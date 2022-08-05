@@ -1,0 +1,5 @@
+#!/home/users/pjh/tools/miniconda/210821/miniconda3/envs/genome_v5/bin/python
+import sys
+sys.path.append('/home/users/pjh/scripts/python_genome_packages')
+from handygenome.tools.database_converter.repeat_converter import main
+main(sys.argv[1:])

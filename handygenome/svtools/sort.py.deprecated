@@ -1,0 +1,75 @@
+import sys
+import argparse
+
+import cyvcf2
+
+from ..common import funcs as common_funcs
+from ..common import params as common_params
+from .format_check import vcf_is_delly_format
+
+
+def argument_parsing(cmdline_args):
+	parser = argparse.ArgumentParser()
+	parser.add_argument('-i', dest = 'input', required = True, 
+			help = 'Input vcf file')
+	parser.add_argument('-o', dest = 'output', required = True, 
+			help = 'Output vcf file')
+	parser.add_argument('-O', dest = 'output_fmt', required = False, default = 'z', 
+			help = '[optional] Output file format. Must be one of v, z, u, or b. Default: z')
+	parser.add_argument('-f', dest = 'fasta', required = False, default = None, 
+			help = '''\
+[optional] Fasta file path. If set, chromosome orders are extracted from this file. \
+Otherwise, genome version is inferred from chromosome names in input file and preset fasta is used.''')
+
+	args = parser.parse_args(cmdline_args)
+	
+	return args
+
+
+def sanity_check(args):
+	if not vcf_is_delly_format(args.input):
+		common_funcs.printErr('Input vcf is not in Delly result format. Exiting.')
+		sys.exit(1)
+
+
+def get_variants_list(args):
+	vcf = cyvcf2.VCF(args.input)
+	variants_list = list(vcf)
+	vcf.close()
+	return variants_list
+
+
+def get_chrom_dict(args):
+	if args.fasta != None:
+		chrom_dict = common_funcs.get_chrom_dict(fasta_path = args.fasta)
+	else:
+		chrom_dict = common_funcs.get_chrom_dict(vcf_path = args.input)
+
+	return chrom_dict
+
+
+def sort_variants_list(variants_list, chrom_dict):
+	variants_list.sort( key = lambda x: (chrom_dict['names'].index(x.CHROM), x.POS, x.INFO['END']) )
+	return variants_list
+
+
+def write_output(args, variants_list, fmt_dict = common_params.BCFTOOLS_FORMAT_DICT):
+	mode = fmt_dict[args.output_fmt]
+	vcf = cyvcf2.VCF(args.input)
+	writer = cyvcf2.Writer(args.output, vcf, mode = mode)
+	for variant in variants_list:
+		writer.write_record(variant)
+	writer.close()
+	vcf.close()
+
+	
+def main(cmdline_args):
+	args = argument_parsing(cmdline_args)
+	sanity_check(args)
+
+	variants_list = get_variants_list(args)
+	chrom_dict = get_chrom_dict(args)
+
+	variants_list = sort_variants_list(variants_list, chrom_dict)
+
+	write_output(args, variants_list)

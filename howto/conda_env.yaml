@@ -1,0 +1,14 @@
+name: handygenome
+dependencies:
+    - python
+
+    - conda-forge::jupyterlab
+    - conda-forge::ipykernel
+
+    - conda-forge::numpy
+    - conda-forge::scipy
+    - conda-forge::pandas
+    - conda-forge::matplotlib
+    - conda-forge::biopython
+    - bioconda::pysam
+    - bioconda::pyranges

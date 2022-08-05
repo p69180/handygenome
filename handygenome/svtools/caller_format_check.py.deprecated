@@ -1,0 +1,114 @@
+import sys
+
+import cyvcf2
+
+from ..common.funcs import printErr
+
+
+def get_variant_format_checker_dict():
+	variant_format_checker_dict = dict()
+
+	# Delly_v0.7.3
+	def func(variant):
+		try:
+			CHR2 = variant.INFO.__getitem__('CHR2')
+			END = variant.INFO.__getitem__('END')
+		except KeyError:
+			return False
+		else:
+			return True
+	variant_format_checker_dict['Delly_v0.7.3'] = func
+
+	# VCFv4.3
+	def func(variant):
+		try:
+			CHR2 = variant.INFO.__getitem__('CHR2')
+			END = variant.INFO.__getitem__('END')
+		except KeyError:
+			return False
+		else:
+			return True
+	#variant_format_checker_dict['VCFv4.3'] = func
+
+	# get caller_list
+	caller_list = tuple(variant_format_checker_dict.keys())
+
+	# return
+	return variant_format_checker_dict, caller_list
+
+
+
+
+
+
+
+
+
+def init_vcf_format_dict(caller_list):
+	vcf_format_dict = dict()
+	for caller in caller_list:
+		vcf_format_dict[caller] = True # Default value is True for all callers
+	
+	return vcf_format_dict
+
+
+def modify_vcf_format_dict(vcf_path, vcf_format_dict, caller_list, variant_format_checker_dict):
+	vcf = cyvcf2.VCF(vcf_path)
+	for variant in vcf:
+		# If all caller formats are not satisfied, stop the examination
+		if sum(vcf_format_dict.values()) == 0:
+			break
+		# check if each caller format is satisfied
+		for caller in caller_list:
+			if vcf_format_dict[caller]:
+				if not variant_format_checker_dict[caller](variant):
+					vcf_format_dict[caller] = False
+	vcf.close()
+
+	return vcf_format_dict
+
+
+def get_result_from_format_dict(vcf_format_dict, caller_list):
+	# sanity check
+	if sum(vcf_format_dict.values()) == 1:
+		result_format = [ caller for caller, tf in vcf_format_dict.items() if tf is True ][0]
+		return result_format
+	elif sum(vcf_format_dict.values()) == 0:
+		printErr(f'Input vcf file format does not conform with any of the callers:')
+		printErr(caller_list)
+		sys.exit(1)
+	elif sum(vcf_format_dict.values()) > 1:
+		printErr(f'Input vcf file format conforms with more than one callers:')
+		true_caller_list = [ caller for caller, tf in vcf_format_dict.items() if tf is True ]
+		printErr(', '.join(true_caller_list))
+		sys.exit(1)
+
+
+def get_vcf_format(vcf_path, caller_list):
+	vcf_format_dict = init_vcf_format_dict(caller_list)
+	variant_format_checker_dict = get_variant_format_checker_dict()
+	vcf_format_dict = modify_vcf_format_dict(
+			vcf_path, 
+			vcf_format_dict, 
+			caller_list, 
+			variant_format_checker_dict
+			)
+	vcf_format = get_result_from_format_dict(vcf_format_dict, caller_list)
+
+	return vcf_format
+
+
+# main functions
+
+#def vcf_is_delly_format(vcf_path, caller_list = get_caller_list()):
+#	vcf_format = get_vcf_format(vcf_path, caller_list)
+#	if vcf_format == 'Delly':
+#		return True
+#	else:
+#		return False
+#
+#
+#def main(vcf_path, caller_list = get_caller_list()):
+#	vcf_format = get_vcf_format(vcf_path, caller_list)
+#	return vcf_format
+
