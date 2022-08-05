@@ -6,6 +6,8 @@ __pycache__/
 # Jupyter Notebook
 .ipynb_checkpoints
 
-# data
+# others
 /data/
 /indel_realigner_test/
+/sequenza_source_modified/
+/tests/
