@@ -89,7 +89,7 @@ class CosmicInfo(annotitem.AnnotItem):
             return total_occurrence / num_sample_allsites
 
 
-class CosmicInfoList(annotitem.AnnotItemList):
+class CosmicInfoALTlist(annotitem.AnnotItemALTlist):
     meta = {'ID': 'cosmic_info', 'Number': 'A', 'Type': 'String', 'Description': 'COSMIC information encoded as a string, one for each ALT allele'}
 
     @classmethod
@@ -103,7 +103,7 @@ class CosmicInfoList(annotitem.AnnotItemList):
             cosmicinfolist.extend([None] * transl_num)
         else:
             for infostring in vr.info[cls.get_annotkey()]:
-                if infostring is None:
+                if infostring in infoformat.NA_VALUES:
                     cosmicinfolist.append(None)
                 else:
                     cosmicinfo = CosmicInfo(metadata=metadata)

@@ -55,32 +55,6 @@ def get_tmpfile_paths(tmpdir, original_vcf_path, chromdict, chrname_converter):
 #####################
 
 
-@common.get_deco_timestamp('writing final output', LOGGER)
-def write_outfile(
-        outfile_path, original_vcf_path, popfreq_metadata,
-        chromdict, chrname_converter,
-        logging_lineno):
-    new_header = get_new_header(chromdict, popfreq_metadata)
-    infile_vcfids = dict()
-    in_vcf = pysam.VariantFile(original_vcf_path, mode="r")
-    out_vcf = pysam.VariantFile(outfile_path, mode="wz", header=new_header)
-
-    for vr in common.iter_lineno_logging(in_vcf.fetch(), LOGGER, logging_lineno):
-        if "FREQ" not in vr.info:
-            continue
-        freq_dict = handle_freq(vr.info["FREQ"])
-
-        new_vr_list = get_new_vr_list(
-            vr, freq_dict, chromdict, chrname_converter, new_header, infile_vcfids)
-        for new_vr in new_vr_list:
-            out_vcf.write(new_vr)
-
-    indexing.index_vcf(outfile_path)
-
-
-#####################
-
-
 def get_tmp_new_header(chromdict):
     header = initvcf.create_header(chromdict=chromdict)
     libpopfreq.PopfreqInfoList.add_meta_info(header)

@@ -3,11 +3,18 @@ import re
 import pysam
 
 import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-infoformat = importlib.import_module('.'.join([top_package_name, 'variantplus', 'infoformat']))
-annotitem = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotitem']))
-customfile = importlib.import_module('.'.join([top_package_name, 'annotation', 'customfile']))
+
+top_package_name = __name__.split(".")[0]
+common = importlib.import_module(".".join([top_package_name, "common"]))
+infoformat = importlib.import_module(
+    ".".join([top_package_name, "variantplus", "infoformat"])
+)
+annotitem = importlib.import_module(
+    ".".join([top_package_name, "annotation", "annotitem"])
+)
+customfile = importlib.import_module(
+    ".".join([top_package_name, "annotation", "customfile"])
+)
 
 
 class PopfreqInfo(annotitem.AnnotItem):
@@ -21,8 +28,10 @@ class PopfreqInfo(annotitem.AnnotItem):
 
 class PopfreqInfoList(annotitem.AnnotItemList):
     meta = {
-            'ID': 'popfreq', 'Number': 'A', 'Type': 'String', 
-            'Description': 'Population frequencies encoded as a string, one for each ALT allele',
+        "ID": "popfreq",
+        "Number": "A",
+        "Type": "String",
+        "Description": "Population frequencies encoded as a string, one for each ALT allele",
     }
 
     @classmethod
@@ -50,7 +59,9 @@ class PopfreqInfoList(annotitem.AnnotItemList):
         if metadata is None:
             metadata = PopfreqMetadata.from_vcfheader(vr.header)
 
-        dbsnp_vr_list = customfile.fetch_relevant_vr_multialt(vcfspec, dbsnp_vcf, fasta=fasta, search_equivs=True, allow_multiple=False)
+        dbsnp_vr_list = customfile.fetch_relevant_vr_multialt(
+            vcfspec, dbsnp_vcf, fasta=fasta, search_equivs=True, allow_multiple=False
+        )
         popinfolist = cls()
         for vr in dbsnp_vr_list:
             if vr is None:
@@ -62,7 +73,7 @@ class PopfreqInfoList(annotitem.AnnotItemList):
 
 
 class PopfreqMetadata(annotitem.AnnotItem):
-    meta = {'ID': 'popfreq_metadata'}
+    meta = {"ID": "popfreq_metadata"}
 
     def get_self_show(self):
         return dict(self)
@@ -71,18 +82,20 @@ class PopfreqMetadata(annotitem.AnnotItem):
 def extract_population_names(dbsnp_vcf_header):
     pop_names = list()
     for key in dbsnp_vcf_header.info:
-        if key.startswith('AF_'):
-            pop_names.append(re.sub('^AF_', '', key))
+        if key.startswith("AF_"):
+            pop_names.append(re.sub("^AF_", "", key))
 
     return pop_names
 
 
 def fetch_dbsnp_vr(vcfspec, dbsnp_vcf, fasta, search_equivs=True):
     """Result may be None"""
-    dbsnp_vr = customfile.fetch_relevant_vr(vcfspec, dbsnp_vcf, fasta=fasta,
-                                            search_equivs=search_equivs,
-                                            allow_multiple=False)
-    
+    dbsnp_vr = customfile.fetch_relevant_vr(
+        vcfspec,
+        dbsnp_vcf,
+        fasta=fasta,
+        search_equivs=search_equivs,
+        allow_multiple=False,
+    )
+
     return dbsnp_vr
-
-

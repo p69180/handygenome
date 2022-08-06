@@ -378,7 +378,7 @@ def get_vcf_header(chromdict, cosmic_metadata):
             header.contigs.add(contig, length)
 
     cosmic_metadata.write_header(header)
-    libcosmicinfo.CosmicInfoList.add_meta_info(header)
+    libcosmicinfo.CosmicInfoALTlist.add_meta_info(header)
     
     return header
 
@@ -391,7 +391,7 @@ def into_CosmicInfo(cosv, cosv_info):
     cosmicinfo['coding_score'] = cosv_info['coding_score']
     cosmicinfo['noncoding_score'] = cosv_info['noncoding_score']
 
-    cosmicinfolist = libcosmicinfo.CosmicInfoList()
+    cosmicinfolist = libcosmicinfo.CosmicInfoALTlist()
     cosmicinfolist.append(cosmicinfo)
 
     return cosmicinfolist

@@ -4,7 +4,7 @@ import sys
 import collections
 import copy
 import json
-import functools 
+import functools
 
 import pysam
 
@@ -42,16 +42,18 @@ structvars = importlib.import_module(
 
 
 # annotitem codec functions #
-ENCODING_SEPS = ('\x1c', '\x1d')
-DEFAULT_SEPS = (',', ':')
+
+ENCODING_SEPS = ("\x1c", "\x1d")
+DEFAULT_SEPS = (",", ":")
 PERCENT_TABLE = {
-    '%': '%25',
-    ':': '%3A', 
-    ';': '%3B', 
-    '=': '%3D', 
-    ',': '%2C',
+    "%": "%25",
+    ":": "%3A",
+    ";": "%3B",
+    "=": "%3D",
+    ",": "%2C",
 }
 TR_TABLE_DECODER = str.maketrans(dict(zip(ENCODING_SEPS, DEFAULT_SEPS)))
+
 
 def _replace(string, tup):
     return string.replace(*tup)
@@ -62,9 +64,9 @@ def _encode_replacer_percent(string):
 
 
 def _decode_replacer_percent(string):
-    return functools.reduce(_replace, 
-                            (reversed(x) for x in PERCENT_TABLE.items()), 
-                            string)
+    return functools.reduce(
+        _replace, (reversed(x) for x in PERCENT_TABLE.items()), string
+    )
 
 
 def _decode_replacer_seps(string):
@@ -73,32 +75,27 @@ def _decode_replacer_seps(string):
 
 def _encode(data, handle_percent=True):
     if handle_percent:
-        return _encode_replacer_percent(
-            json.dumps(data, separators=ENCODING_SEPS)
-        )
+        return _encode_replacer_percent(json.dumps(data, separators=ENCODING_SEPS))
     else:
         return json.dumps(data, separators=ENCODING_SEPS)
 
 
 def _decode(string, handle_percent=True):
     if handle_percent:
-        return json.loads(
-            _decode_replacer_seps(
-                _decode_replacer_percent(string)
-            )
-        )
+        return json.loads(_decode_replacer_seps(_decode_replacer_percent(string)))
     else:
         return json.loads(_decode_replacer_seps(string))
+
 
 #############################
 
 
 # CONSTANTS
-#SEPS = {
+# SEPS = {
 #    "nonprint": {"top": "\x1c", "keyval": "\x1d", "seq": "\x1e", "subkeyval": "\x1f"},
 #    "initial": {"top": "$$$", "keyval": ":::", "seq": "&&&", "subkeyval": "@@@"},
 #    "percent": {"top": "%3A", "keyval": "%3B", "seq": "%3D", "subkeyval": "%25"},
-#}
+# }
 DEFAULT_SEPTYPE = "nonprint"
 
 # SEP_TOP = '$$$'
@@ -869,6 +866,10 @@ class AnnotItemBase:
     def annotkey(self):
         return self.__class__.meta["ID"]
 
+    @staticmethod
+    def decode(infostring):
+        return _decode(infostring)
+
     @classmethod
     def get_annotkey(cls):
         return cls.meta["ID"]
@@ -903,14 +904,12 @@ class AnnotItemBase:
 
 class AnnotItem(AnnotItemBase, dict):
     meta = None
-        # to be used as "items" argument for pysam.VariantHeader.add_meta
+    # to be used as "items" argument for pysam.VariantHeader.add_meta
 
     ##### constructors #####
     @classmethod
-    def decode(cls, infostring):
-        annotitem = cls()
-        annotitem.update(_decode(infostring))
-        return annotitem
+    def from_infostring(cls, infostring):
+        return cls(cls.decode(infostring))
 
     @classmethod
     def from_vcfheader(cls, vcfheader):
@@ -918,49 +917,52 @@ class AnnotItem(AnnotItemBase, dict):
         annotkey = cls.get_annotkey()
         for rec in vcfheader.records:
             if rec.key == annotkey:
-                result = cls.decode(rec.value)
-
+                result = cls.from_infostring(rec.value)
         if result is None:
-            raise Exception(f'The vcfheader does not contain annotation key {annotkey}.')
+            raise Exception(
+                f"The vcfheader does not contain annotation key {annotkey}."
+            )
 
         return result
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(data)
+
     ########################
 
     def encode(self):
         return _encode(dict(self))
 
-    def load_infostring(self, infostring, overwrite=True):
-        other_annotitem = self.decode(infostring)
-        self.load_other(other_annotitem, overwrite=overwrite)
+    #    def load_infostring(self, infostring, overwrite=True):
+    #        other_annotitem = self.from_infostring(infostring)
+    #        self.update_dict(other_annotitem, overwrite=overwrite)
+    #
+    #    def load_vr_info(self, vr, infokey=None):
+    #        if infokey is None:
+    #            infokey = self.annotkey
+    #
+    #        assert vr.header.info[infokey].number == 1
+    #        assert vr.header.info[infokey].type == "String"
+    #
+    #        if not infoformat.check_NA_info(vr, infokey):
+    #            infostring = infoformat.get_info(vr, infokey)
+    #            self.load_infostring(infostring)
+    #
+    #    load_vr = load_vr_info  # alias
+    #
+    #    def load_vr_format(self, vr, sampleid, key=None):
+    #        if key is None:
+    #            key = self.annotkey
+    #
+    #        assert vr.header.formats[key].number == 1
+    #        assert vr.header.formats[key].type == "String"
+    #
+    #        if not infoformat.check_NA_format(vr, sampleid, key):
+    #            infostring = infoformat.get_format(vr, sampleid, key)
+    #            self.load_infostring(infostring)
 
-    def load_vr_info(self, vr, infokey=None):
-        if infokey is None:
-            infokey = self.annotkey
-
-        assert vr.header.info[infokey].number == 1
-        assert vr.header.info[infokey].type == "String"
-
-        if not infoformat.check_NA_info(vr, infokey):
-            infostring = infoformat.get_info(vr, infokey)
-            self.load_infostring(infostring)
-
-    load_vr = load_vr_info  # alias
-
-    def load_vr_format(self, vr, sampleid, key=None):
-        if key is None:
-            key = self.annotkey
-
-        assert vr.header.formats[key].number == 1
-        assert vr.header.formats[key].type == "String"
-
-        if not infoformat.check_NA_format(vr, sampleid, key):
-            infostring = infoformat.get_format(vr, sampleid, key)
-            self.load_infostring(infostring)
-
-    def load_other(self, other, overwrite=False):
-        """Args:
-        other: an AnnotItem object
-        """
+    def update_dict(self, other, overwrite=False):
         if overwrite:
             for key, val in other.items():
                 self[key] = val
@@ -976,10 +978,11 @@ class AnnotItem(AnnotItemBase, dict):
                     else:
                         if val != old_val:
                             raise Exception(
-                                f"Old value and new value are different; "
-                                f"key: {key} ; old_val: {old_val} ; "
-                                f"new_val: {val}"
+                                f"Old value and new value are different; key: {key}; old_val: {old_val}; new_val: {val}"
                             )
+
+    load_other = update_dict
+
 
 #    def write_info(self, vr, key=None, add_meta=False):
 #        if key is None:
@@ -1000,16 +1003,17 @@ class AnnotItem(AnnotItemBase, dict):
 #        infoformat.set_format(vr, sampleid, key, self.encode())
 
 
-class AnnotItemList(AnnotItemBase, list):
+class AnnotItemALTlist(AnnotItemBase, list):
     meta = None
 
     def get_self_show(self):
-        return [(None if (x is None) else x.get_self_show())
-                for x in self]
+        return [(None if (x is None) else x.get_self_show()) for x in self]
 
     def encode(self):
-        return tuple((None if (x is None) else x.encode())
-                     for x in self)
+        return tuple((None if (x is None) else x.encode()) for x in self)
+
+
+AnnotItemList = AnnotItemALTlist
 
 
 class AnnotItemDict(dict):

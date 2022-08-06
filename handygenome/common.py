@@ -503,8 +503,8 @@ class Vcfspec:
                          self.ref, 
                          '|'.join(self.alts)])
 
-    def get_mutation_type(self, idx=0):
-        return get_mttype(self.ref, self.alts[idx])
+    def get_mutation_type(self, alt_idx=0):
+        return get_mttype(self.ref, self.alts[alt_idx])
 
     def get_mttype_firstalt(self):
         return self.get_mutation_type(0)
@@ -537,6 +537,11 @@ class Vcfspec:
         for alt in self.alts:
             new_vcfspec = self.__class__(self.chrom, self.pos, self.ref, (alt,))
             yield new_vcfspec
+
+    def get_monoalt(self, alt_idx=0):
+        return self.__class__(
+            self.chrom, self.pos, self.ref, (self.alts[alt_idx],)
+        )
 
     def check_without_N(self):
         return (

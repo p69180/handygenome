@@ -31,7 +31,7 @@ ensembl_rest = importlib.import_module(
 )
 veplib = importlib.import_module(".".join([top_package_name, "annotation", "veplib"]))
 customfile = importlib.import_module(
-    ".".join([top_package_name, "annotation", "customfile"])
+    ".".join([top_package_name, "annotation", "customfile_new"])
 )
 rnalib = importlib.import_module(".".join([top_package_name, "annotation", "rnalib"]))
 
@@ -60,32 +60,32 @@ META_DESCRIPTIONS_SUFFIXES = {
 ###############################################
 
 
-REGULATORY_FEATURE_TYPES = {
-    "regulatory": {
-        "Promoter": "promoter",
-        "Promoter Flanking Region": "promoter_flank",
-        "CTCF Binding Site": "CTCFBS",
-        "TF binding site": "TFBS",
-        "Enhancer": "enhancer",
-        "Open chromatin": "open_chromatin",
-    },
-    "overlap": {
-        "Predicted promoter": "promoter",
-        "Predicted promoter flanking region": "promoter_flank",
-        "CTCF binding site": "CTCFBS",
-        "Transcription factor binding site": "TFBS",
-        "Predicted enhancer region": "enhancer",
-        "Open chromatin region": "open_chromatin",
-    },
-    "vep": {
-        "promoter": "promoter",
-        "promoter_flanking_region": "promoter_flank",
-        "CTCF_binding_site": "CTCFBS",
-        "TF_binding_site": "TFBS",
-        "enhancer": "enhancer",
-        "open_chromatin_region": "open_chromatin",
-    },
-}
+#REGULATORY_FEATURE_TYPES = {
+#    "regulatory": {
+#        "Promoter": "promoter",
+#        "Promoter Flanking Region": "promoter_flank",
+#        "CTCF Binding Site": "CTCFBS",
+#        "TF binding site": "TFBS",
+#        "Enhancer": "enhancer",
+#        "Open chromatin": "open_chromatin",
+#    },
+#    "overlap": {
+#        "Predicted promoter": "promoter",
+#        "Predicted promoter flanking region": "promoter_flank",
+#        "CTCF binding site": "CTCFBS",
+#        "Transcription factor binding site": "TFBS",
+#        "Predicted enhancer region": "enhancer",
+#        "Open chromatin region": "open_chromatin",
+#    },
+#    "vep": {
+#        "promoter": "promoter",
+#        "promoter_flanking_region": "promoter_flank",
+#        "CTCF_binding_site": "CTCFBS",
+#        "TF_binding_site": "TFBS",
+#        "enhancer": "enhancer",
+#        "open_chromatin_region": "open_chromatin",
+#    },
+#}
 
 BIOTYPE_REGULATORY_CLASSES = {
     "promoter": (
@@ -360,12 +360,143 @@ class EnsemblFeature(annotitem.AnnotItem):
         return self["distance"] is None
 
 
+class EnsemblFeatureSetBase(annotitem.AnnotItem):
+    feature_type = None
+
+    @property
+    def overlapping(self):
+        result = self.__class__()
+        for key, val in self.items():
+            if val.is_overlapping:
+                result[key] = val
+        return result
+
+    def get_self_show(self):
+        return {key, val.get_self_show() for key, val in self.items()}
+
+    def add_feature(self, feature):
+        self[feature["id"]] = feature
+
+    def update_other(self, other, overwrite=True, create_new=True):
+        """Args:
+            other: another EnsemblFeatureSetBase object
+        """
+        for ID, feature in other.items():
+            if ID in self.keys():
+                self[ID].update_dict(feature, overwrite=overwrite)
+            else:
+                if create_new:
+                    self[ID] = feature
+
+    def get_distance_setter_snv(self, vcfspec):
+        pos0 = vcfspec.pos0
+        def distance_setter(feature_range0):
+            if pos0 < feature_range0.start:
+                distance = feature_range0.start - pos0
+            elif pos0 >= feature_range0.stop:
+                distance = feature_range0.stop - 1 - pos0
+            else:
+                distance = None
+            return distance
+        return distance_setter
+
+    def get_distance_setter_ins(self, vcfspec):
+        pos0 = vcfspec.pos0
+        def distance_setter(feature_range0):
+            if pos0 <= feature_range0.start - 1:
+                distance = feature_range0.start - pos0 - 1
+            elif pos0 >= feature_range0.stop - 1:
+                distance = feature_range0.stop - 1 - pos0
+            else:
+                distance = None
+            return distance
+        return distance_setter
+
+    def get_distance_setter_interval(self, var_range0):
+        def distance_setter(feature_range0):
+            if var_range0.stop <= feature_range0.start:
+                distance = feature_range0.start - var_range0.stop + 1
+            elif var_range0.start >= feature_range0.stop:
+                distance = feature_range0.stop - 1 - var_range0.start
+            else:
+                distance = None
+            return distance
+        return distance_setter
+
+    def get_distance_setter_del(self, vcfspec):
+        var_range0 = range(vcfspec.pos, vcfspec.pos + len(vcfspec.ref) - 1)
+        return self.get_distance_setter_interval(var_range0)
+
+    def get_distance_setter_bnd(self, pos):
+        vcfspec = common.Vcfspec(chrom=None, pos=pos, ref=None, alts=None)
+        return self.get_distance_setter_snv(vcfspec)
+
+    def set_missing_distances_base(self, distance_setter):
+        """Sets distance for features not derived from VEP (e.g. repeat
+        elements). Simulates the distance given by VEP.
+        """
+        for feature in self.values():
+            if "distance" not in feature:
+                # features derived from "ensembl rest overlap"
+                #   do not have "distance" value
+                assert "start0" in feature and "end0" in feature, (
+                    f'"start0" or "end0" missing for this feature:\n{feature}'
+                )
+                feature_range0 = range(feature["start0"], feature["end0"])
+                feature["distance"] = distance_setter(feature_range0)
+
+
+class EnsemblFeatureSetPlain(EnsemblFeatureSetBase):
+    def get_fetch_interval(self, vcfspec, distance, chromdict):
+        return common.Interval(
+            chrom=vcfspec.chrom,
+            start1=max(1, vcfspec.pos - distance),
+            end1=min(chromdict[vcfspec.chrom], vcfspec.pos + distance),
+        )
+
+    def set_missing_distances(self, vcfspec, alt_idx=0):
+        mttype = vcfspec.get_mutation_type(alt_idx)
+        if mttype == "snv":
+            distance_setter = self.get_distance_setter_snv(vcfspec)
+        elif mttype == "ins":
+            distance_setter = self.get_distance_setter_ins(vcfspec)
+        elif mttype in ("del", "delins", "mnv", "cpgmet"):
+            distance_setter = self.get_distance_setter_del(vcfspec)
+        else:
+            raise Exception(f"Unexpected mutation type: {mttype}")
+
+        self.set_missing_distances_base(distance_setter)
+
+
 class Transcript(EnsemblFeature):
     feature_type = 'transcript'
 
-    @property
-    def is_canonical(self):
-        return self["is_canonical"]
+    def __getitem__(self, key):
+        if key == 'consequence_flags':
+            return self.consequence_flags
+        elif key == 'subtype_flags':
+            return self.subtype_flags
+        elif key == 'exon_ranges':
+            return self.exon_ranges
+        elif key == 'intron_ranges':
+            return self.intron_ranges
+        else:
+            return super().__getitem__(key)
+
+    def get_self_show(self):
+        self_show = dict(self)
+        for key in (
+            'consequence_flags', 
+            'subtype_flags',
+            'exon_ranges',
+            'intron_ranges',
+        ):
+            try:
+                self_show[key] = self[key]
+            except KeyError:
+                pass
+
+        return self_show
 
     @functools.cached_property
     def consequence_flags(self):
@@ -394,72 +525,256 @@ class Transcript(EnsemblFeature):
 
     @functools.cached_property
     def exon_ranges(self):
-        pass
+        if 'exon_borders' in self.keys():
+            if self['exon_borders'] is None:
+                return None
+            else:
+                return [range(*x) for x in self['exon_borders']]
+        else:
+            return None
 
     @functools.cached_property
     def intron_ranges(self):
-        exon_ranges = self.get_exon_ranges()
-        if exon_ranges is not None:
-            pass
-
-        if len(exon_ranges) == 1:
-            intron_ranges = None
+        exon_ranges = self.exon_ranges
+        if exon_ranges is None:
+            result = None
         else:
-            intron_ranges = dict()
-            ascending = sorted(exon_ranges.items(), key=lambda x: x[1][0])
-            for idx in range(len(ascending) - 1):
-                intron_number = (
-                    ascending[idx][0]
-                    if annotitem["is_forward"]
-                    else ascending[idx + 1][0]
-                )
-                range_item = range(ascending[idx][1][-1] + 1, ascending[idx + 1][1][0])
-                intron_ranges[intron_number] = range_item
-            intron_ranges = dict(sorted(intron_ranges.items(), key=lambda x: x[0]))
+            if len(exon_ranges) == 1:
+                result = None
+            else:
+                assert self['is_forward'] is not None
+                result = list()
+                if self['is_forward']:
+                    for idx in range(len(exon_ranges) - 1):
+                        result.append(
+                            range(exon_ranges[idx].stop, exon_ranges[idx + 1].start)
+                        )
+                else:
+                    for idx in range(len(exon_ranges) - 1):
+                        result.append(
+                            range(exon_ranges[idx + 1].stop, exon_ranges[idx].start)
+                        )
+        return result
 
-        return intron_ranges
+
+class TranscriptSet(EnsemblFeatureSetPlain):
+    # constructor
+    @classmethod
+    def from_infostring(cls, infostring):
+        tmp = result.decode(infostring)
+        for key, val in tmp.items():
+            self[key] = Transcript.from_dict(val)
+
+    @property
+    def canonical(self):
+        result = self.__class__()
+        for key, val in self.items():
+            if val['is_canonical']:
+                result[key] = val
+        return result
+
+    @property
+    def canon_ovlp(self):
+        result = self.__class__()
+        for key, val in self.items():
+            if (val['is_canonical'] and val.is_overlapping):
+                result[key] = val
+        return result
+
+    def update_ensembl_gff(self, vcfspec, chromdict, distance, tabixfile_geneset, refver=None, fill_missing_canonical=True):
+        assert not ((refver is None) and fill_missing_canonical), (
+            f'If "fill_missing_canonical" is True, "refver" must be given.'
+        )
+
+        fetch_interval = self.get_fetch_interval(vcfspec, distance, chromdict)
+        transcript_set = customfile.fetch_transcript(
+            fetch_interval.chrom,
+            fetch_interval.start0,
+            fetch_interval.end0,
+            tabixfile_geneset,
+        )
+
+        if fill_missing_canonical:
+            for ID, transcript in transcript_set.items():
+                if "is_canonical" not in transcript.keys():
+                    raw_result = ensembl_rest.lookup_id(
+                        ID=transcript["id"], refver=refver, expand=False
+                    )
+                    transcript["is_canonical"] = (raw_result["is_canonical"] == 1)
+
+        self.update_other(transcript_set, overwrite=False, create_new=True)
 
 
-class TranscriptInfo(annotitem.AnnotItem):
-    pass
+class TranscriptSetALTlist(annotitem.AnnotItemALTlist):
+    meta = {
+        "ID": "transcripts",
+        "Number": "A",
+        "Type": "String",
+        "Description": "Transcript annotations encoded as a string, one for each ALT allele",
+    }
 
+    @classmethod
+    def from_vr(cls, vr):
+        altlist = cls()
+        if infoformat.check_NA_info(vr, cls.get_annotkey()):
+            transl_num = infoformat.get_translated_number_info(vr, cls.get_annotkey())
+            altlist.extend([None] * transl_num)
+        else:
+            for infostring in vr.info[cls.get_annotkey()]:
+                if infostring in infoformat.NA_VALUES:
+                    altlist.append(None)
+                else:
+                    altlist.append(TranscriptSet.from_infostring(infostring))
 
-class TranscriptInfoList(annotitem.AnnotItemList):
-    pass
+        return altlist
 
 
 class Regulatory(EnsemblFeature):
     feature_type = 'regulatory'
 
+    def __getitem__(self, key):
+        if key == 'subtype_flags':
+            return self.subtype_flags
+        else:
+            return super().__getitem__(key)
+
+    def get_self_show(self):
+        self_show = dict(self)
+        for key in (
+            'subtype_flags',
+        ):
+            try:
+                self_show[key] = self[key]
+            except KeyError:
+                pass
+
+        return self_show
+
     @functools.cached_property
     def subtype_flags(self):
         if self["biotype"] not in BIOTYPE_REGULATORY_VALUES:
             raise Exception(
-                f'Unexpected regulatory biotype value; biotype: {self["biotype"]}; feature_id: {self["id"]}'
+                f'Unexpected regulatory biotype value;\n{dict(self)}'
             )
         result = dict()
         for key, val in BIOTYPE_REGULATORY_CLASSES.items():
             result[key] = self["biotype"] in val
 
 
-class RegulatoryInfo(annotitem.AnnotItem):
-    pass
+class RegulatorySet(EnsemblFeatureSetPlain):
+    meta = {
+        "ID": "regulatory_elements",
+        "Number": "1",
+        "Type": "String",
+        "Description": "Regulatory element annotations encoded as a string.",
+    }
+
+    # constructor
+    @classmethod
+    def from_vr(cls, vr):
+        result = cls()
+        tmp = result.decode(vr.info[cls.get_annotkey()])
+        for key, val in tmp.items():
+            result[key] = Regulatory.from_dict(val)
+
+        return result
+
+    def update_ensembl_gff(self, vcfspec, chromdict, distance, tabixfile_regulatory):
+        fetch_interval = self.get_fetch_interval(vcfspec, distance, chromdict)
+        regulatory_set = customfile.fetch_regulatory(
+            fetch_interval.chrom,
+            fetch_interval.start0,
+            fetch_interval.end0,
+            tabixfile_regulatory,
+        )
+        self.update_other(regulatory_set, overwrite=False, create_new=True)
 
 
 class Motif(EnsemblFeature):
     feature_type = 'motif'
 
+    def get_self_show(self):
+        return dict(self)
 
-class MotifInfo(annotitem.AnnotItem):
-    pass
+
+class MotifSet(EnsemblFeatureSetPlain):
+    meta = {
+        "ID": "TF_binding_motifs",
+        "Number": "1",
+        "Type": "String",
+        "Description": "Transcription factor binding motif annotations encoded as a string.",
+    }
+
+    # constructor
+    @classmethod
+    def from_vr(cls, vr):
+        result = cls()
+        tmp = result.decode(vr.info[cls.get_annotkey()])
+        for key, val in tmp.items():
+            result[key] = Motif.from_dict(val)
+
+        return result
 
 
 class Repeat(EnsemblFeature):
     feature_type = 'repeat'
 
+    def __getitem__(self, key):
+        if key == 'id':
+            return self.id
+        else:
+            return super().__getitem__(key)
 
-class RepeatInfo(annotitem.AnnotItem):
-    pass
+    def get_self_show(self):
+        self_show = dict(self)
+        for key in (
+            'id',
+        ):
+            try:
+                self_show[key] = self[key]
+            except KeyError:
+                pass
+
+        return self_show
+
+    @functools.cached_property
+    def id(self):
+        return '_'.join(
+            [
+                self['name'],
+                self['chrom'], 
+                str(self['start1']), 
+                str(self['end1']), 
+            ]
+        )
+
+class RepeatSet(EnsemblFeatureSetPlain):
+    meta = {
+        "ID": "repeat_elements",
+        "Number": "1",
+        "Type": "String",
+        "Description": "Repeat sequence annotations encoded as a string.",
+    }
+
+    # constructor
+    @classmethod
+    def from_vr(cls, vr):
+        result = cls()
+        tmp = result.decode(vr.info[cls.get_annotkey()])
+        for key, val in tmp.items():
+            result[key] = Repeat.from_dict(val)
+
+        return result
+
+    def update_repeatmasker_bed(self, vcfspec, chromdict, distance, tabixfile_repeats):
+        fetch_interval = self.get_fetch_interval(vcfspec, distance, chromdict)
+        repeat_set = customfile.fetch_repeat(
+            fetch_interval.chrom,
+            fetch_interval.start0,
+            fetch_interval.end0,
+            tabixfile_repeats,
+        )
+        self.update_other(repeat_set, overwrite=False, create_new=True)
 
 
 ###################
