@@ -17,19 +17,24 @@ REGULATORY_PATH = {
     }
 
 DBSNP_PATHS = {
-    'hg19': '/home/users/pjh/References/dbSNP37/modified_files_220602/dbSNP_b155_GRCh37.p13.vcf.gz',
+    'hg19': '/home/users/pjh/scripts/python_genome_packages/data/popfreq/dbSNP_b155_GRCh37.p13.vcf.gz',
     'hg38': '/home/users/pjh/References/dbSNP38/modified_files/dbSNP_b155_GRCh38.p13.vcf.gz',
     }
 
+#COSMIC_PATHS = {
+#    'hg19': {
+#        'coding': '/home/users/pjh/References/COSMIC/hg19/modified_files/v95/CosmicMutantExport.vcf.gz',
+#        'noncoding': '/home/users/pjh/References/COSMIC/hg19/modified_files/v95/CosmicNCV.vcf.gz',
+#        },
+#    'hg38': {
+#        'coding': '/home/users/pjh/References/COSMIC/hg38/modified_files/v95/CosmicMutantExport.vcf.gz',
+#        'noncoding': '/home/users/pjh/References/COSMIC/hg38/modified_files/v95/CosmicNCV.vcf.gz',
+#        },
+#    }
+
 COSMIC_PATHS = {
-    'hg19': {
-        'coding': '/home/users/pjh/References/COSMIC/hg19/modified_files/v95/CosmicMutantExport.vcf.gz',
-        'noncoding': '/home/users/pjh/References/COSMIC/hg19/modified_files/v95/CosmicNCV.vcf.gz',
-        },
-    'hg38': {
-        'coding': '/home/users/pjh/References/COSMIC/hg38/modified_files/v95/CosmicMutantExport.vcf.gz',
-        'noncoding': '/home/users/pjh/References/COSMIC/hg38/modified_files/v95/CosmicNCV.vcf.gz',
-        },
+    'hg19': '/home/users/pjh/scripts/python_genome_packages/data/cosmic/v96/grch37/nonSV.vcf.gz',
+    'hg38': None,
     }
 
 ###
@@ -54,13 +59,17 @@ VCFS_DBSNP = {
     'hg38': pysam.VariantFile(DBSNP_PATHS['hg38']),
     }
 
+#VCFS_COSMIC = {
+#    'hg19': {
+#        'coding': pysam.VariantFile(COSMIC_PATHS['hg19']['coding']),
+#        'noncoding': pysam.VariantFile(COSMIC_PATHS['hg19']['noncoding']),
+#        },
+#    'hg38': {
+#        'coding': pysam.VariantFile(COSMIC_PATHS['hg38']['coding']),
+#        'noncoding': pysam.VariantFile(COSMIC_PATHS['hg38']['noncoding']),
+#        },
+#    }
 VCFS_COSMIC = {
-    'hg19': {
-        'coding': pysam.VariantFile(COSMIC_PATHS['hg19']['coding']),
-        'noncoding': pysam.VariantFile(COSMIC_PATHS['hg19']['noncoding']),
-        },
-    'hg38': {
-        'coding': pysam.VariantFile(COSMIC_PATHS['hg38']['coding']),
-        'noncoding': pysam.VariantFile(COSMIC_PATHS['hg38']['noncoding']),
-        },
+    'hg19': pysam.VariantFile(COSMIC_PATHS['hg19']),
+    'hg38': None,
     }

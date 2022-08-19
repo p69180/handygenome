@@ -447,6 +447,7 @@ class ChromDict(collections.OrderedDict):
 
 
 class Vcfspec:
+    # constructors #
     def __init__(self, chrom=None, pos=None, ref=None, alts=None, 
                  somaticindex=1, germlineindexes=(0, 0)):
         if alts is not None:
@@ -460,6 +461,11 @@ class Vcfspec:
             self.alts = tuple(alts)
         self.somaticindex = somaticindex
         self.germlineindexes = sorted(germlineindexes)
+
+    @classmethod
+    def from_vr(cls, vr):
+        return cls(chrom=vr.contig, pos=vr.pos, ref=vr.ref, alts=vr.alts)
+    ################
 
     def __repr__(self):
         if len(self.alts) == 1:
@@ -533,6 +539,12 @@ class Vcfspec:
                      self.pos0 + len(self.ref) + flanklen)
 
     # misc
+    def apply_to_vr(self, vr):
+        vr.contig = self.chrom
+        vr.pos = self.pos
+        vr.ref = self.ref
+        vr.alts = self.alts
+
     def iter_monoalts(self):
         for alt in self.alts:
             new_vcfspec = self.__class__(self.chrom, self.pos, self.ref, (alt,))
@@ -548,6 +560,31 @@ class Vcfspec:
             without_N(self.ref) and
             all(without_N(x) for x in self.alts)
         )
+
+    def to_hgvsg(self, alt_idx=0):
+        chrom = self.chrom
+        pos = self.pos
+        ref = self.ref
+        alt = self.alts[alt_idx]
+        mttype = self.get_mutation_type(alt_idx)
+
+        if mttype == 'snv':
+            result = f'{chrom}:g.{pos}{ref}>{alt}'
+        elif mttype == 'mnv':
+            pos2 = pos1 + (len(ref) - 1)
+            result = f'{chrom}:g.{pos}_{pos2}delins{alt}'
+        elif mttype == 'ins':
+            inserted_seq = alt[1:]
+            result = f'{chrom}:g.{pos}_{pos+1}ins{inserted_seq}'
+        elif mttype == 'del':
+            pos1 = pos + 1
+            pos2 = pos + (len(ref) - 1)
+            result = f'{chrom}:g.{pos1}_{pos2}del'
+        elif mttype == 'delins':
+            pos2 = pos + (len(ref) - 1)
+            result = f'{chrom}:g.{pos}_{pos2}delins{alt}'
+
+        return result
 
 
 def check_vcfspec_monoalt(vcfspec):
@@ -918,7 +955,7 @@ def get_interval_lengths_width(total_length, width):
 def str_to_nonstr(val):
     #assert isinstance(val, str)
 
-    if val.lower() == 'none':
+    if val.lower() in ('none', 'null'):
         return None
     elif val.lower() == 'nan':
         return np.nan

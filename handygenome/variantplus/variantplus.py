@@ -32,14 +32,20 @@ infoformat = importlib.import_module(
 )
 initvcf = importlib.import_module(".".join([top_package_name, "vcfeditor", "initvcf"]))
 
-annotationdb = importlib.import_module(
-    ".".join([top_package_name, "annotation", "annotationdb"])
-)
+#annotationdb = importlib.import_module(
+#    ".".join([top_package_name, "annotation", "annotationdb"])
+#)
 ensembl_feature = importlib.import_module(
     ".".join([top_package_name, "annotation", "ensembl_feature"])
 )
 ensembl_parser = importlib.import_module(
-    ".".join([top_package_name, "annotation", "ensembl_parser_new"])
+    ".".join([top_package_name, "annotation", "ensembl_parser"])
+)
+libpopfreq = importlib.import_module(
+    ".".join([top_package_name, "annotation", "popfreq"])
+)
+libcosmic = importlib.import_module(
+    ".".join([top_package_name, "annotation", "cosmic"])
 )
 
 readplus = importlib.import_module(".".join([top_package_name, "readplus", "readplus"]))
@@ -59,114 +65,231 @@ READCOUNT_FORMAT_KEY = "allele_readcounts"
 
 class VariantPlus:
     """Attributes:
-    vr
-    refver
-    fasta
-    chromdict
-    vcfspec
-    is_sv
-    is_bnd1
-    bnds
-    annotdb
-    annotdb_bnd1
-    annotdb_bnd2
+        vr
+        refver
+        fasta
+        chromdict
+        vcfspec
+        is_sv
+        is_bnd1
+        bnds
+        annotdb
+        annotdb_bnd1
+        annotdb_bnd2
     """
+    # constructors
+    @classmethod
+    def from_vr(cls, vr, refver=None, fasta=None, chromdict=None, **kwargs):
+        result = cls()
 
-    @common.get_deco_num_set(("vr", "vcfspec", "bnds"), 1)
-    def __init__(
-        self,
-        vr=None,
-        vcfspec=None,
-        bnds=None,
-        refver=None,
-        fasta=None,
-        chromdict=None,
-        add_annotdb_infometas=True,
-        set_annotdb=True,
-        set_readstats=True,
-        annotitem_septype=annotationdb.DEFAULT_SEPTYPE,
+        result.vr = vr
+        result.refver = common.infer_refver_vr(result.vr) if (refver is None) else refver
+        result.fasta = (
+            pysam.FastaFile(common.DEFAULT_FASTA_PATHS[result.refver])
+            if fasta is None
+            else fasta
+        )
+        result.chromdict = (
+            common.ChromDict(fasta=result.fasta) if chromdict is None else chromdict
+        )
+        result.vcfspec = common.Vcfspec.from_vr(result.vr)
+
+        result.init_common(**kwargs)
+
+        return result
+
+    @classmethod
+    def from_vcfspec(cls, vcfspec, refver, fasta=None, chromdict=None, **kwargs):
+        result = cls()
+
+        result.vcfspec = vcfspec
+        result.refver = refver
+        result.fasta = (
+            pysam.FastaFile(common.DEFAULT_FASTA_PATHS[result.refver])
+            if fasta is None
+            else fasta
+        )
+        result.chromdict = (
+            common.ChromDict(fasta=result.fasta) if chromdict is None else chromdict
+        )
+        result.vr = initvcf.create_vr(chromdict=result.chromdict, vcfspec=result.vcfspec)
+
+        result.init_common(**kwargs)
+
+        return result
+
+    @classmethod
+    def from_bnds(cls, bnds, refver, fasta=None, chromdict=None, **kwargs):
+        vcfspec = bnds.get_vcfspec_bnd1()
+        return cls.from_vcfspec(vcfspec, refver, fasta, chromdict, **kwargs)
+
+    def init_common(
+        self, 
+        init_popfreq=True, 
+        init_cosmic=True,
+        init_transcript=True,
+        init_regulatory=True,
+        init_motif=False,
+        init_repeat=True,
+        init_readstats=True,
+        popfreq_metadata=None, 
+        cosmic_metadata=None,
     ):
-        """Args:
-        vr: pysam.VariantRecord instance
-        fasta: pysam.FastaFile instance
-        chromdict: handygenome.common.Chromdict instance
-        """
-
-        def init_from_vr(self, vr, refver, fasta, chromdict):
-            self.vr = vr
-            self.refver = common.infer_refver_vr(self.vr) if refver is None else refver
-            self.fasta = (
-                pysam.FastaFile(common.DEFAULT_FASTA_PATHS[self.refver])
-                if fasta is None
-                else fasta
-            )
-            self.chromdict = (
-                common.ChromDict(fasta=self.fasta) if chromdict is None else chromdict
-            )
-            self.vcfspec = varianthandler.get_vcfspec(self.vr)
-
-        def init_from_vcfspec(self, vcfspec, refver, fasta, chromdict):
-            if refver is None:
-                raise Exception(f"If initializing with vcfspec, refver must be given.")
-
-            self.vcfspec = vcfspec
-            self.refver = refver
-
-            self.fasta = (
-                pysam.FastaFile(common.DEFAULT_FASTA_PATHS[self.refver])
-                if fasta is None
-                else fasta
-            )
-            self.chromdict = (
-                common.ChromDict(fasta=self.fasta) if chromdict is None else chromdict
-            )
-
-            self.vr = initvcf.create_vr(chromdict=self.chromdict, vcfspec=self.vcfspec)
-
-        def init_from_bnds(self, bnds, refver, fasta, chromdict):
-            if refver is None:
-                raise Exception(
-                    f"If initializing with Breakends, refver must be given."
-                )
-
-            vcfspec = bnds.get_vcfspec_bnd1()
-            init_from_vcfspec(self, vcfspec, refver, fasta, chromdict)
-
-        # MAIN
-        if vr is not None:
-            init_from_vr(self, vr, refver, fasta, chromdict)
-        elif vcfspec is not None:
-            init_from_vcfspec(self, vcfspec, refver, fasta, chromdict)
-        elif bnds is not None:
-            init_from_bnds(self, bnds, refver, fasta, chromdict)
-
         # SV attrs
         self.is_sv = varianthandler.check_SV(self.vr)
         self.set_bnds_attributes()  # is_bnd1, bnds
 
-        # annotdb
-        self.annotitem_septype = annotitem_septype
-        if add_annotdb_infometas:
-            annotationdb.add_infometas(self.vr.header)
-        if set_annotdb:
-            self.set_annotdb()
+        # popfreq & cosmic
+        if init_popfreq:
+            self._init_popfreq(metadata=popfreq_metadata)
+        if init_cosmic:
+            self._init_cosmic(metadata=cosmic_metadata)
 
         # transcript, regulatory, motif, repeat
-        self.init_features()
+        if init_transcript:
+            self._init_transcript()
+        if init_regulatory:
+            self._init_regulatory()
+        if init_motif:
+            self._init_motif()
+        if init_repeat:
+            self._init_repeat()
 
-        # readstats_datas, rpplists
+        # readstats_data_dict, rpplists
         self.rpplist_dict = dict()
-        self.readstats_datas = dict()
-        self.readstats_dict = dict()
-        if set_readstats:
-            self.load_readstats()
+        self.readstats_data_dict = dict()
+        if init_readstats:
+            self._init_readstats()
 
         # sampleids
         self.sampleids = tuple(self.vr.header.samples)
 
+#    @common.get_deco_num_set(("vr", "vcfspec", "bnds"), 1)
+#    def __init__(
+#        self,
+#        vr=None,
+#        vcfspec=None,
+#        bnds=None,
+#        refver=None,
+#        fasta=None,
+#        chromdict=None,
+#        #add_annotdb_infometas=True,
+#        #set_annotdb=True,
+#        init_popfreq=True,
+#        init_cosmic=True,
+#        init_transcript=True,
+#        init_regulatory=True,
+#        init_motif=False,
+#        init_repeat=True,
+#        init_readstats=True,
+#        #annotitem_septype=annotationdb.DEFAULT_SEPTYPE,
+#        popfreq_metadata=None, 
+#        cosmic_metadata=None,
+#    ):
+#        """Args:
+#            vr: pysam.VariantRecord instance
+#            fasta: pysam.FastaFile instance
+#            chromdict: handygenome.common.Chromdict instance
+#        How to initialize:
+#            1) "vr"
+#            2) "vcfspec" and "refver"
+#            3) "bnds" and "refver"
+#        """
+#
+#        def init_from_vr(self, vr, refver, fasta, chromdict):
+#            self.vr = vr
+#            self.refver = common.infer_refver_vr(self.vr) if refver is None else refver
+#            self.fasta = (
+#                pysam.FastaFile(common.DEFAULT_FASTA_PATHS[self.refver])
+#                if fasta is None
+#                else fasta
+#            )
+#            self.chromdict = (
+#                common.ChromDict(fasta=self.fasta) if chromdict is None else chromdict
+#            )
+#            self.vcfspec = varianthandler.get_vcfspec(self.vr)
+#
+#        def init_from_vcfspec(self, vcfspec, refver, fasta, chromdict):
+#            if refver is None:
+#                raise Exception(f"If initializing with vcfspec, refver must be given.")
+#
+#            self.vcfspec = vcfspec
+#            self.refver = refver
+#
+#            self.fasta = (
+#                pysam.FastaFile(common.DEFAULT_FASTA_PATHS[self.refver])
+#                if fasta is None
+#                else fasta
+#            )
+#            self.chromdict = (
+#                common.ChromDict(fasta=self.fasta) if chromdict is None else chromdict
+#            )
+#
+#            self.vr = initvcf.create_vr(chromdict=self.chromdict, vcfspec=self.vcfspec)
+#
+#        def init_from_bnds(self, bnds, refver, fasta, chromdict):
+#            if refver is None:
+#                raise Exception(
+#                    f"If initializing with Breakends, refver must be given."
+#                )
+#
+#            vcfspec = bnds.get_vcfspec_bnd1()
+#            init_from_vcfspec(self, vcfspec, refver, fasta, chromdict)
+#
+#        # MAIN
+#        if vr is not None:
+#            init_from_vr(self, vr, refver, fasta, chromdict)
+#        elif vcfspec is not None:
+#            init_from_vcfspec(self, vcfspec, refver, fasta, chromdict)
+#        elif bnds is not None:
+#            init_from_bnds(self, bnds, refver, fasta, chromdict)
+#
+#        # SV attrs
+#        self.is_sv = varianthandler.check_SV(self.vr)
+#        self.set_bnds_attributes()  # is_bnd1, bnds
+#
+#        # annotdb
+##        self.annotitem_septype = annotitem_septype
+##        if add_annotdb_infometas:
+##            annotationdb.add_infometas(self.vr.header)
+##        if set_annotdb:
+##            self.set_annotdb()
+#
+#        # popfreq & cosmic
+#        if init_popfreq:
+#            self._init_popfreq(metadata=popfreq_metadata)
+#        if init_cosmic:
+#            self._init_cosmic(metadata=cosmic_metadata)
+#
+#        # transcript, regulatory, motif, repeat
+#        if init_transcript:
+#            self._init_transcript()
+#        if init_regulatory:
+#            self._init_regulatory()
+#        if init_motif:
+#            self._init_motif()
+#        if init_repeat:
+#            self._init_repeat()
+#
+#        # readstats_data_dict, rpplists
+#        self.rpplist_dict = dict()
+#        self.readstats_data_dict = dict()
+#        if init_readstats:
+#            self._init_readstats()
+#
+#        # sampleids
+#        self.sampleids = tuple(self.vr.header.samples)
+
     def __repr__(self):
         vr_string = "\t".join(str(self.vr).split("\t")[:5])
         return f"<VariantPlus object ({vr_string})>"
+
+    # popfreq & cosmic
+    def _init_popfreq(self, metadata=None):
+        self.popfreq = libpopfreq.PopfreqInfoALTlist.from_vr(self.vr, metadata=metadata)
+
+    def _init_cosmic(self, metadata=None):
+        self.cosmic = libcosmic.CosmicInfoALTlist.from_vr(self.vr, metadata=metadata)
 
     # ensembl feature annotations
     def set_annotdb(self):
@@ -201,10 +324,28 @@ class VariantPlus:
             self.annotdb_bnd2 = None
 
     def init_features(self):
+        self._init_transcript()
+        self._init_regulatory()
+        self._init_motif()
+        self._init_repeat()
+
+    def _init_transcript(self):
         self.transcript = ensembl_feature.TranscriptSetALTlist.from_vr(self.vr)
+
+    def _init_regulatory(self):
         self.regulatory = ensembl_feature.RegulatorySet.from_vr(self.vr)
+
+    def _init_motif(self):
         self.motif = ensembl_feature.MotifSet.from_vr(self.vr)
+
+    def _init_repeat(self):
         self.repeat = ensembl_feature.RepeatSet.from_vr(self.vr)
+
+    def update_vep(self, vep_vr, alt_idx, distance, tabixfile_geneset, tabixfile_regulatory, tabixfile_repeats):
+        self.update_cmdline_vep(vep_vr, alt_idx, overwrite=True, create_new=True)
+        self._update_post_vep_transcript(tabixfile_geneset, distance, alt_idx)
+        self._update_post_vep_regulatory(tabixfile_regulatory, distance, alt_idx)
+        self._update_post_vep_repeat(tabixfile_repeats, distance, alt_idx)
 
     def update_cmdline_vep(self, vep_vr, alt_idx, overwrite=True, create_new=True):
         parsed = ensembl_parser.parse_cmdline_vep(vep_vr)
@@ -218,7 +359,7 @@ class VariantPlus:
             parsed["motif"], overwrite=overwrite, create_new=create_new
         )
 
-    def update_post_vep_transcript(self, tabixfile_geneset, distance, alt_idx):
+    def _update_post_vep_transcript(self, tabixfile_geneset, distance, alt_idx):
         self.transcript[alt_idx].update_ensembl_gff(
             vcfspec=self.vcfspec,
             chromdict=self.chromdict,
@@ -231,7 +372,7 @@ class VariantPlus:
             vcfspec=self.vcfspec, alt_idx=alt_idx
         )
 
-    def update_post_vep_regulatory(self, tabixfile_regulatory, distance, alt_idx):
+    def _update_post_vep_regulatory(self, tabixfile_regulatory, distance, alt_idx):
         self.regulatory.update_ensembl_gff(
             vcfspec=self.vcfspec,
             chromdict=self.chromdict,
@@ -240,7 +381,7 @@ class VariantPlus:
         )
         self.regulatory.set_missing_distances(vcfspec=self.vcfspec, alt_idx=alt_idx)
 
-    def update_post_vep_repeat(self, tabixfile_repeats, distance, alt_idx):
+    def _update_post_vep_repeat(self, tabixfile_repeats, distance, alt_idx):
         self.repeat.update_repeatmasker_bed(
             vcfspec=self.vcfspec,
             chromdict=self.chromdict,
@@ -338,19 +479,16 @@ class VariantPlus:
             self.is_bnd1 = None
             self.bnds = None
 
-    # readstats-related
+    # rpplist
     def make_rpplist(
         self,
         bam,
-        no_matesearch=False,
-        set_alleleinfo=False,
-        fetch_padding_common=readplus.FETCH_PADDING_COMMON,
-        fetch_padding_sv=readplus.FETCH_PADDING_SV,
-        new_fetch_padding=readplus.NEW_FETCH_PADDING,
-        long_insert_threshold=readplus.LONG_INSERT_THRESHOLD,
-        flanklen=alleleinfosetup.DEFAULT_FLANKLEN,
-        flanklen_parside=alleleinfosetup_sv.DEFAULT_FLANKLEN_PARSIDE,
-        flanklen_bndside=alleleinfosetup_sv.DEFAULT_FLANKLEN_BNDSIDE,
+        set_alleleinfo=True,
+        rpplist_kwargs={
+            'view': False,
+            'no_matesearch': True,
+        },
+        alleleinfo_kwargs=dict(),
     ):
         if self.is_sv:
             rpplist = readplus.get_rpplist_sv(
@@ -358,17 +496,12 @@ class VariantPlus:
                 fasta=self.fasta,
                 chromdict=self.chromdict,
                 bnds=self.bnds,
-                view=False,
-                fetch_padding_common=fetch_padding_common,
-                fetch_padding_sv=fetch_padding_sv,
-                new_fetch_padding=new_fetch_padding,
-                long_insert_threshold=long_insert_threshold,
+                **rpplist_kwargs,
             )
             if set_alleleinfo:
                 rpplist.update_alleleinfo_sv(
                     bnds=self.bnds,
-                    flanklen_parside=flanklen_parside,
-                    flanklen_bndside=flanklen_bndside,
+                    **alleleinfo_kwargs,
                 )
         else:
             rpplist = readplus.get_rpplist_nonsv(
@@ -378,68 +511,109 @@ class VariantPlus:
                 chrom=self.vcfspec.chrom,
                 start0=self.vcfspec.pos0,
                 end0=self.vcfspec.end0,
-                view=False,
-                no_matesearch=no_matesearch,
-                fetch_padding_common=fetch_padding_common,
-                new_fetch_padding=new_fetch_padding,
-                long_insert_threshold=long_insert_threshold,
+                **rpplist_kwargs,
             )
             if set_alleleinfo:
-                rpplist.update_alleleinfo(vcfspec=self.vcfspec, flanklen=flanklen)
+                rpplist.update_alleleinfo(
+                    vcfspec=self.vcfspec, 
+                    **alleleinfo_kwargs,
+                )
 
         return rpplist
 
-    def set_rpplist(self, sampleid, bam, no_matesearch=False, set_alleleinfo=False):
+    def set_rpplist(
+        self, sampleid, bam, 
+        set_alleleinfo=True,
+        rpplist_kwargs={
+            'view': False,
+            'no_matesearch': True,
+        },
+        alleleinfo_kwargs=dict(),
+    ):
         self.rpplist_dict[sampleid] = self.make_rpplist(
-            bam, no_matesearch=no_matesearch, set_alleleinfo=set_alleleinfo
+            bam, set_alleleinfo=set_alleleinfo,
+            rpplist_kwargs=rpplist_kwargs,
+            alleleinfo_kwargs=alleleinfo_kwargs,
         )
 
-    def get_rpplist(self, sampleid, bam=None):
-        if sampleid not in self.rpplist_dict:
-            if bam is None:
-                raise Exception(
-                    f"rpplist for the sampleid {sampleid} is not "
-                    f"prepared. To make it, bam is required."
-                )
-            self.set_rpplist(sampleid, bam)
-        return self.rpplist_dict[sampleid]
+#    @common.get_deco_num_set(('bam', 'sampleid'), 1)
+#    def get_rpplist(self, sampleid=None, bam=None):
+#        if sampleid is not None:
+#            if sampleid not in self.rpplist_dict:
+#                raise Exception(f"rpplist for the sampleid {sampleid} is not created. To make it, run VariantPlus.set_rpplist method.")
+#            return self.rpplist_dict[sampleid]
+#        elif bam is not None:
+#            return self.make_rpplist(bam=bam)
 
-    def make_readstats_data(self, bam, no_matesearch=False, **kwargs):
-        readstats_data = libreadstats.get_readstats_data(
+    # readstats_data
+    def make_readstats_data(self, bam, **kwargs):
+        return libreadstats.get_readstats_data(
             self.vcfspec,
             bam,
             self.fasta,
             self.chromdict,
-            no_matesearch=no_matesearch,
             **kwargs,
         )
 
-        return readstats_data
-
-    def set_readstats_data(self, sampleid, bam, verbose=False):
+    def set_readstats_data(
+        self, 
+        sampleid, 
+        bam, 
+        verbose=False, 
+        rpplist_kwargs={
+            'view': False,
+            'no_matesearch': True,
+        },
+        alleleinfo_kwargs=dict(),
+    ):
         if verbose:
             print(f"Getting readstats_data for the sample {sampleid}")
-        self.readstats_datas[sampleid] = self.make_readstats_data(bam)
 
-    def get_readstats_data(self, sampleid, bam=None):
-        if sampleid not in self.readstats_datas:
-            if bam is None:
-                raise Exception(
-                    f"readstats_data for the sampleid {sampleid} is not "
-                    f"prepared. To make it, bam is required."
-                )
-            self.set_readstats_data(sampleid, bam, verbose=False)
-        return self.readstats_datas[sampleid]
+        if sampleid not in self.rpplist_dict.keys():
+            self.set_rpplist(
+                sampleid, 
+                bam, 
+                set_alleleinfo=True,
+                rpplist_kwargs=rpplist_kwargs,
+                alleleinfo_kwargs=alleleinfo_kwargs,
+            )
 
-    def load_readstats(self):
+        readstats_data = libreadstats.rpplist_to_readstats_data(
+            self.rpplist_dict[sampleid],
+            self.vcfspec,
+        )
+        self.readstats_data_dict[sampleid] = readstats_data
+
+#    def get_readstats_data(self, sampleid, bam=None):
+#        if sampleid not in self.readstats_data_dict:
+#            if bam is None:
+#                raise Exception(
+#                    f"readstats_data for the sampleid {sampleid} is not "
+#                    f"prepared. To make it, bam is required."
+#                )
+#            self.set_readstats_data(sampleid, bam, verbose=False)
+#        return self.readstats_data_dict[sampleid]
+
+    # readstats
+    def _init_readstats(self):
+        self.readstats_dict = dict()
         for sampleid in self.vr.samples.keys():
             if self.check_NA_format(sampleid, libreadstats.ReadStats.meta["ID"]):
                 self.readstats_dict[sampleid] = None
             else:
-                readstats = libreadstats.ReadStats()
-                readstats.load_vr_format(self.vr, sampleid)
+                readstats = libreadstats.ReadStats.from_vr(self.vr, sampleid)
                 readstats.postprocess()
                 self.readstats_dict[sampleid] = readstats
+
+    def make_readstats(self, bam, **kwargs):
+        return libreadstats.get_readstats(self.vcfspec, bam, self.fasta, self.chromdict, **kwargs)
+
+    def set_readstats(self, sampleid, bam):
+        if sampleid not in self.readstats_data_dict.keys():
+            self.set_readstats_data(sampleid, bam)
+
+        readstats_data = self.readstats_data_dict[sampleid]
+        self.readstats_dict[sampleid] = libreadstats.summarize_readstats_data(readstats_data)
 
     # readstats-related-others
     def calc_readcounts(self, bam, no_matesearch=True):
@@ -516,11 +690,28 @@ class VariantPlus:
             )
 
     # visualizations
+    @common.get_deco_num_set(('bam', 'sampleid'), 1)
+    def show_igv(
+        self, igv, bam=None, sampleid=None, tmpbam_dir=None,
+        rpplist_kwargs={
+            'view': True,
+            'no_matesearch': True,
+        },
+        alleleinfo_kwargs=dict(),
+    ):
+        # get rpplist
+        if sampleid is not None:
+            if sampleid not in self.rpplist_dict.keys():
+                raise Exception(f"rpplist for the sampleid {sampleid} is not created. To bypass this problem, 1) run this method with 'bam' argument, or 2) run VariantPlus.set_rpplist method first.")
+            rpplist = self.rpplist_dict[sampleid]
+        elif bam is not None:
+            rpplist = self.make_rpplist(
+                bam, set_alleleinfo=True,
+                rpplist_kwargs=rpplist_kwargs,
+                alleleinfo_kwargs=alleleinfo_kwargs,
+            )
 
-    def show_igv(self, bam, igv, tmpbam_dir=None, no_matesearch=False):
-        rpplist = self.make_rpplist(
-            bam, no_matesearch=no_matesearch, set_alleleinfo=True
-        )
+        # add alleleinfo tag to ReadPlus and ReadPlusPair objects
         if self.is_sv:
             rpplist.set_alleleinfo_tag_rp_sv(self.bnds)
             rpplist.set_alleleinfo_tag_rpp_sv(self.bnds)
@@ -531,7 +722,12 @@ class VariantPlus:
         # set tmpbam_path
         if tmpbam_dir is None:
             tmpbam_dir = os.getcwd()
-        tmpbam_path = workflow.get_tmpfile_path(suffix=".bam", where=tmpbam_dir)
+
+        if sampleid is None:
+            prefix = None
+        else:
+            prefix = f'{sampleid}_for_show_'
+        tmpbam_path = workflow.get_tmpfile_path(prefix=prefix, suffix=".bam", where=tmpbam_dir)
 
         # main
         rpplist.write_bam(outfile_path=tmpbam_path)
@@ -578,18 +774,18 @@ class VariantPlus:
             self, sampleid_order=sampleids, title=str(self.vcfspec), **kwargs
         )
 
-    @common.get_deco_num_set(("sampleid", "bam"), 1)
-    def show_readstats_data(self, sampleid=None, bam=None, varpos_key="left"):
-        if sampleid is None:
-            readstats_data = libreadstats.get_readstats_data(
-                self.vcfspec, bam, self.fasta, self.chromdict
-            )
-        else:
-            readstats_data = self.get_readstats_data(sampleid, bam=bam)
-
-        variantviz.show_readstats_data(
-            readstats_data, title=sampleid, varpos_key=varpos_key
-        )
+#    @common.get_deco_num_set(("sampleid", "bam"), 1)
+#    def show_readstats_data(self, sampleid=None, bam=None, varpos_key="left"):
+#        if sampleid is None:
+#            readstats_data = libreadstats.get_readstats_data(
+#                self.vcfspec, bam, self.fasta, self.chromdict
+#            )
+#        else:
+#            readstats_data = self.get_readstats_data(sampleid, bam=bam)
+#
+#        variantviz.show_readstats_data(
+#            readstats_data, title=sampleid, varpos_key=varpos_key
+#        )
 
     ##################################################################
 

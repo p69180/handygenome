@@ -28,7 +28,7 @@ class IGVHandle:
                 cmd_src.append(locus)
             elif isinstance(locus, common.Vcfspec):
                 chrom = locus.chrom
-                if locus.get_mutation_type(idx=0) == 'del':
+                if locus.get_mutation_type(alt_idx=0) == 'del':
                     start1 = locus.pos + 1 - width
                     end1 = locus.pos + 1 + width
                 else:

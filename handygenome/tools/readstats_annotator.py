@@ -57,8 +57,7 @@ def mean(array, round_digits=3):
 
 
 def update_header(vcfheader, id_list):
-    vcfheader.add_meta(key='FORMAT', 
-                       items=libreadstats.ReadStats.meta.items())
+    libreadstats.ReadStats.add_meta(vcfheader)
     vpfilter.add_format_filter_meta(vcfheader)
     for sampleid in id_list:
         if sampleid not in vcfheader.samples:
@@ -75,7 +74,7 @@ def update_new_vr(new_vr, refver, fasta, chromdict, bam_list, id_list,
     irrelevant_samples = set(x for x in new_vr.samples.keys()
                              if infoformat.check_NA_format(new_vr, x, FORMAT_key))
     irrelevant_samples.difference_update(id_list)
-    print(irrelevant_samples)
+    #print(irrelevant_samples)
 
     for bam, sampleid in zip(bam_list, id_list):
         readstats = libreadstats.get_readstats(vcfspec, bam, fasta, 

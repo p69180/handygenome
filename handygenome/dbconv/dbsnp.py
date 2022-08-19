@@ -4,6 +4,7 @@ import argparse
 import gzip
 import tempfile
 import gc
+import shutil
 
 import pysam
 
@@ -17,6 +18,7 @@ initvcf = importlib.import_module(".".join([top_package_name, "vcfeditor", "init
 libpopfreq = importlib.import_module(".".join([top_package_name, "annotation", "popfreq"]))
 equivalents = importlib.import_module(".".join([top_package_name, "variantplus", "equivalents"]))
 varianthandler = importlib.import_module(".".join([top_package_name, "variantplus", "varianthandler"]))
+indexing = importlib.import_module(".".join([top_package_name, "vcfeditor", "indexing"]))
 
 
 LOGGER = workflow.get_logger(name='dbSNP converter')
@@ -57,7 +59,7 @@ def get_tmpfile_paths(tmpdir, original_vcf_path, chromdict, chrname_converter):
 
 def get_tmp_new_header(chromdict):
     header = initvcf.create_header(chromdict=chromdict)
-    libpopfreq.PopfreqInfoList.add_meta_info(header)
+    libpopfreq.PopfreqInfoALTlist.add_meta_info(header)
     
     return header
 
@@ -93,7 +95,7 @@ def make_popfreqinfo(original_vr, freq_dict, alt_idx):
         result_freqs[pop] = allele_freq
     popinfo['freqs'] = result_freqs
 
-    popinfolist = libpopfreq.PopfreqInfoList()
+    popinfolist = libpopfreq.PopfreqInfoALTlist()
     popinfolist.append(popinfo)
 
     return popinfolist
@@ -164,15 +166,15 @@ def preprocess(original_vcf_path, chromlist, tmpfile_paths, fasta, chromdict, lo
 
 def get_popfreq_metadata(popnames):
     popfreq_metadata = libpopfreq.PopfreqMetadata()
-    popfreq_metadata['popnames'] = popnames
+    popfreq_metadata['popnames'] = sorted(popnames)
 
     return popfreq_metadata
 
 
 def get_final_new_header(chromdict, popfreq_metadata):
     header = initvcf.create_header(chromdict=chromdict)
-    libpopfreq.PopfreqInfoList.add_meta_info(header)
-    popfreq_metadata.write_header(header)
+    libpopfreq.PopfreqInfoALTlist.add_meta_info(header)
+    popfreq_metadata.write(header)
     
     return header
 
@@ -190,6 +192,7 @@ def write_final_outfile(popnames, chromdict, tmpfile_paths, outfile_path, chroml
                 out_vcf.write(vr)
 
     out_vcf.close()
+    indexing.index_vcf(outfile_path)
 
 
 ######################
@@ -205,6 +208,7 @@ def main(original_vcf_path, outfile_path, refver):
     popnames = preprocess(original_vcf_path, chromlist, tmpfile_paths, fasta, chromdict, logging_lineno=1_000_000)
 
     write_final_outfile(popnames, chromdict, tmpfile_paths, outfile_path, chromlist, logging_lineno=1_000_000)
+    shutil.rmtree(tmpdir)
 
     LOGGER.info(f'ALL SUCCESSFULLY FINISHED')
 

@@ -198,8 +198,11 @@ def check_outfile_validity(outfile, must_not_exist=False):
                         f'a regular file nor a directory.')
 
 
-def get_tmpfile_path(prefix=None, suffix=None, where=os.getcwd(), 
+def get_tmpfile_path(prefix=None, suffix=None, where=None, 
                      delete=False, is_dir=False):
+    if where is None:
+        where = os.getcwd()
+
     if delete:
         fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=where)
         os.close(fd)

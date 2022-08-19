@@ -16,7 +16,7 @@ hgvs = importlib.import_module(".".join([top_package_name, "hgvs"]))
 varianthandler = importlib.import_module(".".join([top_package_name, "variantplus", "varianthandler"]))
 infoformat = importlib.import_module(".".join([top_package_name, "variantplus", "infoformat"]))
 annotitem = importlib.import_module(".".join([top_package_name, "annotation", "annotitem"]))
-libcosmicinfo = importlib.import_module(".".join([top_package_name, "annotation", "cosmicinfo"]))
+libcosmic = importlib.import_module(".".join([top_package_name, "annotation", "cosmic"]))
 indexing = importlib.import_module(".".join([top_package_name, "vcfeditor", "indexing"]))
 
 
@@ -362,7 +362,7 @@ def sort_vcfspecs(vcfspec_cosv_map, chromdict):
 
 
 def get_cosmic_metadata(site_count, refver, cosmic_version):
-    cosmicmeta = libcosmicinfo.CosmicMetadata()
+    cosmicmeta = libcosmic.CosmicMetadata()
     cosmicmeta['num_sample_by_site'] = site_count
     cosmicmeta['reference_version'] = refver
     cosmicmeta['cosmic_version'] = cosmic_version
@@ -378,20 +378,20 @@ def get_vcf_header(chromdict, cosmic_metadata):
             header.contigs.add(contig, length)
 
     cosmic_metadata.write_header(header)
-    libcosmicinfo.CosmicInfoALTlist.add_meta_info(header)
+    libcosmic.CosmicInfoALTlist.add_meta_info(header)
     
     return header
 
 
 def into_CosmicInfo(cosv, cosv_info):
-    cosmicinfo = libcosmicinfo.CosmicInfo()
+    cosmicinfo = libcosmic.CosmicInfo()
     cosmicinfo['id'] = cosv
     cosmicinfo['occurrence'] = cosv_info['primary_site']
     cosmicinfo['occurrence_somatic'] = cosv_info['primary_site_somatic']
     cosmicinfo['coding_score'] = cosv_info['coding_score']
     cosmicinfo['noncoding_score'] = cosv_info['noncoding_score']
 
-    cosmicinfolist = libcosmicinfo.CosmicInfoALTlist()
+    cosmicinfolist = libcosmic.CosmicInfoALTlist()
     cosmicinfolist.append(cosmicinfo)
 
     return cosmicinfolist

@@ -14,7 +14,6 @@ equivalents = importlib.import_module('.'.join([top_package_name, 'variantplus',
 varianthandler = importlib.import_module('.'.join([top_package_name, 'variantplus', 'varianthandler']))
 annotationdb = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotationdb']))
 ensembl_parser = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_parser']))
-ensembl_feature = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_feature']))
 
 
 DEFAULT_FETCHWIDTH = 10
@@ -161,41 +160,46 @@ def fetch_relevant_vr_vcfpath(vcfspec, vcf_path, fasta=None,
 # geneset gff3
 
 def parse_transcript_tabixline(tabixline):
-    transcript = ensembl_feature.Transcript()
+    annotitem = annotationdb.AnnotItem()
 
     attrs_parsed = parse_gff3_attrs(tabixline.attributes)
-    transcript['id'] = attrs_parsed['ID'].split(':')[1]
-    transcript['biotype'] = attrs_parsed['biotype']
+    annotitem['id'] = attrs_parsed['ID'].split(':')[1]
+
+    ensembl_parser.set_feature_type(annotitem, 'transcript')
+    annotitem['biotype'] = attrs_parsed['biotype']
+    ensembl_parser.set_transcript_subtypes(annotitem, annotitem['biotype'], 
+                                           annotitem['id'])
 
     if tabixline.strand == '+':
-        transcript['is_forward'] = True
+        annotitem['is_forward'] = True
     elif tabixline.strand == '-':
-        transcript['is_forward'] = False
+        annotitem['is_forward'] = False
     else:
         raise Exception(f'Unexpected transcript tabixline strand value: '
                         f'"{tabixline.strand}"')
 
-    transcript['chrom'] = tabixline.contig
-    transcript['start0'] = tabixline.start
-    transcript['start1'] = transcript['start0'] + 1
-    transcript['end0'] = tabixline.end
-    transcript['end1'] = transcript['end0']
+    annotitem['chrom'] = tabixline.contig
+    annotitem['start0'] = tabixline.start
+    annotitem['start1'] = annotitem['start0'] + 1
+    annotitem['end0'] = tabixline.end
+    annotitem['end1'] = annotitem['end0']
 
     if 'Name' in attrs_parsed:
-        transcript['transcript_name'] = attrs_parsed['Name']
+        annotitem['transcript_name'] = attrs_parsed['Name']
     else:
-        transcript['transcript_name'] = None
+        annotitem['transcript_name'] = None
 
-    transcript['gene_id'] = attrs_parsed['Parent'].split(':')[1]
+    annotitem['gene_id'] = attrs_parsed['Parent'].split(':')[1]
 
-    return transcript
+    return annotitem
 
 
 def fetch_transcript(chrom, start0, end0, tabixfile_geneset):
-    """Returns an empty TranscriptSet object if the tabixfile does not 
+    """Returns an empty AnnotItemDict object if the tabixfile does not 
     contain chrom.
     """
-    transcript_set = ensembl_feature.TranscriptSet()
+
+    transcript_dict = annotationdb.AnnotItemDict()
     if chrom in tabixfile_geneset.contigs:
         try:
             fetchresult = tabixfile_geneset.fetch(chrom, start0, end0)
@@ -204,11 +208,11 @@ def fetch_transcript(chrom, start0, end0, tabixfile_geneset):
                             f'start0: {start0}, end0: {end0}') from e
             
         for tabixline in fetchresult:
-            if check_tabixline_is_transcript(tabixline):
-                transcript = parse_transcript_tabixline(tabixline)
-                transcript_set[transcript['id']] = transcript
+            if check_tabixline_type_transcript(tabixline):
+                annotitem = parse_transcript_tabixline(tabixline)
+                transcript_dict[annotitem['id']] = annotitem
 
-    return transcript_set
+    return transcript_dict
 
 
 def fetch_transcript_tabixline(chrom, start0, end0, transcript_id_list, 
@@ -250,7 +254,7 @@ def check_geneset_tabixline_type(tabixline, type):
             return (mat.group('type') == type)
 
 
-def check_tabixline_is_transcript(tabixline):
+def check_tabixline_type_transcript(tabixline):
     mat = PAT_GENESET_ID.search(tabixline.attributes)
     if mat is None:
         return False
@@ -269,36 +273,41 @@ def get_parent(tabixline):
 # repeats bed
 
 def parse_repeat_tabixline(tabixline):
-    repeat = ensembl_feature.Repeat()
+    annotitem = annotationdb.AnnotItem()
 
-    repeat['chrom'] = tabixline.contig
-    repeat['start0'] = tabixline.start
-    repeat['end0'] = tabixline.end
-    repeat['start1'] = repeat['start0'] + 1
-    repeat['end1'] = repeat['end0']
+    annotitem['chrom'] = tabixline.contig
+    annotitem['start0'] = tabixline.start
+    annotitem['end0'] = tabixline.end
+    annotitem['start1'] = annotitem['start0'] + 1
+    annotitem['end1'] = annotitem['end0']
+
+    ensembl_parser.set_feature_type(annotitem, 'repeat')
 
     raw_split = tabixline.name.split(':')
-
     clsfml = raw_split[0].split('/')
     if len(clsfml) == 1:
-        repeat['class'] = clsfml[0]
-        repeat['family'] = clsfml[0]
+        annotitem['class'] = clsfml[0]
+        annotitem['family'] = clsfml[0]
     elif len(clsfml) == 2:
-        repeat['class'] = clsfml[0]
-        repeat['family'] = clsfml[1]
+        annotitem['class'] = clsfml[0]
+        annotitem['family'] = clsfml[1]
     else:
         raise Exception(f'Unexpected repeat name pattern: {tabixline.name}')
+    annotitem['name'] = raw_split[1]
 
-    repeat['name'] = raw_split[1]
+    annotitem['id'] = '_'.join([
+        annotitem["name"], tabixline.contig, 
+        str(tabixline.start), str(tabixline.end)])
 
-    return repeat
+    return annotitem
 
 
 def fetch_repeat(chrom, start0, end0, tabixfile_repeats):
-    """Returns an empty EnsemblFeatureSet object if the tabixfile does not 
+    """Returns an empty AnnotItemDict object if the tabixfile does not 
     contain chrom.
     """
-    repeat_set = ensembl_feature.RepeatSet()
+
+    repeat_dict = annotationdb.AnnotItemDict()
     if chrom in tabixfile_repeats.contigs:
         try:
             fetchresult = tabixfile_repeats.fetch(chrom, start0, end0)
@@ -307,36 +316,37 @@ def fetch_repeat(chrom, start0, end0, tabixfile_repeats):
                             f'start0: {start0}, end0: {end0}') from e
 
         for tabixline in fetchresult:
-            repeat = parse_repeat_tabixline(tabixline)
-            repeat_set[repeat['id']] = repeat
+            annotitem = parse_repeat_tabixline(tabixline)
+            repeat_dict[annotitem['id']] = annotitem
 
-    return repeat_set
+    return repeat_dict
 
 
 # regulatory gff3
 
 def parse_regulatory_tabixline(tabixline):
-    regulatory = ensembl_feature.Regulatory()
+    annotitem = annotationdb.AnnotItem()
 
-    regulatory['chrom'] = tabixline.contig
-    regulatory['start0'] = tabixline.start
-    regulatory['end0'] = tabixline.end
-    regulatory['start1'] = regulatory['start0'] + 1
-    regulatory['end1'] = regulatory['end0']
-    regulatory['biotype'] = tabixline.feature
+    annotitem['chrom'] = tabixline.contig
+    annotitem['start0'] = tabixline.start
+    annotitem['end0'] = tabixline.end
+    annotitem['start1'] = annotitem['start0'] + 1
+    annotitem['end1'] = annotitem['end0']
+
+    ensembl_parser.set_feature_type(annotitem, 'regulatory')
+    ensembl_parser.set_regulatory_subtypes(annotitem, tabixline.feature, 'vep')
 
     attrs_parsed = parse_gff3_attrs(tabixline.attributes)
-    regulatory['id'] = attrs_parsed['id']
-    regulatory['activity'] = dict(
-        x.split(':') for x in attrs_parsed['activity'].split(',')
-    )
+    annotitem['id'] = attrs_parsed['id']
+    annotitem['activity'] = dict(
+        x.split(':') for x in attrs_parsed['activity'].split(','))
 
-    regulatory['bound_start1'] = int(attrs_parsed['bound_start'])
-    regulatory['bound_end1'] = int(attrs_parsed['bound_end'])
-    regulatory['bound_start0'] = regulatory['bound_start1'] - 1
-    regulatory['bound_end0'] = regulatory['bound_end1']
+    annotitem['bound_start1'] = int(attrs_parsed['bound_start'])
+    annotitem['bound_end1'] = int(attrs_parsed['bound_end'])
+    annotitem['bound_start0'] = annotitem['bound_start1'] - 1
+    annotitem['bound_end0'] = annotitem['bound_end1']
 
-    return regulatory
+    return annotitem
 
 
 def fetch_regulatory_tabixline(chrom, start0, end0, regulatory_id_list, 
@@ -364,7 +374,7 @@ def fetch_regulatory(chrom, start0, end0, tabixfile_regulatory):
     contain chrom.
     """
 
-    regulatory_set = ensembl_feature.RegulatorySet()
+    regulatory_dict = annotationdb.AnnotItemDict()
     if chrom in tabixfile_regulatory.contigs:
         try:
             fetchresult = tabixfile_regulatory.fetch(chrom, start0, end0)
@@ -373,10 +383,10 @@ def fetch_regulatory(chrom, start0, end0, tabixfile_regulatory):
                             f'start0: {start0}, end0: {end0}') from e
 
         for tabixline in fetchresult:
-            regulatory = parse_regulatory_tabixline(tabixline)
-            regulatory_set.add_feature(regulatory)
+            annotitem = parse_regulatory_tabixline(tabixline)
+            regulatory_dict[annotitem['id']] = annotitem
 
-    return regulatory_set
+    return regulatory_dict
 
 
 def get_ID_regulatory_tabixline(tabixline):

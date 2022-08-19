@@ -6,16 +6,26 @@ import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 infoformat = importlib.import_module('.'.join([top_package_name, 'variantplus', 'infoformat']))
-varianthandler = importlib.import_module('.'.join([top_package_name, 'variantplus', 'varianthandler']))
 annotitem = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotitem']))
 customfile = importlib.import_module('.'.join([top_package_name, 'annotation', 'customfile']))
-infoformat = importlib.import_module('.'.join([top_package_name, 'variantplus', 'infoformat']))
 
 
-class CosmicInfo(annotitem.AnnotItem):
+class CosmicInfo(annotitem.AnnotItemVariantInfoSingle):
+    # constructors
     def __init__(self, metadata=None, **kwargs):
         super().__init__(**kwargs)
         self.metadata = metadata
+
+    @classmethod
+    def init_blank(cls):
+        result = cls()
+        result['id'] = None
+        result['occurrence'] = None
+        result['occurrence_somatic'] = None
+        result['coding_score'] = None
+        result['noncoding_score'] = None
+        return result
+    ##############
 
     def get_self_show(self):
         self_show = dict()
@@ -28,7 +38,7 @@ class CosmicInfo(annotitem.AnnotItem):
             try:
                 self_show[key] = self[key]
             except KeyError:
-                pass
+                self_show[key] = None
 
         for key in ('occurrence', 'occurrence_somatic',
                     'portion_by_site', 'portion_by_site_somatic'):
@@ -38,7 +48,7 @@ class CosmicInfo(annotitem.AnnotItem):
                                                  key=(lambda x: x[1]),
                                                  reverse=True))
             except KeyError:
-                pass
+                self_show[key] = None
 
         return self_show
 
@@ -89,53 +99,53 @@ class CosmicInfo(annotitem.AnnotItem):
             return total_occurrence / num_sample_allsites
 
 
-class CosmicInfoALTlist(annotitem.AnnotItemALTlist):
+class CosmicInfoALTlist(annotitem.AnnotItemVariantInfoALTlist):
     meta = {'ID': 'cosmic_info', 'Number': 'A', 'Type': 'String', 'Description': 'COSMIC information encoded as a string, one for each ALT allele'}
+
+    @classmethod
+    def annotstring_parser(cls, annotstring, metadata):
+        result = CosmicInfo.from_annotstring(annotstring)
+        result.metadata = metadata
+        return result
 
     @classmethod
     def from_vr(cls, vr, metadata=None):
         if metadata is None:
             metadata = CosmicMetadata.from_vcfheader(vr.header)
 
-        cosmicinfolist = cls()
-        if infoformat.check_NA_info(vr, cls.get_annotkey()):
-            transl_num = infoformat.get_translated_number_info(vr, cls.get_annotkey())
-            cosmicinfolist.extend([None] * transl_num)
-        else:
-            for infostring in vr.info[cls.get_annotkey()]:
-                if infostring in infoformat.NA_VALUES:
-                    cosmicinfolist.append(None)
-                else:
-                    cosmicinfo = CosmicInfo(metadata=metadata)
-                    cosmicinfo.load_infostring(infostring)
-                    cosmicinfolist.append(cosmicinfo)
+        annotstring_parser_kwargs = {'metadata': metadata}
+        result = cls.from_vr_base(vr, annotstring_parser_kwargs)
 
-        return cosmicinfolist
+        return result
 
     @classmethod
-    def from_vcfspec(cls, vcfspec, cosmic_vcf, fasta, metadata=None):
+    def from_vcfspec(cls, vcfspec, cosmic_vcf, fasta, metadata=None, donot_init_metadata=False):
         if metadata is None:
-            metadata = CosmicMetadata.from_vcfheader(cosmic_vcf.header)
+            if not donot_init_metadata:
+                metadata = CosmicMetadata.from_vcfheader(cosmic_vcf.header)
 
         cosmic_vr_list = customfile.fetch_relevant_vr_multialt(vcfspec, cosmic_vcf, fasta=fasta, search_equivs=True, allow_multiple=False)
-        cosmicinfolist = cls()
+        result = cls()
         for vr in cosmic_vr_list:
             if vr is None:
-                cosmicinfolist.append(None)
+                result.append(CosmicInfo.init_blank())
             else:
-                cosmicinfolist.extend(CosmicInfoList.from_vr(vr, metadata=metadata))
+                result.extend(CosmicInfoALTlist.from_vr(vr, metadata=metadata))
 
-        return cosmicinfolist
+        return result
 
 
-class CosmicMetadata(annotitem.AnnotItem):
+class CosmicMetadata(annotitem.AnnotItemHeader):
     meta = {'ID': 'cosmic_metadata'}
 
-    def get_self_show(self):
-        return dict(self)
+
+def update_vcfheader(vcfheader, cosmic_vcf):
+    CosmicInfoALTlist.add_meta(vcfheader)
+    cosmicmeta = CosmicMetadata.from_vcfheader(cosmic_vcf.header)
+    cosmicmeta.write(vcfheader)
 
 
-def annotate_vp(vp, cosmic_vcf, fasta, metadata=None):
-    vp.cosmic = CosmicInfoList.from_vcfspec(vp.vcfspec, cosmic_vcf, fasta, metadata=metadata)
+#def annotate_vp(vp, cosmic_vcf, fasta, metadata=None):
+#    vp.cosmic = CosmicInfoALTlist.from_vcfspec(vp.vcfspec, cosmic_vcf, fasta, metadata=metadata)
 
 

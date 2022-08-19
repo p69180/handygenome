@@ -754,7 +754,7 @@ class ReadPlusPairList(list):
 
 
 def get_rpplist_nonsv(bam, fasta, chromdict, chrom, start0, end0, 
-                      view=False, no_matesearch=False,
+                      view=False, no_matesearch=True,
                       fetch_padding_common=FETCH_PADDING_COMMON,
                       fetch_padding_view=FETCH_PADDING_VIEW,
                       new_fetch_padding=NEW_FETCH_PADDING,
@@ -785,11 +785,16 @@ def get_rpplist_nonsv(bam, fasta, chromdict, chrom, start0, end0,
 
 
 def get_rpplist_sv(bam, fasta, chromdict, bnds, view=False,
+                   no_matesearch=False,
                    fetch_padding_common=FETCH_PADDING_COMMON,
                    fetch_padding_sv=FETCH_PADDING_SV,
                    fetch_padding_view=FETCH_PADDING_VIEW,
                    new_fetch_padding=NEW_FETCH_PADDING,
                    long_insert_threshold=LONG_INSERT_THRESHOLD):
+    """Args:
+        no_matesearch: Only for compatibility with VariantPlus.make_rpplist 
+            method. Its input value is not effective.
+    """
     LOGGER_RPPLIST.info('Beginning initial fetch')
     (relevant_qname_set_bnd1, 
      new_fetch_range_bnd1,
@@ -1112,8 +1117,7 @@ def refined_fetch_sv(bam, bnds, new_fetch_range_bnd1, new_fetch_range_bnd2,
     return fetchresult_dict
 
 
-def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, 
-                              no_matesearch=False):
+def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch):
     # classify reads into primary and non-primary ones
     readlist_primary = list()
     readlist_nonprimary = list()

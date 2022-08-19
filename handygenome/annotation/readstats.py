@@ -12,17 +12,25 @@ import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-annotationdb = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotationdb']))
+#annotationdb = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotationdb']))
+annotitem = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotitem']))
+infoformat = importlib.import_module('.'.join([top_package_name, 'variantplus', 'infoformat']))
 readplus = importlib.import_module('.'.join([top_package_name, 'readplus', 'readplus']))
 alleleinfosetup = importlib.import_module('.'.join([top_package_name, 'readplus', 'alleleinfosetup']))
 
 
-READSTATS_FORMAT_KEY = 'readstats'
+#READSTATS_FORMAT_KEY = 'readstats'
 
 
-class ReadStats(annotationdb.AnnotItem):
+class ReadStats(annotitem.AnnotItemVariantFormatSingle):
     meta = {'ID': 'readstats', 'Number': 1, 'Type': 'String',
             'Description': 'Read-based statistics for the variant.'}
+
+    # constructors
+    @classmethod
+    def from_vr(cls, vr, sampleid):
+        return cls.from_vr_base(vr, sampleid)
+    ##############
 
     def get_alleleindexes_mean(self, key, alleleindexes):
         numerator = sum(self[key][x] * self['rppcounts'][x]
@@ -38,7 +46,7 @@ class ReadStats(annotationdb.AnnotItem):
         return sum(val for (key, val) in self['rppcounts'].items()
                    if isinstance(key, int))
 
-    def get_vaf(self, alleleindex):
+    def get_vaf(self, alleleindex=1):
         total_rppcount = self.get_total_rppcount()
         if total_rppcount == 0:
             return np.nan
@@ -80,11 +88,8 @@ class ReadStats(annotationdb.AnnotItem):
         self['total_rppcount'] = self.get_total_rppcount()
 
 
-def get_readstats(vcfspec, bam, fasta, chromdict, no_matesearch=True, 
-                  **kwargs):
-    readstats_data = get_readstats_data(vcfspec, bam, fasta, chromdict, 
-                                        no_matesearch=no_matesearch,
-                                        **kwargs)
+def get_readstats(vcfspec, bam, fasta, chromdict, **kwargs):
+    readstats_data = get_readstats_data(vcfspec, bam, fasta, chromdict, **kwargs)
     result = summarize_readstats_data(readstats_data)
 
     return result
@@ -184,28 +189,26 @@ def rpplist_to_readstats_data(rpplist, vcfspec,
 
 
 def get_readstats_data(
-        vcfspec, bam, fasta, chromdict, 
-        no_matesearch=True,
-        fetch_padding_common=readplus.FETCH_PADDING_COMMON,
-        #fetch_padding_sv=readplus.FETCH_PADDING_SV,
-        new_fetch_padding=readplus.NEW_FETCH_PADDING,
-        long_insert_threshold=readplus.LONG_INSERT_THRESHOLD,
-        flanklen=alleleinfosetup.DEFAULT_FLANKLEN,
-        #flanklen_parside=alleleinfosetup_sv.DEFAULT_FLANKLEN_PARSIDE,
-        #flanklen_bndside=alleleinfosetup_sv.DEFAULT_FLANKLEN_BNDSIDE,
-        ):
+    vcfspec, bam, fasta, chromdict, 
+    rpplist_kwargs=dict(),
+    alleleinfo_kwargs=dict(),
+):
     """Only for non-sv cases"""
 
     rpplist = readplus.get_rpplist_nonsv(
-        bam=bam, fasta=fasta, chromdict=chromdict, 
-        chrom=vcfspec.chrom, start0=vcfspec.pos0, 
-        end0=vcfspec.end0, view=False, 
-        no_matesearch=no_matesearch,
-        fetch_padding_common=fetch_padding_common,
-        new_fetch_padding=new_fetch_padding,
-        long_insert_threshold=long_insert_threshold)
+        bam=bam, 
+        fasta=fasta, 
+        chromdict=chromdict, 
+        chrom=vcfspec.chrom, 
+        start0=vcfspec.pos0, 
+        end0=vcfspec.end0, 
+        view=False, 
+        **rpplist_kwargs,
+    )
     rpplist.update_alleleinfo(
-        vcfspec=vcfspec, flanklen=flanklen)
+        vcfspec=vcfspec, 
+        **alleleinfo_kwargs,
+    )
     readstats_data = rpplist_to_readstats_data(rpplist, vcfspec)
 
     return readstats_data
@@ -282,13 +285,13 @@ def summarize_readstats_data(readstats_data):
     return readstats
 
 
-def add_meta(vcfheader):
-    vcfheader.add_meta(
-        key='FORMAT',
-        items=[('ID', READSTATS_FORMAT_KEY),
-               ('Type', 'String'),
-               ('Number', 1),
-               ('Description', 
-                'Read information statistics for the sample.')])
+#def add_meta(vcfheader):
+#    vcfheader.add_meta(
+#        key='FORMAT',
+#        items=[('ID', READSTATS_FORMAT_KEY),
+#               ('Type', 'String'),
+#               ('Number', 1),
+#               ('Description', 
+#                'Read information statistics for the sample.')])
     
 

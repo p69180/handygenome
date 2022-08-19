@@ -6,12 +6,10 @@ import pysam
 import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
-hgvs = importlib.import_module('.'.join([top_package_name, 'hgvs']))
 infoformat = importlib.import_module('.'.join([top_package_name, 'variantplus', 'infoformat']))
 ensembl_rest = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_rest']))
 annotationdb = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotationdb']))
 veplib = importlib.import_module('.'.join([top_package_name, 'annotation', 'veplib']))
-ensembl_feature = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_feature']))
 
 
 VEP_INFOMETA_PAT = re.compile('Consequence annotations from Ensembl VEP. Format: ([^|]+(\|[^|]+)*)')
@@ -425,7 +423,7 @@ def set_is_forward(annotitem, strand):
         raise Exception(f'Unexpected "strand" value: {strand}')
 
 
-def set_exon_intron_attributes(transcript, exon_value, intron_value):
+def set_exon_intron_attributes(annotitem, exon_value, intron_value):
     def subfun(value):
         if value is None:
             segs = None
@@ -439,10 +437,10 @@ def set_exon_intron_attributes(transcript, exon_value, intron_value):
 
         return segs
 
-    transcript['involved_exons'] = subfun(exon_value)
-    transcript['involved_introns'] = subfun(intron_value)
-    transcript['is_exon_involved'] = (exon_value is not None)
-    transcript['is_intron_involved'] = (intron_value is not None)
+    annotitem['involved_exons'] = subfun(exon_value)
+    annotitem['involved_introns'] = subfun(intron_value)
+    annotitem['is_exon_involved'] = (exon_value is not None)
+    annotitem['is_intron_involved'] = (intron_value is not None)
 
 
 def vep_exon_intron_handler(value):
@@ -528,19 +526,19 @@ def set_codon_frame0(annotitem):
 ##########################################################
 
 
-def get_VEPkeys(vcfheader):
+def get_VEPkeys(pysamhdr):
     """
     Args:
-        vcfheader: pysam.VariantHeader object. Source vcf must be a VEP output.
+        pysamhdr: pysam.VariantHeader object. Source vcf must be a VEP output.
     
     Returns:
         A list composed of VEP annotation subfield names. An empty list 
             if VEP annotation header is absent.
     """
 
-    if veplib.VEP_INFO_FIELD in vcfheader.info:
+    if veplib.VEP_INFO_FIELD in pysamhdr.info:
         mat = VEP_INFOMETA_PAT.fullmatch(
-            vcfheader.info[veplib.VEP_INFO_FIELD].description)
+            pysamhdr.info[veplib.VEP_INFO_FIELD].description)
         if mat is None:
             VEPkeys = None
         else:
@@ -568,8 +566,10 @@ def extract_cmdline_vep_annotation(vr):
 
 
 def parse_cmdline_vep(vr):
-    """Args:
-        vr: pysam.VariantRecord object, derived from a vcf output of cmdline VEP.
+    """
+    Args:
+        vr: pysam.VariantRecord object, derived from a vcf output of 
+            cmdline VEP.
     """
 
     def subfun_common_attributes(result, raw_result):
@@ -603,18 +603,30 @@ def parse_cmdline_vep(vr):
             parse_clinvar(item, result)
         '''
 
-    def subfun_set_polyphen_sift(transcript, raw_result_item):
+    def subfun_featuretype(annotitem, raw_result_item):
+        assert raw_result_item['Feature_type'] in ('Transcript', 
+                                                   'RegulatoryFeature', 
+                                                   'MotifFeature'), (
+            f'Unexpected "Feature_type":\n{raw_result_item}')
+        if raw_result_item['Feature_type'] == 'Transcript':
+            set_feature_type(annotitem, 'transcript')
+        elif raw_result_item['Feature_type'] == 'RegulatoryFeature':
+            set_feature_type(annotitem, 'regulatory')
+        elif raw_result_item['Feature_type'] == 'MotifFeature':
+            set_feature_type(annotitem, 'motif')
+
+    def subfun_set_polyphen_sift(annotitem, raw_result_item):
         for option in ('polyphen', 'sift'):
             raw_value = (raw_result_item['PolyPhen'] 
                          if (option == 'polyphen') else 
                          raw_result_item['SIFT'])
             if raw_value is None:
-                transcript[f'{option}_prediction'] = None
-                transcript[f'{option}_score'] = None
+                annotitem[f'{option}_prediction'] = None
+                annotitem[f'{option}_score'] = None
             else:
                 mat = CMDLINE_VEP_POLYPHEN_SIFT_PAT.fullmatch(raw_value)
-                transcript[f'{option}_prediction'] = mat.group(1)
-                transcript[f'{option}_score'] = float(mat.group(2))
+                annotitem[f'{option}_prediction'] = mat.group(1)
+                annotitem[f'{option}_score'] = float(mat.group(2))
 
     def subfun_set_distance(annotitem, raw_result_item, consequences):
         if raw_result_item['DISTANCE'] is None:
@@ -624,73 +636,68 @@ def parse_cmdline_vep(vr):
 
         #annotitem['is_non_overlapping'] = (annotitem['distance'] is not None)
 
-    def subfun_transcript(raw_result_item):
-        transcript = ensembl_feature.Transcript()
+    def subfun_transcript(annotitem, raw_result_item):
+        annotitem['id'] = raw_result_item['Feature']
+        annotitem['biotype'] = raw_result_item['BIOTYPE']
+        annotitem['consequences'] = raw_result_item['Consequence'].split('&')
+        annotitem['gene_id'] = raw_result_item['Gene']
+        annotitem['gene_name'] = raw_result_item['SYMBOL']
+        annotitem['is_canonical'] = (raw_result_item['CANONICAL'] == 'YES')
+        annotitem['mane_select'] = raw_result_item['MANE_SELECT']
+        annotitem['refseq_id'] = raw_result_item['RefSeq']
 
-        transcript['id'] = raw_result_item['Feature']
-        transcript['biotype'] = raw_result_item['BIOTYPE']
-        transcript['consequences'] = raw_result_item['Consequence'].split('&')
-        transcript['gene_id'] = raw_result_item['Gene']
-        transcript['gene_name'] = raw_result_item['SYMBOL']
-        transcript['is_canonical'] = (raw_result_item['CANONICAL'] == 'YES')
-        transcript['mane_select'] = raw_result_item['MANE_SELECT']
-        transcript['refseq_id'] = raw_result_item['RefSeq']
-
-        transcript['ccds_id'] = raw_result_item['CCDS']
-        transcript['protein_id'] = raw_result_item['ENSP']
-        transcript['aa_change'] = (
+        annotitem['ccds_id'] = raw_result_item['CCDS']
+        annotitem['protein_id'] = raw_result_item['ENSP']
+        annotitem['aa_change'] = (
             None 
             if (raw_result_item['Amino_acids'] is None) else 
             raw_result_item['Amino_acids'].split('/'))
-        transcript['codon_change'] = (
+        annotitem['codon_change'] = (
             None 
             if (raw_result_item['Codons'] is None) else 
             raw_result_item['Codons'].split('/'))
 
-        #set_codon_frame0(transcript)
+        #set_codon_frame0(annotitem)
 
-        transcript['variant_pos_transcript'] = raw_result_item['cDNA_position']
-        transcript['variant_pos_cds'] = raw_result_item['CDS_position']
-        transcript['variant_pos_protein'] = raw_result_item['Protein_position']
+        annotitem['variant_pos_transcript'] = raw_result_item['cDNA_position']
+        annotitem['variant_pos_cds'] = raw_result_item['CDS_position']
+        annotitem['variant_pos_protein'] = raw_result_item['Protein_position']
 
-        transcript['hgvsc'] = raw_result_item['HGVSc']
-        transcript['hgvsp'] = raw_result_item['HGVSp']
+        annotitem['hgvsc'] = raw_result_item['HGVSc']
+        annotitem['hgvsp'] = raw_result_item['HGVSp']
 
-        set_exon_intron_attributes(transcript, 
+        set_exon_intron_attributes(annotitem, 
                                    exon_value=raw_result_item['EXON'], 
                                    intron_value=raw_result_item['INTRON'])
-        set_is_forward(transcript, raw_result_item['STRAND'])
-        subfun_set_distance(transcript, raw_result_item, 
-                            transcript['consequences'])
-        subfun_set_polyphen_sift(transcript, raw_result_item)
+        set_transcript_subtypes(annotitem, raw_result_item['BIOTYPE'], 
+                                raw_result_item['Feature'])
+        set_is_forward(annotitem, raw_result_item['STRAND'])
+        set_consequence_attributes(annotitem, annotitem['consequences'], 
+                                   raw_result_item['Feature'])
+        subfun_set_distance(annotitem, raw_result_item, 
+                            annotitem['consequences'])
+        subfun_set_polyphen_sift(annotitem, raw_result_item)
 
-        return transcript
+    def subfun_regulatory(annotitem, raw_result_item):
+        annotitem['id'] = raw_result_item['Feature']
+        annotitem['biotype'] = raw_result_item['BIOTYPE']
+        annotitem['consequences'] = raw_result_item['Consequence'].split('&')
 
-    def subfun_regulatory(raw_result_item):
-        regulatory = ensembl_feature.Regulatory()
+        set_regulatory_subtypes(annotitem, raw_result_item['BIOTYPE'], 'vep')
 
-        regulatory['id'] = raw_result_item['Feature']
-        regulatory['biotype'] = raw_result_item['BIOTYPE']
-        regulatory['consequences'] = raw_result_item['Consequence'].split('&')
-        set_is_forward(regulatory, None)
-        subfun_set_distance(regulatory, raw_result_item, 
-                            regulatory['consequences'])
+        set_is_forward(annotitem, None)
+        subfun_set_distance(annotitem, raw_result_item, 
+                            annotitem['consequences'])
 
-        return regulatory
+    def subfun_motif(annotitem, raw_result_item):
+        annotitem['id'] = raw_result_item['Feature']
+        annotitem['consequences'] = raw_result_item['Consequence'].split('&')
+        annotitem['matrix_id'] = raw_result_item['MOTIF_NAME']
+        annotitem['TF'] = raw_result_item['TRANSCRIPTION_FACTORS'].split('&')
 
-    def subfun_motif(raw_result_item):
-        motif = ensembl_feature.Motif()
-
-        motif['id'] = raw_result_item['Feature']
-        motif['consequences'] = raw_result_item['Consequence'].split('&')
-        motif['matrix_id'] = raw_result_item['MOTIF_NAME']
-        motif['TF'] = raw_result_item['TRANSCRIPTION_FACTORS'].split('&')
-
-        set_is_forward(motif, raw_result_item['STRAND'])
-        subfun_set_distance(motif, raw_result_item, 
-                            motif['consequences'])
-
-        return motif
+        set_is_forward(annotitem, raw_result_item['STRAND'])
+        subfun_set_distance(annotitem, raw_result_item, 
+                            annotitem['consequences'])
 
     def filter_raw_result_item(raw_result_item):
         if raw_result_item['BIOTYPE'] is None:
@@ -698,102 +705,119 @@ def parse_cmdline_vep(vr):
         else:
             return True
 
-    # main
-    transcriptset = ensembl_feature.TranscriptSet()
-    regulatoryset = ensembl_feature.RegulatorySet()
-    motifset = ensembl_feature.MotifSet()
+    def main(vr):
+        transcript = annotationdb.AnnotItemDict()
+        regulatory = annotationdb.AnnotItemDict()
+        motif = annotationdb.AnnotItemDict()
 
-    raw_result = extract_cmdline_vep_annotation(vr)
-    if raw_result is not None:
-        #subfun_common_attributes(parsed, raw_result)
-        for raw_result_item in raw_result:
-            if not filter_raw_result_item(raw_result_item):
-                continue
+        raw_result = extract_cmdline_vep_annotation(vr)
+        if raw_result is not None:
+            #subfun_common_attributes(parsed, raw_result)
+            for raw_result_item in raw_result:
+                if not filter_raw_result_item(raw_result_item):
+                    continue
 
-            featuretype = raw_result_item['Feature_type']
-            assert featuretype in ('Transcript', 'RegulatoryFeature', 'MotifFeature'), (
-                f'Unexpected "Feature_type":\n{raw_result_item}')
+                annotitem = annotationdb.AnnotItem()
+                subfun_featuretype(annotitem, raw_result_item)
 
-            if featuretype == 'Transcript':
-                transcript = subfun_transcript(raw_result_item)
-                transcriptset[transcript["id"]] = transcript
-            elif featuretype == 'RegulatoryFeature':
-                regulatory = subfun_regulatory(raw_result_item)
-                regulatoryset[regulatory["id"]] = regulatory
-            elif featuretype == 'MotifFeature':
-                motif = subfun_motif(raw_result_item)
-                motifset[motif["id"]] = motif
+                if annotitem['feature_type_flags']['is_transcript']:
+                #if annotitem['is_transcript']:
+                    subfun_transcript(annotitem, raw_result_item)
+                    transcript[annotitem['id']] = annotitem
 
-    parsed = {'transcript': transcriptset, 'regulatory': regulatoryset,
-              'motif': motifset}
+                elif annotitem['feature_type_flags']['is_regulatory']:
+                #elif annotitem['is_regulatory']:
+                    subfun_regulatory(annotitem, raw_result_item)
+                    regulatory[annotitem['id']] = annotitem
 
-    return parsed
+                elif annotitem['feature_type_flags']['is_motif']:
+                #elif annotitem['is_motif']:
+                    subfun_motif(annotitem, raw_result_item)
+                    motif[annotitem['id']] = annotitem
+
+        parsed = {'transcript': transcript, 'regulatory': regulatory,
+                  'motif': motif}
+
+        return parsed
+
+    return main(vr)
 
 
 ##################
 
 
-def _parse_rest_lookup_transcript_singleitem(raw_result, refver, set_gene_name=True):
+def _parse_rest_lookup_transcript_annotitem(raw_result, refver, 
+                                            set_gene_name=True):
     def exon_parser(raw_data):
-        result = list()
-        for dic in raw_data:
-            start0 = dic["start"] - 1
-            end0 = dic["end"]
-            result.append([start, end])
+        result = dict()
+        for idx, dic in enumerate(raw_data):
+            result[f'{idx+1}_start0_end0'] = f'{dic["start"] - 1}_{dic["end"]}'
+
         return result
 
-    transcript = ensembl_feature.Transcript()
+    annotitem = annotationdb.AnnotItem()
     
-    set_is_forward(transcript, raw_result['strand'])
+    set_feature_type(annotitem, 'transcript')
+    set_transcript_subtypes(annotitem, raw_result['biotype'], raw_result['id'])
+    set_is_forward(annotitem, raw_result['strand'])
 
-    transcript['biotype'] = raw_result['biotype']
-    transcript['id'] = raw_result['id']
-    transcript['is_canonical'] = (raw_result['is_canonical'] == 1)
+    annotitem['biotype'] = raw_result['biotype']
+    annotitem['id'] = raw_result['id']
+    annotitem['is_canonical'] = (raw_result['is_canonical'] == 1)
 
-    transcript['chrom'] = raw_result['seq_region_name']
-    transcript['start0'] = raw_result['start'] - 1
-    transcript['start1'] = raw_result['start']
-    transcript['end0'] = raw_result['end']
-    transcript['end1'] = raw_result['end']
+    annotitem['chrom'] = raw_result['seq_region_name']
+    annotitem['start0'] = raw_result['start'] - 1
+    annotitem['start1'] = raw_result['start']
+    annotitem['end0'] = raw_result['end']
+    annotitem['end1'] = raw_result['end']
 
-    if 'display_name' not in raw_result.keys():
-        raise Exception(f'This rest-lookup transcript result does not have "display_name" key:\n{raw_result}')
-    transcript['transcript_name'] = raw_result['display_name']
+    try:
+        annotitem['transcript_name'] = raw_result['display_name']
+    except KeyError as e:
+        raise Exception(f'Unexpected rest lookup transcript '
+                        f'ID result:\n{raw_result}') from e
 
-    transcript['gene_id'] = raw_result['Parent']
+    annotitem['gene_id'] = raw_result['Parent']
     if set_gene_name:
-        lookup_gene_result = ensembl_rest.lookup_id(transcript['gene_id'], refver=refver, expand=False)
-        if 'display_name' not in lookup_gene_result.keys():
-            raise Exception(f'This rest-lookup gene result does not have "display_name" key:\n{lookup_gene_result}')
-        transcript['gene_name'] = lookup_gene_result['display_name']
+        try:
+            gene_name = ensembl_rest.lookup_id(annotitem['gene_id'], 
+                                               refver=refver, 
+                                               expand=False)['display_name']
+        except KeyError as e:
+            raise Exception(f'Unexpected rest lookup gene ID '
+                            f'result:\n{raw_result}') from e
 
+        annotitem['gene_name'] = gene_name
+
+    #annotitem['exons'] = exon_parser(raw_result['Exon'])
     if 'Exon' in raw_result:
-        transcript['exon_borders'] = exon_parser(raw_result['Exon'])
+        annotitem['exons'] = exon_parser(raw_result['Exon'])
     else:
-        transcript['exon_borders'] = None
+        annotitem['exons'] = None
 
-    return transcript
+    return annotitem
 
 
 def parse_rest_lookup_transcript(raw_result, refver, set_gene_name=True):
-    transcript = _parse_rest_lookup_transcript_singleitem(
+    annotitem = _parse_rest_lookup_transcript_annotitem(
         raw_result, refver=refver, set_gene_name=set_gene_name)
 
-    transcriptset = ensembl_feature.TranscriptSet()
-    transcriptset[transcript['id']] = transcript
-    parsed = {'transcript': transcriptset}
+    transcript = annotationdb.AnnotItemDict()
+    transcript[annotitem['id']] = annotitem
+
+    parsed = {'transcript': transcript}
 
     return parsed
 
 
 def parse_rest_lookup_transcript_post(raw_result, refver, set_gene_name=True):
-    transcriptset = ensembl_feature.TranscriptSet()
+    transcript = annotationdb.AnnotItemDict()
     for val in raw_result.values():
-        transcript = _parse_rest_lookup_transcript_singleitem(
+        annotitem = _parse_rest_lookup_transcript_annotitem(
             val, refver=refver, set_gene_name=set_gene_name)
-        transcriptset[transcript['id']] = transcript
+        transcript[annotitem['id']] = annotitem
 
-    parsed = {'transcript': transcriptset}
+    parsed = {'transcript': transcript}
 
     return parsed
 
@@ -802,33 +826,42 @@ def parse_rest_lookup_transcript_post(raw_result, refver, set_gene_name=True):
 
 
 def parse_rest_regulatory(raw_result):
-    regulatory = ensembl_feature.Regulatory()
+    annotitem = annotationdb.AnnotItem()
 
-    regulatory['id'] = raw_result['id']
-    regulatory['chrom'] = raw_result['seq_region_name']
-    regulatory['start0'] = raw_result['start'] - 1
-    regulatory['start1'] = raw_result['start']
-    regulatory['end0'] = raw_result['end']
-    regulatory['end1'] = raw_result['end']
-    regulatory['bound_start0'] = raw_result['bound_start'] - 1
-    regulatory['bound_start1'] = raw_result['bound_start']
-    regulatory['bound_end0'] = raw_result['bound_end']
-    regulatory['bound_end1'] = raw_result['bound_end']
-    regulatory['biotype'] = raw_result['feature_type']
-    regulatory['activity'] = raw_result['activity']
+    set_feature_type(annotitem, 'regulatory')
 
-    regulatoryset = ensembl_feature.RegulatorySet()
-    regulatoryset[regulatory['id']] = regulatory
+    annotitem['id'] = raw_result['id']
 
-    parsed = {'regulatory': regulatoryset}
+    annotitem['chrom'] = raw_result['seq_region_name']
+    annotitem['start0'] = raw_result['start'] - 1
+    annotitem['start1'] = raw_result['start']
+    annotitem['end0'] = raw_result['end']
+    annotitem['end1'] = raw_result['end']
+    annotitem['bound_start0'] = raw_result['bound_start'] - 1
+    annotitem['bound_start1'] = raw_result['bound_start']
+    annotitem['bound_end0'] = raw_result['bound_end']
+    annotitem['bound_end1'] = raw_result['bound_end']
+
+    set_regulatory_subtypes(annotitem, raw_result['feature_type'], 
+                            'regulatory')
+    annotitem['activity'] = raw_result['activity']
+
+    regulatory = annotationdb.AnnotItemDict()
+    regulatory[annotitem['id']] = annotitem
+
+    parsed = { 'regulatory': regulatory }
+
     return parsed
 
 
 ##################
 
 
-def parse_rest_overlap(raw_result, refver, include_motif_without_evidence=False, set_gene_name=True):
+def parse_rest_overlap(raw_result, refver, 
+                       include_motif_without_evidence=False):
     def subfun_common(annotitem, raw_result_item):
+        set_feature_type(annotitem, raw_result_item['feature_type'])
+
         annotitem['chrom'] = raw_result_item['seq_region_name']
         annotitem['start0'] = raw_result_item['start'] - 1
         annotitem['start1'] = raw_result_item['start']
@@ -836,99 +869,106 @@ def parse_rest_overlap(raw_result, refver, include_motif_without_evidence=False,
         annotitem['end1'] = raw_result_item['end']
         set_is_forward(annotitem, raw_result_item['strand'])
 
-    def subfun_transcript(raw_result_item, refver, set_gene_name):
-        transcript = ensembl_feature.Transcript()
-        subfun_common(transcript, raw_result_item)
+        if raw_result_item['feature_type'] == 'transcript':
+            set_feature_type(annotitem, 'transcript')
+        elif raw_result_item['feature_type'] == 'regulatory':
+            set_feature_type(annotitem, 'regulatory')
+        elif raw_result_item['feature_type'] == 'motif':
+            set_feature_type(annotitem, 'motif')
+        elif raw_result_item['feature_type'] == 'repeat':
+            set_feature_type(annotitem, 'repeat')
 
-        transcript['biotype'] = raw_result_item['biotype']
+    def subfun_transcript(annotitem, raw_result_item, refver):
+        annotitem['biotype'] = raw_result_item['biotype']
+        set_transcript_subtypes(annotitem, raw_result_item['biotype'], 
+                                raw_result_item['id'])
+
         #result_item['exons'] = None
-        transcript['id'] = raw_result_item['id']
-        transcript['transcript_name'] = raw_result_item['external_name']
-        transcript['gene_id'] = raw_result_item['Parent']
-        transcript['is_canonical'] = (raw_result_item['is_canonical'] == 1)
-
-        if set_gene_name:
-            transcript['gene_name'] = ensembl_rest.lookup_id(
-                transcript['gene_id'], refver=refver, expand=False
-            )['display_name']
+        annotitem['id'] = raw_result_item['id']
+        annotitem['transcript_name'] = raw_result_item['external_name']
+        annotitem['gene_id'] = raw_result_item['Parent']
+        annotitem['gene_name'] = ensembl_rest.lookup_id(
+            annotitem['gene_id'], refver=refver, expand=False)['display_name']
+        annotitem['is_canonical'] = (raw_result_item['is_canonical'] == 1)
 
         if 'ccdsid' in raw_result_item:
-            transcript['ccds_id'] = raw_result_item['ccdsid']
+            annotitem['ccds_id'] = raw_result_item['ccdsid']
         else:
-            transcript['ccds_id'] = None
+            annotitem['ccds_id'] = None
 
-        return transcript
+    def subfun_regulatory(annotitem, raw_result_item):
+        annotitem['id'] = raw_result_item['id']
+        annotitem['bound_start0'] = raw_result_item['bound_start'] - 1
+        annotitem['bound_start1'] = raw_result_item['bound_start']
+        annotitem['bound_end0'] = raw_result_item['bound_end']
+        annotitem['bound_end1'] = raw_result_item['bound_end']
+        set_regulatory_subtypes(annotitem, raw_result_item['description'], 
+                                'overlap')
 
-    def subfun_regulatory(raw_result_item):
-        regulatory = ensembl_feature.Regulatory()
-        subfun_common(regulatory, raw_result_item)
-
-        regulatory['id'] = raw_result_item['id']
-        regulatory['bound_start0'] = raw_result_item['bound_start'] - 1
-        regulatory['bound_start1'] = raw_result_item['bound_start']
-        regulatory['bound_end0'] = raw_result_item['bound_end']
-        regulatory['bound_end1'] = raw_result_item['bound_end']
-        regulatory['biotype'] = raw_result_item['description']
-
-        return regulatory
-
-    def subfun_motif(raw_result_item):
-        motif = ensembl_feature.Motif()
-        subfun_common(motif, raw_result_item)
-
+    def subfun_motif(annotitem, raw_result_item):
         if 'epigenomes_with_experimental_evidence' in raw_result_item:
-            motif['is_with_evidence'] = True
-            motif['evidence_name'] = '&'.join(
-                raw_result_item['epigenomes_with_experimental_evidence'].split(',')
-            )
+            annotitem['is_with_evidence'] = True
+
+            tmp = raw_result_item['epigenomes_with_experimental_evidence']
+            annotitem['evidence_name'] = '&'.join(tmp.split(','))
         else:
-            motif['is_with_evidence'] = False
-            motif['evidence_name'] = None
+            annotitem['is_with_evidence'] = False
+            annotitem['evidence_name'] = None
 
-        motif['id'] = raw_result_item['stable_id']
-        motif['matrix_id'] = raw_result_item['binding_matrix_stable_id']
-        motif['TF'] = raw_result_item['transcription_factor_complex'].split(',')
+        annotitem['id'] = raw_result_item['stable_id']
+        annotitem['matrix_id'] = raw_result_item['binding_matrix_stable_id']
+        annotitem['TF'] = ','.split(
+            raw_result_item['transcription_factor_complex'])
 
-        return motif
+    def subfun_repeat(annotitem, raw_result_item):
+        annotitem['repeat_type'] = raw_result_item['description']
+        annotitem['id'] = '_'.join(
+            [annotitem['chrom'], str(annotitem['start0']), 
+             str(annotitem['end0']), annotitem['repeat_type']])
 
-    def subfun_repeat(raw_result_item):
-        repeat = ensembl_feature.Repeat()
-        subfun_common(repeat, raw_result_item)
-        repeat['name'] = raw_result_item['description']
+    def main(raw_result, refver, include_motif_without_evidence):
+        transcript = annotationdb.AnnotItemDict()
+        regulatory = annotationdb.AnnotItemDict()
+        motif = annotationdb.AnnotItemDict()
+        repeat = annotationdb.AnnotItemDict()
 
-        return repeat
+        for raw_result_item in raw_result:
+            assert raw_result_item['feature_type'] in ('transcript', 
+                                                       'regulatory', 'motif', 
+                                                       'repeat')
+            annotitem = annotationdb.AnnotItem()
+            subfun_common(annotitem, raw_result_item)
 
-    # main
-    transcriptset = ensembl_feature.TranscriptSet()
-    regulatoryset = ensembl_feature.RegulatorySet()
-    motifset = ensembl_feature.MotifSet()
-    repeatset = ensembl_feature.RepeatSet()
+            if annotitem['feature_type_flags']['is_transcript']:
+                subfun_transcript(annotitem, raw_result_item, refver)
+                transcript[annotitem['id']] = annotitem
 
-    for raw_result_item in raw_result:
-        feature_type = raw_result_item['feature_type']
-        if feature_type == 'transcript':
-            transcript = subfun_transcript(raw_result_item, refver, set_gene_name)
-            transcriptset[transcript["id"]] = transcript
-        elif feature_type == 'regulatory':
-            regulatory = subfun_regulatory(raw_result_item)
-            regulatoryset[regulatory["id"]] = regulatory
-        elif feature_type == 'motif':
-            motif = subfun_motif(raw_result_item)
-            motifset[motif["id"]] = motif
-        elif feature_type == 'repeat':
-            repeat = subfun_repeat(raw_result_item)
-            repeatset[repeat["id"]] = repeat
-        else:
-            raise Exception(f'Unexpected feature type:\n{raw_result_item}')
+            elif annotitem['feature_type_flags']['is_regulatory']:
+                subfun_regulatory(annotitem, raw_result_item)
+                regulatory[annotitem['id']] = annotitem
 
-    parsed = {
-        'transcript': transcriptset,
-        'regulatory': regulatoryset,
-        'motif': motifset,
-        'repeat': repeatset,
-    }
+            elif annotitem['feature_type_flags']['is_motif']:
+                subfun_motif(annotitem, raw_result_item)
+                if include_motif_without_evidence:
+                    motif[annotitem['id']] = annotitem
+                else:
+                    if annotitem['is_with_evidence']:
+                        motif[annotitem['id']] = annotitem
 
-    return parsed
+            elif annotitem['feature_type_flags']['is_repeat']:
+                subfun_repeat(annotitem, raw_result_item)
+                repeat[annotitem['id']] = annotitem
+
+        parsed = {
+            'transcript': transcript,
+            'regulatory': regulatory,
+            'motif': motif,
+            'repeat': repeat,
+        }
+
+        return parsed
+
+    return main(raw_result, refver, include_motif_without_evidence)
 
 
 ##################
@@ -1007,153 +1047,167 @@ def parse_rest_vep(raw_result):
                 annotitem[key] = None
 
     def subfun_transcript(dic):
-        transcript = ensembl_feature.Transcript()
+        annotitem = annotationdb.AnnotItem()
 
-        transcript['id'] = dic['transcript_id']
-        transcript['biotype'] = dic['biotype']
-        transcript['consequences'] = dic['consequence_terms']
-        transcript['gene_id'] = dic['gene_id'] 
-        transcript['gene_name'] = (dic['gene_symbol'] 
+        set_feature_type(annotitem, 'transcript')
+
+        annotitem['id'] = dic['transcript_id']
+        annotitem['biotype'] = dic['biotype']
+        annotitem['consequences'] = dic['consequence_terms']
+        annotitem['gene_id'] = dic['gene_id'] 
+        annotitem['gene_name'] = (dic['gene_symbol'] 
                                   if ('gene_symbol' in dic) else 
                                   None) # 'TEC' biotype transcript does not have a gene symbol
-        transcript['is_canonical'] = ('canonical' in dic)
-        transcript['mane_select'] = (dic['mane_select'] 
+        annotitem['is_canonical'] = ('canonical' in dic)
+        annotitem['mane_select'] = (dic['mane_select'] 
                                     if ('mane_select' in dic) else 
                                     None)
 
-        transcript['ccds_id'] = dic['ccds'] if ('ccds' in dic) else None
-        transcript['protein_id'] = (dic['protein_id'] 
+        annotitem['ccds_id'] = dic['ccds'] if ('ccds' in dic) else None
+        annotitem['protein_id'] = (dic['protein_id'] 
                                    if ('protein_id' in dic) else 
                                    None)
-        transcript['aa_change'] = (dic['amino_acids'].split('/') 
+        annotitem['aa_change'] = (dic['amino_acids'].split('/') 
                                   if ('amino_acids' in dic) else 
                                   None)
-        transcript['codon_change'] = (dic['codons'].split('/') 
+        annotitem['codon_change'] = (dic['codons'].split('/') 
                                      if ('codons' in dic) else 
                                      None)
-        #set_codon_frame0(transcript)
+        #set_codon_frame0(annotitem)
 
-        transcript['variant_start0_transcript'] = (dic['cdna_start'] - 1 
+        annotitem['variant_start0_transcript'] = (dic['cdna_start'] - 1 
                                                   if ('cdna_start' in dic) 
                                                   else None)
-        transcript['variant_start1_transcript'] = (dic['cdna_start'] 
+        annotitem['variant_start1_transcript'] = (dic['cdna_start'] 
                                                   if ('cdna_start' in dic) 
                                                   else None)
-        transcript['variant_end0_transcript'] = (dic['cdna_end'] 
+        annotitem['variant_end0_transcript'] = (dic['cdna_end'] 
                                                 if ('cdna_end' in dic) else 
                                                 None)
-        transcript['variant_end1_transcript'] = (dic['cdna_end'] 
+        annotitem['variant_end1_transcript'] = (dic['cdna_end'] 
                                                 if ('cdna_end' in dic) else 
                                                 None)
 
-        transcript['variant_start0_cds'] = (dic['cds_start'] - 1 
+        annotitem['variant_start0_cds'] = (dic['cds_start'] - 1 
                                            if ('cds_start' in dic) else 
                                            None)
-        transcript['variant_start1_cds'] = (dic['cds_start'] 
+        annotitem['variant_start1_cds'] = (dic['cds_start'] 
                                            if ('cds_start' in dic) else 
                                            None)
-        transcript['variant_end0_cds'] = (dic['cds_end'] 
+        annotitem['variant_end0_cds'] = (dic['cds_end'] 
                                          if ('cds_end' in dic) else 
                                          None)
-        transcript['variant_end1_cds'] = (dic['cds_end'] 
+        annotitem['variant_end1_cds'] = (dic['cds_end'] 
                                          if ('cds_end' in dic) else 
                                          None)
 
-        transcript['variant_start0_protein'] = (dic['protein_start'] - 1 
+        annotitem['variant_start0_protein'] = (dic['protein_start'] - 1 
                                                if ('protein_start' in dic) else 
                                                None)
-        transcript['variant_start1_protein'] = (
+        annotitem['variant_start1_protein'] = (
             dic['protein_start'] 
             if ('protein_start' in dic) else 
             None)
-        transcript['variant_end0_protein'] = (
+        annotitem['variant_end0_protein'] = (
             dic['protein_end'] 
             if ('protein_end' in dic) else 
             None)
-        transcript['variant_end1_protein'] = (
+        annotitem['variant_end1_protein'] = (
             dic['protein_end'] 
             if ('protein_end' in dic) else 
             None)
 
-        transcript['hgvsc'] = dic['hgvsc'] if ('hgvsc' in dic) else None
-        transcript['hgvsp'] = dic['hgvsp'] if ('hgvsp' in dic) else None
+        annotitem['hgvsc'] = dic['hgvsc'] if ('hgvsc' in dic) else None
+        annotitem['hgvsp'] = dic['hgvsp'] if ('hgvsp' in dic) else None
 
         set_exon_intron_attributes(
-            transcript, 
+            annotitem, 
             exon_value=(dic['exon'] if 'exon' in dic else None), 
             intron_value=(dic['intron'] if 'intron' in dic else None))
-        set_is_forward(transcript, dic['strand'])
-        subfun_set_distance(transcript, dic, transcript['consequences'])
-        subfun_set_polyphen_sift_cadd(transcript, dic)
+        set_transcript_subtypes(annotitem, dic['biotype'], 
+                                dic['transcript_id'])
+        set_is_forward(annotitem, dic['strand'])
+        set_consequence_attributes(annotitem, annotitem['consequences'], 
+                                   dic['transcript_id'])
+        subfun_set_distance(annotitem, dic, annotitem['consequences'])
+        subfun_set_polyphen_sift_cadd(annotitem, dic)
 
-        return transcript
+        return annotitem
 
     def subfun_regulatory(dic):
-        regulatory = ensembl_feature.Regulatory()
+        annotitem = annotationdb.AnnotItem()
 
-        regulatory['id'] = dic['regulatory_feature_id']
-        regulatory['biotype'] = dic['biotype']
-        regulatory['consequences'] = dic['consequence_terms']
+        set_feature_type(annotitem, 'regulatory')
 
-        set_is_forward(regulatory, None)
-        subfun_set_distance(regulatory, dic, regulatory['consequences'])
+        annotitem['id'] = dic['regulatory_feature_id']
+        annotitem['biotype'] = dic['biotype']
+        annotitem['consequences'] = dic['consequence_terms']
 
-        return regulatory
+        set_regulatory_subtypes(annotitem, dic['biotype'], 'vep')
+        set_is_forward(annotitem, None)
+        subfun_set_distance(annotitem, dic, annotitem['consequences'])
+
+        return annotitem
 
     def subfun_motif(dic):
-        motif = ensembl_feature.Motif()
+        annotitem = annotationdb.AnnotItem()
 
-        motif['id'] = dic['motif_feature_id']
-        motif['consequences'] = dic['consequence_terms']
-        motif['matrix_id'] = dic['motif_name']
-        motif['TF'] = dic['transcription_factors']
+        set_feature_type(annotitem, 'motif')
 
-        set_is_forward(motif, dic['strand'])
-        subfun_set_distance(motif, dic, motif['consequences'])
+        annotitem['id'] = dic['motif_feature_id']
+        annotitem['consequences'] = dic['consequence_terms']
+        annotitem['matrix_id'] = dic['motif_name']
+        annotitem['TF'] = dic['transcription_factors']
 
-        return motif
+        set_is_forward(annotitem, dic['strand'])
+        subfun_set_distance(annotitem, dic, annotitem['consequences'])
 
-    # main
-    transcriptset = ensembl_feature.TranscriptSet()
-    regulatoryset = ensembl_feature.RegulatorySet()
-    motifset = ensembl_feature.MotifSet()
+        return annotitem
 
-    raw_result = raw_result[0]
-    # 'intergenic_consequences' is ignored
-    if 'transcript_consequences' in raw_result:
-        for dic in raw_result['transcript_consequences']:
-            transcript = subfun_transcript(dic)
-            transcriptset[transcript['id']] = transcript
+    def main(raw_result):
+        transcript = annotationdb.AnnotItemDict()
+        regulatory = annotationdb.AnnotItemDict()
+        motif = annotationdb.AnnotItemDict()
 
-    if 'regulatory_feature_consequences' in raw_result:
-        for dic in raw_result['regulatory_feature_consequences']:
-            regulatory = subfun_regulatory(dic)
-            regulatoryset[regulatory['id']] = regulatory
+        raw_result = raw_result[0]
 
-    if 'motif_feature_consequences' in raw_result:
-        for dic in raw_result['motif_feature_consequences']:
-            motif = subfun_motif(dic)
-            motifset[motif['id']] = motif
+        # 'intergenic_consequences' is ignored
+        if 'transcript_consequences' in raw_result:
+            for dic in raw_result['transcript_consequences']:
+                annotitem = subfun_transcript(dic)
+                transcript[annotitem['id']] = annotitem
 
-    parsed = {
-        'transcript': transcriptset,
-        'regulatory': regulatoryset,
-        'motif': motifset,
-    }
+        if 'regulatory_feature_consequences' in raw_result:
+            for dic in raw_result['regulatory_feature_consequences']:
+                annotitem = subfun_regulatory(dic)
+                regulatory[annotitem['id']] = annotitem
 
-    return parsed
+        if 'motif_feature_consequences' in raw_result:
+            for dic in raw_result['motif_feature_consequences']:
+                annotitem = subfun_motif(dic)
+                motif[annotitem['id']] = annotitem
+
+        parsed = {
+            'transcript': transcript,
+            'regulatory': regulatory,
+            'motif': motif,
+        }
+
+        return parsed
+
+    return main(raw_result)
 
 
 ##############################################################
 
 
-def parse_rest_map(raw_result, adjust_chrom=False, fasta=None):
+def parse_rest_map(raw_result, adjust_chrom = False, fasta = None):
     assert len(raw_result['mappings']) == 1
     dic = raw_result['mappings'][0]
 
     if adjust_chrom:
         assert fasta is not None
-        chrom = hgvs.modify_chrom(dic['seq_region_name'], fasta)
+        chrom = common.modify_chrom( dic['seq_region_name'], fasta )
     else:
         chrom = dic['seq_region_name']
 

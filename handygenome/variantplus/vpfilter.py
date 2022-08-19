@@ -110,9 +110,9 @@ class PopfreqFilter(NonSamplewiseFilter):
             "cutoff": cutoff,
         }
 
-    def check(self, vp, sampleid=None, alleleindex=1):
+    def check(self, vp, sampleid=None, alt_idx=0):
         return all(
-            vp.get_popfreq(popname) <= self.params["cutoff"]
+            vp.popfreq[alt_idx].get_freq(popname) <= self.params["cutoff"]
             for popname in self.params["popnames"]
         )
 
