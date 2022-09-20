@@ -8,7 +8,9 @@ dependencies:
     - conda-forge::numpy
     - conda-forge::scipy
     - conda-forge::pandas
+    - conda-forge::openpyxl
     - conda-forge::matplotlib
     - conda-forge::biopython
     - bioconda::pysam
     - bioconda::pyranges
+    - bioconda::mosdepth

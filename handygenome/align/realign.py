@@ -4,46 +4,40 @@ import importlib
 
 top_package_name = __name__.split(".")[0]
 common = importlib.import_module(".".join([top_package_name, "common"]))
-readhandler = importlib.import_module(
-    ".".join([top_package_name, "readplus", "readhandler"])
-)
+libpileup = importlib.import_module(".".join([top_package_name, "readplus", "pileup"]))
 
 
 # get_active_range
+def active_info_generator(bam, chrom, start0, end0, threshold, reverse=False):
+    pileup = libpileup.get_pileup(
+        bam, chrom, start0, end0, as_array=False, truncate=True
+    )
+    if reverse:
+        iterator = pileup.df.iloc[:, ::-1].iteritems()
+    else:
+        iterator = pileup.df.iteritems()
 
+    for pos0, col in iterator:
+        max_vaf = libpileup.get_max_vaf_from_col(col)
+        if max_vaf is None:
+            is_active = False
+        else:
+            is_active = max_vaf <= threshold
 
-def get_max_vaf(col):
-    counts = collections.Counter(x for x in col if x is not None)
-    max_vaf = max(counts.values()) / sum(counts.values())
-    return max_vaf
-
-
-def get_iterator(pileup, start0, end0):
-    rng = range(start0, end0)
-    return ((rng[idx], pileup[:, idx]) for idx in range(pileup.shape[1]))
+        yield (pos0, is_active)
 
 
 def get_active_info(bam, chrom, start0, end0, threshold):
-    pileup = readhandler.get_pileup(
-        bam, chrom, start0, end0, as_array=True, truncate=True
-    )
-    result = list()
-    for pos0, col in get_iterator(pileup, start0, end0):
-        is_active = get_max_vaf(col) <= threshold
-        result.append((pos0, is_active))
-
-    return result
+    return list(active_info_generator(bam, chrom, start0, end0, threshold))
 
 
 def check_active_col_rightward(bam, chrom, pos0_init, threshold, add_pileup_by):
     start0 = pos0_init
     end0 = start0 + add_pileup_by
     while True:
-        pileup = readhandler.get_pileup(
-            bam, chrom, start0, end0, as_array=True, truncate=True
-        )
-        for pos0, col in get_iterator(pileup, start0, end0):
-            is_active = get_max_vaf(col) <= threshold
+        for pos0, is_active in active_info_generator(
+            bam, chrom, start0, end0, threshold, reverse=False,
+        ):
             yield pos0, is_active
 
         start0 = end0
@@ -55,11 +49,9 @@ def check_active_col_leftward(bam, chrom, pos0_init, threshold, add_pileup_by):
     end0 = pos0_init + 1
     start0 = end0 - add_pileup_by
     while True:
-        pileup = readhandler.get_pileup(
-            bam, chrom, start0, end0, as_array=True, truncate=True
-        )
-        for pos0, col in reversed(tuple(get_iterator(pileup, start0, end0))):
-            is_active = get_max_vaf(col) <= threshold
+        for pos0, is_active in active_info_generator(
+            bam, chrom, start0, end0, threshold, reverse=True,
+        ):
             yield pos0, is_active
 
         end0 = start0
@@ -70,7 +62,7 @@ def check_active_col_leftward(bam, chrom, pos0_init, threshold, add_pileup_by):
 def get_active_range(
     bam, chrom, start0, end0, threshold=0.9, inactive_padding=10, add_pileup_by=10
 ):
-    naive_active_info = get_active_info(bam, chrom, start0, end0, threshold)
+    naive_active_info = list(active_info_generator(bam, chrom, start0, end0, threshold, reverse=False))
     naive_active_positions = [
         pos0 for (pos0, is_active) in naive_active_info if is_active
     ]

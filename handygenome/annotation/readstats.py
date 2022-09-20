@@ -88,8 +88,16 @@ class ReadStats(annotitem.AnnotItemVariantFormatSingle):
         self['total_rppcount'] = self.get_total_rppcount()
 
 
-def get_readstats(vcfspec, bam, fasta, chromdict, **kwargs):
-    readstats_data = get_readstats_data(vcfspec, bam, fasta, chromdict, **kwargs)
+def get_readstats(
+    vcfspec, bam, fasta, chromdict,
+    rpplist_kwargs=dict(),
+    alleleinfo_kwargs=dict(),
+):
+    readstats_data = get_readstats_data(
+        vcfspec, bam, fasta, chromdict,
+        rpplist_kwargs=rpplist_kwargs,
+        alleleinfo_kwargs=alleleinfo_kwargs,
+    )
     result = summarize_readstats_data(readstats_data)
 
     return result

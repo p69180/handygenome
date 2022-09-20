@@ -92,13 +92,14 @@ class VcfPlus:
         chromdict=None,
         init_vp=True,
         logger=None,
-        init_popfreq=True,
-        init_cosmic=True,
-        init_transcript=True,
-        init_regulatory=True,
+        init_all_attrs=True,
+        init_popfreq=False,
+        init_cosmic=False,
+        init_transcript=False,
+        init_regulatory=False,
         init_motif=False,
-        init_repeat=True,
-        init_readstats=True,
+        init_repeat=False,
+        init_readstats=False,
         logging_lineno=DEFAULT_LOGGING_LINENO,
     ):
         """Args:
@@ -121,18 +122,7 @@ class VcfPlus:
             else:
                 self.chromdict = chromdict
 
-#        def init_vp_containers(vplist, set_readstats, logging_lineno):
-#            self.set_vplist(
-#                vplist=vplist,
-#                #set_annotdb=set_annotdb,
-#                set_readstats=set_readstats,
-#                logging_lineno=logging_lineno,
-#            )
-#            self.vplist_filtered = self.vplist
-#            # if set_details:
-#            # self.set_ID_attributes()
-#            # self.set_more_vp_containers()
-
+        # main
         self._vplist_show_len = 30
 
         self.vcf_path = vcf_path
@@ -144,6 +134,15 @@ class VcfPlus:
 
         # initiation of vp containers 
         if init_vp:
+            if init_all_attrs:
+                init_popfreq = True
+                init_cosmic = True
+                init_transcript = True
+                init_regulatory = True
+                init_motif = True
+                init_repeat = True
+                init_readstats = True
+
             self.set_vplist(
                 vplist=None,
                 init_popfreq=init_popfreq,
@@ -264,9 +263,6 @@ class VcfPlus:
                 self.vplist.append(vp)
         else:
             self.vplist = vplist
-
-        # set gr
-        self.vplist.set_gr()
 
     def sort_vplist(self):
         self.logger.info("Sorting self.vplist")

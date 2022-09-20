@@ -34,15 +34,30 @@ ALLELEINFO_TAG_RP = 'a1'
 
 class ReadPlus:
 
-    def __init__(self, read, fasta=None):
+    def __init__(self, read, fasta=None, skip_attrs_setting=False, recalc_NMMD=False):
         self.read = read
-        self.fasta = (common.infer_refver(bamheader=self.read.header)
-                      if fasta is None else fasta)
+        if not skip_attrs_setting:
+            self._init_attrs(fasta, recalc_NMMD)
 
-        self._set_NMMD()
+    def _init_attrs(self, fasta, recalc_NMMD):
+        self.fasta = (
+            pysam.FastaFile(
+                common.DEFAULT_FASTA_PATHS[
+                    common.infer_refver(bamheader=self.read.header)
+                ]
+            )
+            if fasta is None else 
+            fasta
+        )
+
+        if recalc_NMMD:
+            self._set_NMMD()
+        else:
+            if (not self.read.has_tag('NM')) or (not self.read.has_tag('MD')):
+                self._set_NMMD()
+
         #self._set_SAlist()
-        self.pairs_dict = readhandler.get_pairs_dict(self.read, 
-                                                     self.fasta)
+        self.pairs_dict = readhandler.get_pairs_dict(self.read, self.fasta)
             # keys: 'querypos0', 'refpos0','refseq'
 
         self.fiveprime_end = readhandler.get_fiveprime_end(self.read)
@@ -303,6 +318,13 @@ class ReadPlus:
 
         return result
 
+    # cigar
+    def walk_cigar(self):
+        return readhandler.walk_cigar(self.read.cigartuples, self.read.reference_start)
+
+    def split_cigar(self, split_range0):
+        return readhandler.split_cigar(self.read.cigartuples, self.read.reference_start, split_range0)
+
     # alleleinfo
     def update_alleleinfo(self, vcfspec, 
                           flanklen=alleleinfosetup.DEFAULT_FLANKLEN):
@@ -368,22 +390,17 @@ class ReadPlus:
 
     # others
     def _set_NMMD(self):
-        if (not self.read.has_tag('NM')) or (not self.read.has_tag('MD')):
-            (ref_seq_padded, 
-             read_seq_padded) = readhandler.get_padded_seqs(self.read, 
-                                                            self.fasta)
-            if not self.read.has_tag('NM'):
-                self.read.set_tag(
-                    tag='NM', value_type='i',
-                    value=readhandler.get_NM(
-                        self.read, ref_seq_padded=ref_seq_padded, 
-                        read_seq_padded=read_seq_padded))
-            if not self.read.has_tag('MD'):
-                self.read.set_tag(
-                    tag='MD', value_type='Z',
-                    value=readhandler.get_MD(
-                        self.read, ref_seq_padded=ref_seq_padded, 
-                        read_seq_padded=read_seq_padded))
+        (ref_seq_padded, read_seq_padded) = readhandler.get_padded_seqs(self.read, self.fasta)
+        self.read.set_tag(
+            tag='NM', value_type='i',
+            value=readhandler.get_NM(
+                self.read, ref_seq_padded=ref_seq_padded, 
+                read_seq_padded=read_seq_padded))
+        self.read.set_tag(
+            tag='MD', value_type='Z',
+            value=readhandler.get_MD(
+                self.read, ref_seq_padded=ref_seq_padded, 
+                read_seq_padded=read_seq_padded))
 
     def _set_SAlist(self):
         """cigartuples pattern check is done:

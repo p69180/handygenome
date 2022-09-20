@@ -8,6 +8,9 @@ common = importlib.import_module('.'.join([top_package_name, 'common']))
 infoformat = importlib.import_module('.'.join([top_package_name, 'variantplus', 'infoformat']))
 annotitem = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotitem']))
 customfile = importlib.import_module('.'.join([top_package_name, 'annotation', 'customfile']))
+annotation_misc = importlib.import_module(".".join([top_package_name, "annotation", "misc"]))
+
+COSMIC_VCFS = annotation_misc.VCFS_COSMIC
 
 
 class CosmicInfo(annotitem.AnnotItemVariantInfoSingle):

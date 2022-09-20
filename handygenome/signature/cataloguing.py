@@ -25,11 +25,11 @@ def get_sbs_context(chrom, pos, fasta=None, refver=None, pre=1, post=1,
     return seq
 
 
-def to_pyrimidine(base):
-    if base in 'AG':
-        return Bio.Seq.reverse_complement(base)
-    else:
-        return base
+#def to_pyrimidine(base):
+#    if base in 'AG':
+#        return Bio.Seq.reverse_complement(base)
+#    else:
+#        return base
         
 
 @common.get_deco_arg_choices({'refver': common.AVAILABLE_REFVERS})

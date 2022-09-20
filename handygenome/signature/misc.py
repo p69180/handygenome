@@ -10,12 +10,15 @@ top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 
 
-COLORS_SBS6 = {'C>A': np.array([3, 189, 239]) / 256,
-               'C>G': np.array([1, 1, 1]) / 256,
-               'C>T': np.array([228, 41, 38]) / 256,
-               'T>A': np.array([203, 202, 202]) / 256,
-               'T>C': np.array([162, 207, 99]) / 256, 
-               'T>G': np.array([236, 199, 197]) / 256}
+COLORS_SBS6 = {
+    'C>A': np.array([3, 189, 239]) / 256,
+    'C>G': np.array([1, 1, 1]) / 256,
+    'C>T': np.array([228, 41, 38]) / 256,
+    'T>A': np.array([203, 202, 202]) / 256,
+    'T>C': np.array([162, 207, 99]) / 256, 
+    'T>G': np.array([236, 199, 197]) / 256,
+    'other': 'y',
+}
 
 AVAILABLE_REFVERS = ('GRCh38', 'GRCh37', 'mm10')
 AVAILABLE_CAT_TYPES = ('sbs96', 'id83', 'dbs78', 'cn48')

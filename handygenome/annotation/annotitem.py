@@ -916,7 +916,7 @@ class AnnotItemBaseAll:
 
 class AnnotItemBaseHeader:
     def write(self, vcfheader):
-        vcfheader.add_meta(key=self.annotkey, value=self.encode())
+        vcfheader.add_meta(key=self.get_annotkey(), value=self.encode())
 
 
 class AnnotItemBaseInfo:
@@ -926,7 +926,7 @@ class AnnotItemBaseInfo:
 
     def write(self, vr, key=None, add_meta=False):
         if key is None:
-            key = self.annotkey
+            key = self.get_annotkey()
         if add_meta:
             self.__class__.add_meta(vr.header)
 
@@ -940,7 +940,7 @@ class AnnotItemBaseFormat:
 
     def write(self, vr, sampleid, key=None, add_meta=False):
         if key is None:
-            key = self.annotkey
+            key = self.get_annotkey()
         if add_meta:
             self.__class__.add_meta(vr.header)
 

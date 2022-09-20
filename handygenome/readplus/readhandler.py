@@ -26,6 +26,19 @@ CIGAROPDICT = {
     "B": 9,
 }
 CIGARPAT = re.compile(f'([0-9]+)([{"".join(CIGAROPDICT.keys())}])')
+CIGAR_WALK_DICT = { # (target, query)
+    0: (True, True),
+    1: (False, True),
+    2: (True, False),
+    3: (True, False),
+    4: (False, True),
+    5: (False, False),
+    6: (False, False),
+    7: (True, True),
+    8: (True, True),
+}
+CIGAROPS_TARGETONLY = {2, 3}
+CIGAROPS_QUERYONLY = {1, 4}
 
 
 # class definitions
@@ -39,6 +52,14 @@ class NoMDTagError(Exception):
 
 
 ###################################
+
+
+def get_uid(read):
+    return (read.query_name, read.flag)
+
+
+def get_read_dict(read_iter):
+    return {get_uid(x): x for x in read_iter}
 
 
 def check_bad_read(read):
@@ -70,27 +91,82 @@ def get_fetch(bam, chrom, start, end, filter_fun=None):
 
 # cigar-related classes and functions
 
+#class CigarUnit:
+#    def __init__(self, opcode, opstring, count):
+#        self.opcode = opcode
+#        self.opstring = opstring
+#        self.count = count
 
-class CIGARUNIT:
-    def __init__(self, opcode, opstring, count):
-        self.opcode = opcode
-        self.opstring = opstring
-        self.count = count
+class CigarPlus:
+    CIGAROPDICT_ITEMS = [
+        ("M", 0),
+        ("I", 1),
+        ("D", 2),
+        ("N", 3),
+        ("S", 4),
+        ("H", 5),
+        ("P", 6),
+        ("=", 7),
+        ("X", 8),
+        ("B", 9),
+    ]
+    CIGAROPDICT = dict(CIGAROPDICT_ITEMS)
+    CIGAROPDICT_REV = dict((x[1], x[0]) for x in CIGAROPDICT_ITEMS)
+    CIGARPAT = re.compile(f'([0-9]+)([{"".join(CIGAROPDICT.keys())}])')
+    CIGAROPS_TARGETONLY = {2, 3}
+    CIGAROPS_QUERYONLY = {1, 4}
 
+    # constructors #
+    @classmethod
+    def from_cigarstring(cls, cigarstring):
+        result = cls()
+        result.cigartuples = cls.cigarstring_to_cigartuples(cigarstring)
+        return result
+    
+    @classmethod
+    def from_cigartuples(cls, cigartuples):
+        result = cls()
+        result.cigartuples = cigartuples
+        return result
+    ################
 
-class CIGAR:
-    def __init__(self, cigarstring):
-        self.string = cigarstring
-        self.set_list()
-        self.opstrings = [x.opstring for x in self.list]
-
-    def set_list(self):
-        self.list = list()
-        for (count, opstring) in CIGARPAT.findall(self.string):
-            opcode = CIGAROPDICT[opstring]
+    # converters
+    @classmethod
+    def cigarstring_to_cigartuples(cls, cigarstring):
+        result = list()
+        for (count, opstring) in cls.CIGARPAT.findall(cigarstring):
+            opcode = cls.CIGAROPDICT[opstring]
             count = int(count)
-            cigarunit = CIGARUNIT(opcode, opstring, count)
-            self.list.append(cigarunit)
+            result.append((opcode, count))
+        return result
+
+    @classmethod
+    def cigartuples_to_cigarstring(cls, cigartuples):
+        buffer = list()
+        for opcode, count in cigartuples:
+            opstring = cls.CIGAROPDICT_REV[opcode]
+            buffer.append(str(count))
+            buffer.append(opstring)
+        return "".join(buffer)
+
+    # others
+    @property
+    def cigarstring(self):
+        return self.cigartuples_to_cigarstring(self.cigartuples)
+
+    def iter_trailing_queryonly(self):
+        for opcode, count in reversed(self.cigartuples):
+            if opcode in CIGAROPS_QUERYONLY:
+                yield opcode, count
+            else:
+                break
+
+    def iter_leading_queryonly(self):
+        for opcode, count in self.cigartuples:
+            if opcode in CIGAROPS_QUERYONLY:
+                yield opcode, count
+            else:
+                break
 
     def check_DN_outside(self):
         # cigar I may be outside!
@@ -112,11 +188,110 @@ class CIGAR:
         )
 
 
-def get_cigartuples(cigarstring):
-    return [
-        (CIGAROPDICT[cigarop], int(count))
-        for (count, cigarop) in CIGARPAT.findall(cigarstring)
-    ]
+#def get_cigartuples(cigarstring):
+#    return [
+#        (CIGAROPDICT[cigarop], int(count))
+#        for (count, cigarop) in CIGARPAT.findall(cigarstring)
+#    ]
+
+
+CigarWalk = collections.namedtuple(
+    'CigarWalk', 
+    ('cigartuple', 'target_range0', 'query_range0'),
+)
+def walk_cigar(cigartuples, target_start0):
+    query_start0 = 0
+
+    target_end0 = target_start0
+    query_end0 = query_start0
+
+    for cigartup in cigartuples:
+        opcode, count = cigartup
+        walk_target, walk_query = CIGAR_WALK_DICT[opcode]
+        if walk_target:
+            target_end0 += count
+        if walk_query:
+            query_end0 += count
+
+        target_range0 = range(target_start0, target_end0)
+        query_range0 = range(query_start0, query_end0)
+
+        target_start0 = target_end0
+        query_start0 = query_end0
+
+        yield CigarWalk(cigartup, target_range0, query_range0)
+
+
+def split_cigar(cigartuples, reference_start0, split_range0):
+    def add_buffer(tuple_list, queryonly_buffer):
+        while queryonly_buffer:
+            tuple_list.append(queryonly_buffer.pop(0).cigartuple)
+
+    def add_current(tuple_list, cigarwalk):
+        tuple_list.append(cigarwalk.cigartuple)
+
+    tuples_before = list()
+    tuples_within = list()
+    tuples_after = list()
+    reference_pointer = reference_start0
+    queryonly_buffer = list()
+
+    for cigarwalk in walk_cigar(cigartuples, reference_start0):
+        reference_pointer += len(cigarwalk.target_range0)
+
+        if len(cigarwalk.target_range0) == 0:
+            queryonly_buffer.append(cigarwalk)
+        else:
+            # current cigarwalk entirely before split_range0
+            if cigarwalk.target_range0.stop <= split_range0.start:
+                add_buffer(tuples_before, queryonly_buffer)
+                add_current(tuples_before, cigarwalk)
+            # current cigarwalk entirely after split_range0
+            elif cigarwalk.target_range0.start >= split_range0.stop:
+                add_buffer(tuples_after, queryonly_buffer)
+                add_current(tuples_after, cigarwalk)
+            # current cigarwalk overlaps split_range0
+            else:
+                # handle buffer
+                if cigarwalk.target_range0.start < split_range0.start:
+                    add_buffer(tuples_before, queryonly_buffer)
+                else:
+                    add_buffer(tuples_within, queryonly_buffer)
+                # add to tuples_before
+                if cigarwalk.target_range0.start < split_range0.start:
+                    tuple_to_add = (
+                        cigarwalk.cigartuple[0], 
+                        split_range0.start - cigarwalk.target_range0.start,
+                    )
+                    tuples_before.append(tuple_to_add)
+                # add to tuples_after
+                if cigarwalk.target_range0.stop > split_range0.stop:
+                    tuple_to_add = (
+                        cigarwalk.cigartuple[0], 
+                        cigarwalk.target_range0.stop - split_range0.stop,
+                    )
+                    tuples_after.append(tuple_to_add)
+                # add to tuples_within
+                tuple_to_add = (
+                    cigarwalk.cigartuple[0], 
+                    (
+                        min(cigarwalk.target_range0.stop, split_range0.stop)
+                        - max(cigarwalk.target_range0.start, split_range0.start)
+                    )
+                )
+                tuples_within.append(tuple_to_add)
+                    
+    # now reference_pointer is equal to read.reference_end
+    if queryonly_buffer:
+        if reference_pointer < split_range0.start:
+            add_buffer(tuples_before, queryonly_buffer)
+        else:
+            if reference_pointer < split_range0.stop:
+                add_buffer(tuples_within, queryonly_buffer)
+            else:
+                add_buffer(tuples_after, queryonly_buffer)
+
+    return tuples_before, tuples_within, tuples_after
 
 
 def get_aligned_pairs(pos, cigartuples):
@@ -548,221 +723,4 @@ def get_primary_mate(read, bam):
     return mate
 
 
-#####
 
-
-def pileup_readfilter(read):
-    """True if a bad read"""
-    return (
-        check_bad_read(read) or
-        read.is_supplementary or
-        read.is_secondary
-    )
-
-
-def get_pileup(bam, chrom, start0, end0, as_array=False, truncate=True, with_readlist=False, append_read12_to_qname=False):
-    """Returns:
-        An numpy.ndarray object if "as_array" argument is True
-        An pandas.DataFrame object if "as_array" argument is False
-    """
-
-    readlist = list(get_fetch(bam, chrom, start0, end0, filter_fun=pileup_readfilter))
-    pileup, pileup_range = get_pileup_from_reads(readlist, as_array=as_array, return_range=True, append_read12_to_qname=append_read12_to_qname)
-    
-    if truncate:
-        if as_array:
-            start0_idx = pileup_range.index(start0)
-            end0_idx = pileup_range.index(end0)
-            pileup = pileup[:, start0_idx:end0_idx]
-        else:
-            pileup = pileup.loc[:, list(range(start0, end0))]
-
-    if with_readlist:
-        return pileup, readlist
-    else:
-        return pileup
-
-
-def get_pileup_from_reads(readlist, as_array=False, return_range=False, del_char='*', append_read12_to_qname=False):
-    def raise_err(read):
-        raise Exception(f"Unexpected cigar pattern:\n{read.to_string()}")
-
-    def cigar_sanitycheck(read):
-        """Assumes M.* or [IS]M.*"""
-        error = False
-        first_cigarop = read.cigartuples[0][0]
-        if first_cigarop != 0:
-            if first_cigarop not in (1, 4):
-                error = True
-            else:
-                if read.cigartuples[1][0] != 0:
-                    error = True
-        if error:
-            raise_err(read)
-
-    def get_pileup_range(readlist):
-        start0s = list()
-        end0s = list()
-        for read in readlist:
-            start0s.append(read.reference_start)
-            end0s.append(read.reference_end)
-        start0 = min(start0s)
-        end0 = max(end0s)
-
-        return range(start0, end0)
-
-    def handle_leading_insclip(read):
-        leading_insclip_len = 0
-        for cigartup_idx, (cigarop, cigarlen) in enumerate(read.cigartuples):
-            if cigarop in (1, 4):
-                leading_insclip_len += cigarlen
-            else:
-                break
-                
-        if leading_insclip_len == 0:
-            leading_insseq = None
-        else:
-            leading_insseq = read.query_sequence[:leading_insclip_len]
-            
-        query_idx = leading_insclip_len
-
-        return leading_insseq, cigartup_idx, query_idx
-
-    def handle_last_match(
-        read, arr, cigarlen, query_idx, arr_col_idx, arr_row_idx, cigartup_idx
-    ):
-        sl_query = slice(query_idx, query_idx + cigarlen)
-        seq_buffer = tuple(read.query_sequence[sl_query])
-        sl_arr_col = slice(arr_col_idx, arr_col_idx + cigarlen)
-        arr[arr_row_idx, sl_arr_col] = seq_buffer
-        cigartup_idx += 1
-
-        return cigartup_idx
-
-    def add_matches_before_last(
-        read, arr, cigarlen, query_idx, arr_col_idx, arr_row_idx
-    ):
-        sl_query = slice(query_idx, query_idx + cigarlen - 1)
-        seq = tuple(read.query_sequence[sl_query])
-        query_idx += cigarlen - 1
-
-        sl_arr_col = slice(arr_col_idx, arr_col_idx + cigarlen - 1)
-        arr[arr_row_idx, sl_arr_col] = seq
-        arr_col_idx += cigarlen - 1
-
-        return query_idx, arr_col_idx
-
-    def handle_del_after_match(
-        read, arr, query_idx, arr_col_idx, arr_row_idx, next_cigarlen
-    ):
-        seq = read.query_sequence[query_idx]
-        query_idx += 1
-        arr[arr_row_idx, arr_col_idx] = seq
-        arr_col_idx += 1
-
-        sl_arr_col = slice(arr_col_idx, arr_col_idx + next_cigarlen)
-        arr[arr_row_idx, sl_arr_col] = del_char
-        arr_col_idx += next_cigarlen
-
-        return query_idx, arr_col_idx
-
-    def handle_insclip_after_match(
-        read, arr, query_idx, arr_col_idx, arr_row_idx, next_cigarlen
-    ):
-        match_seq = read.query_sequence[query_idx]
-        query_idx += 1
-        insseq = read.query_sequence[query_idx : (query_idx + next_cigarlen)]
-        query_idx += next_cigarlen
-        seq = match_seq + f"({insseq})"
-
-        arr[arr_row_idx, arr_col_idx] = seq
-        arr_col_idx += 1
-
-        return query_idx, arr_col_idx
-
-    def add_seqs(read, arr, cigartup_idx, query_idx, arr_row_idx, arr_col_idx):
-        while True:
-            if cigartup_idx == len(read.cigartuples):
-                break
-
-            cigarop, cigarlen = read.cigartuples[cigartup_idx]
-            if cigarop != 0:
-                raise_err(read)
-
-            if cigartup_idx == len(read.cigartuples) - 1:
-                cigartup_idx = handle_last_match(
-                    read,
-                    arr,
-                    cigarlen,
-                    query_idx,
-                    arr_col_idx,
-                    arr_row_idx,
-                    cigartup_idx,
-                )
-                continue
-            else:
-                if cigarlen > 1:
-                    query_idx, arr_col_idx = add_matches_before_last(
-                        read, arr, cigarlen, query_idx, arr_col_idx, arr_row_idx
-                    )
-
-                next_cigarop, next_cigarlen = read.cigartuples[cigartup_idx + 1]
-                if next_cigarop == 2:  # deletion
-                    query_idx, arr_col_idx = handle_del_after_match(
-                        read, arr, query_idx, arr_col_idx, arr_row_idx, next_cigarlen
-                    )
-                elif next_cigarop in (1, 4):
-                    query_idx, arr_col_idx = handle_insclip_after_match(
-                        read, arr, query_idx, arr_col_idx, arr_row_idx, next_cigarlen
-                    )
-
-                cigartup_idx += 2
-                continue
-
-    def add_leading_insseq(read, leading_insseq, arr, arr_row_idx, arr_col_idx_init):
-        if leading_insseq is not None:
-            old_seq = arr[arr_row_idx, arr_col_idx_init]
-            new_seq = f"(l+{leading_insseq})" + old_seq
-            arr[arr_row_idx, arr_col_idx_init] = f"({leading_insseq})" + old_seq
-
-    # main
-    pileup_range = get_pileup_range(readlist)
-    ncol = len(pileup_range)
-    nrow = len(readlist)
-    #arr = np.empty((nrow, ncol), dtype=object)
-    arr = np.full((nrow, ncol), None, dtype=object)
-
-    for arr_row_idx, read in enumerate(readlist):
-        try:
-            arr_col_idx_init = read.reference_start - pileup_range.start
-            arr_col_idx = arr_col_idx_init
-            leading_insseq, cigartup_idx, query_idx = handle_leading_insclip(read)
-            add_seqs(read, arr, cigartup_idx, query_idx, arr_row_idx, arr_col_idx)
-            add_leading_insseq(read, leading_insseq, arr, arr_row_idx, arr_col_idx_init)
-        except Exception as exc:
-            try:
-                cigar_sanitycheck(read)
-            except Exception as exc_cigarpattern:
-                raise exc_cigarpattern from exc
-            else:
-                raise exc
-
-    if as_array:
-        if return_range:
-            return (arr, pileup_range)
-        else:
-            return arr
-    else:
-        if append_read12_to_qname:
-            qnames = [x.query_name + ('_read1' if x.is_read1 else '_read2')
-                      for x in readlist]
-            if len(qnames) != len(set(qnames)):
-                reads_as_string = '\n'.join(x.query_name for x in readlist)
-                raise Exception(f'Duplicate read query names even after appending "read1" or "read2". Input reads are as following:\n{reads_as_string}')
-        else:
-            qnames = [x.query_name for x in readlist]
-        df = pd.DataFrame(arr, index=qnames, columns=list(pileup_range))
-        if return_range:
-            return (df, pileup_range)
-        else:
-            return df

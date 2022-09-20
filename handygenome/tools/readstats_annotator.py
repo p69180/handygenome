@@ -74,13 +74,13 @@ def update_new_vr(new_vr, refver, fasta, chromdict, bam_list, id_list,
     irrelevant_samples = set(x for x in new_vr.samples.keys()
                              if infoformat.check_NA_format(new_vr, x, FORMAT_key))
     irrelevant_samples.difference_update(id_list)
-    #print(irrelevant_samples)
 
     for bam, sampleid in zip(bam_list, id_list):
-        readstats = libreadstats.get_readstats(vcfspec, bam, fasta, 
-                                               chromdict,
-                                               no_matesearch=no_matesearch)
-        readstats.write_format(new_vr, sampleid)
+        readstats = libreadstats.get_readstats(
+            vcfspec, bam, fasta, chromdict,
+            rpplist_kwargs={'no_matesearch': no_matesearch},
+        )
+        readstats.write(new_vr, sampleid)
 
     for sampleid in irrelevant_samples:
         infoformat.set_NA_format(new_vr, sampleid, FORMAT_key)

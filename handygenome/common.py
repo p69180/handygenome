@@ -57,6 +57,7 @@ import subprocess
 import pysam
 import pyranges as pr
 import numpy as np
+import Bio.Seq
 
 import importlib
 TOP_PACKAGE_NAME = __name__.split('.')[0]
@@ -336,6 +337,7 @@ class RefverDict(collections.UserDict):
 
     converter = dict()
     for refver, alias_refvers in aliases.items():
+        converter[refver] = refver
         for alias_refver in alias_refvers:
             converter[alias_refver] = refver
 
@@ -437,6 +439,13 @@ class ChromDict(collections.OrderedDict):
         self.contigs = list(self.keys())
         self.lengths = list(self.values())
 
+    def to_gr(self):
+        return pr.PyRanges(
+            chromosomes=self.contigs,
+            starts=([0] * len(self.contigs)),
+            ends=self.lengths
+        )
+
     def to_interval_list(self):
         intvlist = IntervalList()
         for contig, length in zip(self.contigs, self.lengths):
@@ -509,8 +518,8 @@ class Vcfspec:
                          self.ref, 
                          '|'.join(self.alts)])
 
-    def get_mutation_type(self, alt_idx=0):
-        return get_mttype(self.ref, self.alts[alt_idx])
+    def get_mutation_type(self, alt_index=0):
+        return get_mttype(self.ref, self.alts[alt_index])
 
     def get_mttype_firstalt(self):
         return self.get_mutation_type(0)
@@ -550,9 +559,9 @@ class Vcfspec:
             new_vcfspec = self.__class__(self.chrom, self.pos, self.ref, (alt,))
             yield new_vcfspec
 
-    def get_monoalt(self, alt_idx=0):
+    def get_monoalt(self, alt_index=0):
         return self.__class__(
-            self.chrom, self.pos, self.ref, (self.alts[alt_idx],)
+            self.chrom, self.pos, self.ref, (self.alts[alt_index],)
         )
 
     def check_without_N(self):
@@ -561,17 +570,17 @@ class Vcfspec:
             all(without_N(x) for x in self.alts)
         )
 
-    def to_hgvsg(self, alt_idx=0):
+    def to_hgvsg(self, alt_index=0):
         chrom = self.chrom
         pos = self.pos
         ref = self.ref
-        alt = self.alts[alt_idx]
-        mttype = self.get_mutation_type(alt_idx)
+        alt = self.alts[alt_index]
+        mttype = self.get_mutation_type(alt_index)
 
         if mttype == 'snv':
             result = f'{chrom}:g.{pos}{ref}>{alt}'
         elif mttype == 'mnv':
-            pos2 = pos1 + (len(ref) - 1)
+            pos2 = pos + (len(ref) - 1)
             result = f'{chrom}:g.{pos}_{pos2}delins{alt}'
         elif mttype == 'ins':
             inserted_seq = alt[1:]
@@ -579,12 +588,29 @@ class Vcfspec:
         elif mttype == 'del':
             pos1 = pos + 1
             pos2 = pos + (len(ref) - 1)
-            result = f'{chrom}:g.{pos1}_{pos2}del'
+            if pos1 == pos2:
+                result = f'{chrom}:g.{pos1}del'
+            else:
+                result = f'{chrom}:g.{pos1}_{pos2}del'
         elif mttype == 'delins':
+            pos1 = pos
             pos2 = pos + (len(ref) - 1)
-            result = f'{chrom}:g.{pos}_{pos2}delins{alt}'
+            if pos1 == pos2:
+                result = f'{chrom}:g.{pos1}delins{alt}'
+            else:
+                result = f'{chrom}:g.{pos1}_{pos2}delins{alt}'
 
         return result
+
+    def to_gr(self):
+        ref_range0 = self.REF_range0
+        return pr.from_dict(
+            {
+                'Chromosome': [self.chrom], 
+                'Start': [ref_range0.start], 
+                'End': [ref_range0.stop],
+            }
+        )
 
 
 def check_vcfspec_monoalt(vcfspec):
@@ -661,7 +687,7 @@ class IntervalList(list):
         super().__init__(*args, **kwargs)
         self._lengths_cumsum = None
 
-    # I/O
+    # constructors #
     @classmethod
     def from_gr(cls, gr):
         result = cls()
@@ -679,10 +705,25 @@ class IntervalList(list):
     def from_chromdict(cls, chromdict):
         result = cls()
         for contig, length in chromdict.items():
-            intv = Interval(chrom=contig, start0=0, end0=length)
-            result.append(result)
+            result.append(Interval(chrom=contig, start0=0, end0=length))
 
         return result
+
+    @classmethod
+    def from_vcfspec(cls, vcfspec):
+        return cls.from_gr(cls, vcfspec.to_gr())
+
+    @classmethod
+    def get_depth_bins(cls, refver, width=100_000):
+        result = cls()
+        chromdict = ChromDict(refver=refver)
+        for contig, length in zip(chromdict.contigs, chromdict.lengths):
+            intvlist_contig = cls()
+            intvlist_contig.append(Interval(chrom=contig, start0=0, end0=length))
+            for item in intvlist_contig.split(width=width):
+                result.extend(item)
+        return result
+    ################
 
     def write_bed(self, outfile_path):
         with openfile(outfile_path, 'w') as outfile:
@@ -697,8 +738,7 @@ class IntervalList(list):
             chroms.append(intv.chrom)
             starts.append(intv.start0)
             ends.append(intv.end0)
-        return pr.from_dict({'Chromosome': chroms, 'Start': starts, 
-                             'End': ends})
+        return pr.from_dict({'Chromosome': chroms, 'Start': starts, 'End': ends})
 
     # properties
     @functools.cached_property
@@ -723,7 +763,7 @@ class IntervalList(list):
     def isec(self, other):
         self_gr = self.to_gr()
         other_gr = other.to_gr()
-        isec_gr = self_gr.intersect(other_gr)
+        isec_gr = self_gr.set_intersect(other_gr)
 
         return self.__class__.from_gr(isec_gr)
 
@@ -885,6 +925,7 @@ class IntervalList(list):
 
         return chrom, new_pos0, self_idx
 
+
 ###################################################
 
 def without_N(seq):
@@ -908,9 +949,7 @@ def zenumerate(iterable):
 
 
 def round_sig(num, n):
-    """
-    round 'num' with 'n' significant digits
-    """
+    """round 'num' with 'n' significant digits"""
 
     assert n > 0
     from math import log10, floor
@@ -1134,9 +1173,15 @@ def get_mttype(ref, alt):
                 mttype = 'mnv'
         else:
             if len(ref) == 1:
-                mttype = 'ins'
+                if ref[0] == alt[0]:
+                    mttype = 'ins'
+                else:
+                    mttype = 'delins'
             elif len(alt) == 1:
-                mttype = 'del'
+                if ref[0] == alt[0]:
+                    mttype = 'del'
+                else:
+                    mttype = 'delins'
             else:
                 mttype = 'delins'
 
@@ -1377,7 +1422,24 @@ def iter_lineno_logging(line_iterator, logger, logging_lineno, msgfunc=None):
         yield line
 
 
+def gr_iterrows(gr):
+    """Args:
+        gr: pyranges.PyRanges object
+    """
+    indexers = (np.eye(gr.df.shape[0]) == 1)
+    for row_indexer in indexers:
+        yield gr[row_indexer]
+
+
 ###################################################
+
+
+def to_pyrimidine(base):
+    if base in 'AG':
+        return Bio.Seq.reverse_complement(base)
+    else:
+        return base
+
 
 def get_different_base(base):
     assert base in 'ACTG'

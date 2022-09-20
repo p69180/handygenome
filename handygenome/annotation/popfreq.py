@@ -15,6 +15,12 @@ annotitem = importlib.import_module(
 customfile = importlib.import_module(
     ".".join([top_package_name, "annotation", "customfile"])
 )
+annotation_misc = importlib.import_module(
+    ".".join([top_package_name, "annotation", "misc"])
+)
+
+
+DBSNP_VCFS = annotation_misc.VCFS_DBSNP
 
 
 class PopfreqInfo(annotitem.AnnotItemVariantInfoSingle):

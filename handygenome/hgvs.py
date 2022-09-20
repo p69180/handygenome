@@ -180,8 +180,6 @@ def hgvsg_to_vcfspec(hgvsg, fasta, leftmost=True):
     #   effectively work
     if leftmost:
         vcfspec = equivalents.leftmost(vcfspec, fasta)
-    elif rightmost:
-        vcfspec = equivalents.rightmost(vcfspec, fasta)
 
     return vcfspec
         

@@ -291,6 +291,36 @@ class VariantPlus:
     def _init_cosmic(self, metadata=None):
         self.cosmic = libcosmic.CosmicInfoALTlist.from_vr(self.vr, metadata=metadata)
 
+    def create_popfreq(self):
+        if self.refver == 'GRCh37':
+            refver = 'hg19'
+        else:
+            refver = self.refver
+
+        dbsnp_vcf = libpopfreq.POPFREQ_VCFS[refver]
+        popfreqlist = libpopfreq.PopfreqInfoALTlist.from_vcfspec(
+            vcfspec=self.vcfspec, 
+            dbsnp_vcf=dbsnp_vcf,
+            fasta=self.fasta,
+            metadata=libpopfreq.PopfreqMetadata.from_vcfheader(dbsnp_vcf.header),
+        )
+        return popfreqlist
+
+    def create_cosmic(self):
+        if self.refver == 'GRCh37':
+            refver = 'hg19'
+        else:
+            refver = self.refver
+
+        cosmic_vcf = libcosmic.COSMIC_VCFS[refver]
+        cosmiclist = libcosmic.CosmicInfoALTlist.from_vcfspec(
+            vcfspec=self.vcfspec, 
+            cosmic_vcf=cosmic_vcf,
+            fasta=self.fasta,
+            metadata=libcosmic.CosmicMetadata.from_vcfheader(cosmic_vcf.header),
+        )
+        return cosmiclist
+
     # ensembl feature annotations
     def set_annotdb(self):
         if self.is_sv:
@@ -391,11 +421,11 @@ class VariantPlus:
         self.repeat.set_missing_distances(vcfspec=self.vcfspec, alt_idx=alt_idx)
 
     # alleleindexes
-    def get_other_alleleindexes(self, alleleindex):
+    def get_other_alleleindexes(self, allele_index):
         """Returns all integer allele indexes other than the input"""
 
         all_alleleindexes = set(range(len(self.vr.alleles)))
-        other_alleleindexes = all_alleleindexes.difference([alleleindex])
+        other_alleleindexes = all_alleleindexes.difference([allele_index])
         return tuple(sorted(other_alleleindexes))
 
     # miscellaneous
@@ -641,9 +671,9 @@ class VariantPlus:
         readstats = self.readstats_dict[sampleid]
         return readstats.get_total_rppcount()
 
-    def get_vaf(self, sampleid, alleleindex=1, ndigits=None):
+    def get_vaf(self, sampleid, allele_index=1, ndigits=None):
         readstats = self.readstats_dict[sampleid]
-        vaf = readstats.get_vaf(alleleindex)
+        vaf = readstats.get_vaf(allele_index)
         if np.isnan(vaf):
             return vaf
         else:
@@ -816,23 +846,43 @@ class VariantPlusList(list):
         else:
             return random.sample(self, k=n)
 
-    def set_gr(self):
+    def get_gr(self, vaf_sampleid=None):
+        if vaf_sampleid is None:
+            if len(self[0].vr.header.samples) == 0:
+                vaf_sampleid = None
+            else:
+                vaf_sampleid = self[0].vr.header.samples[0]
+
         chroms = list()
         starts = list()
         ends = list()
-        for vp in self:
-            ref_range0 = vp.vcfspec.REF_range0
-            chroms.append(vp.vr.contig)
-            starts.append(ref_range0.start)
-            ends.append(ref_range0.stop)
-        self._gr = pyranges.from_dict(
-            {"Chromosome": chroms, "Start": starts, "End": ends}
-        )
+        refs = list()
+        alts = list()
+        vafs = list()
 
-    def get_gr(self):
-        if self._gr is None:
-            self.set_gr()
-        return self._gr
+        for vp in self:
+            chroms.append(vp.vcfspec.chrom)
+            starts.append(vp.vcfspec.pos0)
+            ends.append(vp.vcfspec.end0)
+            refs.append(vp.vcfspec.ref)
+            alts.append(vp.vcfspec.alts[0])
+
+            if vaf_sampleid is None:
+                vafs.append(np.nan)
+            else:
+                vaf = vp.get_vaf(vaf_sampleid, allele_index=1, ndigits=None)
+                vafs.append(vaf)  # vaf can be np.nan
+
+        return pyranges.from_dict(
+            {
+                'Chromosome': chroms,
+                'Start': starts,
+                'End': ends,
+                'REF': refs,
+                'ALT': alts,
+                'VAF': vafs,
+            }
+        )
 
     def get_isec(self, gr):
         overlaps = self.get_gr().count_overlaps(gr, overlap_col="count")
@@ -842,13 +892,13 @@ class VariantPlusList(list):
         return vplist_filtered
 
     def get_sigresult(self, catalogue_type="sbs96", **kwargs):
-        signatureresult = importlib.import_module(
+        libsig = importlib.import_module(
             ".".join([top_package_name, "signature", "signatureresult"])
         )
 
         vcfspec_iter = (vp.vcfspec for vp in self)
         refver = self[0].refver
-        sigresult = signatureresult.get_sigresult_from_vcfspecs(
+        sigresult = libsig.get_sigresult_from_vcfspecs(
             vcfspec_iter, refver=refver, catalogue_type=catalogue_type, **kwargs
         )
         return sigresult
