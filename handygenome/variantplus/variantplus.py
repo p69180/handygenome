@@ -5,8 +5,9 @@ import itertools
 import random
 
 import pysam
-import pyranges
+import pyranges as pr
 import numpy as np
+import pandas as pd
 
 import importlib
 
@@ -14,8 +15,8 @@ top_package_name = __name__.split(".")[0]
 common = importlib.import_module(".".join([top_package_name, "common"]))
 workflow = importlib.import_module(".".join([top_package_name, "workflow"]))
 
-breakends_module = importlib.import_module(
-    ".".join([top_package_name, "variantplus", "breakends"])
+libbreakends = importlib.import_module(
+    ".".join([top_package_name, "sv", "breakends"])
 )
 
 varianthandler = importlib.import_module(
@@ -430,7 +431,7 @@ class VariantPlus:
 
     # miscellaneous
     def get_gr(self):
-        return pyranges.from_dict(
+        return pr.from_dict(
             {
                 "Chromosome": [self.vr.contig],
                 "Start": [self.vr.pos - 1],
@@ -496,13 +497,13 @@ class VariantPlus:
 
     def set_bnds_attributes(self):
         if self.is_sv:
-            vr_svinfo = breakends_module.get_vr_svinfo_standard_vr(
+            vr_svinfo = libbreakends.get_vr_svinfo_standard_vr(
                 self.vr,
                 self.fasta,
                 self.chromdict,
             )
             self.is_bnd1 = vr_svinfo["is_bnd1"]
-            self.bnds = breakends_module.get_bnds_from_vr_svinfo(
+            self.bnds = libbreakends.get_bnds_from_vr_svinfo(
                 self.vr, vr_svinfo, self.fasta, self.chromdict
             )
         else:
@@ -846,14 +847,16 @@ class VariantPlusList(list):
         else:
             return random.sample(self, k=n)
 
-    def get_gr(self, vaf_sampleid=None):
+    def get_df(self, vaf_sampleid=None, as_gr=False):
         if vaf_sampleid is None:
-            if len(self[0].vr.header.samples) == 0:
+            sample_ids = list(self[0].vr.header.samples)
+            if len(sample_ids) == 0:
                 vaf_sampleid = None
             else:
-                vaf_sampleid = self[0].vr.header.samples[0]
+                vaf_sampleid = sample_ids[0]
 
         chroms = list()
+        poss = list()
         starts = list()
         ends = list()
         refs = list()
@@ -862,6 +865,7 @@ class VariantPlusList(list):
 
         for vp in self:
             chroms.append(vp.vcfspec.chrom)
+            poss.append(vp.vcfspec.pos)
             starts.append(vp.vcfspec.pos0)
             ends.append(vp.vcfspec.end0)
             refs.append(vp.vcfspec.ref)
@@ -873,16 +877,31 @@ class VariantPlusList(list):
                 vaf = vp.get_vaf(vaf_sampleid, allele_index=1, ndigits=None)
                 vafs.append(vaf)  # vaf can be np.nan
 
-        return pyranges.from_dict(
-            {
-                'Chromosome': chroms,
-                'Start': starts,
-                'End': ends,
-                'REF': refs,
-                'ALT': alts,
-                'VAF': vafs,
-            }
-        )
+        if as_gr:
+            return pr.from_dict(
+                {
+                    'Chromosome': chroms,
+                    'Start': starts,
+                    'End': ends,
+                    'REF': refs,
+                    'ALT': alts,
+                    'VAF': vafs,
+                },
+                int64=False,
+            )
+        else:
+            return pd.DataFrame.from_dict(
+                {
+                    'CHROM': chroms,
+                    'POS': poss,
+                    'REF': refs,
+                    'ALT': alts,
+                    'VAF': vafs,
+                }
+            )
+
+    def get_gr(self, vaf_sampleid=None):
+        return self.get_df(vaf_sampleid=vaf_sampleid, as_gr=True)
 
     def get_isec(self, gr):
         overlaps = self.get_gr().count_overlaps(gr, overlap_col="count")

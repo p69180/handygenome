@@ -3,7 +3,7 @@ import socket
 import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
-breakends = importlib.import_module('.'.join([top_package_name, 'variantplus', 'breakends']))
+breakends = importlib.import_module('.'.join([top_package_name, 'sv', 'breakends']))
 
 
 class IGVHandle:
@@ -28,7 +28,7 @@ class IGVHandle:
                 cmd_src.append(locus)
             elif isinstance(locus, common.Vcfspec):
                 chrom = locus.chrom
-                if locus.get_mutation_type(alt_idx=0) == 'del':
+                if locus.get_mutation_type(alt_index=0) == 'del':
                     start1 = locus.pos + 1 - width
                     end1 = locus.pos + 1 + width
                 else:

@@ -7,7 +7,7 @@ import pysam
 import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
-breakends_module = importlib.import_module('.'.join([top_package_name, 'variantplus', 'breakends']))
+libbreakends = importlib.import_module('.'.join([top_package_name, 'sv', 'breakends']))
 
 
 INFO_END_PAT = re.compile('^(.*;)?END=([^;]+);.*$')
@@ -49,9 +49,9 @@ def get_bnds_from_caller_vr(vr, fasta, chromdict):
     if vr_svinfo is None:
         return None
     else:
-        bnds = breakends_module.get_bnds_from_vr_svinfo(vr, vr_svinfo, fasta, 
+        bnds = libbreakends.get_bnds_from_vr_svinfo(vr, vr_svinfo, fasta, 
                                                         chromdict)
-        bnd1adv_form = breakends_module.get_bnds_equivalents(bnds)[0]
+        bnd1adv_form = libbreakends.get_bnds_equivalents(bnds)[0]
         return bnd1adv_form
 
 
@@ -69,7 +69,7 @@ def get_vr_svinfo_caller_vr(vr, fasta, chromdict):
         vr_svinfo = get_vr_svinfo_manta(vr, fasta, chromdict)
 
     else: # Assumed that other SV callers follow the SV vcf standard
-        vr_svinfo = breakends_module.get_vr_svinfo_standard_vr(vr, fasta, 
+        vr_svinfo = libbreakends.get_vr_svinfo_standard_vr(vr, fasta, 
                                                                chromdict)
         modify_vr_svinfo_for_dRanger(vr_svinfo, fasta)
 
@@ -112,7 +112,7 @@ def get_vr_svinfo_manta(vr, fasta, chromdict):
         vr_svinfo['is_bnd1'] = True
     
     else: # standard bnd string representation is assumed
-        vr_svinfo = breakends_module.get_vr_svinfo_standard_vr(vr, fasta, 
+        vr_svinfo = libbreakends.get_vr_svinfo_standard_vr(vr, fasta, 
                                                                chromdict)
 
     return vr_svinfo
@@ -140,7 +140,7 @@ def get_vr_svinfo_delly(vr, fasta, chromdict):
         vr_svinfo['ref'] = fasta.fetch(vr.contig, vr.pos - 1, vr.pos)
         vr_svinfo['t'] = vr_svinfo['ref']
 
-        vr_svinfo['is_bnd1'] = breakends_module.get_is_bnd1(vr, vr_svinfo, chromdict)
+        vr_svinfo['is_bnd1'] = libbreakends.get_is_bnd1(vr, vr_svinfo, chromdict)
 
         return vr_svinfo
 

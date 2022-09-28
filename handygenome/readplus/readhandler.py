@@ -41,12 +41,6 @@ CIGAROPS_TARGETONLY = {2, 3}
 CIGAROPS_QUERYONLY = {1, 4}
 
 
-# class definitions
-Clipspec = collections.namedtuple(
-    "Clipspec", ["start1", "is_forward", "seq", "qual", "qname"]
-)
-
-
 class NoMDTagError(Exception):
     pass
 
@@ -55,7 +49,7 @@ class NoMDTagError(Exception):
 
 
 def get_uid(read):
-    return (read.query_name, read.flag)
+    return (read.query_name, read.flag, read.reference_start, read.cigarstring)
 
 
 def get_read_dict(read_iter):
@@ -97,7 +91,7 @@ def get_fetch(bam, chrom, start, end, filter_fun=None):
 #        self.opstring = opstring
 #        self.count = count
 
-class CigarPlus:
+class Cigar:
     CIGAROPDICT_ITEMS = [
         ("M", 0),
         ("I", 1),
@@ -635,6 +629,11 @@ def get_softclip_ends_range0(read):
         end = read.reference_end
 
     return range(start, end)
+
+
+Clipspec = collections.namedtuple(
+    "Clipspec", ["start1", "is_forward", "seq", "qual", "qname"]
+)
 
 
 def get_softclip_specs(read):

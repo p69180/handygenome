@@ -28,8 +28,15 @@ libsigmisc = importlib.import_module('.'.join([top_package_name, 'signature', 'm
         - At that time, dtype must be "int32".
 """
 
+SV_COLORMAP = {
+    'DEL': 'red',
+    'DUP': 'green',
+    'INV': 'aquamarine',
+    'TRA': 'gold',
+    np.nan: 'black',
+}
 
-CYTOBAND_COLORS = {
+CYTOBAND_COLORMAP = {
     "gneg": "#FFFFFF00", 
     "gpos25": "#EEEEEE", 
     "gpos50": "#BBBBBB", 
@@ -46,19 +53,18 @@ CYTOBAND_PATHS = common.RefverDict({
 })
 
 
-def get_cytoband_gr(cytoband_path, refver):
-    result = pr.PyRanges(
-        pd.read_table(
-            cytoband_path, 
-            header=None,
-            names=['Chromosome', 'Start', 'End', 'Name', 'Stain']
-        )
-    )   
+def read_cytoband(cytoband_path, refver):
+    result = pd.read_table(
+        cytoband_path, 
+        header=None,
+        names=['Chromosome', 'Start', 'End', 'Name', 'Stain']
+    )
+    result['Color'] = result['Stain'].apply(lambda x: CYTOBAND_COLORMAP[x])
+
     refver = common.RefverDict.converter[refver]
     if refver == 'GRCh37':
-        result = result.assign(
-            'Chromosome', 
-            lambda df: df.Chromosome.apply(lambda x: re.sub('^chr', '', x))
+        result['Chromosome'] = result['Chromosome'].apply(
+            lambda x: re.sub('^chr', '', x)
         )
 
     return result
@@ -152,7 +158,8 @@ class SectorList(list):
                 'Start': starts,
                 'End': ends,
                 'ID': ids,
-            }
+            },
+            int64=False,
         )
 
         return result
@@ -265,18 +272,11 @@ class Circos:
             self.ax.text(angle_rad, radial_pos, label, rotation=rot, ha='center', va='center', fontsize=fontsize)
 
     def draw_cytoband(self, refver, radial_range=(0.94, 1)):
-        cytoband_gr = get_cytoband_gr(CYTOBAND_PATHS[refver], refver)
-        cytoband_gr = cytoband_gr.assign(
-            'Color', 
-            lambda df: pd.Series(CYTOBAND_COLORS[x] for x in df['Stain'])
-        )
-
+        cytoband_df = read_cytoband(CYTOBAND_PATHS[refver], refver)
         self.draw_frame(radial_range)
-        self.draw_bar(cytoband_gr, radial_range)
+        self.draw_bar(cytoband_df, radial_range)
 
-    def draw_point_mutation(self, data_gr, radial_range=(0.8, 0.94), size=5):
-        check_column_existence(data_gr, ('REF', 'ALT', 'VAF'))
-
+    def draw_point_mutation(self, data_df, radial_range=(0.8, 0.94), size=5):
         def make_colors(df):
             colormap = libsigmisc.COLORS_SBS6
             colorlist = list()
@@ -297,34 +297,36 @@ class Circos:
 
                 colorlist.append(color)
 
-            return pd.Series(colorlist)
+            return colorlist
 
-        data_gr = data_gr.assign('Color', make_colors)
-        data_gr = data_gr.assign('Y', lambda df: df['VAF'])
+        check_column_existence(data_df, ('CHROM', 'POS', 'REF', 'ALT', 'VAF'))
 
-        self.draw_frame(radial_range, gridline_ys=[0.25, 0.5, 0.75], gridlabel_ys=[0, 0.5, 1], ymin=0, ymax=1)
-        self.draw_scatter(data_gr, radial_range, size=size)
+        data_df['Chromosome'] = data_df['CHROM']
+        data_df['Pos0'] = data_df['POS'] - 1
+        data_df['Y'] = data_df['VAF']
+        data_df['Color'] = make_colors(data_df)
 
-    def draw_copynumber(self, data_gr, radial_range, color_A='red', color_B='blue', ymin=None, ymax=None, ymax_quantile=0.95, y_offset=0.1, linewidth=0.5):
-        check_column_existence(data_gr, ('CN_A', 'CN_B'))
+        ymin = 0
+        ymax = 1
+        self.draw_frame(radial_range, gridline_ys=[0.25, 0.5, 0.75], gridlabel_ys=[0, 0.5, 1], ymin=ymin, ymax=ymax)
+        self.draw_scatter(data_df, radial_range, ymin=ymin, ymax=ymax, size=size)
+
+    def draw_copynumber(self, data_df, radial_range, color_A='red', color_B='blue', ymin=None, ymax=None, ymax_quantile=0.95, y_offset=0.1, linewidth=0.5):
+        check_column_existence(data_df, ('Chromosome', 'Start', 'End', 'A', 'B'))
         # A
-        data_gr_A = data_gr.assign('Y', lambda df: df['CN_A'] + y_offset)
-        data_gr_A = data_gr_A.assign(
-            'Color', 
-            lambda df: pd.Series(np.full(df.shape[0], color_A))
-        )
+        data_df_A = data_df.copy()
+        data_df_A['Y'] = data_df_A['A'] + y_offset
+        data_df_A['Color'] = color_A
         # B
-        data_gr_B = data_gr.assign('Y', lambda df: df['CN_B'] - y_offset)
-        data_gr_B = data_gr_B.assign(
-            'Color', 
-            lambda df: pd.Series(np.full(df.shape[0], color_B))
-        )
+        data_df_B = data_df.copy()
+        data_df_B['Y'] = data_df_B['B'] - y_offset
+        data_df_B['Color'] = color_B
         # set limits
         if ymin is None:
             ymin = 0
         if ymax is None:
-            data_gr_modified = self.modify_data(data_gr, make_radius=False)
-            all_ys = list(itertools.chain(data_gr_modified.CN_A, data_gr_modified.CN_B))
+            data_df_modified = self.modify_data(data_df, make_radius=False)
+            all_ys = list(itertools.chain(data_df_modified['A'], data_df_modified['B']))
             ymax = np.quantile(all_ys, ymax_quantile)
             ymax = max(ymax, 6)
         # draw frame
@@ -332,35 +334,33 @@ class Circos:
         gridlabel_ys = np.arange(start=np.rint(ymin), stop=np.rint(ymax), step=2, dtype='int')
         self.draw_frame(radial_range, gridline_ys=gridline_ys, gridlabel_ys=gridlabel_ys, ymin=ymin, ymax=ymax)
         # draw arcs
-        self.draw_arc(data_gr_A, radial_range, linewidth=linewidth, ymin=ymin, ymax=ymax)
-        self.draw_arc(data_gr_B, radial_range, linewidth=linewidth, ymin=ymin, ymax=ymax)
+        self.draw_arc(data_df_A, radial_range, linewidth=linewidth, ymin=ymin, ymax=ymax)
+        self.draw_arc(data_df_B, radial_range, linewidth=linewidth, ymin=ymin, ymax=ymax)
 
-    def draw_depth_scatter(self, data_gr, radial_range, color='black', ymin=None, ymax=None, ymax_quantile=0.99, size=1):
-        check_column_existence(data_gr, ('Depth',))
-        # prepare data_gr
-        data_gr = data_gr.assign('Y', lambda df: df['Depth'])
-        data_gr = data_gr.assign(
-            'Color', 
-            lambda df: pd.Series(np.full(df.shape[0], color))
-        )
+    def draw_depth_scatter(self, data_df, radial_range, color='black', ymin=None, ymax=None, ymax_quantile=0.99, size=1):
+        check_column_existence(data_df, ('Chromosome', 'Start', 'End', 'Depth'))
+
+        data_df['Pos0'] = ((data_df['Start'] + data_df['End']) * 0.5).apply(int)
+        data_df['Y'] = data_df['Depth']
+        data_df['Color'] = color
         # set limits
         if ymin is None:
             ymin = 0
         if ymax is None:
-            data_gr_modified = self.modify_data(data_gr, make_radius=False)
-            ymax = np.quantile(data_gr_modified.Depth, ymax_quantile)
+            data_df_modified = self.modify_data(data_df, make_radius=False)
+            ymax = np.quantile(data_df_modified['Depth'], ymax_quantile)
             ymax = max(ymax, 60)
         # draw frame
         gridline_ys = np.arange(start=np.rint(ymin), stop=np.rint(ymax), step=10, dtype='int')
         gridlabel_ys = np.arange(start=np.rint(ymin), stop=np.rint(ymax), step=20, dtype='int')
         self.draw_frame(radial_range, gridline_ys=gridline_ys, gridlabel_ys=gridlabel_ys, ymin=ymin, ymax=ymax)
         # draw dots
-        self.draw_scatter(data_gr, radial_range, ymin=ymin, ymax=ymax, size=size)
+        self.draw_scatter(data_df, radial_range, ymin=ymin, ymax=ymax, size=size)
 
     draw_depth = draw_depth_scatter
 
     def draw_breakends(self, data_df, radial_pos, linewidth=0.5):
-        check_column_existence(data_df, ('Chrom_site1', 'Pos0_site1', 'Chrom_site2', 'Pos0_site2', 'Color'))
+        check_column_existence(data_df, ('Chromosome_site1', 'Pos0_site1', 'Chromosome_site2', 'Pos0_site2', 'Color'))
         self.draw_chord(data_df, radial_pos, linewidth=linewidth)
 
     #################
@@ -423,23 +423,21 @@ class Circos:
             rot += 180
         return rot
 
-    def modify_data(self, data_gr, make_radius=False, radial_range=None, ymin=None, ymax=None):
-        """Args:
-            data_gr: pyranges.PyRanges object representing data to draw on circos
-        """
-
-        def sanity_check(data_gr, make_radius, radial_range):
+    def modify_data(self, data_df, make_radius=False, radial_range=None, ymin=None, ymax=None):
+        def sanity_check(data_df, make_radius, radial_range):
+            check_column_existence(data_df, ('Chromosome', 'Start', 'End'))
             if make_radius:
                 if radial_range is None:
                     raise Exception(f'If "make_radius" is True, "radial_range" must be given.')
-                if 'Y' not in data_gr.columns:
-                    raise Exception(f'If "make_radius" is True, "Y" column must be included in "data_gr".')
+                if 'Y' not in data_df.columns:
+                    raise Exception(f'If "make_radius" is True, "Y" column must be included in "data_df".')
 
         # sanity check
-        sanity_check(data_gr, make_radius, radial_range)
-        # save original data_gr columns
-        columns = data_gr.columns
-
+        sanity_check(data_df, make_radius, radial_range)
+        # save original data_df columns
+        columns = data_df.columns
+        # perform join
+        data_gr = pr.PyRanges(df=data_df, int64=False)
         gr_joined = data_gr.join(self.sectorlist.gr).new_position('intersection')
         if gr_joined.empty:
             result_columns = list(columns)
@@ -480,39 +478,42 @@ class Circos:
         return result
 
     def modify_breakends_data(self, data_df):
-        def set_site1_coords(data_gr):
-            data_gr = data_gr.assign('Chromosome', lambda df: df['Chrom_site1'])
-            data_gr = data_gr.assign('Start', lambda df: df['Pos0_site1'])
-            data_gr = data_gr.assign('End', lambda df: df['Pos0_site1'] + 1)
-            return data_gr
 
-        def set_site2_coords(data_gr):
-            data_gr = data_gr.assign('Chromosome', lambda df: df['Chrom_site2'])
-            data_gr = data_gr.assign('Start', lambda df: df['Pos0_site2'])
-            data_gr = data_gr.assign('End', lambda df: df['Pos0_site2'] + 1)
-            return data_gr
+        def set_site1_coords(data):
+            if isinstance(data, pr.PyRanges):
+                # without coercing into int32, "intersect" method results in error
+                data = data.assign('Chromosome', lambda df: df['Chromosome_site1'])
+                data = data.assign('Start', lambda df: df['Pos0_site1'].astype('int32'))
+                data = data.assign('End', lambda df: (df['Pos0_site1'] + 1).astype('int32'))
+            elif isinstance(data, pd.DataFrame):
+                data['Chromosome'] = data['Chromosome_site1']
+                data['Start'] = data['Pos0_site1']
+                data['End'] = data['Pos0_site1'] + 1
+            return data
+
+        def set_site2_coords(data):
+            if isinstance(data, pr.PyRanges):
+                # without coercing into int32, "intersect" method results in error
+                data = data.assign('Chromosome', lambda df: df['Chromosome_site2'])
+                data = data.assign('Start', lambda df: df['Pos0_site2'].astype('int32'))
+                data = data.assign('End', lambda df: (df['Pos0_site2'] + 1).astype('int32'))
+            elif isinstance(data, pd.DataFrame):
+                data['Chromosome'] = data['Chromosome_site2']
+                data['Start'] = data['Pos0_site2']
+                data['End'] = data['Pos0_site2'] + 1
+            return data
 
         # sanity check
-        check_column_existence(data_df, ('Chrom_site1', 'Pos0_site1', 'Chrom_site2', 'Pos0_site2', 'Color'))
-        # treat nan rows
+        check_column_existence(data_df, ('Chromosome_site1', 'Pos0_site1', 'Chromosome_site2', 'Pos0_site2', 'Color'))
+        # remove nan rows - those whose bnd2 is unknown (e.g. telomere)
         data_df = data_df.loc[np.logical_not(data_df['Pos0_site1'].isna()), :]
         data_df = data_df.loc[np.logical_not(data_df['Pos0_site2'].isna()), :]
-        # without coercing into int32, "intersect" method results in error
-        data_df['Pos0_site1'] = data_df['Pos0_site1'].astype('int32')  
-        data_df['Pos0_site2'] = data_df['Pos0_site2'].astype('int32')
+        # prepare data_df for turning into a pyranges object
+        data_df['Chromosome'] = '1'
+        data_df['Start'] = 0
+        data_df['End'] = 1
         # initialize gr
-        data_gr = pr.from_dict(
-            {
-                'Chromosome': '1',
-                'Start': 0,
-                'End': 1,
-                'Chrom_site1': data_df['Chrom_site1'],
-                'Pos0_site1': data_df['Pos0_site1'],
-                'Chrom_site2': data_df['Chrom_site2'],
-                'Pos0_site2': data_df['Pos0_site2'],
-                'Color': data_df['Color'],
-            }
-        )
+        data_gr = pr.PyRanges(df=data_df, int64=False)
         # intersect with site1
         data_gr = set_site1_coords(data_gr)
         data_gr = data_gr.intersect(self.sectorlist.gr)
@@ -524,13 +525,12 @@ class Circos:
         if data_gr.empty:
             return pd.DataFrame()
         # run modify_data with site2
-        data_df = self.modify_data(data_gr, make_radius=False)
+        data_df = self.modify_data(data_gr.df, make_radius=False)
         data_df.insert(data_df.shape[1], 'Angle_site2_rad', data_df['Start_rad'])
         data_df = data_df.drop(columns=['Start_rad', 'End_rad', 'ID', 'Start_b', 'End_b'])
         # run modify_data with site1
-        data_gr = pr.PyRanges(df=data_df)
-        data_gr = set_site1_coords(data_gr)
-        data_df = self.modify_data(data_gr, make_radius=False)
+        data_df = set_site1_coords(data_df)
+        data_df = self.modify_data(data_df, make_radius=False)
         data_df.insert(data_df.shape[1], 'Angle_site1_rad', data_df['Start_rad'])
         data_df = data_df.drop(columns=['Start_rad', 'End_rad', 'ID', 'Start_b', 'End_b'])
         # finally drop unused columns
@@ -617,19 +617,15 @@ class Circos:
                         self.ax.text(text_angle, radius, label, rotation=rot, ha='center', va='center', fontsize=gridlabel_size)
                         #print(sector_start_angle_rad, radius, label, rot)
 
-    def draw_bar(self, data_gr, radial_range):
-        #assert isinstance(data_gr, pr.PyRanges), f'"data_gr" argument must be a pyranges.PyRanges object.'
-        check_column_existence(data_gr, ('Color',))
-
-        data_df = self.modify_data(data_gr, make_radius=False)
-
+    def draw_bar(self, data_df, radial_range):
+        check_column_existence(data_df, ('Chromosome', 'Start', 'End', 'Color',))
+        # modify data
+        data_df = self.modify_data(data_df, make_radius=False)
         # remove rows where Color value is missing
         data_df = data_df.loc[np.logical_not(data_df['Color'].isnull()), :]
-
         # prepare drawing parameters
         height = radial_range[1] - radial_range[0]
         bottom = radial_range[0]
-
         # draw
         for idx, row in data_df.iterrows():
             color = row['Color']
@@ -637,27 +633,26 @@ class Circos:
             width = row['End_rad'] - row['Start_rad']
             self.ax.bar(x=x, height=height, width=width, bottom=bottom, align='edge', color=color, linewidth=0)
             
-    def draw_scatter(self, data_gr, radial_range, ymin=None, ymax=None, size=None, alpha=None):
-        check_column_existence(data_gr, ('Y', 'Color'))
-
-        data_df = self.modify_data(data_gr, make_radius=True, radial_range=radial_range, ymin=ymin, ymax=ymax)
-
+    def draw_scatter(self, data_df, radial_range, ymin=None, ymax=None, size=None, alpha=None):
+        check_column_existence(data_df, ('Chromosome', 'Pos0', 'Y', 'Color'))
+        # modify data
+        data_df['Start'] = data_df['Pos0']
+        data_df['End'] = data_df['Pos0'] + 1
+        data_df = self.modify_data(data_df, make_radius=True, radial_range=radial_range, ymin=ymin, ymax=ymax)
         # remove rows where Y or Color value is missing
         data_df = data_df.loc[np.logical_not(data_df['Y'].isnull()), :]
         data_df = data_df.loc[np.logical_not(data_df['Color'].isnull()), :]
-
         # prepare drawing parameters
         x = data_df['Start_rad']
         y = data_df['Radius']
         colors = data_df['Color']
-
         # draw
         self.ax.scatter(x=x, y=y, s=size, c=colors, alpha=alpha)
 
-    def draw_arc(self, data_gr, radial_range, linewidth=None, ymin=None, ymax=None):
-        check_column_existence(data_gr, ('Y', 'Color'))
+    def draw_arc(self, data_df, radial_range, linewidth=None, ymin=None, ymax=None):
+        check_column_existence(data_df, ('Chromosome', 'Start', 'End', 'Y', 'Color'))
 
-        data_df = self.modify_data(data_gr, make_radius=True, radial_range=radial_range, ymin=ymin, ymax=ymax)
+        data_df = self.modify_data(data_df, make_radius=True, radial_range=radial_range, ymin=ymin, ymax=ymax)
         # remove rows where Y or Color value is missing
         data_df = data_df.loc[np.logical_not(data_df['Y'].isnull()), :]
         data_df = data_df.loc[np.logical_not(data_df['Color'].isnull()), :]
@@ -685,7 +680,8 @@ class Circos:
             self.ax.add_patch(arc)
 
     def draw_chord(self, data_df, radial_pos, linewidth=None):
-        def get_patch(site1_rad, site2_rad, radial_pos, color, linewidth):
+
+        def make_patch(site1_rad, site2_rad, radial_pos, color, linewidth):
             site1_vert = (site1_rad, radial_pos)
             site2_vert = (site2_rad, radial_pos)
             control_vert = (0, 0)
@@ -706,8 +702,11 @@ class Circos:
             return patch
 
         # main
-        check_column_existence(data_df, ('Chrom_site1', 'Pos0_site1', 'Chrom_site2', 'Pos0_site2', 'Color'))
+        check_column_existence(data_df, ('Chromosome_site1', 'Pos0_site1', 'Chromosome_site2', 'Pos0_site2', 'Color'))
         data_df = self.modify_breakends_data(data_df)
         for idx, row in data_df.iterrows():
-            patch = get_patch(row['Angle_site1_rad'], row['Angle_site2_rad'], radial_pos, row['Color'], linewidth=linewidth)
+            patch = make_patch(row['Angle_site1_rad'], row['Angle_site2_rad'], radial_pos, row['Color'], linewidth=linewidth)
             self.ax.add_patch(patch)
+
+
+

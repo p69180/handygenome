@@ -8,7 +8,7 @@ import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-structvars = importlib.import_module('.'.join([top_package_name, 'svlib', 'structvars']))
+structvars = importlib.import_module('.'.join([top_package_name, 'sv', 'structvars']))
 
 
 LOGGER = workflow.get_logger(

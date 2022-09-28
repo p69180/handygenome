@@ -1,7 +1,7 @@
 import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
-breakends = importlib.import_module('.'.join([top_package_name, 'variantplus', 'breakends']))
+breakends = importlib.import_module('.'.join([top_package_name, 'sv', 'breakends']))
 alleleinfosetup = importlib.import_module('.'.join([top_package_name, 'readplus', 'alleleinfosetup']))
 
 

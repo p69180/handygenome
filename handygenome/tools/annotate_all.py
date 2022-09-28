@@ -29,7 +29,7 @@ variantplus = importlib.import_module(
     ".".join([top_package_name, "variantplus", "variantplus"])
 )
 breakends = importlib.import_module(
-    ".".join([top_package_name, "variantplus", "breakends"])
+    ".".join([top_package_name, "sv", "breakends"])
 )
 annotation_misc = importlib.import_module(
     ".".join([top_package_name, "annotation", "misc"])

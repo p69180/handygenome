@@ -16,8 +16,8 @@ varianthandler = importlib.import_module(
     ".".join([top_package_name, "variantplus", "varianthandler"])
 )
 initvcf = importlib.import_module(".".join([top_package_name, "vcfeditor", "initvcf"]))
-breakends = importlib.import_module(
-    ".".join([top_package_name, "variantplus", "breakends"])
+libbreakends = importlib.import_module(
+    ".".join([top_package_name, "sv", "breakends"])
 )
 # annotationdb = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotationdb']))
 indexing = importlib.import_module(
@@ -239,7 +239,7 @@ class VcfPlus:
 
             for vr in common.iter_lineno_logging(self.vcf.fetch(), self.logger, logging_lineno):
                 if varianthandler.check_SV(vr):
-                    vr_svinfo = breakends.get_vr_svinfo_standard_vr(
+                    vr_svinfo = libbreakends.get_vr_svinfo_standard_vr(
                         vr, self.fasta, self.chromdict
                     )
                     if not vr_svinfo["is_bnd1"]:
