@@ -5,7 +5,6 @@ import gzip
 import collections
 import re
 
-import pysam
 import Bio.Align
 
 import importlib
@@ -14,28 +13,30 @@ top_package_name = __name__.split(".")[0]
 common = importlib.import_module(".".join([top_package_name, "common"]))
 
 
-ALIGNER_FILLED = Bio.Align.PairwiseAligner(
-    mode='global',
-    match_score=2,
-    mismatch_score=-3,
-    query_internal_open_gap_score=-7,
-    query_internal_extend_gap_score=-2,
-    target_internal_open_gap_score=-7,
-    target_internal_extend_gap_score=-2,
-    query_left_open_gap_score=-7,
-    query_left_extend_gap_score=-2,
-)
+#ALIGNER_FILLED = Bio.Align.PairwiseAligner(
+#    mode='global',
+#    match_score=2,
+#    mismatch_score=-3,
+#    query_internal_open_gap_score=-7,
+#    query_internal_extend_gap_score=-2,
+#    target_internal_open_gap_score=-7,
+#    target_internal_extend_gap_score=-2,
+#    query_left_open_gap_score=-7,
+#    query_left_extend_gap_score=-2,
+#)
+#
+#ALIGNER_UNFILLED = Bio.Align.PairwiseAligner(
+#    mode='global',
+#    match_score=2,
+#    mismatch_score=-3,
+#    query_internal_open_gap_score=-7,
+#    query_internal_extend_gap_score=-2,
+#    target_internal_open_gap_score=-7,
+#    target_internal_extend_gap_score=-2,
+#)
 
-ALIGNER_UNFILLED = Bio.Align.PairwiseAligner(
-    mode='global',
-    match_score=2,
-    mismatch_score=-3,
-    query_internal_open_gap_score=-7,
-    query_internal_extend_gap_score=-2,
-    target_internal_open_gap_score=-7,
-    target_internal_extend_gap_score=-2,
-)
 
+# parameters are derived from Biopython documentation
 ALIGNER_BLASTN = Bio.Align.PairwiseAligner(
     match_score=2,
     mismatch_score=-3,

@@ -7,7 +7,7 @@ import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 hgvs = importlib.import_module('.'.join([top_package_name, 'hgvs']))
-infoformat = importlib.import_module('.'.join([top_package_name, 'variantplus', 'infoformat']))
+infoformat = importlib.import_module('.'.join([top_package_name, 'variant', 'infoformat']))
 ensembl_rest = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_rest']))
 #annotationdb = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotationdb']))
 veplib = importlib.import_module('.'.join([top_package_name, 'annotation', 'veplib']))

@@ -11,6 +11,7 @@ toolsetup = importlib.import_module('.'.join([top_package_name, 'workflow', 'too
 indexing = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'indexing']))
 initvcf = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'initvcf']))
 headerhandler = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'headerhandler']))
+libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
 
 
 def argument_parser(cmdargs):
@@ -44,7 +45,7 @@ def argument_parser(cmdargs):
 def add_meta(vcfheader):
     # ALT meta
     vcfheader.add_meta(
-        key='ALT', items=[('ID', common.CPGMET_ALT), 
+        key='ALT', items=[('ID', libvcfspec.CPGMET_ALT), 
                           ('Description', 'CpG site methylation')])
 
     # INFO meta

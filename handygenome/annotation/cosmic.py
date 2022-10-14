@@ -5,7 +5,7 @@ import pysam
 import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
-infoformat = importlib.import_module('.'.join([top_package_name, 'variantplus', 'infoformat']))
+infoformat = importlib.import_module('.'.join([top_package_name, 'variant', 'infoformat']))
 annotitem = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotitem']))
 customfile = importlib.import_module('.'.join([top_package_name, 'annotation', 'customfile']))
 annotation_misc = importlib.import_module(".".join([top_package_name, "annotation", "misc"]))

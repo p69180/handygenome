@@ -211,8 +211,7 @@ def get_tmpfile_path(prefix=None, suffix=None, where=None,
         if is_dir:
             path = tempfile.mkdtemp(prefix=prefix, suffix=suffix, dir=where)
         else:
-            fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix, 
-                                        dir=where)
+            fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=where)
             os.close(fd)
 
     return path

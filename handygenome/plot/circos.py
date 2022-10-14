@@ -76,6 +76,12 @@ def check_column_existence(gr, names):
             raise Exception(f'"{key}" must be included in columns')
 
 
+def linspace_rounded(start, stop, num):
+    width = (stop - start) / num
+    decimals = int(-np.log10(width))
+    return np.linspace(start, stop, num).round(decimals)
+
+
 class Sector:
     def __init__(self, chrom, start0, end0):
         self.chrom = chrom
@@ -135,6 +141,17 @@ class SectorList(list):
         chromdict = common.ChromDict(refver=refver)
         return cls.from_chromdict(chromdict, assembled_only=assembled_only)
 
+    @classmethod
+    def from_gr(cls, gr):
+        chroms = list()
+        start0s = list()
+        end0s = list()
+        for idx, row in gr.df.iterrows():
+            chroms.append(row['Chromosome'])
+            start0s.append(row['Start'])
+            end0s.append(row['End'])
+        return cls(chroms, start0s, end0s)
+
     @functools.cached_property
     def dict(self):
         return {x.id: x for x in self}
@@ -170,7 +187,12 @@ class SectorList(list):
 
 class Circos:
     @common.get_deco_num_set(('refver', 'chromdict'), 1)
-    def __init__(self, refver=None, chromdict=None, sectorlist=None, ylim=(0, 1), interspace_deg=2, figsize=(10, 10), angle_range_deg=(0, 360), theta_offset_deg=90, theta_direction=-1):
+    def __init__(self, refver=None, chromdict=None, sectorlist=None, ylim=(0, 1), sector_interspace_deg=2, figsize=(10, 10), angle_range_deg=(0, 360), theta_offset_deg=90, theta_direction=-1):
+        """Args:
+            sector_interspace_deg: A scalar or a sequence type with the same 
+                length as sectorlist. Each element represents the space BEFORE
+                to the sector of the same index.
+        """
         # chromdict
         if refver is not None:
             self.chromdict = common.ChromDict(refver=refver)
@@ -181,17 +203,18 @@ class Circos:
             self.sectorlist = SectorList.from_chromdict(self.chromdict, assembled_only=True)
         else:
             self.sectorlist = sectorlist
+        # sector interspace
+        self.sector_interspace_deg = self.arghandler_sector_interspace_deg(sector_interspace_deg)
+        self.sector_interspace_rad = np.deg2rad(sector_interspace_deg)
         # others 
         self.ylim = ylim
-        self.interspace_deg = interspace_deg
-        self.interspace_rad = np.deg2rad(interspace_deg)
         self.figsize = figsize
         self.angle_range_deg = self.get_angle_range(angle_range_deg)
         self.angle_length_deg = self.angle_range_deg[1] - self.angle_range_deg[0]
         self.theta_offset_deg = theta_offset_deg
         self.theta_direction = theta_direction
         # postprocess
-        self.init_figure()
+        #self.init_figure()
         self.set_sector_angles()
 
     @staticmethod
@@ -208,35 +231,20 @@ class Circos:
         elif end_angle < start_angle:
             return (start_angle, end_angle + 360)
 
-    def init_figure(self):
-        self.figure = plt.figure(figsize=self.figsize)
-        self.ax = self.figure.add_axes([0, 0, 1, 1], polar=True)
-
-        self.ax.set_theta_offset(np.deg2rad(self.theta_offset_deg))
-        self.ax.set_theta_direction(self.theta_direction)
-        self.ax.set_xlim(*np.deg2rad(self.angle_range_deg))
-        self.ax.set_ylim(self.ylim[0], self.ylim[1])
-        self.ax.spines['polar'].set_visible(False)
-        self.ax.xaxis.set_ticks([])
-        self.ax.xaxis.set_ticklabels([])
-        self.ax.yaxis.set_ticks([])
-        self.ax.yaxis.set_ticklabels([])
-
-        plt.close()
-
     def set_sector_angles(self):
-        interspace_deg_sum = self.interspace_deg * len(self.sectorlist)
-        if interspace_deg_sum > self.angle_length_deg:
-            raise Exception(f'Sum of interspaces({interspace_deg_sum}) is greater than the total circos angle({self.angle_length_deg}). Choose a smaller interspace_deg.')
+        sector_interspace_deg_sum = self.sector_interspace_deg.sum()
+        if sector_interspace_deg_sum > self.angle_length_deg:
+            raise Exception(f'Sum of interspaces({sector_interspace_deg_sum}) is greater than the total circos angle({self.angle_length_deg}). Choose a smaller "sector_interspace_deg".')
 
-        sector_length_angle_deg_sum = self.angle_length_deg - interspace_deg_sum
+        sector_length_angle_deg_sum = self.angle_length_deg - sector_interspace_deg_sum
         sector_length_sum = sum(x.length for x in self.sectorlist)
 
         cursor_deg = self.angle_range_deg[0]
         sector_angles_rad = dict()
         #sector_angles_deg = dict()
-        for sector in self.sectorlist:
-            sector_start_angle_deg = cursor_deg
+        for sector, interspace_deg in zip(self.sectorlist, self.sector_interspace_deg):
+            # now cursor_deg indicates "sector start position" - "interspace"
+            sector_start_angle_deg = cursor_deg + interspace_deg
             sector_end_angle_deg = sector_start_angle_deg + sector_length_angle_deg_sum * (sector.length / sector_length_sum)
 
             sector_angle_pair_deg = (sector_start_angle_deg, sector_end_angle_deg)
@@ -244,22 +252,55 @@ class Circos:
             #sector_angles_deg[sector.id] = sector_angle_pair_deg
             sector_angles_rad[sector.id] = sector_angle_pair_rad
 
-            cursor_deg = sector_end_angle_deg + self.interspace_deg
+            cursor_deg = sector_end_angle_deg
 
         self.sector_angles_rad = sector_angles_rad
         #self.sector_angles_deg = sector_angles_deg
 
-    def draw_sector_titles(self, short_for_full_chromosome=True, radial_pos=1.15, fontsize=20):
+    # drawing methods
+#    def init_figure(self):  # deprecated
+#        self.figure = plt.figure(figsize=self.figsize)
+#        self.ax = self.figure.add_axes([0, 0, 1, 1], polar=True)
+#
+#        self.ax.set_theta_offset(np.deg2rad(self.theta_offset_deg))
+#        self.ax.set_theta_direction(self.theta_direction)
+#        self.ax.set_xlim(*np.deg2rad(self.angle_range_deg))
+#        self.ax.set_ylim(self.ylim[0], self.ylim[1])
+#        self.ax.spines['polar'].set_visible(False)
+#        self.ax.xaxis.set_ticks([])
+#        self.ax.xaxis.set_ticklabels([])
+#        self.ax.yaxis.set_ticks([])
+#        self.ax.yaxis.set_ticklabels([])
+#
+#        plt.close()
+
+    def init_plot(self, ax):
+        ax.set_theta_offset(np.deg2rad(self.theta_offset_deg))
+        ax.set_theta_direction(self.theta_direction)
+        ax.set_xlim(*np.deg2rad(self.angle_range_deg))
+        ax.set_ylim(self.ylim[0], self.ylim[1])
+        ax.spines['polar'].set_visible(False)
+        ax.xaxis.set_ticks([])
+        ax.xaxis.set_ticklabels([])
+        ax.yaxis.set_ticks([])
+        ax.yaxis.set_ticklabels([])
+
+        plt.close()
+
+    def draw_sector_titles(self, ax, short_for_full_chromosome=True, radial_pos=1.15, fontsize=20, perpendicular=False):
         for sector in self.sectorlist: 
             label = sector.get_label(short_for_full_chromosome=short_for_full_chromosome, chromdict=self.chromdict)
             sector_angle_pair_rad = self.sector_angles_rad[sector.id]
             position_rad = (sector_angle_pair_rad[0] + sector_angle_pair_rad[1]) / 2
             position_deg = self.to_canonical_degrees(position_rad)
-            rot = self.get_rotation_upright(position_deg)
+            if perpendicular:
+                rot = self.get_rotation_perpendicular(position_deg)
+            else:
+                rot = self.get_rotation_upright(position_deg)
             # draw text
-            self.ax.text(position_rad, radial_pos, label, rotation=rot, ha='center', va='center', fontsize=fontsize)
+            ax.text(position_rad, radial_pos, label, rotation=rot, ha='center', va='center', fontsize=fontsize)
 
-    def draw_sector_positions(self, interspace_deg=30, radial_pos=1.10, fontsize=10):
+    def draw_poslabels_within_sector(self, ax, interspace_deg=30, radial_pos=1.10, fontsize=10):
         tick_angles_deg = np.arange(start=self.angle_range_deg[0], stop=self.angle_range_deg[1], step=interspace_deg)
         tick_angles_rad = np.deg2rad(tick_angles_deg)
         for angle_rad in tick_angles_rad:
@@ -269,14 +310,14 @@ class Circos:
             label = f'{data_position:,}'
             canonical_degree = self.to_canonical_degrees(angle_rad)
             rot = self.get_rotation_perpendicular(canonical_degree)
-            self.ax.text(angle_rad, radial_pos, label, rotation=rot, ha='center', va='center', fontsize=fontsize)
+            ax.text(angle_rad, radial_pos, label, rotation=rot, ha='center', va='center', fontsize=fontsize)
 
-    def draw_cytoband(self, refver, radial_range=(0.94, 1)):
+    def draw_cytoband(self, ax, refver, radial_range=(0.94, 1)):
         cytoband_df = read_cytoband(CYTOBAND_PATHS[refver], refver)
-        self.draw_frame(radial_range)
-        self.draw_bar(cytoband_df, radial_range)
+        self.draw_frame(ax, radial_range)
+        self.draw_bar(ax, cytoband_df, radial_range)
 
-    def draw_point_mutation(self, data_df, radial_range=(0.8, 0.94), size=5):
+    def draw_point_mutation(self, ax, data_df, radial_range=(0.8, 0.94), size=5, draw_gridlabel=True):
         def make_colors(df):
             colormap = libsigmisc.COLORS_SBS6
             colorlist = list()
@@ -299,6 +340,8 @@ class Circos:
 
             return colorlist
 
+        # main
+        where_to_draw_label = self.arghandler_draw_gridlabel(draw_gridlabel)
         check_column_existence(data_df, ('CHROM', 'POS', 'REF', 'ALT', 'VAF'))
 
         data_df['Chromosome'] = data_df['CHROM']
@@ -308,36 +351,54 @@ class Circos:
 
         ymin = 0
         ymax = 1
-        self.draw_frame(radial_range, gridline_ys=[0.25, 0.5, 0.75], gridlabel_ys=[0, 0.5, 1], ymin=ymin, ymax=ymax)
-        self.draw_scatter(data_df, radial_range, ymin=ymin, ymax=ymax, size=size)
+        gridline_ys = [0.25, 0.5, 0.75]
+        gridlabel_ys = [0, 0.5, 1] if where_to_draw_label.any() else None
+        self.draw_frame(ax, radial_range, gridline_ys=gridline_ys, gridlabel_ys=gridlabel_ys, ymin=ymin, ymax=ymax, where_to_draw_label=where_to_draw_label)
+        self.draw_scatter(ax, data_df, radial_range, ymin=ymin, ymax=ymax, size=size)
 
-    def draw_copynumber(self, data_df, radial_range, color_A='red', color_B='blue', ymin=None, ymax=None, ymax_quantile=0.95, y_offset=0.1, linewidth=0.5):
+    def draw_copynumber(self, ax, data_df, radial_range, color_A='red', color_B='blue', ymin=None, ymax=None, ymax_quantile=0.95, y_offset=0.1, linewidth=0.5, draw_gridlabel=True):
+        where_to_draw_label = self.arghandler_draw_gridlabel(draw_gridlabel)
         check_column_existence(data_df, ('Chromosome', 'Start', 'End', 'A', 'B'))
+        # filter out NaN rows
+        data_df = data_df.loc[np.logical_not(data_df['A'].isnull()), :]
+        data_df = data_df.loc[np.logical_not(data_df['B'].isnull()), :]
         # A
         data_df_A = data_df.copy()
-        data_df_A['Y'] = data_df_A['A'] + y_offset
+        data_df_A['Y'] = data_df_A['A']
+        zero_rows = data_df_A['Y'] == 0
+        data_df_A.loc[zero_rows, 'Y'] += 2 * y_offset
+        data_df_A.loc[np.logical_not(zero_rows), 'Y'] += y_offset
         data_df_A['Color'] = color_A
         # B
         data_df_B = data_df.copy()
-        data_df_B['Y'] = data_df_B['B'] - y_offset
+        data_df_B['Y'] = data_df_B['B']
+        zero_rows = data_df_A['Y'] == 0
+        data_df_B.loc[zero_rows, 'Y'] += y_offset
+        data_df_B.loc[np.logical_not(zero_rows), 'Y'] -= y_offset
         data_df_B['Color'] = color_B
         # set limits
         if ymin is None:
             ymin = 0
         if ymax is None:
             data_df_modified = self.modify_data(data_df, make_radius=False)
-            all_ys = list(itertools.chain(data_df_modified['A'], data_df_modified['B']))
+            all_ys = pd.Series(itertools.chain(data_df_modified['A'], data_df_modified['B']))
+            all_ys = all_ys.loc[np.logical_not(all_ys.isnull())]
             ymax = np.quantile(all_ys, ymax_quantile)
             ymax = max(ymax, 6)
         # draw frame
         gridline_ys = np.arange(start=np.rint(ymin), stop=np.rint(ymax), step=1, dtype='int')
-        gridlabel_ys = np.arange(start=np.rint(ymin), stop=np.rint(ymax), step=2, dtype='int')
-        self.draw_frame(radial_range, gridline_ys=gridline_ys, gridlabel_ys=gridlabel_ys, ymin=ymin, ymax=ymax)
-        # draw arcs
-        self.draw_arc(data_df_A, radial_range, linewidth=linewidth, ymin=ymin, ymax=ymax)
-        self.draw_arc(data_df_B, radial_range, linewidth=linewidth, ymin=ymin, ymax=ymax)
+        if where_to_draw_label.any():
+            gridlabel_ys = np.arange(start=np.rint(ymin), stop=np.rint(ymax), step=2, dtype='int')
+        else:
+            gridlabel_ys = None
 
-    def draw_depth_scatter(self, data_df, radial_range, color='black', ymin=None, ymax=None, ymax_quantile=0.99, size=1):
+        self.draw_frame(ax, radial_range, gridline_ys=gridline_ys, gridlabel_ys=gridlabel_ys, ymin=ymin, ymax=ymax, where_to_draw_label=where_to_draw_label)
+        # draw arcs
+        self.draw_arc(ax, data_df_A, radial_range, linewidth=linewidth, ymin=ymin, ymax=ymax)
+        self.draw_arc(ax, data_df_B, radial_range, linewidth=linewidth, ymin=ymin, ymax=ymax)
+
+    def draw_depth_scatter(self, ax, data_df, radial_range, color='black', ymin=None, ymax=None, ymax_quantile=0.99, size=1, gridline_num=8, draw_gridlabel=True):
+        where_to_draw_label = self.arghandler_draw_gridlabel(draw_gridlabel)
         check_column_existence(data_df, ('Chromosome', 'Start', 'End', 'Depth'))
 
         data_df['Pos0'] = ((data_df['Start'] + data_df['End']) * 0.5).apply(int)
@@ -351,17 +412,23 @@ class Circos:
             ymax = np.quantile(data_df_modified['Depth'], ymax_quantile)
             ymax = max(ymax, 60)
         # draw frame
-        gridline_ys = np.arange(start=np.rint(ymin), stop=np.rint(ymax), step=10, dtype='int')
-        gridlabel_ys = np.arange(start=np.rint(ymin), stop=np.rint(ymax), step=20, dtype='int')
-        self.draw_frame(radial_range, gridline_ys=gridline_ys, gridlabel_ys=gridlabel_ys, ymin=ymin, ymax=ymax)
+        gridline_start = np.floor(ymin)
+        gridline_stop = np.ceil(ymax)
+        gridline_ys = np.rint(np.linspace(start=gridline_start, stop=gridline_stop, num=gridline_num, endpoint=True)).astype('int')
+        if where_to_draw_label.any():
+            gridlabel_ys = gridline_ys[::2]
+        else:
+            gridlabel_ys = None
+
+        self.draw_frame(ax, radial_range, gridline_ys=gridline_ys, gridlabel_ys=gridlabel_ys, ymin=ymin, ymax=ymax, where_to_draw_label=where_to_draw_label)
         # draw dots
-        self.draw_scatter(data_df, radial_range, ymin=ymin, ymax=ymax, size=size)
+        self.draw_scatter(ax, data_df, radial_range, ymin=ymin, ymax=ymax, size=size)
 
     draw_depth = draw_depth_scatter
 
-    def draw_breakends(self, data_df, radial_pos, linewidth=0.5):
-        check_column_existence(data_df, ('Chromosome_site1', 'Pos0_site1', 'Chromosome_site2', 'Pos0_site2', 'Color'))
-        self.draw_chord(data_df, radial_pos, linewidth=linewidth)
+    def draw_breakends(self, ax, data_df, radial_pos, linewidth=0.5):
+        check_column_existence(data_df, ('CHROM_site1', 'POS0_site1', 'CHROM_site2', 'POS0_site2', 'Color'))
+        self.draw_chord(ax, data_df, radial_pos, linewidth=linewidth)
 
     #################
 
@@ -482,32 +549,32 @@ class Circos:
         def set_site1_coords(data):
             if isinstance(data, pr.PyRanges):
                 # without coercing into int32, "intersect" method results in error
-                data = data.assign('Chromosome', lambda df: df['Chromosome_site1'])
-                data = data.assign('Start', lambda df: df['Pos0_site1'].astype('int32'))
-                data = data.assign('End', lambda df: (df['Pos0_site1'] + 1).astype('int32'))
+                data = data.assign('Chromosome', lambda df: df['CHROM_site1'])
+                data = data.assign('Start', lambda df: df['POS0_site1'].astype('int32'))
+                data = data.assign('End', lambda df: (df['POS0_site1'] + 1).astype('int32'))
             elif isinstance(data, pd.DataFrame):
-                data['Chromosome'] = data['Chromosome_site1']
-                data['Start'] = data['Pos0_site1']
-                data['End'] = data['Pos0_site1'] + 1
+                data['Chromosome'] = data['CHROM_site1']
+                data['Start'] = data['POS0_site1']
+                data['End'] = data['POS0_site1'] + 1
             return data
 
         def set_site2_coords(data):
             if isinstance(data, pr.PyRanges):
                 # without coercing into int32, "intersect" method results in error
-                data = data.assign('Chromosome', lambda df: df['Chromosome_site2'])
-                data = data.assign('Start', lambda df: df['Pos0_site2'].astype('int32'))
-                data = data.assign('End', lambda df: (df['Pos0_site2'] + 1).astype('int32'))
+                data = data.assign('Chromosome', lambda df: df['CHROM_site2'])
+                data = data.assign('Start', lambda df: df['POS0_site2'].astype('int32'))
+                data = data.assign('End', lambda df: (df['POS0_site2'] + 1).astype('int32'))
             elif isinstance(data, pd.DataFrame):
-                data['Chromosome'] = data['Chromosome_site2']
-                data['Start'] = data['Pos0_site2']
-                data['End'] = data['Pos0_site2'] + 1
+                data['Chromosome'] = data['CHROM_site2']
+                data['Start'] = data['POS0_site2']
+                data['End'] = data['POS0_site2'] + 1
             return data
 
         # sanity check
-        check_column_existence(data_df, ('Chromosome_site1', 'Pos0_site1', 'Chromosome_site2', 'Pos0_site2', 'Color'))
+        check_column_existence(data_df, ('CHROM_site1', 'POS0_site1', 'CHROM_site2', 'POS0_site2', 'Color'))
         # remove nan rows - those whose bnd2 is unknown (e.g. telomere)
-        data_df = data_df.loc[np.logical_not(data_df['Pos0_site1'].isna()), :]
-        data_df = data_df.loc[np.logical_not(data_df['Pos0_site2'].isna()), :]
+        data_df = data_df.loc[np.logical_not(data_df['POS0_site1'].isna()), :]
+        data_df = data_df.loc[np.logical_not(data_df['POS0_site2'].isna()), :]
         # prepare data_df for turning into a pyranges object
         data_df['Chromosome'] = '1'
         data_df['Start'] = 0
@@ -538,7 +605,7 @@ class Circos:
 
         return data_df
 
-    def draw_frame(self, radial_range, gridline_ys=None, gridlabel_ys=None, gridlabels=None, gridlabel_size=None, ymin=None, ymax=None, linewidth_grid=0.5, linewidth_spine=1, color_spine='black', color_grid='black'):
+    def draw_frame(self, ax, radial_range, gridline_ys=None, gridlabel_ys=None, gridlabels=None, gridlabel_size=None, ymin=None, ymax=None, linewidth_grid=0.5, linewidth_spine=1, color_spine='black', color_grid='black', where_to_draw_label=None):
         # sanity checks
         if (gridlabel_ys is not None) and (gridlabels is not None):
             if len(gridlabel_ys) != len(gridlabels):
@@ -564,6 +631,10 @@ class Circos:
             if ymax is None:
                 ymax = max(all_ys)
 
+        # set default "where_to_draw_label"
+        if where_to_draw_label is None:
+            where_to_draw_label = np.repeat(True, len(self.sectorlist))
+
         # set other parameters
         spine_height = radial_range[1] - radial_range[0]
         spine_bottom = radial_range[0]
@@ -583,11 +654,11 @@ class Circos:
             #gridlabel_diameters = 2 * gridlabel_radii
 
         # draw
-        for sector_angle_pair_rad in self.sector_angles_rad.values():
+        for idx, (sector, draw_label) in enumerate(zip(self.sectorlist, where_to_draw_label)):
             # draw spines
-            sector_start_angle_rad, sector_end_angle_rad = sector_angle_pair_rad
+            sector_start_angle_rad, sector_end_angle_rad = self.sector_angles_rad[sector.id]
             width = sector_end_angle_rad - sector_start_angle_rad
-            self.ax.bar(x=sector_start_angle_rad, height=spine_height, width=width, bottom=spine_bottom, align='edge', fill=False, edgecolor=color_spine, linewidth=linewidth_spine)
+            ax.bar(x=sector_start_angle_rad, height=spine_height, width=width, bottom=spine_bottom, align='edge', fill=False, edgecolor=color_spine, linewidth=linewidth_spine)
 
             if draw_grids:
                 # set thetas
@@ -605,19 +676,20 @@ class Circos:
                         arc = mpl.patches.Arc(
                             xy=(0, 0), width=diameter, height=diameter,
                             theta1=theta1, theta2=theta2, linewidth=linewidth_grid,
-                            edgecolor=color_grid, transform=self.ax.transData._b,
+                            edgecolor=color_grid, transform=ax.transData._b,
                             zorder=0, alpha=0.25,
                         )
-                        self.ax.add_patch(arc)
+                        ax.add_patch(arc)
                 # draw gridlabels
-                if gridlabel_radii is not None:
-                    text_angle = sector_start_angle_rad - 0.5 * self.interspace_rad
+                if (gridlabel_radii is not None) and draw_label:
+                    interspace_rad = self.sector_interspace_rad[idx]
+                    text_angle = sector_start_angle_rad - 0.5 * interspace_rad
                     for radius, label in zip(gridlabel_radii, gridlabels):
                         rot = self.get_rotation_upright(start_theta)
-                        self.ax.text(text_angle, radius, label, rotation=rot, ha='center', va='center', fontsize=gridlabel_size)
+                        ax.text(text_angle, radius, label, rotation=rot, ha='center', va='center', fontsize=gridlabel_size)
                         #print(sector_start_angle_rad, radius, label, rot)
 
-    def draw_bar(self, data_df, radial_range):
+    def draw_bar(self, ax, data_df, radial_range):
         check_column_existence(data_df, ('Chromosome', 'Start', 'End', 'Color',))
         # modify data
         data_df = self.modify_data(data_df, make_radius=False)
@@ -631,9 +703,9 @@ class Circos:
             color = row['Color']
             x = row['Start_rad']
             width = row['End_rad'] - row['Start_rad']
-            self.ax.bar(x=x, height=height, width=width, bottom=bottom, align='edge', color=color, linewidth=0)
+            ax.bar(x=x, height=height, width=width, bottom=bottom, align='edge', color=color, linewidth=0)
             
-    def draw_scatter(self, data_df, radial_range, ymin=None, ymax=None, size=None, alpha=None):
+    def draw_scatter(self, ax, data_df, radial_range, ymin=None, ymax=None, size=None, alpha=None):
         check_column_existence(data_df, ('Chromosome', 'Pos0', 'Y', 'Color'))
         # modify data
         data_df['Start'] = data_df['Pos0']
@@ -647,9 +719,9 @@ class Circos:
         y = data_df['Radius']
         colors = data_df['Color']
         # draw
-        self.ax.scatter(x=x, y=y, s=size, c=colors, alpha=alpha)
+        ax.scatter(x=x, y=y, s=size, c=colors, alpha=alpha)
 
-    def draw_arc(self, data_df, radial_range, linewidth=None, ymin=None, ymax=None):
+    def draw_arc(self, ax, data_df, radial_range, linewidth=None, ymin=None, ymax=None):
         check_column_existence(data_df, ('Chromosome', 'Start', 'End', 'Y', 'Color'))
 
         data_df = self.modify_data(data_df, make_radius=True, radial_range=radial_range, ymin=ymin, ymax=ymax)
@@ -675,11 +747,11 @@ class Circos:
             arc = mpl.patches.Arc(
                 xy=(0, 0), width=diameter, height=diameter,
                 theta1=theta1, theta2=theta2, linewidth=linewidth,
-                edgecolor=color, transform=self.ax.transData._b,
+                edgecolor=color, transform=ax.transData._b,
             )
-            self.ax.add_patch(arc)
+            ax.add_patch(arc)
 
-    def draw_chord(self, data_df, radial_pos, linewidth=None):
+    def draw_chord(self, ax, data_df, radial_pos, linewidth=None):
 
         def make_patch(site1_rad, site2_rad, radial_pos, color, linewidth):
             site1_vert = (site1_rad, radial_pos)
@@ -702,11 +774,32 @@ class Circos:
             return patch
 
         # main
-        check_column_existence(data_df, ('Chromosome_site1', 'Pos0_site1', 'Chromosome_site2', 'Pos0_site2', 'Color'))
+        check_column_existence(data_df, ('CHROM_site1', 'POS0_site1', 'CHROM_site2', 'POS0_site2', 'Color'))
         data_df = self.modify_breakends_data(data_df)
         for idx, row in data_df.iterrows():
             patch = make_patch(row['Angle_site1_rad'], row['Angle_site2_rad'], radial_pos, row['Color'], linewidth=linewidth)
-            self.ax.add_patch(patch)
+            ax.add_patch(patch)
 
+    def arghandler_draw_gridlabel(self, arg):
+        if arg is True:
+            return np.repeat(True, len(self.sectorlist))
+        elif arg is False:
+            return np.repeat(False, len(self.sectorlist))
+        else:
+            if len(arg) != len(self.sectorlist):
+                raise Exception(f'When "draw_gridlabel" is a sequence, its length must be equal to the number of sectors.')
+            if not all(isinstance(x, int) for x in arg):
+                raise Exception(f'When "draw_gridlabel" is a sequence, all of its elements must be integers.')
+            result = np.repeat(False, len(self.sectorlist))
+            result[list(arg)] = True
+            return result
+
+    def arghandler_sector_interspace_deg(self, arg):
+        if np.isscalar(arg):
+            return np.repeat(arg, len(self.sectorlist))
+        else:
+            if len(arg) != len(self.sectorlist):
+                raise Exception(f'When "sector_interspace_deg" is a sequence, its length must be equal to the number of sectors.')
+            return np.array(arg)
 
 

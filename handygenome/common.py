@@ -83,8 +83,8 @@ RE_PATS = {
 }
 
 # SV symbolic allele strings
-SV_ALTS = ('DEL', 'INS', 'DUP', 'INV', 'CNV', 'BND', 'TRA')
-CPGMET_ALT = 'CPGMET'
+#SV_ALTS = ('DEL', 'INS', 'DUP', 'INV', 'CNV', 'BND', 'TRA')
+#CPGMET_ALT = 'CPGMET'
 
 # executable paths
 BASH = '/usr/bin/bash'
@@ -455,170 +455,170 @@ class ChromDict(collections.OrderedDict):
         return intvlist
 
 
-class Vcfspec:
-    # constructors #
-    def __init__(self, chrom=None, pos=None, ref=None, alts=None, 
-                 somaticindex=1, germlineindexes=(0, 0)):
-        if alts is not None:
-            if not isinstance(alts, (tuple, list)):
-                raise Exception(f'"alts" argument must be a tuple or a list.')
-
-        self.chrom = chrom
-        self.pos = pos
-        self.ref = ref
-        if alts is not None:
-            self.alts = tuple(alts)
-        self.somaticindex = somaticindex
-        self.germlineindexes = sorted(germlineindexes)
-
-    @classmethod
-    def from_vr(cls, vr):
-        return cls(chrom=vr.contig, pos=vr.pos, ref=vr.ref, alts=vr.alts)
-    ################
-
-    def __repr__(self):
-        if len(self.alts) == 1:
-            altstring = str(self.alts[0])
-        else:
-            altstring = str(list(self.alts))
-        return (f'<Vcfspec ({self.chrom}:{self.pos} '
-                f'{self.ref}>{altstring})>')
-
-    def __hash__(self):
-        return hash(self.get_tuple())
-
-    def __eq__(self, other):
-        return all(getattr(self, key) == getattr(other, key)
-                   for key in ('chrom', 'pos', 'ref', 'alts'))
-
-    @property
-    def pos0(self):
-        return self.pos - 1
-
-    @property
-    def end0(self):
-        return self.pos0 + len(self.ref)
-
-    @property
-    def alleles(self):
-        return (self.ref,) + self.alts
-
-    @property
-    def germline(self):
-        alleles = self.alleles
-        return tuple(alleles[x] for x in self.germlineindexes)
-
-    @property
-    def somatic(self):
-        return self.alleles[self.somaticindex]
-
-    def get_id(self):
-        return '_'.join([self.chrom, 
-                         str(self.pos), 
-                         self.ref, 
-                         '|'.join(self.alts)])
-
-    def get_mutation_type(self, alt_index=0):
-        return get_mttype(self.ref, self.alts[alt_index])
-
-    def get_mttype_firstalt(self):
-        return self.get_mutation_type(0)
-
-    def get_tuple(self):
-        return (self.chrom, self.pos, self.ref, self.alts)
-
-    ### ranges
-    @property
-    def REF_range0(self):
-        return range(self.pos0, self.end0)
-
-    @functools.cache
-    def get_preflank_range0(self, idx=0, flanklen=1):
-        assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
-
-        if self.alts[idx][0] == self.ref[0]:
-            flanklen = flanklen - 1
-        return range(self.pos0 - flanklen, self.pos0)
-
-    @functools.cache
-    def get_postflank_range0(self, flanklen=1):
-        assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
-
-        return range(self.pos0 + len(self.ref),
-                     self.pos0 + len(self.ref) + flanklen)
-
-    # misc
-    def apply_to_vr(self, vr):
-        vr.contig = self.chrom
-        vr.pos = self.pos
-        vr.ref = self.ref
-        vr.alts = self.alts
-
-    def iter_monoalts(self):
-        for alt in self.alts:
-            new_vcfspec = self.__class__(self.chrom, self.pos, self.ref, (alt,))
-            yield new_vcfspec
-
-    def get_monoalt(self, alt_index=0):
-        return self.__class__(
-            self.chrom, self.pos, self.ref, (self.alts[alt_index],)
-        )
-
-    def check_without_N(self):
-        return (
-            without_N(self.ref) and
-            all(without_N(x) for x in self.alts)
-        )
-
-    def to_hgvsg(self, alt_index=0):
-        chrom = self.chrom
-        pos = self.pos
-        ref = self.ref
-        alt = self.alts[alt_index]
-        mttype = self.get_mutation_type(alt_index)
-
-        if mttype == 'snv':
-            result = f'{chrom}:g.{pos}{ref}>{alt}'
-        elif mttype == 'mnv':
-            pos2 = pos + (len(ref) - 1)
-            result = f'{chrom}:g.{pos}_{pos2}delins{alt}'
-        elif mttype == 'ins':
-            inserted_seq = alt[1:]
-            result = f'{chrom}:g.{pos}_{pos+1}ins{inserted_seq}'
-        elif mttype == 'del':
-            pos1 = pos + 1
-            pos2 = pos + (len(ref) - 1)
-            if pos1 == pos2:
-                result = f'{chrom}:g.{pos1}del'
-            else:
-                result = f'{chrom}:g.{pos1}_{pos2}del'
-        elif mttype == 'delins':
-            pos1 = pos
-            pos2 = pos + (len(ref) - 1)
-            if pos1 == pos2:
-                result = f'{chrom}:g.{pos1}delins{alt}'
-            else:
-                result = f'{chrom}:g.{pos1}_{pos2}delins{alt}'
-
-        return result
-
-    def to_gr(self):
-        ref_range0 = self.REF_range0
-        return pr.from_dict(
-            {
-                'Chromosome': [self.chrom], 
-                'Start': [ref_range0.start], 
-                'End': [ref_range0.stop],
-            }
-        )
-
-
-def check_vcfspec_monoalt(vcfspec):
-    if len(vcfspec.alts) != 1:
-        raise Exception('The input vcfspec must be with single ALT.')
-
-# alias
-check_vcfspec_monoallele = check_vcfspec_monoalt
+#class Vcfspec:
+#    # constructors #
+#    def __init__(self, chrom=None, pos=None, ref=None, alts=None, 
+#                 somaticindex=1, germlineindexes=(0, 0)):
+#        if alts is not None:
+#            if not isinstance(alts, (tuple, list)):
+#                raise Exception(f'"alts" argument must be a tuple or a list.')
+#
+#        self.chrom = chrom
+#        self.pos = pos
+#        self.ref = ref
+#        if alts is not None:
+#            self.alts = tuple(alts)
+#        self.somaticindex = somaticindex
+#        self.germlineindexes = sorted(germlineindexes)
+#
+#    @classmethod
+#    def from_vr(cls, vr):
+#        return cls(chrom=vr.contig, pos=vr.pos, ref=vr.ref, alts=vr.alts)
+#    ################
+#
+#    def __repr__(self):
+#        if len(self.alts) == 1:
+#            altstring = str(self.alts[0])
+#        else:
+#            altstring = str(list(self.alts))
+#        return (f'<Vcfspec ({self.chrom}:{self.pos} '
+#                f'{self.ref}>{altstring})>')
+#
+#    def __hash__(self):
+#        return hash(self.get_tuple())
+#
+#    def __eq__(self, other):
+#        return all(getattr(self, key) == getattr(other, key)
+#                   for key in ('chrom', 'pos', 'ref', 'alts'))
+#
+#    @property
+#    def pos0(self):
+#        return self.pos - 1
+#
+#    @property
+#    def end0(self):
+#        return self.pos0 + len(self.ref)
+#
+#    @property
+#    def alleles(self):
+#        return (self.ref,) + self.alts
+#
+#    @property
+#    def germline(self):
+#        alleles = self.alleles
+#        return tuple(alleles[x] for x in self.germlineindexes)
+#
+#    @property
+#    def somatic(self):
+#        return self.alleles[self.somaticindex]
+#
+#    def get_id(self):
+#        return '_'.join([self.chrom, 
+#                         str(self.pos), 
+#                         self.ref, 
+#                         '|'.join(self.alts)])
+#
+#    def get_mutation_type(self, alt_index=0):
+#        return get_mttype(self.ref, self.alts[alt_index])
+#
+#    def get_mttype_firstalt(self):
+#        return self.get_mutation_type(0)
+#
+#    def get_tuple(self):
+#        return (self.chrom, self.pos, self.ref, self.alts)
+#
+#    ### ranges
+#    @property
+#    def REF_range0(self):
+#        return range(self.pos0, self.end0)
+#
+#    @functools.cache
+#    def get_preflank_range0(self, idx=0, flanklen=1):
+#        assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
+#
+#        if self.alts[idx][0] == self.ref[0]:
+#            flanklen = flanklen - 1
+#        return range(self.pos0 - flanklen, self.pos0)
+#
+#    @functools.cache
+#    def get_postflank_range0(self, flanklen=1):
+#        assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
+#
+#        return range(self.pos0 + len(self.ref),
+#                     self.pos0 + len(self.ref) + flanklen)
+#
+#    # misc
+#    def apply_to_vr(self, vr):
+#        vr.contig = self.chrom
+#        vr.pos = self.pos
+#        vr.ref = self.ref
+#        vr.alts = self.alts
+#
+#    def iter_monoalts(self):
+#        for alt in self.alts:
+#            new_vcfspec = self.__class__(self.chrom, self.pos, self.ref, (alt,))
+#            yield new_vcfspec
+#
+#    def get_monoalt(self, alt_index=0):
+#        return self.__class__(
+#            self.chrom, self.pos, self.ref, (self.alts[alt_index],)
+#        )
+#
+#    def check_without_N(self):
+#        return (
+#            without_N(self.ref) and
+#            all(without_N(x) for x in self.alts)
+#        )
+#
+#    def to_hgvsg(self, alt_index=0):
+#        chrom = self.chrom
+#        pos = self.pos
+#        ref = self.ref
+#        alt = self.alts[alt_index]
+#        mttype = self.get_mutation_type(alt_index)
+#
+#        if mttype == 'snv':
+#            result = f'{chrom}:g.{pos}{ref}>{alt}'
+#        elif mttype == 'mnv':
+#            pos2 = pos + (len(ref) - 1)
+#            result = f'{chrom}:g.{pos}_{pos2}delins{alt}'
+#        elif mttype == 'ins':
+#            inserted_seq = alt[1:]
+#            result = f'{chrom}:g.{pos}_{pos+1}ins{inserted_seq}'
+#        elif mttype == 'del':
+#            pos1 = pos + 1
+#            pos2 = pos + (len(ref) - 1)
+#            if pos1 == pos2:
+#                result = f'{chrom}:g.{pos1}del'
+#            else:
+#                result = f'{chrom}:g.{pos1}_{pos2}del'
+#        elif mttype == 'delins':
+#            pos1 = pos
+#            pos2 = pos + (len(ref) - 1)
+#            if pos1 == pos2:
+#                result = f'{chrom}:g.{pos1}delins{alt}'
+#            else:
+#                result = f'{chrom}:g.{pos1}_{pos2}delins{alt}'
+#
+#        return result
+#
+#    def to_gr(self):
+#        ref_range0 = self.REF_range0
+#        return pr.from_dict(
+#            {
+#                'Chromosome': [self.chrom], 
+#                'Start': [ref_range0.start], 
+#                'End': [ref_range0.stop],
+#            }
+#        )
+#
+#
+#def check_vcfspec_monoalt(vcfspec):
+#    if len(vcfspec.alts) != 1:
+#        raise Exception('The input vcfspec must be with single ALT.')
+#
+## alias
+#check_vcfspec_monoallele = check_vcfspec_monoalt
 
 
 class Interval:
@@ -1148,56 +1148,17 @@ def get_linesp_byte(byteline, sep=b'\t'):
     return rm_newline_byte(byteline).split(sep)
 
 
-###################################################
 
-
-def get_mttype(ref, alt):
-    if RE_PATS['nucleobases'].fullmatch(alt) is None:
-        if any(
-                (re.fullmatch(f'<{x}(:.+)?>', alt) is not None)
-                for x in SV_ALTS):
-            mttype = 'sv'
-        elif (
-                (RE_PATS['alt_bndstring_1'].fullmatch(alt) is not None) or 
-                (RE_PATS['alt_bndstring_2'].fullmatch(alt) is not None)):
-            mttype = 'sv'
-        elif alt == f'<{CPGMET_ALT}>':
-            mttype = 'cpgmet'
-        else:
-            raise Exception(f'Unexpected symbolic ALT allele: {alt}')
-    else:
-        if len(ref) == len(alt):
-            if len(ref) == 1:
-                mttype = 'snv'
-            else:
-                mttype = 'mnv'
-        else:
-            if len(ref) == 1:
-                if ref[0] == alt[0]:
-                    mttype = 'ins'
-                else:
-                    mttype = 'delins'
-            elif len(alt) == 1:
-                if ref[0] == alt[0]:
-                    mttype = 'del'
-                else:
-                    mttype = 'delins'
-            else:
-                mttype = 'delins'
-
-    return mttype
-
-
-def get_indelseq(ref, alt):
-    mttype = get_mttype(ref, alt)
-    if mttype == 'ins':
-        indelseq = alt[1:]
-    elif mttype == 'del':
-        indelseq = ref[1:]
-    else:
-        indelseq = None
-    
-    return indelseq
+#def get_indelseq(ref, alt):
+#    mttype = get_mttype(ref, alt)
+#    if mttype == 'ins':
+#        indelseq = alt[1:]
+#    elif mttype == 'del':
+#        indelseq = ref[1:]
+#    else:
+#        indelseq = None
+#    
+#    return indelseq
 
 
 ###################################################
@@ -1388,9 +1349,20 @@ def write_mode_arghandler(mode_bcftools, mode_pysam):
         return mode_pysam
 
 
-def fileiter(path, sep='\t', remove_leading_hashes=True):
+def fileiter(path, sep='\t', remove_leading_hashes=True, skip_double_hashes=True):
     infile = openfile(path, 'r')
-    headerline = next(infile)
+
+    while True:
+        line = next(infile)
+        if skip_double_hashes:
+            if line.startswith('##'):
+                continue
+            else:
+                break
+        else:
+            break
+        
+    headerline = line
     if remove_leading_hashes:
         headerline = re.sub('^#*', '', headerline)
     header = get_linesp(headerline, sep=sep)
@@ -1450,6 +1422,84 @@ def get_different_base(base):
 
 
 ###################################################
+
+def pairwise(iterable):
+    iterable = iter(iterable)
+    try:
+        x0 = next(iterable)
+        x1 = next(iterable)
+    except StopIteration:
+        return
+
+    while True:
+        yield (x0, x1)
+        try:
+            x2 = next(iterable)
+        except StopIteration:
+            return
+        x0 = x1
+        x1 = x2
+        continue
+
+
+def _multi_selector_base(sequence, comparing_func, key=None, with_target_val=False):
+    if key is None:
+        values = sequence
+    else:
+        values = [key(x) for x in sequence]
+    target_val = comparing_func(values)
+    is_target_val = [x == target_val for x in values]
+
+    if with_target_val:
+        return list(itertools.compress(sequence, is_target_val)), target_val
+    else:
+        return list(itertools.compress(sequence, is_target_val))
+
+
+def multi_min(sequence, key=None, with_target_val=False):
+    return _multi_selector_base(sequence, min, key=key, with_target_val=with_target_val)
+
+
+def multi_max(sequence, key=None, with_target_val=False):
+    return _multi_selector_base(sequence, max, key=key, with_target_val=with_target_val)
+
+
+def range_overlaps(range1, range2):
+    return not ((range1.stop <= range2.start) or (range1.start >= range2.stop))
+
+
+def range_included(range1, range2):
+    """Returns:
+        True if range1 is included in range2
+    """
+    return (range1.start >= range2.start) and (range1.stop <= range2.stop)
+
+
+def range_intersection(range1, range2):
+    start = max(range1.start, range2.start)
+    stop = min(range1.stop, range2.stop)
+    if stop > start:
+        return range(start, stop)
+    else:
+        return None
+
+
+def range_subtraction(range1, range2):
+    isec = range_intersection(range1, range2)
+    if isec is None:
+        return range1
+    else:
+        if isec.start == range1.start:
+            if isec.stop == range1.stop:
+                return None
+            else:
+                return range(isec.stop, range1.stop)
+        else:
+            if isec.stop == range1.stop:
+                return range(range1.start, isec.start)
+            else:
+                return (range(range1.start, isec.start), range(isec.stop, range1.stop))
+
 
 # deprecated; this does not work
 def get_vcf_noerr(*args, **kwargs):

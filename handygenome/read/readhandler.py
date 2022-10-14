@@ -47,19 +47,24 @@ class NoMDTagError(Exception):
 
 ###################################
 
+ReadUID = collections.namedtuple(
+    'ReadUID',
+    ('qname', 'flag', 'chrom', 'pos0'),
+)
+
 
 def get_uid(read):
-    return (read.query_name, read.flag, read.reference_start, read.cigarstring)
+    return ReadUID(read.query_name, read.flag, read.reference_name, read.reference_start)
 
 
 def get_read_dict(read_iter):
     return {get_uid(x): x for x in read_iter}
 
 
-def check_bad_read(read):
-    """returns True if the read is to be excluded"""
+def readfilter_bad_read(read):
+    """returns True if the read is to be included"""
 
-    return (
+    return not (
         (not read.is_paired)
         or read.is_unmapped
         or read.mate_is_unmapped
@@ -67,20 +72,30 @@ def check_bad_read(read):
     )
 
 
-def get_fetch(bam, chrom, start, end, filter_fun=None):
+def readfilter_pileup(read):
+    return readfilter_bad_read(read) and (not read.is_supplementary) and (not read.is_secondary)
+
+
+def get_fetch(bam, chrom, start, end, readfilter=None, with_uid=False):
     """
     - returns a generator
     - similar to bam.fetch iterator except read filtering
     """
 
     # set default filtering function
-    if filter_fun is None:
-        filter_fun = check_bad_read
-
-    fetch = bam.fetch(chrom, start, end)
-    for read in fetch:
-        if not filter_fun(read):
-            yield read
+    if readfilter is None:
+        readfilter = readfilter_bad_read
+    # set yielder
+    if with_uid:
+        def yielder(read):
+            return read, get_uid(read)
+    else:
+        def yielder(read):
+            return read
+    # main
+    for read in bam.fetch(chrom, start, end):
+        if readfilter(read):
+            yield yielder(read)
 
 
 # cigar-related classes and functions

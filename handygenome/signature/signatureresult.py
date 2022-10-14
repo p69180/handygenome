@@ -5,11 +5,12 @@ import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-varianthandler = importlib.import_module('.'.join([top_package_name, 'variantplus', 'varianthandler']))
+varianthandler = importlib.import_module('.'.join([top_package_name, 'variant', 'varianthandler']))
 signature_misc = importlib.import_module('.'.join([top_package_name, 'signature', 'misc']))
 sigprofiler = importlib.import_module('.'.join([top_package_name, 'signature', 'sigprofiler']))
 cataloguing = importlib.import_module('.'.join([top_package_name, 'signature', 'cataloguing']))
 plotter_sbs96 = importlib.import_module('.'.join([top_package_name, 'signature', 'plotter_sbs96']))
+libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
 
 
 LOGGER = workflow.get_logger(__name__, level='info')
@@ -111,8 +112,11 @@ def get_sigresult_from_vcfspecs(vcfspec_iter, refver='GRCh37',
 
 @common.get_deco_arg_choices({'refver': signature_misc.AVAILABLE_REFVERS})
 def get_sigresult_from_vcfpath(vcf_path, refver='GRCh37', **kwargs):
-    vcfspec_iter = (varianthandler.get_vcfspec(vr)
-                    for vr in pysam.VariantFile(vcf_path).fetch())
+    vcfspec_iter = (
+        libvcfspec.Vcfspec.from_vr(vr)
+        #varianthandler.get_vcfspec(vr)
+        for vr in pysam.VariantFile(vcf_path).fetch()
+    )
     sigresult = get_sigresult_from_vcfspecs(vcfspec_iter, refver, **kwargs)
 
     return sigresult

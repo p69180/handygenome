@@ -9,6 +9,7 @@ top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
 structvars = importlib.import_module('.'.join([top_package_name, 'sv', 'structvars']))
+libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
 
 
 LOGGER = workflow.get_logger(
@@ -178,7 +179,7 @@ class Breakends:
         else:
             alt = t + alt_matestring
 
-        return common.Vcfspec(chrom, pos, ref, [alt])
+        return libvcfspec.Vcfspec(chrom, pos, ref, [alt])
 
     def get_vcfspec_bnd2(self):
         chrom = self.chrom_bnd2
@@ -200,7 +201,7 @@ class Breakends:
         else:
             alt = t + alt_matestring
 
-        return common.Vcfspec(chrom, pos, ref, [alt])
+        return libvcfspec.Vcfspec(chrom, pos, ref, [alt])
 
     def get_simplesv(self):
         if self.chrom_bnd1 != self.chrom_bnd2:

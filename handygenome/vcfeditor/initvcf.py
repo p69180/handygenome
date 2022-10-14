@@ -6,7 +6,7 @@ import pysam
 import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
-varianthandler = importlib.import_module('.'.join([top_package_name, 'variantplus', 'varianthandler']))
+varianthandler = importlib.import_module('.'.join([top_package_name, 'variant', 'varianthandler']))
 
 
 def write_empty_vcf(outfile_path, chromdict=None, samples=None, pysamhdr=None, 

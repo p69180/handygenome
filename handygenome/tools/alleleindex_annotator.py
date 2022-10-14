@@ -9,8 +9,8 @@ top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
 toolsetup = importlib.import_module('.'.join([top_package_name, 'workflow', 'toolsetup']))
-alleleindexes = importlib.import_module('.'.join([top_package_name, 'variantplus', 'alleleindexes']))
-varianthandler = importlib.import_module('.'.join([top_package_name, 'variantplus', 'varianthandler']))
+alleleindexes = importlib.import_module('.'.join([top_package_name, 'variant', 'alleleindexes']))
+varianthandler = importlib.import_module('.'.join([top_package_name, 'variant', 'varianthandler']))
 indexing = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'indexing']))
 
 

@@ -7,11 +7,12 @@ top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
 toolsetup = importlib.import_module('.'.join([top_package_name, 'workflow', 'toolsetup']))
-svcaller_parser = importlib.import_module('.'.join([top_package_name, 'variantplus', 'svcaller_parser']))
-equivalents = importlib.import_module('.'.join([top_package_name, 'variantplus', 'equivalents']))
-varianthandler = importlib.import_module('.'.join([top_package_name, 'variantplus', 'varianthandler']))
+svcaller_parser = importlib.import_module('.'.join([top_package_name, 'variant', 'svcaller_parser']))
+#equivalents = importlib.import_module('.'.join([top_package_name, 'variant', 'equivalents']))
+varianthandler = importlib.import_module('.'.join([top_package_name, 'variant', 'varianthandler']))
 headerhandler = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'headerhandler']))
 indexing = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'indexing']))
+libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
 
 
 def argument_parser(cmdargs):
@@ -48,8 +49,9 @@ def process_nonsv(vr, out_vr_list, nonsv_set, fasta, logger):
         discarded.
     """
 
-    vcfspec_original = varianthandler.get_vcfspec(vr)
-    vcfspec_left = equivalents.leftmost(vcfspec_original, fasta)
+    vcfspec_original = libvcfspec.Vcfspec.from_vr(vr)
+    #vcfspec_original = varianthandler.get_vcfspec(vr)
+    vcfspec_left = libvcfspec.leftmost(vcfspec_original, fasta)
     ID = vcfspec_left.get_id()
 
     if ID in nonsv_set:

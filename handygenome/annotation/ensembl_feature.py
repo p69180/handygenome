@@ -11,10 +11,10 @@ top_package_name = __name__.split(".")[0]
 common = importlib.import_module(".".join([top_package_name, "common"]))
 
 infoformat = importlib.import_module(
-    ".".join([top_package_name, "variantplus", "infoformat"])
+    ".".join([top_package_name, "variant", "infoformat"])
 )
 varianthandler = importlib.import_module(
-    ".".join([top_package_name, "variantplus", "varianthandler"])
+    ".".join([top_package_name, "variant", "varianthandler"])
 )
 
 annotitem = importlib.import_module(
@@ -31,6 +31,7 @@ customfile = importlib.import_module(
     ".".join([top_package_name, "annotation", "customfile"])
 )
 rnalib = importlib.import_module(".".join([top_package_name, "annotation", "rnalib"]))
+libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
 
 
 META_ID_PREFIX = {
@@ -430,7 +431,7 @@ class EnsemblFeatureSetBase(annotitem.AnnotItemVariantInfoSingle):
         return self.get_distance_setter_interval(var_range0)
 
     def get_distance_setter_bnd(self, pos):
-        vcfspec = common.Vcfspec(chrom=None, pos=pos, ref=None, alts=None)
+        vcfspec = libvcfspec.Vcfspec(chrom=None, pos=pos, ref=None, alts=None)
         return self.get_distance_setter_snv(vcfspec)
 
     def set_missing_distances_base(self, distance_setter):

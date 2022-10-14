@@ -16,9 +16,10 @@ workflow = importlib.import_module(".".join([top_package_name, "workflow"]))
 assemblyspec = importlib.import_module(".".join([top_package_name, "assemblyspec"]))
 initvcf = importlib.import_module(".".join([top_package_name, "vcfeditor", "initvcf"]))
 libpopfreq = importlib.import_module(".".join([top_package_name, "annotation", "popfreq"]))
-equivalents = importlib.import_module(".".join([top_package_name, "variantplus", "equivalents"]))
-varianthandler = importlib.import_module(".".join([top_package_name, "variantplus", "varianthandler"]))
+#equivalents = importlib.import_module(".".join([top_package_name, "variant", "equivalents"]))
+varianthandler = importlib.import_module(".".join([top_package_name, "variant", "varianthandler"]))
 indexing = importlib.import_module(".".join([top_package_name, "vcfeditor", "indexing"]))
+libvcfspec = importlib.import_module(".".join([top_package_name, "variant", "vcfspec"]))
 
 
 LOGGER = workflow.get_logger(name='dbSNP converter')
@@ -102,12 +103,13 @@ def make_popfreqinfo(original_vr, freq_dict, alt_idx):
 
 
 def get_new_vr_list(original_vr, freq_dict, new_chrom, fasta, tmp_new_header):
-    vcfspec = varianthandler.get_vcfspec(original_vr)
+    vcfspec = libvcfspec.Vcfspec.from_vr(original_vr)
+    #vcfspec = varianthandler.get_vcfspec(original_vr)
     vcfspec.chrom = new_chrom
 
     new_vr_list = list()
     for alt_idx, sub_vcfspec in enumerate(vcfspec.iter_monoalts()):
-        sub_vcfspec = equivalents.leftmost(sub_vcfspec, fasta)
+        sub_vcfspec = libvcfspec.leftmost(sub_vcfspec, fasta)
         new_vr = tmp_new_header.new_record()
         varianthandler.apply_vcfspec(new_vr, sub_vcfspec)
         popinfolist = make_popfreqinfo(original_vr, freq_dict, alt_idx)
@@ -129,7 +131,8 @@ def process_by_chrom(original_vcf, chrom, new_chrom, tmp_outfile_path, popnames,
         popnames.update(freq_dict.keys())
         new_vr_list = get_new_vr_list(original_vr, freq_dict, new_chrom, fasta, tmp_new_header)
         for new_vr in new_vr_list:
-            vcfspec = varianthandler.get_vcfspec(new_vr)
+            vcfspec = libvcfspec.Vcfspec.from_vr(new_vr)
+            #vcfspec = varianthandler.get_vcfspec(new_vr)
             out_vrs[vcfspec] = new_vr
 
     # 2. write to tmp output file

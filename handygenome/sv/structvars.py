@@ -6,9 +6,10 @@ top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 initvcf = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'initvcf']))
 breakends = importlib.import_module('.'.join([top_package_name, 'sv', 'breakends']))
+libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
 
 
-MITOCHONDRIAL = ( 'chrM', 'MT' )
+MITOCHONDRIAL = ('chrM', 'MT')
 
 
 class SimpleStructuralVariant(common.Interval):
@@ -69,7 +70,7 @@ class Deletion(SimpleStructuralVariant):
 		ref = self.fasta.fetch(self.chrom, pos - 1, self.end0)
 		alt = ref[0]
 
-		return common.Vcfspec(self.chrom, pos, ref, [alt])
+		return libvcfspec.Vcfspec(self.chrom, pos, ref, [alt])
 			
 	def get_bnds(self):
 		return breakends.Breakends(
@@ -103,7 +104,7 @@ class TandemDuplication(SimpleStructuralVariant):
 		ref = fetched[0]
 		alt = fetched
 
-		return common.Vcfspec(self.chrom, pos, ref, [alt])
+		return libvcfspec.Vcfspec(self.chrom, pos, ref, [alt])
 
 
 class Inversion(SimpleStructuralVariant):
@@ -128,5 +129,5 @@ class Inversion(SimpleStructuralVariant):
 			ref = fetched
 			alt = Bio.Seq.reverse_complement(fetched)
 
-		return common.Vcfspec(self.chrom, pos, ref, [alt])
+		return libvcfspec.Vcfspec(self.chrom, pos, ref, [alt])
 

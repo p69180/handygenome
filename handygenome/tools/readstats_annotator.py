@@ -15,13 +15,14 @@ common = importlib.import_module('.'.join([top_package_name, 'common']))
 workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
 toolsetup = importlib.import_module('.'.join([top_package_name, 'workflow', 'toolsetup']))
 libreadstats = importlib.import_module('.'.join([top_package_name, 'annotation', 'readstats']))
-varianthandler = importlib.import_module('.'.join([top_package_name, 'variantplus', 'varianthandler']))
-variantplus = importlib.import_module('.'.join([top_package_name, 'variantplus', 'variantplus']))
-vpfilter = importlib.import_module('.'.join([top_package_name, 'variantplus', 'vpfilter']))
-infoformat = importlib.import_module('.'.join([top_package_name, 'variantplus', 'infoformat']))
+varianthandler = importlib.import_module('.'.join([top_package_name, 'variant', 'varianthandler']))
+variantplus = importlib.import_module('.'.join([top_package_name, 'variant', 'variantplus']))
+vpfilter = importlib.import_module('.'.join([top_package_name, 'variant', 'vpfilter']))
+infoformat = importlib.import_module('.'.join([top_package_name, 'variant', 'infoformat']))
 indexing = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'indexing']))
-split = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'split']))
-concat = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'concat']))
+libsplit = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'split']))
+libconcat = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'concat']))
+libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
 
 
 def unit_job(split_infile_path, split_outfile_path, bam_path_list, id_list, 
@@ -66,7 +67,8 @@ def update_header(vcfheader, id_list):
 
 def update_new_vr(new_vr, refver, fasta, chromdict, bam_list, id_list,
                   no_matesearch):
-    vcfspec = varianthandler.get_vcfspec(new_vr)
+    vcfspec = libvcfspec.Vcfspec.from_vr(new_vr)
+    #vcfspec = varianthandler.get_vcfspec(new_vr)
     print(vcfspec, flush=True)  # for logging
 
     # get irrelevant sample ids: these need to be set '.' afterward
@@ -282,7 +284,7 @@ def main(cmdargs):
 
     # split the input file
     logger.info('Splitting the input file')
-    split_infile_path_list = split.main(vcf_path=args.infile_path, 
+    split_infile_path_list = libsplit.main(vcf_path=args.infile_path, 
                                         outdir=tmpdir_paths['split_infiles'], 
                                         n_file=args.parallel, 
                                         mode_bcftools='z', prefix='', 
@@ -301,7 +303,7 @@ def main(cmdargs):
 
     # concatenates split files
     logger.info('Merging split files')
-    concat.main(infile_path_list=split_outfile_path_list,
+    libconcat.main(infile_path_list=split_outfile_path_list,
                 outfile_path=args.outfile_path, mode_pysam=args.mode_pysam,
                 outfile_must_not_exist='no')
 

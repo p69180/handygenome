@@ -11,9 +11,9 @@ import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-readhandler = importlib.import_module('.'.join([top_package_name, 'readplus', 'readhandler']))
-alleleinfosetup = importlib.import_module('.'.join([top_package_name, 'readplus', 'alleleinfosetup']))
-alleleinfosetup_sv = importlib.import_module('.'.join([top_package_name, 'readplus', 'alleleinfosetup_sv']))
+readhandler = importlib.import_module('.'.join([top_package_name, 'read', 'readhandler']))
+alleleinfosetup = importlib.import_module('.'.join([top_package_name, 'read', 'alleleinfosetup']))
+alleleinfosetup_sv = importlib.import_module('.'.join([top_package_name, 'read', 'alleleinfosetup_sv']))
 
 
 RPPLIST_MAX_SHOW_LEN = 30
@@ -907,7 +907,7 @@ def readfilter_matesearch(read, long_insert_threshold):
 def initial_fetch_nonsv(bam, chrom, start0, end0, view,
                         fetch_padding_common, fetch_padding_view,
                         new_fetch_padding, long_insert_threshold):
-    """Read filtering done by readhandler.check_bad_read"""
+    """Read filtering done by readhandler.readfilter_bad_read"""
 
     def readfilter_qname(read, start0, end0):
         """The read is selected if True.
@@ -929,7 +929,7 @@ def initial_fetch_nonsv(bam, chrom, start0, end0, view,
     fetcher = readhandler.get_fetch(bam, chrom, 
                                     start=(start0 - initial_fetch_padding),
                                     end=(end0 + initial_fetch_padding),
-                                    filter_fun=readhandler.check_bad_read)
+                                    readfilter=readhandler.readfilter_bad_read)
 
     for read in fetcher:
         read_is_relevant = (True
@@ -953,7 +953,7 @@ def initial_fetch_nonsv(bam, chrom, start0, end0, view,
 def initial_fetch_sv(bam, bnds, view, fetch_padding_common,
                      fetch_padding_sv, fetch_padding_view,
                      new_fetch_padding, long_insert_threshold):
-    """Read filtering done by readhandler.check_bad_read"""
+    """Read filtering done by readhandler.readfilter_bad_read"""
 
     def get_initial_fetcher(bam, chrom_bnd, pos_range0, endis5, 
                                fetch_padding_common, fetch_padding_sv):
@@ -965,7 +965,7 @@ def initial_fetch_sv(bam, bnds, view, fetch_padding_common,
                 end=(max(pos_range0) + 1
                      + fetch_padding_common
                      + fetch_padding_sv),
-                filter_fun=readhandler.check_bad_read)
+                readfilter=readhandler.readfilter_bad_read)
         else:
             fetcher = readhandler.get_fetch(
                 bam, chrom, 
@@ -974,7 +974,7 @@ def initial_fetch_sv(bam, bnds, view, fetch_padding_common,
                        - fetch_padding_sv),
                 end=(max(pos_range0) + 1
                      + fetch_padding_common),
-                filter_fun=readhandler.check_bad_read)
+                readfilter=readhandler.readfilter_bad_read)
 
         return fetcher
 
@@ -984,7 +984,7 @@ def initial_fetch_sv(bam, bnds, view, fetch_padding_common,
             bam, chrom_bnd,
             start=(min(pos_range0) - fetch_padding_view),
             end=(max(pos_range0) + 1 + fetch_padding_view),
-            filter_fun=readhandler.check_bad_read)
+            readfilter=readhandler.readfilter_bad_read)
 
         return fetcher
 
@@ -1080,7 +1080,7 @@ def initial_fetch_sv(bam, bnds, view, fetch_padding_common,
 #### refined fetch ####
 
 def refined_fetch_nonsv(bam, chrom, new_fetch_range, relevant_qname_set):
-    """Read filtering is done by check_bad_read.
+    """Read filtering is done by readfilter_bad_read.
     Store the fetched read only if its qname is included in the
         "relevant_qname_set".
     """
@@ -1093,7 +1093,7 @@ def refined_fetch_nonsv(bam, chrom, new_fetch_range, relevant_qname_set):
     for read in readhandler.get_fetch(
             bam, chrom, start=new_fetch_range.start, 
             end=new_fetch_range.stop, 
-            filter_fun=readhandler.check_bad_read):
+            readfilter=readhandler.readfilter_bad_read):
         if read.query_name in fetchresult_dict:
             fetchresult_dict[read.query_name].append(read)
 
@@ -1102,7 +1102,7 @@ def refined_fetch_nonsv(bam, chrom, new_fetch_range, relevant_qname_set):
 
 def refined_fetch_sv(bam, bnds, new_fetch_range_bnd1, new_fetch_range_bnd2,
                      relevant_qname_set_union):
-    """Read filtering is done by check_bad_read.
+    """Read filtering is done by readfilter_bad_read.
     Store the fetched read only if its qname is included in the
         "relevant_qname_list".
     """
@@ -1113,7 +1113,7 @@ def refined_fetch_sv(bam, bnds, new_fetch_range_bnd1, new_fetch_range_bnd2,
             fetch = readhandler.get_fetch(
                 bam, chrom_bnd, 
                 start=new_fetch_range.start, end=new_fetch_range.stop,
-                filter_fun=readhandler.check_bad_read)
+                readfilter=readhandler.readfilter_bad_read)
             for read in fetch:
                 if read.query_name in fetchresult_dict:
                     if all((read.compare(x) != 0)
@@ -1190,7 +1190,7 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch):
 #                 long_insert_threshold=LONG_INSERT_THRESHOLD,
 #                 new_fetch_padding=NEW_FETCH_PADDING,
 #                 verbose=False):
-#        """Read filtering is done by "readhandler.check_bad_read".
+#        """Read filtering is done by "readhandler.readfilter_bad_read".
 #        Mate-unmapped reads are filtered out.
 #        Args:
 #            mode: must be one of "sv", "nonsv", "view"
@@ -1290,7 +1290,7 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch):
 #                    end=(end0 
 #                         + fetch_padding_common
 #                         + fetch_padding_sv),
-#                    filter_fun=readhandler.check_bad_read)
+#                    readfilter=readhandler.readfilter_bad_read)
 #            else:
 #                fetcher = readhandler.get_fetch(
 #                    bam, chrom, 
@@ -1298,20 +1298,20 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch):
 #                           - fetch_padding_common
 #                           - fetch_padding_sv),
 #                    end=(end0 + fetch_padding_common),
-#                    filter_fun=readhandler.check_bad_read)
+#                    readfilter=readhandler.readfilter_bad_read)
 #        elif mode in ('nonsv', 'view'):
 #            fetcher = readhandler.get_fetch(
 #                bam, chrom, 
 #                start=(start0 - fetch_padding_common),
 #                end=(end0 + fetch_padding_common),
-#                filter_fun=readhandler.check_bad_read)
+#                readfilter=readhandler.readfilter_bad_read)
 #
 #        return fetcher
 #
 #    def _initial_fetch(self, bam, chrom, start0, end0, mode, endis5,
 #                       fetch_padding_common, fetch_padding_sv,
 #                       new_fetch_padding, long_insert_threshold):
-#        """Read filtering done by readhandler.check_bad_read"""
+#        """Read filtering done by readhandler.readfilter_bad_read"""
 #
 #        relevant_qname_list = list()
 #        start0_list = list()
@@ -1352,7 +1352,7 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch):
 #
 #    def _refined_fetch(self, bam, chrom, new_fetch_range, 
 #                       relevant_qname_list):
-#        """Read filtering is done by check_bad_read.
+#        """Read filtering is done by readfilter_bad_read.
 #        Store the fetched read only if its qname is included in the
 #            "relevant_qname_list".
 #        """
@@ -1365,7 +1365,7 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch):
 #        for read in readhandler.get_fetch(
 #                bam, chrom, start=new_fetch_range.start, 
 #                end=new_fetch_range.stop, 
-#                filter_fun=readhandler.check_bad_read):
+#                readfilter=readhandler.readfilter_bad_read):
 #            if read.query_name in fetchresult_dict:
 #                fetchresult_dict[read.query_name].append(read)
 #

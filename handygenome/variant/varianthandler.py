@@ -6,20 +6,21 @@ import pysam
 import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
-infoformat = importlib.import_module('.'.join([top_package_name, 'variantplus', 'infoformat']))
+infoformat = importlib.import_module('.'.join([top_package_name, 'variant', 'infoformat']))
 headerhandler = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'headerhandler']))
 initvcf = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'initvcf']))
+libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
 
 
-def get_vcfspec(vr):
-    return common.Vcfspec(vr.contig, vr.pos, vr.ref, tuple(vr.alts))
+#def get_vcfspec(vr):
+#    return common.Vcfspec(vr.contig, vr.pos, vr.ref, tuple(vr.alts))
 
 
 def check_SV(vr):
     alt = vr.alts[0]
     if any(
             (re.fullmatch(f'<{x}(:.+)?>', alt) is not None)
-            for x in common.SV_ALTS):
+            for x in libvcfspec.SV_ALTS):
         # <DEL>, <INV>, ...
         return True
     elif (
@@ -31,7 +32,7 @@ def check_SV(vr):
 
 
 def check_cpgmet(vr):
-    return vr.alts[0] == f'<{common.CPGMET_ALT}>'
+    return vr.alts[0] == f'<{libvcfspec.CPGMET_ALT}>'
 
 
 # sorting helpers

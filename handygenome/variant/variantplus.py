@@ -20,16 +20,16 @@ libbreakends = importlib.import_module(
 )
 
 varianthandler = importlib.import_module(
-    ".".join([top_package_name, "variantplus", "varianthandler"])
+    ".".join([top_package_name, "variant", "varianthandler"])
 )
 variantviz = importlib.import_module(
-    ".".join([top_package_name, "variantplus", "variantviz"])
+    ".".join([top_package_name, "variant", "variantviz"])
 )
 vpfilter = importlib.import_module(
-    ".".join([top_package_name, "variantplus", "vpfilter"])
+    ".".join([top_package_name, "variant", "vpfilter"])
 )
 infoformat = importlib.import_module(
-    ".".join([top_package_name, "variantplus", "infoformat"])
+    ".".join([top_package_name, "variant", "infoformat"])
 )
 initvcf = importlib.import_module(".".join([top_package_name, "vcfeditor", "initvcf"]))
 
@@ -49,16 +49,20 @@ libcosmic = importlib.import_module(
     ".".join([top_package_name, "annotation", "cosmic"])
 )
 
-readplus = importlib.import_module(".".join([top_package_name, "readplus", "readplus"]))
+readplus = importlib.import_module(".".join([top_package_name, "read", "readplus"]))
 libreadstats = importlib.import_module(
     ".".join([top_package_name, "annotation", "readstats"])
 )
 alleleinfosetup = importlib.import_module(
-    ".".join([top_package_name, "readplus", "alleleinfosetup"])
+    ".".join([top_package_name, "read", "alleleinfosetup"])
 )
 alleleinfosetup_sv = importlib.import_module(
-    ".".join([top_package_name, "readplus", "alleleinfosetup_sv"])
+    ".".join([top_package_name, "read", "alleleinfosetup_sv"])
 )
+libvcfspec = importlib.import_module(
+    ".".join([top_package_name, "variant", "vcfspec"])
+)
+
 
 
 READCOUNT_FORMAT_KEY = "allele_readcounts"
@@ -93,7 +97,7 @@ class VariantPlus:
         result.chromdict = (
             common.ChromDict(fasta=result.fasta) if chromdict is None else chromdict
         )
-        result.vcfspec = common.Vcfspec.from_vr(result.vr)
+        result.vcfspec = libvcfspec.Vcfspec.from_vr(result.vr)
 
         result.init_common(**kwargs)
 

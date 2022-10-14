@@ -14,9 +14,9 @@ common = importlib.import_module('.'.join([top_package_name, 'common']))
 workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
 #annotationdb = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotationdb']))
 annotitem = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotitem']))
-infoformat = importlib.import_module('.'.join([top_package_name, 'variantplus', 'infoformat']))
-readplus = importlib.import_module('.'.join([top_package_name, 'readplus', 'readplus']))
-alleleinfosetup = importlib.import_module('.'.join([top_package_name, 'readplus', 'alleleinfosetup']))
+infoformat = importlib.import_module('.'.join([top_package_name, 'variant', 'infoformat']))
+readplus = importlib.import_module('.'.join([top_package_name, 'read', 'readplus']))
+alleleinfosetup = importlib.import_module('.'.join([top_package_name, 'read', 'alleleinfosetup']))
 
 
 #READSTATS_FORMAT_KEY = 'readstats'

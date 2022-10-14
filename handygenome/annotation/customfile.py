@@ -9,12 +9,13 @@ import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-infoformat = importlib.import_module('.'.join([top_package_name, 'variantplus', 'infoformat']))
-equivalents = importlib.import_module('.'.join([top_package_name, 'variantplus', 'equivalents']))
-varianthandler = importlib.import_module('.'.join([top_package_name, 'variantplus', 'varianthandler']))
+infoformat = importlib.import_module('.'.join([top_package_name, 'variant', 'infoformat']))
+#equivalents = importlib.import_module('.'.join([top_package_name, 'variant', 'equivalents']))
+#varianthandler = importlib.import_module('.'.join([top_package_name, 'variant', 'varianthandler']))
 #annotationdb = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotationdb']))
 ensembl_parser = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_parser']))
 ensembl_feature = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_feature']))
+libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
 
 
 DEFAULT_FETCHWIDTH = 10
@@ -43,7 +44,7 @@ def fetch_relevant_vr_multialt(vcfspec, vcf, fasta=None, search_equivs=True,
                                allow_multiple=False):
     result = list()
     for alt in vcfspec.alts:
-        new_vcfspec = common.Vcfspec(vcfspec.chrom, vcfspec.pos, vcfspec.ref, (alt,))
+        new_vcfspec = libvcfspec.Vcfspec(vcfspec.chrom, vcfspec.pos, vcfspec.ref, (alt,))
         result.append(
             fetch_relevant_vr(new_vcfspec, vcf, fasta=fasta, search_equivs=search_equivs,
                               allow_multiple=allow_multiple)
@@ -75,7 +76,7 @@ def fetch_relevant_vr(vcfspec, vcf, fasta=None, search_equivs=True,
 
     def search_equivalents(vcfspec, vcf, matcher, fasta):
         if vcfspec.chrom in vcf.header.contigs:
-            equivs = equivalents.indel_equivalents(vcfspec, fasta)
+            equivs = libvcfspec.indel_equivalents(vcfspec, fasta)
             poslist = [x.pos for x in equivs]
             fetchresult = vcf.fetch(contig=vcfspec.chrom, 
                                     start=(min(poslist) - 1),
@@ -83,8 +84,9 @@ def fetch_relevant_vr(vcfspec, vcf, fasta=None, search_equivs=True,
 
             relevant_vr_candidates = list()
             for vr in fetchresult:
-                vr_vcfspec = equivalents.make_parsimonious(
-                    varianthandler.get_vcfspec(vr)
+                vr_vcfspec = libvcfspec.make_parsimonious(
+                    libvcfspec.Vcfspec.from_vr(vr)
+                    #varianthandler.get_vcfspec(vr)
                 )
                 if any(matcher(query, vr_vcfspec) for query in equivs):
                     relevant_vr_candidates.append(vr)
@@ -100,7 +102,8 @@ def fetch_relevant_vr(vcfspec, vcf, fasta=None, search_equivs=True,
 
             relevant_vr_candidates = list()
             for vr in fetchresult:
-                vr_vcfspec = varianthandler.get_vcfspec(vr)
+                vr_vcfspec = libvcfspec.Vcfspec.from_vr(vr)
+                #vr_vcfspec = varianthandler.get_vcfspec(vr)
                 if matcher(vcfspec, vr_vcfspec):
                     relevant_vr_candidates.append(vr)
         else:

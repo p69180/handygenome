@@ -17,6 +17,8 @@ def read_sequenza_segment(segment_path, as_gr=False):
         ),
         skiprows=1,
     )
+    df.loc[df['CNt'] == 0, 'A'] = 0
+    df.loc[df['CNt'] == 0, 'B'] = 0
 
     if as_gr:
         return pr.PyRanges(df=df)

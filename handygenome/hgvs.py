@@ -6,9 +6,10 @@ import Bio.Seq
 import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
-equivalents = importlib.import_module('.'.join([top_package_name, 'variantplus', 'equivalents']))
+#equivalents = importlib.import_module('.'.join([top_package_name, 'variant', 'equivalents']))
 ensembl_rest = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_rest']))
 ensembl_parser = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_parser']))
+libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
 
 
 HGVSG_PATTERNS = {
@@ -174,12 +175,12 @@ def hgvsg_to_vcfspec(hgvsg, fasta, leftmost=True):
 
     #############
 
-    vcfspec = common.Vcfspec(chrom, pos, ref, [alt])
+    vcfspec = libvcfspec.Vcfspec(chrom, pos, ref, [alt])
 
     # when ref or alt contains 'n' or 'N', functions below do not 
     #   effectively work
     if leftmost:
-        vcfspec = equivalents.leftmost(vcfspec, fasta)
+        vcfspec = libvcfspec.leftmost(vcfspec, fasta)
 
     return vcfspec
         

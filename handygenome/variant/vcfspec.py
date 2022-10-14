@@ -1,12 +1,273 @@
+import re
 import itertools
+import functools
+
+import Bio
 
 import importlib
-
-top_package_name = __name__.split(".")[0]
-common = importlib.import_module(".".join([top_package_name, "common"]))
+top_package_name = __name__.split('.')[0]
+common = importlib.import_module('.'.join([top_package_name, 'common']))
+alignhandler = importlib.import_module('.'.join([top_package_name, 'align', 'alignhandler']))
+realign = importlib.import_module('.'.join([top_package_name, 'align', 'realign']))
 
 
 DEFAULT_FETCH_EXTEND_LENGTH = 10
+SV_ALTS = ('DEL', 'INS', 'DUP', 'INV', 'CNV', 'BND', 'TRA')
+CPGMET_ALT = 'CPGMET'
+
+
+class Vcfspec:
+    # constructors #
+    def __init__(self, chrom=None, pos=None, ref=None, alts=None, 
+                 somaticindex=1, germlineindexes=(0, 0)):
+        if alts is not None:
+            if not isinstance(alts, (tuple, list)):
+                raise Exception(f'"alts" argument must be a tuple or a list.')
+
+        self.chrom = chrom
+        self.pos = pos
+        self.ref = ref
+        if alts is not None:
+            self.alts = tuple(alts)
+        self.somaticindex = somaticindex
+        self.germlineindexes = sorted(germlineindexes)
+
+    @classmethod
+    def from_vr(cls, vr):
+        return cls(chrom=vr.contig, pos=vr.pos, ref=vr.ref, alts=vr.alts)
+    ################
+
+    def __repr__(self):
+        if len(self.alts) == 1:
+            altstring = str(self.alts[0])
+        else:
+            altstring = str(list(self.alts))
+        return f'<Vcfspec ({self.chrom}:{self.pos} {self.ref}>{altstring})>'
+
+    def __hash__(self):
+        return hash(self.get_tuple())
+
+    def __eq__(self, other):
+        return all(
+            getattr(self, key) == getattr(other, key)
+            for key in ('chrom', 'pos', 'ref', 'alts')
+        )
+
+    @property
+    def pos0(self):
+        return self.pos - 1
+
+    @property
+    def end0(self):
+        return self.pos0 + len(self.ref)
+
+    @property
+    def alleles(self):
+        return (self.ref,) + self.alts
+
+    @property
+    def germline(self):
+        alleles = self.alleles
+        return tuple(alleles[x] for x in self.germlineindexes)
+
+    @property
+    def somatic(self):
+        return self.alleles[self.somaticindex]
+
+    def get_id(self):
+        return '_'.join([self.chrom, 
+                         str(self.pos), 
+                         self.ref, 
+                         '|'.join(self.alts)])
+
+    def get_mutation_type(self, alt_index=0):
+        return get_mttype(self.ref, self.alts[alt_index])
+
+    def get_mttype_firstalt(self):
+        return self.get_mutation_type(0)
+
+    def get_tuple(self):
+        return (self.chrom, self.pos, self.ref, self.alts)
+
+    ### ranges
+    @property
+    def REF_range0(self):
+        return range(self.pos0, self.end0)
+
+    @functools.cache
+    def get_preflank_range0(self, idx=0, flanklen=1):
+        assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
+
+        if self.alts[idx][0] == self.ref[0]:
+            flanklen = flanklen - 1
+        return range(self.pos0 - flanklen, self.pos0)
+
+    @functools.cache
+    def get_postflank_range0(self, flanklen=1):
+        assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
+
+        return range(self.pos0 + len(self.ref),
+                     self.pos0 + len(self.ref) + flanklen)
+
+    # equivalents
+    def normalize(self, fasta, fetch_extend_length=DEFAULT_FETCH_EXTEND_LENGTH):
+        return leftmost(self, fasta, fetch_extend_length=fetch_extend_length)
+
+    # misc
+    def apply_to_vr(self, vr):
+        vr.contig = self.chrom
+        vr.pos = self.pos
+        vr.ref = self.ref
+        vr.alts = self.alts
+
+    def iter_monoalts(self):
+        for alt in self.alts:
+            new_vcfspec = self.__class__(self.chrom, self.pos, self.ref, (alt,))
+            yield new_vcfspec
+
+    def get_monoalt(self, alt_index=0):
+        return self.__class__(
+            self.chrom, self.pos, self.ref, (self.alts[alt_index],)
+        )
+
+    def check_without_N(self):
+        return (
+            without_N(self.ref) and
+            all(without_N(x) for x in self.alts)
+        )
+
+    def to_hgvsg(self, alt_index=0):
+        chrom = self.chrom
+        pos = self.pos
+        ref = self.ref
+        alt = self.alts[alt_index]
+        mttype = self.get_mutation_type(alt_index)
+
+        if mttype == 'snv':
+            result = f'{chrom}:g.{pos}{ref}>{alt}'
+        elif mttype == 'mnv':
+            pos2 = pos + (len(ref) - 1)
+            result = f'{chrom}:g.{pos}_{pos2}delins{alt}'
+        elif mttype == 'ins':
+            inserted_seq = alt[1:]
+            result = f'{chrom}:g.{pos}_{pos+1}ins{inserted_seq}'
+        elif mttype == 'del':
+            pos1 = pos + 1
+            pos2 = pos + (len(ref) - 1)
+            if pos1 == pos2:
+                result = f'{chrom}:g.{pos1}del'
+            else:
+                result = f'{chrom}:g.{pos1}_{pos2}del'
+        elif mttype == 'delins':
+            pos1 = pos
+            pos2 = pos + (len(ref) - 1)
+            if pos1 == pos2:
+                result = f'{chrom}:g.{pos1}delins{alt}'
+            else:
+                result = f'{chrom}:g.{pos1}_{pos2}delins{alt}'
+
+        return result
+
+    def to_gr(self):
+        ref_range0 = self.REF_range0
+        return pr.from_dict(
+            {
+                'Chromosome': [self.chrom], 
+                'Start': [ref_range0.start], 
+                'End': [ref_range0.stop],
+            }
+        )
+
+
+def check_vcfspec_monoalt(vcfspec):
+    if len(vcfspec.alts) != 1:
+        raise Exception('The input vcfspec must be with single ALT.')
+
+check_vcfspec_monoallele = check_vcfspec_monoalt
+
+
+def get_mttype(ref, alt):
+    if common.RE_PATS['nucleobases'].fullmatch(alt) is None:
+        if any(
+            (re.fullmatch(f'<{x}(:.+)?>', alt) is not None) for x in SV_ALTS
+        ):
+            mttype = 'sv'
+        elif (
+            (common.RE_PATS['alt_bndstring_1'].fullmatch(alt) is not None) or 
+            (common.RE_PATS['alt_bndstring_2'].fullmatch(alt) is not None)
+        ):
+            mttype = 'sv'
+        elif alt == f'<{CPGMET_ALT}>':
+            mttype = 'cpgmet'
+        else:
+            raise Exception(f'Unexpected symbolic ALT allele: {alt}')
+    else:
+        if len(ref) == len(alt):
+            if len(ref) == 1:
+                mttype = 'snv'
+            else:
+                mttype = 'mnv'
+        else:
+            if len(ref) == 1:
+                if ref[0] == alt[0]:
+                    mttype = 'ins'
+                else:
+                    mttype = 'delins'
+            elif len(alt) == 1:
+                if ref[0] == alt[0]:
+                    mttype = 'del'
+                else:
+                    mttype = 'delins'
+            else:
+                mttype = 'delins'
+
+    return mttype
+
+
+def merge_vcfspecs(vcfspec_list, fasta, merging_distance_le=3):
+    assert len(set(x.chrom for x in vcfspec_list)) == 1, f'Input vcfspecs belong to more than one chromosomes.'
+    assert all(len(x.alts) == 1 for x in vcfspec_list), f'All input vcfspecs must have one ALT.'
+
+    new_vcfspec_list = list()
+
+    def unit_func(vcfspec1, vcfspec2):
+        num_intervening_bases = vcfspec2.REF_range0.start - vcfspec1.REF_range0.stop
+        if num_intervening_bases <= merging_distance_le:
+            new_pos = vcfspec1.pos
+            if num_intervening_bases == 0:
+                new_ref = vcfspec1.ref + vcfspec2.ref
+                new_alt = vcfspec1.alts[0] + vcfspec2.alts[0]
+            else:
+                intervening_ref = fasta.fetch(vcfspec1.chrom, vcfspec1.REF_range0.stop, vcfspec2.REF_range0.start)
+                new_ref = vcfspec1.ref + intervening_ref + vcfspec2.ref
+                new_alt = vcfspec1.alts[0] + intervening_ref + vcfspec2.alts[0]
+            return Vcfspec(vcfspec1.chrom, new_pos, new_ref, (new_alt,))
+        else:
+            new_vcfspec_list.append(vcfspec1)
+            return vcfspec2
+
+    final = functools.reduce(unit_func, sorted(vcfspec_list, key=(lambda x: x.pos)))
+    new_vcfspec_list.append(final)
+
+    return new_vcfspec_list
+
+
+def split_vcfspec(vcfspec, fasta, splitting_distance_ge=3, show_alignment=False):
+    check_vcfspec_monoalt(vcfspec)
+
+    alignment = alignhandler.alignment_tiebreaker(
+        realign.ALIGNER_MAIN.align(vcfspec.ref, vcfspec.alts[0]),
+        raise_with_failure=True,
+    )
+    vcfspec_list = alignhandler.alignment_to_vcfspec(
+        alignment, target_start0=vcfspec.pos0, chrom=vcfspec.chrom, fasta=fasta, strip_query_gaps=False)
+    merged_vcfspec_list = merge_vcfspecs(vcfspec_list, fasta, merging_distance_le=(splitting_distance_ge - 1))
+    return merged_vcfspec_list
+
+
+##############
+# equivalent #
+##############
 
 
 def leftmost(vcfspec, fasta, fetch_extend_length=DEFAULT_FETCH_EXTEND_LENGTH):
@@ -28,16 +289,18 @@ def indel_equivalents(vcfspec, fasta, parsimoniously=True, fetch_extend_length=D
 
 
 def make_parsimonious(vcfspec):
-    common.check_vcfspec_monoalt(vcfspec)
+    check_vcfspec_monoalt(vcfspec)
 
     pos = vcfspec.pos
     ref = vcfspec.ref
     alt = vcfspec.alts[0]
+    #ref_alt_samelen = (len(ref) == len(alt))
 
     # left
     min_length = min(len(ref), len(alt))
     action_idx = None
-    for idx in range(0, min_length - 1):
+    for idx in range(0, min_length):
+        # all identical leading bases are searched for
         if ref[idx] == alt[idx]:
             action_idx = idx
             continue
@@ -45,14 +308,16 @@ def make_parsimonious(vcfspec):
             break
 
     if action_idx is not None:
-        ref = ref[(action_idx + 1):]
-        alt = alt[(action_idx + 1):]
-        pos += (action_idx + 1)
+        ref = ref[action_idx:]
+        alt = alt[action_idx:]
+        pos += action_idx
+        # identical leading bases, except the rightmost one, have been removed
 
     # right
     min_length = min(len(ref), len(alt))
     action_idx = None
     for idx in range(-1, -min_length, -1):
+        # all identical trailing bases, except for the leftmost position, are searched for
         if ref[idx] == alt[idx]:
             action_idx = idx
             continue
@@ -62,9 +327,19 @@ def make_parsimonious(vcfspec):
     if action_idx is not None:
         ref = ref[:action_idx]
         alt = alt[:action_idx]
+        # all searched identical trailing bases have been removed
+
+    # final modificaiton
+    if (
+        (len(ref) == len(alt)) or  # e.g. REF = AGCC ; ALT = ATCG
+        (len(ref) > 1 and len(alt) > 1)  # e.g. REF = ATTTGA ; ALT = AG
+    ):
+        ref = ref[1:]
+        alt = alt[1:]
+        pos += 1
 
     # result
-    return common.Vcfspec(vcfspec.chrom, pos, ref, (alt,))
+    return Vcfspec(vcfspec.chrom, pos, ref, (alt,))
 
 
 def shifting_equivalents(vcfspec, fasta, fetch_extend_length):
@@ -82,6 +357,7 @@ def shifting_equivalents(vcfspec, fasta, fetch_extend_length):
             1) ref or alt sequence includes 'n' or 'N'
             2) input vcfspec is not a simple insertion or deletion (e.g. SNV, MNV, complex indel(delins))
     """
+
     ##### progressive fetch #####
 
     def progressive_fetch_forward(
@@ -418,15 +694,20 @@ def shifting_equivalents(vcfspec, fasta, fetch_extend_length):
         )
         # make result
         result = list()
-        result.append(common.Vcfspec(chrom, pos, ref, [alt]))
+        result.append(Vcfspec(chrom, pos, ref, [alt]))
         for new_pos, new_ref, new_alt in new_pos_list:
-            result.append(common.Vcfspec(chrom, new_pos, new_ref, [new_alt]))
+            result.append(Vcfspec(chrom, new_pos, new_ref, [new_alt]))
         result.sort(key=(lambda x: x.pos))
 
         return result
 
+    # sanity check
+    def sanity_check_indel(vcfspec):
+        if vcfspec.ref[0] != vcfspec.alts[0][0]:
+            raise Exception(f'Inserted/deleted seq must be on the right side, not left side.')
+
     # main
-    common.check_vcfspec_monoallele(vcfspec)
+    check_vcfspec_monoalt(vcfspec)
 
     chrom, pos, ref, alts = vcfspec.get_tuple()
     alt = alts[0]
@@ -435,6 +716,7 @@ def shifting_equivalents(vcfspec, fasta, fetch_extend_length):
         # if set('nN').isdisjoint(ref) and set('nN').isdisjoint(alt):
         mttype = vcfspec.get_mttype_firstalt()
         if mttype in ("ins", "del"):
+            sanity_check_indel(vcfspec)
             is_ins = mttype == "ins"
             diff_seq = list(alt[1:]) if is_ins else list(ref[1:])
             result = get_result(
@@ -487,3 +769,5 @@ def _check_commutative_for_proof(refseq, insseq):
 
     return main(refseq, insseq)
 """
+
+##############

@@ -6,7 +6,7 @@ import numpy as np
 import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
-variantplus = importlib.import_module('.'.join([top_package_name, 'variantplus', 'variantplus']))
+variantplus = importlib.import_module('.'.join([top_package_name, 'variant', 'variantplus']))
 
 
 class PanelOfNormal:

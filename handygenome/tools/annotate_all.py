@@ -23,10 +23,10 @@ indexing = importlib.import_module(
 )
 
 varianthandler = importlib.import_module(
-    ".".join([top_package_name, "variantplus", "varianthandler"])
+    ".".join([top_package_name, "variant", "varianthandler"])
 )
 variantplus = importlib.import_module(
-    ".".join([top_package_name, "variantplus", "variantplus"])
+    ".".join([top_package_name, "variant", "variantplus"])
 )
 breakends = importlib.import_module(
     ".".join([top_package_name, "sv", "breakends"])
@@ -48,6 +48,7 @@ libcosmic = importlib.import_module(
 libpopfreq = importlib.import_module(
     ".".join([top_package_name, "annotation", "popfreq"])
 )
+libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
 
 
 def unit_job(
@@ -120,7 +121,7 @@ def setup_vep(
 
 def make_vepinput(split_infile_path, vepinput_path, fasta, chromdict):
     def add_outvr_nonsv(vr, in_vcf, out_vr_list):
-        vcfspec = common.Vcfspec.from_vr(vr)
+        vcfspec = libvcfspec.Vcfspec.from_vr(vr)
         for sub_vcfspec in vcfspec.iter_monoalts():
             new_vr = in_vcf.header.new_record()
             sub_vcfspec.apply_to_vr(new_vr)
@@ -146,7 +147,7 @@ def make_vepinput(split_infile_path, vepinput_path, fasta, chromdict):
 
     def add_outvr_cpgmet(vr, in_vcf, out_vr_list):
         new_vr = in_vcf.header.new_record()
-        vcfspec = common.Vcfspec.from_vr(vr)
+        vcfspec = libvcfspec.Vcfspec.from_vr(vr)
         vcfspec.apply_to_vr(new_vr)
         new_vr.alts = ("N",)
         new_vr.id = vcfspec.get_id()
@@ -305,7 +306,7 @@ def add_annotations(
         do_cosmic,
         do_popfreq,
     ):
-        vcfspec = common.Vcfspec.from_vr(vr)
+        vcfspec = libvcfspec.Vcfspec.from_vr(vr)
         if do_features:
             add_vep_nonsv(
                 vr,
@@ -380,7 +381,7 @@ def add_annotations(
         do_cosmic,
         do_popfreq,
     ):
-        vcfspec = common.Vcfspec.from_vr(vr)
+        vcfspec = libvcfspec.Vcfspec.from_vr(vr)
         if do_features:
             add_vep_nonsv(
                 vr,

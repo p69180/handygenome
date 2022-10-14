@@ -4,6 +4,7 @@ import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 breakends = importlib.import_module('.'.join([top_package_name, 'sv', 'breakends']))
+libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
 
 
 class IGVHandle:
@@ -26,7 +27,7 @@ class IGVHandle:
         for locus in loci:
             if isinstance(locus, str):
                 cmd_src.append(locus)
-            elif isinstance(locus, common.Vcfspec):
+            elif isinstance(locus, libvcfspec.Vcfspec):
                 chrom = locus.chrom
                 if locus.get_mutation_type(alt_index=0) == 'del':
                     start1 = locus.pos + 1 - width

@@ -9,9 +9,10 @@ import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-varianthandler = importlib.import_module('.'.join([top_package_name, 'variantplus', 'varianthandler']))
+varianthandler = importlib.import_module('.'.join([top_package_name, 'variant', 'varianthandler']))
 headerhandler = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'headerhandler']))
 initvcf = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'initvcf']))
+libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
 
 
 LOGGER = workflow.get_logger()
@@ -67,7 +68,8 @@ def load_vcf_data(vcf_list):
     for in_vcf in vcf_list:
         subset = set()
         for vr in in_vcf.fetch():
-            vcfspec = varianthandler.get_vcfspec(vr)
+            vcfspec = libvcfspec.Vcfspec.from_vr(vr)
+            #vcfspec = varianthandler.get_vcfspec(vr)
             subset.add(vcfspec)
             if vcfspec not in vr_dict:
                 vr_dict[vcfspec] = list()

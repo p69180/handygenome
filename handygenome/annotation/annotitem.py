@@ -14,10 +14,10 @@ top_package_name = __name__.split(".")[0]
 common = importlib.import_module(".".join([top_package_name, "common"]))
 
 infoformat = importlib.import_module(
-    ".".join([top_package_name, "variantplus", "infoformat"])
+    ".".join([top_package_name, "variant", "infoformat"])
 )
 #varianthandler = importlib.import_module(
-#    ".".join([top_package_name, "variantplus", "varianthandler"])
+#    ".".join([top_package_name, "variant", "varianthandler"])
 #)
 
 # annotation = importlib.import_module('.'.join([top_package_name, 'annotation']))

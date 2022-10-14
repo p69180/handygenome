@@ -9,6 +9,7 @@ top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
 initvcf = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'initvcf']))
+libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
 
 
 VEP_INFO_FIELD = 'CSQ'
@@ -117,7 +118,7 @@ def run_vep_with_vcfspec(vcfspec, refver, distance=DEFAULT_DISTANCE):
 
 def run_vep_with_interval(interval, refver, distance=DEFAULT_DISTANCE):
     chromdict = common.ChromDict(refver = refver)
-    vcfspec = common.Vcfspec(interval.chrom, interval.start0, 'N', ['<DEL>'])
+    vcfspec = libvcfspec.Vcfspec(interval.chrom, interval.start0, 'N', ['<DEL>'])
     while True:
         vr = initvcf.create_vr(chromdict=chromdict, vcfspec=vcfspec, 
                                end=interval.end1)
