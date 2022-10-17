@@ -32,6 +32,8 @@ class Vcfspec:
         self.somaticindex = somaticindex
         self.germlineindexes = sorted(germlineindexes)
 
+        self._equivalents = None
+
     @classmethod
     def from_vr(cls, vr):
         return cls(chrom=vr.contig, pos=vr.pos, ref=vr.ref, alts=vr.alts)
@@ -89,7 +91,7 @@ class Vcfspec:
     def get_tuple(self):
         return (self.chrom, self.pos, self.ref, self.alts)
 
-    ### ranges
+    # ranges
     @property
     def REF_range0(self):
         return range(self.pos0, self.end0)
@@ -106,12 +108,19 @@ class Vcfspec:
     def get_postflank_range0(self, flanklen=1):
         assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
 
-        return range(self.pos0 + len(self.ref),
-                     self.pos0 + len(self.ref) + flanklen)
+        return range(
+            self.pos0 + len(self.ref),
+            self.pos0 + len(self.ref) + flanklen,
+        )
 
     # equivalents
     def normalize(self, fasta, fetch_extend_length=DEFAULT_FETCH_EXTEND_LENGTH):
         return leftmost(self, fasta, fetch_extend_length=fetch_extend_length)
+
+    def get_equivalents(self, fasta, fetch_extend_length=DEFAULT_FETCH_EXTEND_LENGTH):
+        if self._equivalents is None:
+            self._equivalents = indel_equivalents(self, fasta, parsimoniously=True, fetch_extend_length=fetch_extend_length)
+        return self._equivalents
 
     # misc
     def apply_to_vr(self, vr):

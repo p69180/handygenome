@@ -20,7 +20,6 @@ librealign = importlib.import_module(".".join([top_package_name, "align", "reali
 
 DEL_VALUE = "*"
 EMPTY_VALUE = ""
-DEFAULT_ACTIVE_THRESHOLD = 0.9
 DEFAULT_EXTEND_FETCHEDREADS_BY = 300
 DEFAULT_EXTEND_PILEUP_BY = 30
 MAX_READ_LENGTH = 151
@@ -66,8 +65,8 @@ class FetchedReadsCluster:
         for read in readhandler.get_fetch(
             result.bam, result.chrom, start0, end0, readfilter=result.readfilter
         ):
-            readuid = readhandler.get_uid(read)
-            result.dict[readuid] = read
+            read_uid = readhandler.get_uid(read)
+            result.dict[read_uid] = read
 
         return result
 
@@ -120,8 +119,8 @@ class FetchedReadsCluster:
     def get_id(self):
         return (self.chrom, self.fetch_start0, self.fetch_end0)
 
-    def get_read(self, readuid):
-        return self.dict[readuid]
+    def get_read(self, read_uid):
+        return self.dict[read_uid]
 
     def copy(self):
         result = self.__class__(self.bam, self.chrom)
@@ -356,11 +355,11 @@ class FetchedReadsSinglechrom:
                 result[id] = x
         return result
 
-    def get_read(self, readuid):
+    def get_read(self, read_uid):
         found_read = False
         for frcluster in self.clusters:
             try:
-                read = frcluster.dict[readuid]
+                read = frcluster.dict[read_uid]
             except KeyError:
                 continue
             else:
@@ -493,14 +492,14 @@ class FetchedReads:
 
         return result
 
-    def get_read(self, readuid):
+    def get_read(self, read_uid):
         found_read = False
         for frcluster in itertools.chain.from_iterable(
             (cluster for cluster in frsinglechr.clusters)
             for frsinglechr in self.subdata.values()
         ):
             try:
-                read = frcluster.dict[readuid]
+                read = frcluster.dict[read_uid]
             except KeyError:
                 continue
             else:
@@ -544,125 +543,18 @@ class FetchedReads:
 ########################
 
 
-#class FetchedReadsList(list):
-#    """Consists of adjacent FetchedReads objects with identical chromosomes
-#    """
-#    def __init__(self, chrom, bam):
-#        self.chrom = chrom
-#        self.bam = bam
-#    
-#    @property
-#    def fetch_start0(self):
-#        return self[0].fetch_start0
-#
-#    @property
-#    def fetch_end0(self):
-#        return self[-1].fetch_end0
-#
-#    def get_read(self, uid):
-#        found_read = False
-#        for fetchedreads in self:
-#            try:
-#                read = fetchedreads.dict[uid]
-#            except KeyError:
-#                continue
-#            else:
-#                found_read = True
-#                break
-#
-#        if not found_read:
-#            raise Exception(f'Given uid is not present.')
-#
-#        return read
-#
-#    def sort(self):
-#        super().sort(key=(lambda x: x.fetch_start0), reverse=False)
-#
-#    def fetch(self, start0=None, end0=None, with_uid=False):
-#        processed_uids = set()
-#        start0, end0 = fetch_arghandler(start0, end0, self[0].fetch_start0, self[-1].fetch_end0)
-#
-#        start0_cursor = start0
-#        for fetchedreads in self:
-#            if fetchedreads.fetch_end0 <= start0:
-#                continue
-#
-#            fetch_start0 = start0_cursor
-#            fetch_end0 = min(fetchedreads.fetch_end0, end0)
-#            for read, uid in fetchedreads.fetch(fetch_start0, fetch_end0, with_uid=True):
-#                if uid in processed_uids:
-#                    continue
-#                else:
-#                    processed_uids.add(uid)
-#                    if with_uid:
-#                        yield read, uid
-#                    else:
-#                        yield read
-#
-#            if fetchedreads.fetch_end0 > end0:
-#                break
-#
-#            start0_cursor = fetch_end0
-#
-#    def extend_rightward(self, start0, end0):
-#        if len(self) > 0:
-#            assert start0 > self[-1].fetch_start0, f'"start0" argument must be greater than "fetch_start0" of the rightmost element.'
-#            assert end0 > self[-1].fetch_end0, f'"end0" argument must be greater than "fetch_end0" of the rightmost element.'
-#
-#        self.append(
-#            FetchedReads.from_fetch(bam=self.bam, chrom=self.chrom, start0=start0, end0=end0)
-#        )
-#
-#    def extend_leftward(self, start0, end0):
-#        if len(self) > 0:
-#            assert start0 < self[0].fetch_start0, f'"start0" argument must be less than "fetch_start0" of the leftmost element.'
-#            assert end0 < self[0].fetch_end0, f'"end0" argument must be less than "fetch_end0" of the leftmost element.'
-#
-#        self.insert(
-#            0, 
-#            FetchedReads.from_fetch(bam=self.bam, chrom=self.chrom, start0=start0, end0=end0)
-#        )
-#
-#
-#class FetchedReadsDict(dict):
-#    def get_read(self, uid):
-#        return self[uid.chrom].get_read(uid)
-#
-#    def fetch(self, chrom, start0, end0, with_uid=False):
-#        if chrom in self.keys():
-#            fetchedreads_list = self[chrom]
-#        else:
-#            raise Exception(f'Given "chrom" is not present in this FetchedReadsDict object.')
-#
-#        if len(fetchedreads_list) == 0:
-#            return iter(())
-#        else:
-#            return fetchedreads_list.fetch(start0, end0, with_uid)
+class PileupBase:
+    def _coord_arg_sanitycheck(self, start0, end0):
+        #if start0 is not None:
+        if start0 < self.start0:
+            raise Exception('Input "start0" argument is out of pileup range.')
+        #if end0 is not None:
+        if end0 > self.end0:
+            raise Exception('Input "end0" argument is out of pileup range.')
 
-
-class Pileup:
-    pat_insclip = re.compile("(\(.+\))?([^()]+)(\(.+\))?")
-    pat_parenthesis = re.compile("[()]")
-    row_spec_exluded_vals = {DEL_VALUE, EMPTY_VALUE}
-
-    def __init__(
-        self, df, chrom, fasta, fetchedreads, active_threshold=DEFAULT_ACTIVE_THRESHOLD,
-    ):
-        self.df = df
-        self.chrom = chrom
-        self.fasta = fasta
-        self.fetchedreads = fetchedreads
-        self.bam = self.fetchedreads.bam
-        self.active_threshold = active_threshold
-
-        #self._set_active_info()
-
-        self._ref_seq_cache = dict()
-        self._alignment_store = dict()
-
-        #self.row_specs = dict()
-        # self.uids = uids
-        # self.split_cigars = None
+    def _coord_arg_sanitycheck_pos0(self, pos0):
+        if pos0 not in self.df.columns:
+            raise Exception('Input "pos0" argument is out of pileup range.')
 
     @property
     def start0(self):
@@ -673,25 +565,242 @@ class Pileup:
         return self.df.columns[-1] + 1
 
     @property
-    def range(self):
+    def range0(self):
         return range(self.start0, self.end0)
 
-    def pick_frcluster(self):
-        return self.fetchedreads.choose_cluster(self.chrom, self.start0, self.end0)
+    def get_ref_seq(self, start0=None, end0=None):
+        if start0 is None:
+            start0 = self.start0
+        if end0 is None:
+            end0 = self.end0
+        self._coord_arg_sanitycheck(start0, end0)
 
-    def get_ref_seq(self):
-        key = (self.start0, self.end0)
+        key = (start0, end0)
         if key not in self._ref_seq_cache:
             self._ref_seq_cache[key] = self.fasta.fetch(self.chrom, key[0], key[1])
         return self._ref_seq_cache[key]
 
-    def get_max_vaf_colindex(self, col_idx, with_counts=False):
-        col = self.df.iloc[:, col_idx]
-        return get_max_vaf_from_pileupcol(col, with_counts=with_counts)
+#    @staticmethod
+#    def get_max_vaf_from_pileupcol(col, with_counts=False, empty_value=EMPTY_VALUE):
+#        counts = collections.Counter(x for x in col if x != empty_value)
+#        total = sum(counts.values())
+#        if total == 0:
+#            raise Exception(f"Pileup column allele count sum is 0.")
+#
+#        max_allele, max_count = max(counts.items(), key=(lambda x: x[1]))
+#        max_vaf = max_count / total
+#
+#        if with_counts:
+#            return max_allele, max_vaf, counts
+#        else:
+#            return max_allele, max_vaf
+#
+#    def get_max_vaf_colindex(self, col_idx, with_counts=False):
+#        col = self.df.iloc[:, col_idx]
+#        return self.get_max_vaf_from_pileupcol(col, with_counts=with_counts)
+#
+#    def get_max_vaf_colpos0(self, col_pos0, with_counts=False):
+#        col = self.df.loc[:, col_pos0]
+#        return self.get_max_vaf_from_pileupcol(col, with_counts=with_counts)
 
-    def get_max_vaf_colpos0(self, col_pos0, with_counts=False):
-        col = self.df.loc[:, col_pos0]
-        return get_max_vaf_from_pileupcol(col, with_counts=with_counts)
+    def get_allele_counter(self, pos0):
+        #self._coord_arg_sanitycheck_pos0(pos0)
+        col = self.df.loc[:, pos0]
+        return collections.Counter(x for x in col if x != EMPTY_VALUE)
+
+    def get_allele_portions(self, pos0):
+        counter = self.get_allele_counter(pos0)
+        counter_sum = sum(counter.values())
+        portions = dict()
+        for key, val in counter.items():
+            portions[key] = val / counter_sum
+        return portions
+
+    # active info related ones #
+    def iter_active_info_old_deprecated(self, start0, end0, reverse=False):
+        self._coord_arg_sanitycheck(start0, end0)
+
+        ref_seq = self.get_ref_seq(start0, end0)
+        pos0_range = range(start0, end0)
+        if reverse:
+            ref_seq = ref_seq[::-1]
+            pos0_range = pos0_range[::-1]
+
+        for ref_base, pos0 in zip(ref_seq, pos0_range):
+            max_allele, max_vaf = self.get_max_vaf_colpos0(pos0, with_counts=False)
+            if max_vaf >= self.active_threshold:
+                is_active = not (max_allele == ref_base)
+            else:
+                is_active = True
+            yield is_active
+
+    def iter_active_info(self, start0, end0, reverse=False):
+        self._coord_arg_sanitycheck(start0, end0)
+
+        ref_seq = self.get_ref_seq(start0, end0)
+        pos0_range = range(start0, end0)
+        if reverse:
+            ref_seq = ref_seq[::-1]
+            pos0_range = pos0_range[::-1]
+
+        for ref_base, pos0 in zip(ref_seq, pos0_range):
+            counter = self.get_allele_counter(pos0)
+            non_ref_portion = 1 - (counter[ref_base] / sum(counter.values()))
+            is_active = (non_ref_portion >= self.active_threshold)
+            yield is_active 
+
+    def _set_active_info(self, start0=None, end0=None):
+        if start0 is None:
+            start0 = self.start0
+        if end0 is None:
+            end0 = self.end0
+
+        self._coord_arg_sanitycheck(start0, end0)
+        if not hasattr(self, '_active_info'):
+            setattr(self, '_active_info', list())
+
+        active_info_idx_start = start0 - self.start0
+        active_info_idx_end = end0 - self.start0
+
+        self._active_info[
+            active_info_idx_start:active_info_idx_end
+        ] = self.iter_active_info(start0, end0, reverse=False)
+
+    def get_active_info(self, start0=None, end0=None):
+        if start0 is None:
+            start0 = self.start0
+        if end0 is None:
+            end0 = self.end0
+
+        self._coord_arg_sanitycheck(start0, end0)
+
+        active_info_idx_start = start0 - self.start0
+        active_info_idx_end = end0 - self.start0
+
+        return pd.Series(
+            self._active_info[active_info_idx_start:active_info_idx_end], 
+            index=self.df.columns[active_info_idx_start:active_info_idx_end],
+        )
+
+    def get_active_positions(self):
+        return tuple(
+            itertools.compress(self.df.columns, self._active_info)
+        )
+
+    def check_inactive_margin_right(self, length):
+        return not any(self._active_info[-length:])
+
+    def check_inactive_margin_left(self, length):
+        return not any(self._active_info[:length])
+
+    # row specs related ones
+    @staticmethod
+    def row_spec_matcher(query, target):
+        if query['left_filled']:
+            if query['right_filled']:
+                if target['left_filled'] and target['right_filled']:
+                    return query['seq'] in target['seq']
+                else:
+                    return False
+            else:
+                if target['left_filled']:
+                    return query['seq'] == target['seq'][:len(query['seq'])]
+                else:
+                    return False
+        else:
+            if query['right_filled']:
+                if target['right_filled']:
+                    return query['seq'] == target['seq'][-len(query['seq']):]
+                else:
+                    return False
+            else:
+                return query['seq'] in target['seq']
+
+    def set_row_spec_groups(self):
+        """row_spec's are grouped by whether one is a substring of another."""
+        self.row_spec_groups = collections.OrderedDict()
+        for query_rowid, query in sorted(
+            self.row_specs.items(), 
+            key=(lambda x: x[1]['match_length']), 
+            reverse=True,
+        ):
+            superseq_candidates = list()
+            for target_rowid in self.row_spec_groups.keys():
+                target = self.row_specs[target_rowid]
+                if self.row_spec_matcher(query, target):
+                    superseq_candidates.append(target_rowid)
+                if len(superseq_candidates) >= 2:
+                    break
+                    
+            if len(superseq_candidates) == 0:
+                self.row_spec_groups[query_rowid] = {
+                    'subseq_rowids': set(),
+                    'subseq_hits': 0,
+                }
+                self.row_spec_groups[query_rowid]['subseq_rowids'].add(query_rowid)
+                self.row_spec_groups[query_rowid]['subseq_hits'] += 1
+            elif len(superseq_candidates) == 1:
+                superseq_rowid = superseq_candidates[0]
+                self.row_spec_groups[superseq_rowid]['subseq_rowids'].add(query_rowid)
+                self.row_spec_groups[superseq_rowid]['subseq_hits'] += 1
+            else:
+                for superseq_rowid in superseq_candidates:
+                    self.row_spec_groups[superseq_rowid]['subseq_rowids'].add(query_rowid)
+
+    # for debugging
+    def show_row_spec_alignments(self):
+        subseq_hits_sum = sum(x['subseq_hits'] for x in self.row_spec_groups.values())
+        for superseq_id, groupinfo in sorted(
+            self.row_spec_groups.items(),
+            key=(lambda x: x[1]['subseq_hits']),
+            reverse=True,
+        ):
+            superseq_row_spec = self.row_specs[superseq_id]
+            lstrip_query_gaps = not superseq_row_spec["left_filled"]
+            rstrip_query_gaps = not superseq_row_spec["right_filled"]
+
+            superseq_aln = self._alignment_store[superseq_id]
+            superseq_vcfspec_list = alignhandler.alignment_to_vcfspec(
+                superseq_aln, 
+                self.start0, 
+                self.chrom, 
+                self.fasta,
+                lstrip_query_gaps=lstrip_query_gaps,
+                rstrip_query_gaps=rstrip_query_gaps,
+            )
+
+            print('subseq hits:', groupinfo['subseq_hits'])
+            print('subseq hits portion:', groupinfo['subseq_hits'] / subseq_hits_sum)
+            print(superseq_row_spec)
+            print(superseq_vcfspec_list)
+            print(superseq_aln)
+            print()
+
+
+class Pileup(PileupBase):
+    pat_insclip = re.compile("(\(.+\))?([^()]+)(\(.+\))?")
+    pat_parenthesis = re.compile("[()]")
+    row_spec_exluded_vals = {DEL_VALUE, EMPTY_VALUE}
+
+    def __init__(self, df, chrom, fasta, fetchedreads, active_threshold=None):
+        self.df = df
+        self.chrom = chrom
+        self.fasta = fasta
+        self.fetchedreads = fetchedreads
+        self.bam = self.fetchedreads.bam
+
+        if active_threshold is None:
+            self.active_threshold = librealign.DEFAULT_ACTIVE_THRESHOLD
+        else:
+            self.active_threshold = active_threshold
+
+        self._ref_seq_cache = dict()
+        self._alignment_store = dict()
+
+        self._set_active_info()
+
+    def pick_frcluster(self):
+        return self.fetchedreads.choose_cluster(self.chrom, self.start0, self.end0)
 
     def subset(self, start0, end0, inplace=False):
         self._coord_arg_sanitycheck(start0, end0)
@@ -699,8 +808,8 @@ class Pileup:
         new_df = self.df.loc[:, start0:(end0 - 1)]
         # remove out-of-range rows
         row_within_range = list()
-        for uid, row in new_df.iterrows():
-            read = self.get_read(uid)
+        for row_id, row in new_df.iterrows():
+            read = self.get_read(row_id)
             if read.reference_end <= start0 or read.reference_start >= end0:
                 row_within_range.append(False)
             else:
@@ -724,83 +833,10 @@ class Pileup:
             result._ref_seq_cache = self._ref_seq_cache
             return result
 
-    def get_read(self, uid):
-        return self.fetchedreads.get_read(uid)
+    def get_read(self, row_id):
+        return self.fetchedreads.get_read(row_id)
 
-    ##################
-
-    def _coord_arg_sanitycheck(self, start0, end0):
-        if start0 is not None:
-            if start0 < self.start0:
-                raise Exception('Input "start0" argument is out of pileup range.')
-        if end0 is not None:
-            if end0 > self.end0:
-                raise Exception('Input "end0" argument is out of pileup range.')
-
-    # active info related #
-    def iter_active_info(self, start0, end0, reverse=False):
-        self._coord_arg_sanitycheck(start0, end0)
-
-        ref_seq = self.fasta.fetch(self.chrom, start0, end0)
-        pos0_range = range(start0, end0)
-        if reverse:
-            ref_seq = ref_seq[::-1]
-            pos0_range = range(pos0_range)
-
-        for ref_base, pos0 in zip(ref_seq, pos0_range):
-            max_allele, max_vaf = self.get_max_vaf_colpos0(pos0, with_counts=False)
-            if max_vaf >= self.active_threshold:
-                is_active = not (max_allele == ref_base)
-            else:
-                is_active = True
-            yield is_active
-
-    def _set_active_info(self, start0=None, end0=None):
-        self._coord_arg_sanitycheck(start0, end0)
-
-        if not hasattr(self, '_active_info'):
-            setattr(self, '_active_info', list())
-
-        if start0 is None:
-            start0 = self.start0
-        if end0 is None:
-            end0 = self.end0
-        active_info_idx_start = start0 - self.start0
-        active_info_idx_end = end0 - self.start0
-
-        self._active_info[
-            active_info_idx_start:active_info_idx_end
-        ] = self.iter_active_info(start0, end0, reverse=False)
-
-    def get_active_info(self, start0=None, end0=None):
-        self._coord_arg_sanitycheck(start0, end0)
-
-        if start0 is None:
-            start0 = self.start0
-        if end0 is None:
-            end0 = self.end0
-        active_info_idx_start = start0 - self.start0
-        active_info_idx_end = end0 - self.start0
-
-        return pd.Series(
-            self._active_info[active_info_idx_start:active_info_idx_end], 
-            index=self.df.columns[active_info_idx_start:active_info_idx_end],
-        )
-
-    def get_active_positions(self):
-        return tuple(
-            itertools.compress(self.df.columns, self._active_info)
-        )
-
-    def check_inactive_margin_right(self, length):
-        return not any(self._active_info[-length:])
-
-    def check_inactive_margin_left(self, length):
-        return not any(self._active_info[:length])
-
-    #######################
-
-    ### extend and related ###
+    ### extend ###
     def extend_rightward(self, width, extend_fetchedreads_by=DEFAULT_EXTEND_FETCHEDREADS_BY):
         # keep original starts and ends
         border_col_idx_left = self.df.shape[1] - 1
@@ -892,11 +928,9 @@ class Pileup:
             inplace=True,
         )
 
-    ##############
-
     ### row specs ###
-    def get_row_spec(self, readuid):
-        row = self.df.loc[readuid, :]
+    def get_row_spec(self, row_id):
+        row = self.df.loc[row_id, :]
         return {
             "seq": "".join(
                 self.__class__.pat_parenthesis.sub("", x) 
@@ -910,154 +944,189 @@ class Pileup:
 
     def set_row_specs(self):
         self.row_specs = dict()
-        for readuid, row in self.df.iterrows():
-            self.row_specs[readuid] = self.get_row_spec(readuid)
-
-    def set_row_spec_groups(self):
-        self.row_spec_groups = group_row_specs(self.row_specs)
+        for row_id, row in self.df.iterrows():
+            self.row_specs[row_id] = self.get_row_spec(row_id)
 
     # get realigned reads #
     def get_realigned_reads(self, aligner=None):
+        """Returns:
+            dict (keys ReadUID, values pysam.AlignedSegment)
+        """
         if aligner is None:
-            aligner = librealign.ALIGNER
+            aligner = librealign.ALIGNER_MAIN
         ref_seq = self.get_ref_seq()
         ref_seq_reversed = ref_seq[::-1]
-        return librealign.get_realigned_reads(self, self.range, ref_seq, ref_seq_reversed, aligner)
+        return librealign.get_realigned_reads(self, self.range0, ref_seq, ref_seq_reversed, aligner)
 
-    def get_vcfspecs(self, subseq_portion_threshold=0.05):
+    def get_vcfspecs(self, allele_portion_threshold=None):
+        if allele_portion_threshold is None:
+            allele_portion_threshold = librealign.DEFAULT_VCFSPEC_EXTRACTION_THRESHOLD
         ref_seq = self.get_ref_seq()
-        return librealign.get_vcfspecs(self, self.range, ref_seq, subseq_portion_threshold=subseq_portion_threshold)
+        return librealign.get_vcfspecs(self, allele_portion_threshold=allele_portion_threshold)
 
 
-class MultisamplePileup:
+class MultisamplePileup(PileupBase):
     def __init__(self, pileup_dict):
         """Args:
             pileup_dict: keys - sampleid; values - Pileup object
         """
         self.pileup_dict = pileup_dict
 
-    def equalize_margins(self):
-        max_range_start0 = min(x.start0 for x in self.pileup_dict.values())
-        max_range_end0 = max(x.end0 for x in self.pileup_dict.values())
-        for pileup in self.pileup_dict.values():
-            if pileup.start0 > max_range_start0:
-                pileup.extend_leftward(pileup.start0 - max_range_start0)
-            if pileup.end0 < max_range_end0:
-                pileup.extend_rightward(max_range_end0 - pileup.end0)
+        #self.active_threshold = self._get_active_threshold()
+        self._alignment_store = dict()
 
-    def equalize_inactive_margins(self, inactive_padding):
-        while True:
-            # extend
-            self.equalize_margins()
-            # check inactive margins
-            left_margin_insufficient = list()
-            right_margin_insufficient = list()
-            for sampleid, pileup in self.pileup_dict.items():
-                if not pileup.check_inactive_margin_left(inactive_padding):
-                    left_margin_insufficient.append(sampleid)
-                if not pileup.check_inactive_margin_right(inactive_padding):
-                    right_margin_insufficient.append(sampleid)
-            # check whether to break
-            if len(left_margin_insufficient) == 0 and len(right_margin_insufficient) == 0:
-                break
-            # secure inactive margins
-            for sampleid in left_margin_insufficient:
-                self.pileup_dict[sampleid].secure_inactive_padding_leftward(inactive_padding)
-            for sampleid in right_margin_insufficient:
-                self.pileup_dict[sampleid].secure_inactive_padding_rightward(inactive_padding)
+        first_pileup = next(iter(self.pileup_dict.values()))
+        self.chrom = first_pileup.chrom
+        self.fasta = first_pileup.fasta
+        self._ref_seq_cache = first_pileup._ref_seq_cache
+
+    def _get_active_threshold(self):
+        depth_sum = sum(x.df.shape[0] for x in self.pileup_dict.values())
+        corrected_active_thresholds = (
+            x.active_threshold * (x.df.shape[0] / depth_sum)
+            for x in self.pileup_dict.values()
+        )
+        return min(corrected_active_thresholds)
+
+    def _get_active_threshold_simple(self):
+        return sum(x.active_threshold for x in self.pileup_dict.values()) / (len(self.pileup_dict) ** 2)
 
     def set_df(self):
+        assert len(set(x.range0 for x in self.pileup_dict.values())) == 1, f'Genomic ranges of pileup objects are different.'
         self.df = pd.concat(
             {key: val.df for key, val in self.pileup_dict.items()},
             names=['SampleID', 'ReadUID'],
         )
+        self._set_active_info()
 
-    def get_read(self, sampleid, readuid):
-        return self.pileup_dict[sampleid].get_read(readuid)
-            
+    def get_read(self, row_id):
+        sampleid, read_uid = row_id
+        return self.pileup_dict[sampleid].get_read(read_uid)
+
+    ### extend ###
+    def extend_rightward(self, width, extend_fetchedreads_by=DEFAULT_EXTEND_FETCHEDREADS_BY):
+        for pileup in self.pileup_dict.values():
+            pileup.extend_rightward(width, extend_fetchedreads_by=extend_fetchedreads_by)
+
+    def extend_leftward(self, width, extend_fetchedreads_by=DEFAULT_EXTEND_FETCHEDREADS_BY):
+        for pileup in self.pileup_dict.values():
+            pileup.extend_leftward(width, extend_fetchedreads_by=extend_fetchedreads_by)
+
+    # equalize
+    def equalize_margins_leftward(self):
+        max_range_start0 = min(x.start0 for x in self.pileup_dict.values())
+        for pileup in self.pileup_dict.values():
+            if pileup.start0 > max_range_start0:
+                pileup.extend_leftward(pileup.start0 - max_range_start0)
+
+    def equalize_margins_rightward(self):
+        max_range_end0 = max(x.end0 for x in self.pileup_dict.values())
+        for pileup in self.pileup_dict.values():
+            if pileup.end0 < max_range_end0:
+                pileup.extend_rightward(max_range_end0 - pileup.end0)
+
+    def equalize_margins(self):
+        self.equalize_margins_leftward()
+        self.equalize_margins_rightward()
+
+    # secure inactive padding
+    def secure_inactive_padding_leftward(self, inactive_padding, extend_pileup_by=DEFAULT_EXTEND_PILEUP_BY, extend_fetchedreads_by=DEFAULT_EXTEND_FETCHEDREADS_BY):
+        while True:
+            self.equalize_margins_leftward()
+            # check inactive margins
+            margin_insufficient = list()
+            for sampleid, pileup in self.pileup_dict.items():
+                if not pileup.check_inactive_margin_left(inactive_padding):
+                    margin_insufficient.append(sampleid)
+            # check whether to break
+            if len(margin_insufficient) == 0:
+                break
+            # secure inactive margins
+            for sampleid in margin_insufficient:
+                self.pileup_dict[sampleid].secure_inactive_padding_leftward(inactive_padding, extend_pileup_by=extend_pileup_by, extend_fetchedreads_by=extend_fetchedreads_by)
+
+    def secure_inactive_padding_rightward(self, inactive_padding, extend_pileup_by=DEFAULT_EXTEND_PILEUP_BY, extend_fetchedreads_by=DEFAULT_EXTEND_FETCHEDREADS_BY):
+        while True:
+            self.equalize_margins_rightward()
+            # check inactive margins
+            margin_insufficient = list()
+            for sampleid, pileup in self.pileup_dict.items():
+                if not pileup.check_inactive_margin_right(inactive_padding):
+                    margin_insufficient.append(sampleid)
+            # check whether to break
+            if len(margin_insufficient) == 0:
+                break
+            # secure inactive margins
+            for sampleid in margin_insufficient:
+                self.pileup_dict[sampleid].secure_inactive_padding_rightward(inactive_padding, extend_pileup_by=extend_pileup_by, extend_fetchedreads_by=extend_fetchedreads_by)
+
+    ### row specs ###
     def set_row_specs(self):
         for pileup in self.pileup_dict.values():
             pileup.set_row_specs()
 
         self.row_specs = dict()
         for idx, row in self.df.iterrows():
-            sampleid, readuid = idx
-            self.row_specs[(sampleid, readuid)] = self.pileup_dict[sampleid].row_specs[readuid]
+            sampleid, read_uid = idx
+            self.row_specs[(sampleid, read_uid)] = self.pileup_dict[sampleid].row_specs[read_uid]
 
-    def set_row_spec_groups(self):
-        self.row_spec_groups = group_row_specs(self.row_specs)
+    def divide_row_spec_groups(self):
+        # initialize
+        row_spec_groups_by_sample = dict()
+        superseq_rowids_sorted = [
+            superseq_rowid for superseq_rowid, groupinfo in sorted(
+                self.row_spec_groups.items(),
+                key=(lambda x: x[1]['subseq_hits']),
+                reverse=True,
+            )
+        ]
+        for sampleid, pileup in self.pileup_dict.items():
+            row_spec_groups_by_sample[sampleid] = collections.OrderedDict()
+            for superseq_rowid in superseq_rowids_sorted:
+                row_spec_groups_by_sample[sampleid][superseq_rowid] = {
+                    #'subseq_rowids': set(),
+                    'subseq_hits': 0,
+                }
+        # fill in values
+        for superseq_rowid, groupinfo in self.row_spec_groups.items():
+            for subseq_rowid in groupinfo['subseq_rowids']:
+                subseq_sampleid, subseq_readuid = subseq_rowid
+                #row_spec_groups_by_sample[subseq_sampleid][superseq_rowid]['subseq_rowids'].add(subseq_readuid)
+                row_spec_groups_by_sample[subseq_sampleid][superseq_rowid]['subseq_hits'] += 1
+        # assign to each single sample pileup
+        for sampleid, groups in row_spec_groups_by_sample.items():
+            self.pileup_dict[sampleid].row_spec_groups = groups
 
-            
-def group_row_specs(row_specs):
-    """Input "row_spec"s are grouped by whether one is a substring of another."""
-    
-    def matcher(query, target):
-        if query['left_filled']:
-            if query['right_filled']:
-                if target['left_filled'] and target['right_filled']:
-                    return query['seq'] in target['seq']
-                else:
-                    return False
-            else:
-                if target['left_filled']:
-                    return query['seq'] == target['seq'][:len(query['seq'])]
-                else:
-                    return False
-        else:
-            if query['right_filled']:
-                if target['right_filled']:
-                    return query['seq'] == target['seq'][-len(query['seq']):]
-                else:
-                    return False
-            else:
-                return query['seq'] in target['seq']                
-        
-    # main
-    row_spec_groups = collections.OrderedDict()
-    for query_rowid, query in sorted(
-        row_specs.items(), 
-        key=(lambda x: x[1]['match_length']), 
-        reverse=True,
-    ):
-        superseq_candidates = list()
-        for target_rowid in row_spec_groups.keys():
-            target = row_specs[target_rowid]
-            if matcher(query, target):
-                superseq_candidates.append(target_rowid)
-            if len(superseq_candidates) >= 2:
-                break
-                
-        if len(superseq_candidates) == 0:                
-            row_spec_groups[query_rowid] = {
-                'subseq_rowids': set(),
-                'subseq_hits': 0,
-            }
-            row_spec_groups[query_rowid]['subseq_rowids'].add(query_rowid)
-            row_spec_groups[query_rowid]['subseq_hits'] += 1
-        elif len(superseq_candidates) == 1:
-            superseq_rowid = superseq_candidates[0]
-            row_spec_groups[superseq_rowid]['subseq_rowids'].add(query_rowid)
-            row_spec_groups[superseq_rowid]['subseq_hits'] += 1
-        else:
-            for superseq_rowid in superseq_candidates:
-                row_spec_groups[superseq_rowid]['subseq_rowids'].add(query_rowid)
-            
-    return row_spec_groups
+    # get realigned reads #
+    def get_realigned_reads(self, aligner=None):
+        """Returns:
+            dict (keys sampleid, values dict (keys ReadUID, values pysam.AlignedSegment))
+        """
+        if aligner is None:
+            aligner = librealign.ALIGNER_MAIN
+        ref_seq = self.get_ref_seq()
+        ref_seq_reversed = ref_seq[::-1]
 
+        realigned_reads_allsamples = librealign.get_realigned_reads(self, self.range0, ref_seq, ref_seq_reversed, aligner)
+        realigned_reads_multisample = dict()
+        for row_id, read in realigned_reads_allsamples.items():
+            sampleid, readuid = row_id
+            realigned_reads_multisample.setdefault(sampleid, dict())
+            realigned_reads_multisample[sampleid][readuid] = read
 
-def get_max_vaf_from_pileupcol(col, with_counts=False, empty_value=EMPTY_VALUE):
-    counts = collections.Counter(x for x in col if x != empty_value)
-    total = sum(counts.values())
-    if total == 0:
-        raise Exception(f"Pileup column allele count sum is 0.")
+        return realigned_reads_multisample
 
-    max_allele, max_count = max(counts.items(), key=(lambda x: x[1]))
-    max_vaf = max_count / total
-
-    if with_counts:
-        return max_allele, max_vaf, counts
-    else:
-        return max_allele, max_vaf
+    def get_vcfspecs(self, allele_portion_threshold=None):
+        """Must be run after 'divide_row_spec_groups' and 'get_realigned_reads' 
+            methods have been run.
+            'divide_row_spec_groups' is needed for setting 'row_spec_groups' for
+                each singlesample Pileup.
+            'get_realigned_reads' is needed for initiating '_alignment_store' attribute.
+        """
+        if allele_portion_threshold is None:
+            allele_portion_threshold = librealign.DEFAULT_VCFSPEC_EXTRACTION_THRESHOLD
+        vcfspecs_allsamples = librealign.get_vcfspecs_multisample(self, allele_portion_threshold)
+        return vcfspecs_allsamples
 
 
 @common.get_deco_num_set(('bam', 'fetchedreads'), 1)
@@ -1068,7 +1137,7 @@ def get_pileup(
     bam=None,
     fetchedreads=None,
     fasta=None,
-    active_threshold=DEFAULT_ACTIVE_THRESHOLD,
+    active_threshold=None,
     truncate=True,
     as_array=False,
     return_range=False,
@@ -1085,17 +1154,6 @@ def get_pileup(
         else:
             fetchedreads.add_reads(chrom, start0, end0)
         return fetchedreads
-
-#    def set_params(chrom, start0, end0, bam, fetchedreads):
-#        if fetchedreads is None:
-#            fetchedreads = FetchedReads.from_fetch(bam, chrom, start0, end0)
-#        else:
-#            if not fetchedreads.check_fully_includes(chrom, start0, end0):
-#                fetchedreads.add_reads(chrom, start0, end0)
-#
-#        pileup_range = range(start0, end0)
-#
-#        return pileup_range, fetchedreads
 
     def make_readlist(fetchedreads, chrom, start0, end0):
         readlist = list()
@@ -1355,12 +1413,14 @@ def get_pileup(
             fetchedreads=fetchedreads,
             active_threshold=active_threshold,
         )
-        pileup._set_active_info()
         return pileup
 
     # main
-    # setup parameters
+    # parameter handling
     sanity_check(chrom, start0, end0, bam, fetchedreads, fasta, as_array)
+    if active_threshold is None:
+        active_threshold = librealign.DEFAULT_ACTIVE_THRESHOLD
+    # prepare fetchedreads and pileup_range
     fetchedreads = supplement_fetchedreads(chrom, start0, end0, bam, fetchedreads)
     pileup_range = range(start0, end0)
     #pileup_range, fetchedreads = set_params(chrom, start0, end0, bam, fetchedreads)
@@ -1407,6 +1467,43 @@ def get_pileup(
             return (pileup, pileup_range)
         else:
             return pileup
+
+
+def get_pileup_multisample(
+    chrom,
+    start0,
+    end0,
+    bam_dict,
+    fasta,
+    active_threshold_onesample=None,
+    del_value=DEL_VALUE,
+    empty_value=EMPTY_VALUE,
+):
+    # parameter handling
+    if active_threshold_onesample is None:
+        active_threshold_onesample = librealign.DEFAULT_ACTIVE_THRESHOLD
+    # initialize pileup_dict
+    pileup_dict = dict()
+    for sampleid, bam in bam_dict.items():
+        pileup_dict[sampleid] = get_pileup(
+            chrom,
+            start0,
+            end0,
+            bam=bam,
+            fasta=fasta,
+            active_threshold=active_threshold_onesample,
+            truncate=True,
+            as_array=False,
+            return_range=False,
+            del_value=del_value,
+            empty_value=empty_value,
+        )
+    # create MultisamplePileup object and postprocess
+    mspileup = MultisamplePileup(pileup_dict)
+    mspileup.set_df()
+
+    return mspileup
+
 
 
 # def get_pileup(bam, chrom, start0, end0, as_array=False, truncate=True, with_reads=False):

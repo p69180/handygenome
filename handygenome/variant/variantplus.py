@@ -3,6 +3,7 @@ import pprint
 import os
 import itertools
 import random
+import shutil
 
 import pysam
 import pyranges as pr
@@ -52,12 +53,6 @@ libcosmic = importlib.import_module(
 readplus = importlib.import_module(".".join([top_package_name, "read", "readplus"]))
 libreadstats = importlib.import_module(
     ".".join([top_package_name, "annotation", "readstats"])
-)
-alleleinfosetup = importlib.import_module(
-    ".".join([top_package_name, "read", "alleleinfosetup"])
-)
-alleleinfosetup_sv = importlib.import_module(
-    ".".join([top_package_name, "read", "alleleinfosetup_sv"])
 )
 libvcfspec = importlib.import_module(
     ".".join([top_package_name, "variant", "vcfspec"])
@@ -727,12 +722,13 @@ class VariantPlus:
     # visualizations
     @common.get_deco_num_set(('bam', 'sampleid'), 1)
     def show_igv(
-        self, igv, bam=None, sampleid=None, tmpbam_dir=None,
+        self, igv, bam=None, sampleid=None, tmpbam_dir=None, trackname=None,
         rpplist_kwargs={
             'view': True,
             'no_matesearch': True,
         },
         alleleinfo_kwargs=dict(),
+        viewaspairs=True,
     ):
         # get rpplist
         if sampleid is not None:
@@ -756,13 +752,22 @@ class VariantPlus:
 
         # set tmpbam_path
         if tmpbam_dir is None:
-            tmpbam_dir = os.getcwd()
+            tmpbam_dir = workflow.get_tmpfile_path(prefix='tmpdir_show_igv_', dir=os.getcwd(), delete=False, is_dir=True)
 
-        if sampleid is None:
-            prefix = None
+        if trackname is None:  # trackname is basename of tmpbam_path
+            if sampleid is None:
+                tmpbam_path = workflow.get_tmpfile_path(suffix='.bam', dir=tmpbam_dir, delete=False)
+                #trackname = os.path.basename(tmpbam_path)
+            else:
+                #trackname = f'{sampleid}_for_show.bam'
+                tmpbam_path = os.path.join(tmpbam_dir, f'{sampleid}_for_show.bam')
+                if os.path.exists(tmpbam_path):
+                    tmpbam_path = workflow.get_tmpfile_path(prefix=f'{sampleid}_for_show_', suffix='.bam', dir=tmpbam_dir, delete=False)
+                    #trackname = os.path.basename(tmpbam_path)
         else:
-            prefix = f'{sampleid}_for_show_'
-        tmpbam_path = workflow.get_tmpfile_path(prefix=prefix, suffix=".bam", where=tmpbam_dir)
+            tmpbam_path = os.path.join(tmpbam_dir, trackname)
+            if os.path.exists(tmpbam_path):
+                tmpbam_path = workflow.get_tmpfile_path(prefix=re.sub('\.bam$', '', trackname), suffix='.bam', dir=tmpbam_dir, delete=False)
 
         # main
         rpplist.write_bam(outfile_path=tmpbam_path)
@@ -796,10 +801,15 @@ class VariantPlus:
             igv.goto([self.vcfspec], width=width)
 
         igv.cmd("group")
-        igv.viewaspairs()
+
+        if viewaspairs:
+            igv.viewaspairs()
+        else:
+            igv.viewaspairs_off()
+
         igv.cmd(f"colorBy TAG {readplus.ALLELEINFO_TAG_RPP}")
 
-        os.remove(tmpbam_path)
+        shutil.rmtree(tmpbam_dir)
 
     def show_readcounts(self, sampleids=None, **kwargs):
         if sampleids is None:

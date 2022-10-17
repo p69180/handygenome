@@ -2,7 +2,6 @@ import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 breakends = importlib.import_module('.'.join([top_package_name, 'sv', 'breakends']))
-alleleinfosetup = importlib.import_module('.'.join([top_package_name, 'read', 'alleleinfosetup']))
 
 
 DEFAULT_FLANKLEN_PARSIDE = 1

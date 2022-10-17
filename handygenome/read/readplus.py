@@ -12,8 +12,8 @@ top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
 readhandler = importlib.import_module('.'.join([top_package_name, 'read', 'readhandler']))
-alleleinfosetup = importlib.import_module('.'.join([top_package_name, 'read', 'alleleinfosetup']))
-alleleinfosetup_sv = importlib.import_module('.'.join([top_package_name, 'read', 'alleleinfosetup_sv']))
+liballeleinfo = importlib.import_module('.'.join([top_package_name, 'read', 'alleleinfo']))
+liballeleinfo_sv = importlib.import_module('.'.join([top_package_name, 'read', 'alleleinfo_sv']))
 
 
 RPPLIST_MAX_SHOW_LEN = 30
@@ -326,11 +326,11 @@ class ReadPlus:
         return readhandler.split_cigar(self.read.cigartuples, self.read.reference_start, split_range0)
 
     # alleleinfo
-    def update_alleleinfo(self, vcfspec, 
-                          flanklen=alleleinfosetup.DEFAULT_FLANKLEN):
+    def update_alleleinfo(self, vcfspec, flanklen=liballeleinfo.DEFAULT_FLANKLEN):
         # aiitem: AlleleInfoItem
-        aiitem = alleleinfosetup.make_alleleinfoitem_readplus(
-            vcfspec=vcfspec, rp=self, flanklen=flanklen)
+        aiitem = liballeleinfo.make_alleleinfoitem_readplus(
+            vcfspec=vcfspec, rp=self, flanklen=flanklen,
+        )
         self.alleleinfo[vcfspec] = aiitem
 
     def set_alleleinfo_tag(self, vcfspec):
@@ -342,13 +342,13 @@ class ReadPlus:
 
     def update_alleleinfo_sv(
             self, bnds, 
-            flanklen_parside=alleleinfosetup_sv.DEFAULT_FLANKLEN_PARSIDE,
-            flanklen_bndside=alleleinfosetup_sv.DEFAULT_FLANKLEN_BNDSIDE):
-        aiitem_bnd1 = alleleinfosetup_sv.make_alleleinfoitem_readplus(
+            flanklen_parside=liballeleinfo_sv.DEFAULT_FLANKLEN_PARSIDE,
+            flanklen_bndside=liballeleinfo_sv.DEFAULT_FLANKLEN_BNDSIDE):
+        aiitem_bnd1 = liballeleinfo_sv.make_alleleinfoitem_readplus(
             bnds=bnds, is_bnd1=True, rp=self, 
             flanklen_parside=flanklen_parside,
             flanklen_bndside=flanklen_bndside)
-        aiitem_bnd2 = alleleinfosetup_sv.make_alleleinfoitem_readplus(
+        aiitem_bnd2 = liballeleinfo_sv.make_alleleinfoitem_readplus(
             bnds=bnds, is_bnd1=False, rp=self, 
             flanklen_parside=flanklen_parside,
             flanklen_bndside=flanklen_bndside)
@@ -390,17 +390,7 @@ class ReadPlus:
 
     # others
     def _set_NMMD(self):
-        (ref_seq_padded, read_seq_padded) = readhandler.get_padded_seqs(self.read, self.fasta)
-        self.read.set_tag(
-            tag='NM', value_type='i',
-            value=readhandler.get_NM(
-                self.read, ref_seq_padded=ref_seq_padded, 
-                read_seq_padded=read_seq_padded))
-        self.read.set_tag(
-            tag='MD', value_type='Z',
-            value=readhandler.get_MD(
-                self.read, ref_seq_padded=ref_seq_padded, 
-                read_seq_padded=read_seq_padded))
+        readhandler.set_NMMD(self.read, self.fasta)
 
     def _set_SAlist(self):
         """cigartuples pattern check is done:
@@ -507,13 +497,11 @@ class ReadPlusPair:
                         self.rp2.check_softclip_overlaps_vcfspec(vcfspec))
 
     # alleleinfo-related methods
-    def update_alleleinfo(self, vcfspec, 
-                          flanklen=alleleinfosetup.DEFAULT_FLANKLEN):
+    def update_alleleinfo(self, vcfspec, flanklen=liballeleinfo.DEFAULT_FLANKLEN):
         # rp1
         #if vcfspec not in self.rp1.alleleinfo:
         self.rp1.update_alleleinfo(vcfspec, flanklen=flanklen)
         aiitem_rp1 = self.rp1.alleleinfo[vcfspec]
-
         # rp2
         #if vcfspec not in self.rp2.alleleinfo:
         if self.rp2 is None:
@@ -521,7 +509,7 @@ class ReadPlusPair:
         else:
             self.rp2.update_alleleinfo(vcfspec, flanklen=flanklen)
             aiitem_rp2 = self.rp2.alleleinfo[vcfspec]
-            aiitem = alleleinfosetup.make_alleleinfoitem_readpluspair(
+            aiitem = liballeleinfo.make_alleleinfoitem_readpluspair(
                 vcfspec, aiitem_rp1, aiitem_rp2)
             self.alleleinfo[vcfspec] = aiitem
 
@@ -536,15 +524,15 @@ class ReadPlusPair:
 
     def update_alleleinfo_sv(
             self, bnds, 
-            flanklen_parside=alleleinfosetup_sv.DEFAULT_FLANKLEN_PARSIDE,
-            flanklen_bndside=alleleinfosetup_sv.DEFAULT_FLANKLEN_BNDSIDE):
+            flanklen_parside=liballeleinfo_sv.DEFAULT_FLANKLEN_PARSIDE,
+            flanklen_bndside=liballeleinfo_sv.DEFAULT_FLANKLEN_BNDSIDE):
         self.rp1.update_alleleinfo_sv(bnds,
                                       flanklen_parside=flanklen_parside,
                                       flanklen_bndside=flanklen_bndside)
         self.rp2.update_alleleinfo_sv(bnds,
                                       flanklen_parside=flanklen_parside,
                                       flanklen_bndside=flanklen_bndside)
-        aiitem = alleleinfosetup_sv.make_alleleinfoitem_readpluspair(
+        aiitem = liballeleinfo_sv.make_alleleinfoitem_readpluspair(
             aiitem_bnd1_rp1=self.rp1.alleleinfo[bnds]['bnd1'], 
             aiitem_bnd1_rp2=self.rp2.alleleinfo[bnds]['bnd1'],
             aiitem_bnd2_rp1=self.rp1.alleleinfo[bnds]['bnd2'], 
@@ -670,11 +658,11 @@ class ReadPlusPairList(list):
                 bnd1_relevant = (
                     rp.read.reference_name == bnds.chrom_bnd1 and
                     (rp.get_distance(bnds.get_pos_range0_bnd1())
-                     < alleleinfosetup_sv.BND_DISTANCE_THRESHOLD))
+                     < liballeleinfo_sv.BND_DISTANCE_THRESHOLD))
                 bnd2_relevant = (
                     rp.read.reference_name == bnds.chrom_bnd2 and
                     (rp.get_distance(bnds.get_pos_range0_bnd2())
-                     < alleleinfosetup_sv.BND_DISTANCE_THRESHOLD))
+                     < liballeleinfo_sv.BND_DISTANCE_THRESHOLD))
 
                 if bnd1_relevant:
                     start_list_bnd1.append(rp.read.reference_start)
@@ -689,14 +677,14 @@ class ReadPlusPairList(list):
         return ref_range0_bnd1, ref_range0_bnd2
 
     def update_alleleinfo(self, vcfspec, 
-                          flanklen=alleleinfosetup.DEFAULT_FLANKLEN):
+                          flanklen=liballeleinfo.DEFAULT_FLANKLEN):
         for rpp in self:
             rpp.update_alleleinfo(vcfspec, flanklen=flanklen)
 
     def update_alleleinfo_sv(
             self, bnds, 
-            flanklen_parside=alleleinfosetup_sv.DEFAULT_FLANKLEN_PARSIDE,
-            flanklen_bndside=alleleinfosetup_sv.DEFAULT_FLANKLEN_BNDSIDE):
+            flanklen_parside=liballeleinfo_sv.DEFAULT_FLANKLEN_PARSIDE,
+            flanklen_bndside=liballeleinfo_sv.DEFAULT_FLANKLEN_BNDSIDE):
         for rpp in self:
             rpp.update_alleleinfo_sv(bnds, flanklen_parside=flanklen_parside,
                                      flanklen_bndside=flanklen_bndside)
@@ -778,9 +766,16 @@ def get_rpplist_nonsv(bam, fasta, chromdict, chrom, start0, end0,
                       long_insert_threshold=LONG_INSERT_THRESHOLD):
     LOGGER_RPPLIST.info('Beginning initial fetch')
     (relevant_qname_set, new_fetch_range) = initial_fetch_nonsv(
-        bam, chrom, start0, end0, view,
-        fetch_padding_common, fetch_padding_view,
-        new_fetch_padding, long_insert_threshold)
+        bam=bam, 
+        chrom=chrom, 
+        start0=start0, 
+        end0=end0, 
+        view=view,
+        fetch_padding_common=fetch_padding_common, 
+        fetch_padding_view=fetch_padding_view,
+        new_fetch_padding=new_fetch_padding, 
+        long_insert_threshold=long_insert_threshold,
+    )
 
     rpplist = ReadPlusPairList(chromdict=chromdict)
     if len(relevant_qname_set) > 0:
@@ -923,18 +918,14 @@ def initial_fetch_nonsv(bam, chrom, start0, end0, view,
     relevant_qname_set = set()
     start0_set = set()
 
-    initial_fetch_padding = (fetch_padding_view 
-                             if view else 
-                             fetch_padding_common)
+    initial_fetch_padding = (fetch_padding_view if view else fetch_padding_common)
     fetcher = readhandler.get_fetch(bam, chrom, 
                                     start=(start0 - initial_fetch_padding),
                                     end=(end0 + initial_fetch_padding),
                                     readfilter=readhandler.readfilter_bad_read)
 
     for read in fetcher:
-        read_is_relevant = (True
-                            if view else
-                            readfilter_qname(read, start0, end0))
+        read_is_relevant = (True if view else readfilter_qname(read, start0, end0))
         if read_is_relevant:
             relevant_qname_set.add(read.query_name)
             start0_set.add(read.reference_start)

@@ -30,12 +30,10 @@ def make_alleleinfoitem_readpluspair(vcfspec, aiitem_rp1, aiitem_rp2):
 def make_alleleinfoitem_readplus(vcfspec, rp, flanklen=DEFAULT_FLANKLEN):
     assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
 
-    preflank_range0, postflank_range0 = get_flank_ranges(vcfspec, flanklen)
-    spans = (rp.check_spans(preflank_range0) and 
-             rp.check_spans(postflank_range0))
+    preflank_range0, postflank_range0 = get_flank_ranges(vcfspec, flanklen, rp.fasta)
+    spans = (rp.check_spans(preflank_range0) and rp.check_spans(postflank_range0))
     if spans:
-        alleleclass = get_alleleclass(vcfspec, rp, preflank_range0, 
-                                      postflank_range0)
+        alleleclass = get_alleleclass(vcfspec, rp, preflank_range0, postflank_range0)
     else:
         alleleclass = None
 
@@ -46,22 +44,34 @@ def make_alleleinfoitem_readplus(vcfspec, rp, flanklen=DEFAULT_FLANKLEN):
     return alleleinfoitem
 
 
-def get_flank_ranges(vcfspec, flanklen):
-    preflank_range0_candidates = set()
-    for idx in range(len(vcfspec.alts)):
-        preflank_range0_candidates.add(
-            vcfspec.get_preflank_range0(idx=idx, flanklen=flanklen))
-
-    if len(preflank_range0_candidates) != 1:
-        raise Exception(
-            f'There are more than one possible pre-flanking ranges '
-            f'for the input vcfspec: {vcfspec}')
-    else:
-        preflank_range0 = preflank_range0_candidates.pop()
-
-    postflank_range0 = vcfspec.get_postflank_range0(flanklen=flanklen)
+def get_flank_ranges(vcfspec, flanklen, fasta):
+    equivalents = vcfspec.get_equivalents(fasta)
+    preflank_range0 = get_preflank_range0(equivalents[0], flanklen)
+    postflank_range0 = equivalents[-1].get_postflank_range0(flanklen=flanklen)
 
     return preflank_range0, postflank_range0
+
+
+def get_preflank_range0(vcfspec, flanklen):
+#    preflank_range0_candidates = set(
+#        vcfspec.get_preflank_range0(idx=idx, flanklen=flanklen)
+#        for idx in range(len(vcfspec.alts))
+#    )
+#    if len(preflank_range0_candidates) != 1:
+#        raise Exception(
+#            f'There are more than one possible pre-flanking ranges '
+#            f'for the input vcfspec: {vcfspec}')
+#    else:
+#        preflank_range0 = preflank_range0_candidates.pop()
+
+    return min(
+        (
+            vcfspec.get_preflank_range0(idx=idx, flanklen=flanklen)
+            for idx in range(len(vcfspec.alts))
+        ),
+        key=(lambda x: x.start),
+    )
+
 
 
 def get_alleleclass(vcfspec, rp, preflank_range0, postflank_range0):
@@ -74,9 +84,7 @@ def get_alleleclass(vcfspec, rp, preflank_range0, postflank_range0):
         ...
     """
 
-    if (
-            rp.check_matches(preflank_range0) and
-            rp.check_matches(postflank_range0)):
+    if rp.check_matches(preflank_range0) and rp.check_matches(postflank_range0):
         allele_seq = rp.get_seq_from_range0(vcfspec.REF_range0)
         alleles = vcfspec.alleles
         if allele_seq in alleles:

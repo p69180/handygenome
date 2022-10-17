@@ -540,6 +540,21 @@ def get_NM(read, fasta=None, ref_seq_padded=None, read_seq_padded=None):
     return NM
 
 
+def set_NMMD(read, fasta):
+    ref_seq_padded, read_seq_padded = get_padded_seqs(read, fasta)
+    NM = get_NM(read, ref_seq_padded=ref_seq_padded, read_seq_padded=read_seq_padded)
+    MD = get_MD(read, ref_seq_padded=ref_seq_padded, read_seq_padded=read_seq_padded)
+    read.set_tag(tag='NM', value_type='i', value=NM)
+    read.set_tag(tag='MD', value_type='Z', value=MD)
+
+
+def get_NMMD(read, fasta):
+    ref_seq_padded, read_seq_padded = get_padded_seqs(read, fasta)
+    NM = get_NM(read, ref_seq_padded=ref_seq_padded, read_seq_padded=read_seq_padded)
+    MD = get_MD(read, ref_seq_padded=ref_seq_padded, read_seq_padded=read_seq_padded)
+    return NM, MD
+
+
 def get_pairorient_substring(read, mate=False):
     if mate:
         orientation = "r" if read.mate_is_reverse else "f"

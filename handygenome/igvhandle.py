@@ -68,7 +68,7 @@ class IGVHandle:
         for _ in range(n):
             self.cmd('zoomout')
 
-    def viewaspairs(self, turnoff=False):
+    def viewaspairs(self):
         self.cmd('viewaspairs')
 
     def viewaspairs_off(self):

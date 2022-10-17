@@ -16,7 +16,7 @@ workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
 annotitem = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotitem']))
 infoformat = importlib.import_module('.'.join([top_package_name, 'variant', 'infoformat']))
 readplus = importlib.import_module('.'.join([top_package_name, 'read', 'readplus']))
-alleleinfosetup = importlib.import_module('.'.join([top_package_name, 'read', 'alleleinfosetup']))
+liballeleinfo = importlib.import_module('.'.join([top_package_name, 'read', 'alleleinfo']))
 
 
 #READSTATS_FORMAT_KEY = 'readstats'
@@ -104,7 +104,7 @@ def get_readstats(
 
 
 def rpplist_to_readstats_data(rpplist, vcfspec, 
-                              flanklen=alleleinfosetup.DEFAULT_FLANKLEN):
+                              flanklen=liballeleinfo.DEFAULT_FLANKLEN):
     def add_MQ_rpp(rpp, data, alleleclass_rpp):
         if rpp.rp2 is None:
             MQ = rpp.rp1.read.mapping_quality

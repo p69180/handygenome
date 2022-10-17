@@ -336,7 +336,8 @@ def alignment_to_cigartuples(
     match_handler = _match_handler_78 if match_as_78 else _match_handler_0
     # init cigartuples
     cigartuples = list()
-    walks = list(path_to_walks(alignment.path))
+    walks = get_walks(alignment, copy=False)
+    #list(path_to_walks(alignment.path))
     for target_range0, query_range0 in walks:
         if len(target_range0) == 0:
             cigartuples.append((1, len(query_range0)))
@@ -408,8 +409,22 @@ def path_to_walks(alignpath):
         yield range(x0[0], x1[0]), range(x0[1], x1[1])  # target_range, query_range
 
 
+def set_walks(alignment):
+    alignment.walks = list(path_to_walks(alignment.path))
+
+
+def get_walks(alignment, copy=False):
+    if not hasattr(alignment, 'walks'):
+        set_walks(alignment)
+
+    if copy:
+        return alignment.walks.copy()
+    else:
+        return alignment.walks
+
+
 def amend_outer_insdel_left(alignment):
-    walks = list(path_to_walks(alignment.path))
+    walks = get_walks(alignment, copy=False)
     if len(walks) < 3:
         return alignment
 
@@ -423,11 +438,10 @@ def amend_outer_insdel_left(alignment):
             (range(walks[1][0].stop, walks[1][0].stop), walks[0][1]),
         ]
         new_walks.extend(walks[2:])
-        new_path = walks_to_path(new_walks)
         return Bio.Align.PairwiseAlignment(
             alignment.target, 
             alignment.query, 
-            new_path,
+            walks_to_path(new_walks),
             0,
         )
     else:
@@ -441,7 +455,7 @@ def amend_outer_insdel_right(alignment):
 
 
 def show_alignment_with_numbers(alignment):
-    aln_length = sum(max(len(x), len(y)) for (x, y) in path_to_walks(alignment.path))
+    aln_length = sum(max(len(x), len(y)) for (x, y) in get_walks(alignment))
     string_tens = ''.join(
         str(x) + ' ' * (9 if x == 0 else 9 - np.floor(np.log10(x)).astype('int'))
         for x in range(aln_length // 10 + 1)
@@ -469,72 +483,152 @@ def reverse_alignment(alignment):
     )
 
 
-def remove_flanking_query_gaps(alignment):
+#def remove_flanking_query_gaps(alignment):
+#    offset = 0
+#    # strip leading query gap
+#    walks = list(path_to_walks(alignment.path))
+#    for idx, (target_walk, query_walk) in enumerate(walks):
+#        if len(query_walk) != 0:
+#            break
+#        else:
+#            offset += len(target_walk)
+#    walks = walks[idx:]
+#    # correct coordinates of target_walk's
+#    for idx in range(len(walks)):
+#        old_target_walk, old_query_walk = walks[idx]
+#        new_target_walk = range(old_target_walk.start - offset, old_target_walk.stop - offset)
+#        walks[idx] = (new_target_walk, old_query_walk)
+#    # strip trailing query gap
+#    for idx, (target_walk, query_walk) in enumerate(walks[::-1]):
+#        if len(query_walk) != 0:
+#            break
+#    if idx > 0:
+#        walks = walks[:-idx]
+#    # make new alignment
+#    new_aln = Bio.Align.PairwiseAlignment(
+#        alignment.target[offset:], 
+#        alignment.query,
+#        walks_to_path(walks),
+#        0,
+#    )
+#        
+#    return new_aln, offset
+
+
+def remove_leading_query_gaps_component_input(target, query, walks, as_alignment=True):
     offset = 0
-    # strip leading query gap
-    walks = list(path_to_walks(alignment.path))
     for idx, (target_walk, query_walk) in enumerate(walks):
-        if len(query_walk) != 0:
-            break
-        else:
+        if len(query_walk) == 0:
             offset += len(target_walk)
-    walks = walks[idx:]
-    # correct coordinates of target_walk's
-    for idx in range(len(walks)):
-        old_target_walk, old_query_walk = walks[idx]
-        new_target_walk = range(old_target_walk.start - offset, old_target_walk.stop - offset)
-        walks[idx] = (new_target_walk, old_query_walk)
-    # strip trailing query gap
-    for idx, (target_walk, query_walk) in enumerate(walks[::-1]):
-        if len(query_walk) != 0:
+        else:
             break
+    new_walks = walks[idx:]
+    new_target = target[offset:]
+    # correct coordinates of target_walk's
+    for idx in range(len(new_walks)):
+        old_target_walk, old_query_walk = new_walks[idx]
+        new_target_walk = range(old_target_walk.start - offset, old_target_walk.stop - offset)
+        new_walks[idx] = (new_target_walk, old_query_walk)
+    # return
+    if as_alignment:
+        new_aln = Bio.Align.PairwiseAlignment(new_target, query, walks_to_path(new_walks), 0)
+        return new_aln, offset
+    else:
+        return new_target, new_walks, offset
+
+
+def remove_leading_query_gaps(alignment, as_alignment=True):
+    return remove_leading_query_gaps_component_input(alignment.target, alignment.query, get_walks(alignment, copy=False), as_alignment=as_alignment)
+
+
+def remove_trailing_query_gaps_component_input(target, query, walks, as_alignment=True):
+    offset = 0
+    for idx, (target_walk, query_walk) in enumerate(walks[::-1]):
+        if len(query_walk) == 0:
+            offset += len(target_walk)
+        else:
+            break
+
     if idx > 0:
-        walks = walks[:-idx]
-    # make new alignment
+        new_walks = walks[:-idx]
+    else:
+        new_walks = walks.copy()
+
+    if offset == 0:
+        new_target = target
+    else:
+        new_target = target[:-offset]
+
+    # return
+    if as_alignment:
+        new_aln = Bio.Align.PairwiseAlignment(new_target, query, walks_to_path(new_walks), 0)
+        return new_aln, offset
+    else:
+        return new_target, new_walks, offset
+
+
+def remove_trailing_query_gaps(alignment, as_alignment=True):
+    return remove_trailing_query_gaps_component_input(alignment.target, alignment.query, get_walks(alignment, copy=False), as_alignment=as_alignment)
+
+
+def remove_flanking_query_gaps(alignment):
+    target_lstrip, walks_lstrip, leading_offset = remove_leading_query_gaps(alignment, as_alignment=False)
+    target_lrstrip, walks_lrstrip, trailing_offset = remove_trailing_query_gaps_component_input(
+        target_lstrip, alignment.query, walks_lstrip, as_alignment=False,
+    )
     new_aln = Bio.Align.PairwiseAlignment(
-        alignment.target[offset:], 
-        alignment.query,
-        walks_to_path(walks),
+        target_lrstrip, 
+        alignment.query, 
+        walks_to_path(walks_lrstrip),
         0,
     )
         
-    return new_aln, offset
+    return new_aln, leading_offset
 
 
-def alignment_to_vcfspec(alignment, target_start0, chrom, fasta, strip_query_gaps=True):
+def alignment_to_vcfspec(alignment, target_start0, chrom, fasta, lstrip_query_gaps=True, rstrip_query_gaps=True):
     vcfspec_list = list()
-    if strip_query_gaps:
-        alignment, offset = remove_flanking_query_gaps(alignment)
+    # strip
+    if lstrip_query_gaps:
+        if rstrip_query_gaps:
+            new_aln, leading_offset = remove_flanking_query_gaps(alignment)
+        else:
+            new_aln, leading_offset = remove_leading_query_gaps(alignment, as_alignment=True)
     else:
-        alignment, offset = alignment, 0
+        if rstrip_query_gaps:
+            new_aln, trailing_offset = remove_trailing_query_gaps(alignment, as_alignment=True)
+            leading_offset = 0
+        else:
+            new_aln = alignment
+            leading_offset = 0
     
-    target_start0 += offset
+    target_start0 += leading_offset
     current_pos0 = target_start0
     target_idx = 0
     query_idx = 0
     
-    for target_walk, query_walk in path_to_walks(alignment.path):
+    for target_walk, query_walk in get_walks(new_aln, copy=False):
         if len(target_walk) == 0:
             pos = current_pos0
             if target_idx == 0:
                 ref = fasta.fetch(chrom, current_pos0 - 1, current_pos0)
             else:
-                ref = alignment.target[target_idx - 1]
-            inserted_seq = alignment.query[query_idx:(query_idx + len(query_walk))]
+                ref = new_aln.target[target_idx - 1]
+            inserted_seq = new_aln.query[query_idx:(query_idx + len(query_walk))]
             alt = ref + inserted_seq
             vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,)))
         elif len(query_walk) == 0:
             pos = current_pos0
             if target_idx == 0:
                 preceding_base = fasta.fetch(chrom, current_pos0 - 1, current_pos0)
-                ref = preceding_base + alignment.target[target_idx:(target_idx + len(target_walk))]
+                ref = preceding_base + new_aln.target[target_idx:(target_idx + len(target_walk))]
             else:
-                ref = alignment.target[(target_idx - 1):(target_idx + len(target_walk))]
+                ref = new_aln.target[(target_idx - 1):(target_idx + len(target_walk))]
             alt = ref[0]
             vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,)))
         else:
             iterator = (
-                (idx_offset, alignment.target[target_idx + idx_offset], alignment.query[query_idx + idx_offset])
+                (idx_offset, new_aln.target[target_idx + idx_offset], new_aln.query[query_idx + idx_offset])
                 for idx_offset in range(len(target_walk))
             )
             idx_offset, target_base, query_base = next(iterator)
@@ -572,7 +666,7 @@ def alignment_to_vcfspec(alignment, target_start0, chrom, fasta, strip_query_gap
         target_idx += len(target_walk)
         query_idx += len(query_walk)
         
-    return vcfspec_list
+    return tuple(vcfspec_list)
 
 
 ############################
@@ -585,15 +679,16 @@ class AlignmentTieError(Exception):
 
 def tiebreaker_scorer_leftmost_gaps(alignment):
     score = 0
-    for target_range0, query_range0 in path_to_walks(alignment.path):
+    for target_range0, query_range0 in get_walks(alignment, copy=False):
         if len(target_range0) == 0 or len(query_range0) == 0:
-            score += target_range0.start
-    return -score
+            score -= target_range0.start
+    return score
 
 
 def tiebreaker_scorer_gap_length_sum(alignment):
+    """Those with shorter gap lengths sum are favored"""
     score = 0
-    walks = list(path_to_walks(alignment.path))
+    walks = get_walks(alignment, copy=False)
     for idx, (target_range0, query_range0) in enumerate(walks):
         if len(target_range0) == 0:
             score -= len(query_range0)
@@ -603,11 +698,32 @@ def tiebreaker_scorer_gap_length_sum(alignment):
     return score
 
 
-def alignment_tiebreaker(alignments, raise_with_failure=True):
+def tiebreaker_scorer_gap_ordering(alignment):
+    """Favors longer gaps coming earlier than shorter gaps"""
+    score = 0
+    walks = get_walks(alignment, copy=False)
+    for idx, (target_range0, query_range0) in enumerate(walks):
+        if len(target_range0) == 0:
+            score -= len(query_range0) * target_range0.start
+        elif len(query_range0) == 0:
+            if idx != 0 and idx != (len(walks) - 1):
+                score -= len(target_range0) * query_range0.start
+    return score
+
+
+def tiebreakers_merged_main(alignments):
     # alignment with the highest score is selected
     selected_alns = common.multi_max(alignments, key=tiebreaker_scorer_gap_length_sum, with_target_val=False)
-    selected_alns = common.multi_max(selected_alns, key=tiebreaker_scorer_leftmost_gaps, with_target_val=False)
-    
+    if len(selected_alns) != 1:
+        selected_alns = common.multi_max(selected_alns, key=tiebreaker_scorer_leftmost_gaps, with_target_val=False)
+        if len(selected_alns) != 1:
+            selected_alns = common.multi_max(selected_alns, key=tiebreaker_scorer_gap_ordering, with_target_val=False)
+
+    return selected_alns
+
+
+def alignment_tiebreaker(alignments, raise_with_failure=True):
+    selected_alns = tiebreakers_merged_main(alignments)
     if len(selected_alns) != 1 and raise_with_failure:
         alignments_string = '\n'.join(str(x) for x in selected_alns)
         raise AlignmentTieError(
