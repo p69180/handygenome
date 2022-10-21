@@ -10,9 +10,6 @@ top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
 infoformat = importlib.import_module('.'.join([top_package_name, 'variant', 'infoformat']))
-#equivalents = importlib.import_module('.'.join([top_package_name, 'variant', 'equivalents']))
-#varianthandler = importlib.import_module('.'.join([top_package_name, 'variant', 'varianthandler']))
-#annotationdb = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotationdb']))
 ensembl_parser = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_parser']))
 ensembl_feature = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_feature']))
 libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
@@ -40,31 +37,24 @@ class NoVcfIndexError(Exception):
     pass
 
 
-def fetch_relevant_vr_multialt(vcfspec, vcf, fasta=None, search_equivs=True,
-                               allow_multiple=False):
+def fetch_relevant_vr_multialt(vcfspec, vcf, search_equivs=True, allow_multiple=False):
     result = list()
     for alt in vcfspec.alts:
         new_vcfspec = libvcfspec.Vcfspec(vcfspec.chrom, vcfspec.pos, vcfspec.ref, (alt,))
         result.append(
-            fetch_relevant_vr(new_vcfspec, vcf, fasta=fasta, search_equivs=search_equivs,
-                              allow_multiple=allow_multiple)
+            fetch_relevant_vr(new_vcfspec, vcf, search_equivs=search_equivs, allow_multiple=allow_multiple)
         )
 
     return result
 
 
-def fetch_relevant_vr(vcfspec, vcf, fasta=None, search_equivs=True,
-                      allow_multiple=False):
+def fetch_relevant_vr(vcfspec, vcf, search_equivs=True, allow_multiple=False):
     """Args:
         vcfspec: Must be with one ALT allele.
         vcf: pysam.VariantFile object
-        fasta: Not required when 'search_equivs' is False
         search_equivs: If True, all equivalent forms are fetched. If False, 
             only vrs with identical chrom, pos, ref, alt are fetched.
     """
-
-    assert not ((fasta is None) and search_equivs), (
-        f'If "search_equivs" is True, "fasta" must be given.')
     assert len(vcfspec.alts) == 1, (
         f'Argument "vcfspec" must be with one ALT allele.')
 
@@ -74,9 +64,9 @@ def fetch_relevant_vr(vcfspec, vcf, fasta=None, search_equivs=True,
     def matcher_any(query_vcfspec, target_vcfspec):
         return any((query_vcfspec == x) for x in target_vcfspec.iter_monoalts())
 
-    def search_equivalents(vcfspec, vcf, matcher, fasta):
+    def search_equivalents(vcfspec, vcf, matcher):
         if vcfspec.chrom in vcf.header.contigs:
-            equivs = libvcfspec.indel_equivalents(vcfspec, fasta)
+            equivs = vcfspec.get_equivalents()
             poslist = [x.pos for x in equivs]
             fetchresult = vcf.fetch(contig=vcfspec.chrom, 
                                     start=(min(poslist) - 1),
@@ -136,7 +126,7 @@ def fetch_relevant_vr(vcfspec, vcf, fasta=None, search_equivs=True,
     matcher = matcher_exact
 
     if search_equivs:
-        relevant_vr_candidates = search_equivalents(vcfspec, vcf, matcher, fasta)
+        relevant_vr_candidates = search_equivalents(vcfspec, vcf, matcher)
     else:
         relevant_vr_candidates = search_identical(vcfspec, vcf, matcher)
 
@@ -145,12 +135,10 @@ def fetch_relevant_vr(vcfspec, vcf, fasta=None, search_equivs=True,
     return relevant_vr
 
 
-def fetch_relevant_vr_vcfpath(vcfspec, vcf_path, fasta=None, 
-                              search_equivs=True):
+def fetch_relevant_vr_vcfpath(vcfspec, vcf_path, search_equivs=True):
     with pysam.VariantFile(vcf_path, 'r') as vcf:
         try:
-            relevant_vr = fetch_relevant_vr(vcfspec, vcf, fasta = fasta, 
-                                            search_equivs = search_equivs)
+            relevant_vr = fetch_relevant_vr(vcfspec, vcf, search_equivs=search_equivs)
         except NoVcfIndexError:
             print(f'Input vcf path: {vcf_path}')
             raise

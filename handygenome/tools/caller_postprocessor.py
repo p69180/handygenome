@@ -42,7 +42,7 @@ def argument_parser(cmdargs):
     return args
 
 
-def process_nonsv(vr, out_vr_list, nonsv_set, fasta, logger):
+def process_nonsv(vr, out_vr_list, nonsv_set, logger):
     """
     Normalize the input vr(the leftmost form).
     Check if the normalized vcfspec is duplicated, in which case the vr is
@@ -50,8 +50,7 @@ def process_nonsv(vr, out_vr_list, nonsv_set, fasta, logger):
     """
 
     vcfspec_original = libvcfspec.Vcfspec.from_vr(vr)
-    #vcfspec_original = varianthandler.get_vcfspec(vr)
-    vcfspec_left = libvcfspec.leftmost(vcfspec_original, fasta)
+    vcfspec_left = vcfspec_original.leftmost()
     ID = vcfspec_left.get_id()
 
     if ID in nonsv_set:
@@ -115,7 +114,7 @@ def process_monoallelic_vr(vr, out_vr_list, nonsv_set, bnds_set, fasta,
     if varianthandler.check_SV(vr):
         process_sv(vr, out_vr_list, bnds_set, fasta, chromdict, logger)
     else:
-        process_nonsv(vr, out_vr_list, nonsv_set, fasta, logger)
+        process_nonsv(vr, out_vr_list, nonsv_set, logger)
 
 
 def main(cmdargs):

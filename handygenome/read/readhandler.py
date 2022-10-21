@@ -76,26 +76,18 @@ def readfilter_pileup(read):
     return readfilter_bad_read(read) and (not read.is_supplementary) and (not read.is_secondary)
 
 
-def get_fetch(bam, chrom, start, end, readfilter=None, with_uid=False):
+def get_fetch(bam, chrom, start, end, readfilter=None):
     """
     - returns a generator
     - similar to bam.fetch iterator except read filtering
     """
-
     # set default filtering function
     if readfilter is None:
         readfilter = readfilter_bad_read
-    # set yielder
-    if with_uid:
-        def yielder(read):
-            return read, get_uid(read)
-    else:
-        def yielder(read):
-            return read
     # main
     for read in bam.fetch(chrom, start, end):
         if readfilter(read):
-            yield yielder(read)
+            yield read
 
 
 # cigar-related classes and functions

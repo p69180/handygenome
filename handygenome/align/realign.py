@@ -6,6 +6,8 @@ import warnings
 
 import pysam
 import Bio.Align
+import pandas as pd
+import pyranges as pr
 
 import importlib
 top_package_name = __name__.split(".")[0]
@@ -15,11 +17,14 @@ libpileup = importlib.import_module(".".join([top_package_name, "read", "pileup"
 alignhandler = importlib.import_module(".".join([top_package_name, "align", "alignhandler"]))
 bameditor = importlib.import_module(".".join([top_package_name, "bameditor"]))
 readhandler = importlib.import_module(".".join([top_package_name, "read", "readhandler"]))
+#fetchcache = importlib.import_module(".".join([top_package_name, "read", "fetchcache"]))
 
 
+DEFAULT_EXTEND_PILEUP_BY = 20
 DEFAULT_INACTIVE_PADDING = 10
 DEFAULT_ACTIVE_THRESHOLD = 0.05
 DEFAULT_VCFSPEC_EXTRACTION_THRESHOLD = 0.05
+DEFAULT_VCFSPEC_CONCAT_DISTANCE = None
 
 
 #ALIGNER_FILLED = Bio.Align.PairwiseAligner(
@@ -67,11 +72,11 @@ ALIGNER_MAIN = ALIGNER_EQUAL_MM_GAP
 
 
 
-###########################
-# secure_inactive_padding #
-###########################
+############################
+# inactive padding related #
+############################
 
-def secure_inactive_padding_rightward(pileup, inactive_padding, extend_pileup_by=libpileup.DEFAULT_EXTEND_PILEUP_BY, extend_fetchedreads_by=libpileup.DEFAULT_EXTEND_FETCHEDREADS_BY, inplace=False):
+def secure_inactive_padding_rightward(pileup, inactive_padding, extend_pileup_by=libpileup.DEFAULT_EXTEND_PILEUP_BY, inplace=False):
     """Returns a modified pileup object with inactive region on the right margin"""
     # set initial_rightmost_active_pos0
     initial_active_positions = pileup.get_active_positions()
@@ -82,7 +87,7 @@ def secure_inactive_padding_rightward(pileup, inactive_padding, extend_pileup_by
     # initial extend
     while True:
         if pileup.end0 - (initial_rightmost_active_pos0 + 1) < inactive_padding:
-            pileup.extend_rightward(width=extend_pileup_by, extend_fetchedreads_by=extend_fetchedreads_by)
+            pileup.extend_rightward(width=extend_pileup_by)
         else:
             break
     # initial search loop
@@ -91,7 +96,7 @@ def secure_inactive_padding_rightward(pileup, inactive_padding, extend_pileup_by
     # subsequent search loop
     if not found_result:
         while True:
-            pileup.extend_rightward(width=extend_pileup_by, extend_fetchedreads_by=extend_fetchedreads_by)
+            pileup.extend_rightward(width=extend_pileup_by)
             active_info = pileup.get_active_info(
                 start0=(pileup.end0 - extend_pileup_by + 1 - inactive_padding)
             )
@@ -106,7 +111,7 @@ def secure_inactive_padding_rightward(pileup, inactive_padding, extend_pileup_by
         return pileup_clipped
 
 
-def secure_inactive_padding_leftward(pileup, inactive_padding, extend_pileup_by=libpileup.DEFAULT_EXTEND_PILEUP_BY, extend_fetchedreads_by=libpileup.DEFAULT_EXTEND_FETCHEDREADS_BY, inplace=False):
+def secure_inactive_padding_leftward(pileup, inactive_padding, extend_pileup_by=libpileup.DEFAULT_EXTEND_PILEUP_BY, inplace=False):
     """Returns a modified pileup object with inactive region on the left margin"""
     # set initial_leftmost_active_pos0
     initial_active_positions = pileup.get_active_positions()
@@ -117,7 +122,7 @@ def secure_inactive_padding_leftward(pileup, inactive_padding, extend_pileup_by=
     # initial extend
     while True:
         if initial_leftmost_active_pos0 - pileup.start0 < inactive_padding:
-            pileup.extend_leftward(width=extend_pileup_by, extend_fetchedreads_by=extend_fetchedreads_by)
+            pileup.extend_leftward(width=extend_pileup_by)
         else:
             break
     # initial search loop
@@ -126,7 +131,7 @@ def secure_inactive_padding_leftward(pileup, inactive_padding, extend_pileup_by=
     # subsequent search loop
     if not found_result:
         while True:
-            pileup.extend_leftward(width=extend_pileup_by, extend_fetchedreads_by=extend_fetchedreads_by)
+            pileup.extend_leftward(width=extend_pileup_by)
             active_info = pileup.get_active_info(
                 end0=(pileup.start0 + extend_pileup_by - 1 + inactive_padding)
             )[::-1]
@@ -156,6 +161,94 @@ def _find_inactive_run(active_info, inactive_padding):
 # get_active_region_pileup #
 ############################
 
+def secure_margin_with_vcfspecs(active_region_pileup, factor_vcfspec_range, factor_repeat_area):
+    candidate_start0s = set()
+    candidate_end0s = set()
+    for vcfspec in itertools.chain.from_iterable(active_region_pileup.vcfspecs):
+        # padding with (vcfspec REF_range length) * factor
+        vcfspec_range = vcfspec.REF_range0
+        padding = int(len(vcfspec_range) * factor_vcfspec_range)
+        candidate_start0s.add(vcfspec_range.start - padding)
+        candidate_end0s.add(vcfspec_range.stop + padding)
+        # padding considering repetitive reference region
+        equivalents = vcfspec.get_equivalents()
+        repeat_area_start0 = equivalents[0].pos0
+        repeat_area_end0 = equivalents[-1].end0
+        padding = int((repeat_area_end0 - repeat_area_start0) * factor_repeat_area)
+        candidate_start0s.add(repeat_area_start0 - padding)
+        candidate_end0s.add(repeat_area_end0 + padding)
+
+    if len(candidate_start0s) == 0:
+        left_edited = False
+    else:
+        desired_start0 = min(candidate_start0s)
+        start_margin = desired_start0 - active_region_pileup.start0
+        if start_margin < 0:
+            left_edited = True
+            active_region_pileup.extend_leftward(-start_margin)
+        else:
+            left_edited = False
+
+    if len(candidate_end0s) == 0:
+        right_edited = False
+    else:
+        desired_end0 = max(candidate_end0s)
+        end_margin = active_region_pileup.end0 - desired_end0
+        if end_margin < 0:
+            right_edited = True
+            active_region_pileup.extend_rightward(-end_margin)
+        else:
+            right_edited = False
+
+    edited = left_edited or right_edited
+
+    return edited
+
+
+def augment_margins(active_region_pileup, inactive_padding, extend_pileup_by, factor_vcfspec_range, factor_repeat_area, aligner, allele_portion_threshold, vcfspec_concat_dist):
+    edited = False
+    while True:
+        if active_region_pileup.check_inactive_margin_right(inactive_padding):
+            right_inactive_margin_edited = False
+        else:
+            right_inactive_margin_edited = True
+            edited = True
+            active_region_pileup.secure_inactive_padding_rightward(inactive_padding, extend_pileup_by=extend_pileup_by)
+
+        if active_region_pileup.check_inactive_margin_left(inactive_padding):
+            left_inactive_margin_edited = False
+        else:
+            left_inactive_margin_edited = True
+            edited = True
+            active_region_pileup.secure_inactive_padding_leftward(inactive_padding, extend_pileup_by=extend_pileup_by)
+
+        # preparation for secure_margin_with_vcfspecs
+        active_region_pileup.set_row_specs()
+        active_region_pileup.set_row_spec_groups()
+        active_region_pileup.save_superseq_alignments(aligner=aligner)
+        active_region_pileup.set_vcfspecs(allele_portion_threshold=allele_portion_threshold, concat_dist_le=vcfspec_concat_dist)
+
+        vcfspec_margin_edited = secure_margin_with_vcfspecs(active_region_pileup, factor_vcfspec_range, factor_repeat_area)
+
+        if vcfspec_margin_edited:
+            edited = True
+
+        if not vcfspec_margin_edited:
+            break
+
+    return edited
+
+
+def augment_margins_multisample(active_region_mspileup, inactive_padding, extend_pileup_by, factor_vcfspec_range, factor_repeat_area, aligner, allele_portion_threshold, vcfspec_concat_dist):
+    while True:
+        active_region_mspileup.equalize_margins()
+        augmented = dict()
+        for sampleid, pileup in active_region_mspileup.pileup_dict.items():
+            augmented[sampleid] = augment_margins(pileup, inactive_padding, extend_pileup_by, factor_vcfspec_range, factor_repeat_area, aligner, allele_portion_threshold, vcfspec_concat_dist)
+        if not any(augmented.values()):
+            break
+
+
 def get_active_region_pileup(
     chrom,
     start0,
@@ -164,76 +257,42 @@ def get_active_region_pileup(
     fasta,
     active_threshold=DEFAULT_ACTIVE_THRESHOLD,
     inactive_padding=DEFAULT_INACTIVE_PADDING,
-    extend_fetchedreads_by=libpileup.DEFAULT_EXTEND_FETCHEDREADS_BY,
     extend_pileup_by=libpileup.DEFAULT_EXTEND_PILEUP_BY,
-    set_row_specs=True,
+    augment_factor_vcfspec_range=1.5,
+    augment_factor_repeat_area=1.5,
+    aligner=None,
+    allele_portion_threshold=None,
+    vcfspec_concat_dist=None,
 ):
     """Returns:
         "active_range" and "pileup" are returned.
         When there is no active position around input range (start0, end0), 
             returned "active_range" is None. Pileup object, created as a 
             byproduct, is returned.
-        Otherwise, "active_range" is python range object. Pileup object is
-            clipped by "subset" method to fit "active_range", 
-            then "set_row_specs" and "set_row_spec_groups" methods are run, 
-            then returned.
     """
-
-    def get_initial_fetch_range_old(start0, end0, extend_fetchedreads_by):
-        query_range = range(start0, end0)
-        diff_range_len = extend_fetchedreads_by - len(query_range)
-        if diff_range_len > 0:
-            pad = int(diff_range_len / 2)
-            if diff_range_len % 2 == 0:
-                initial_fetch_range = range(start0 - pad, end0 + pad)
-            else:
-                initial_fetch_range = range(start0 - pad, end0 + pad + 1)
-        else:
-            initial_fetch_range = query_range
-
-        return initial_fetch_range
-
-    def get_initial_fetch_range(start0, end0, inactive_padding):
-        return range(start0 - inactive_padding * 3, end0 + inactive_padding * 3)
-
-    def inspect_initial_range(
-        chrom, start0, end0, fasta, bam, active_threshold, extend_fetchedreads_by, inactive_padding,
-    ):
-        initial_fetch_range = get_initial_fetch_range(start0, end0, inactive_padding)
-        fetchedreads_initial = libpileup.FetchedReads.from_fetch(
-            bam, chrom, initial_fetch_range.start, initial_fetch_range.stop, readfilter=readhandler.readfilter_pileup,
-        )
-        active_region_pileup = libpileup.get_pileup(
-            chrom=chrom, 
-            start0=start0, 
-            end0=end0, 
-            fetchedreads=fetchedreads_initial,
-            fasta=fasta,
-            active_threshold=active_threshold,
-            truncate=True,
-            as_array=False,
-            return_range=False,
-        )
-        return active_region_pileup
-
-    def augment_inactive_padding(active_region_pileup, inactive_padding, extend_pileup_by, extend_fetchedreads_by, factor=2):
-        active_region_length = len(active_region_pileup.range0) - (2 * inactive_padding)
-        if inactive_padding < factor * active_region_length:
-            new_inactive_padding = factor * active_region_length
-            active_region_pileup.secure_inactive_padding_rightward(new_inactive_padding, extend_pileup_by, extend_fetchedreads_by)
-            active_region_pileup.secure_inactive_padding_leftward(new_inactive_padding, extend_pileup_by, extend_fetchedreads_by)
-
     # main
-    active_region_pileup = inspect_initial_range(
-        chrom, start0, end0, fasta, bam, active_threshold, extend_fetchedreads_by, inactive_padding,
+    active_region_pileup = libpileup.get_pileup(
+        chrom=chrom, 
+        start0=start0, 
+        end0=end0, 
+        bam=bam,
+        fasta=fasta,
+        active_threshold=active_threshold,
+        truncate=True,
+        as_array=False,
+        return_range=False,
     )
-    active_region_pileup.secure_inactive_padding_rightward(inactive_padding, extend_pileup_by, extend_fetchedreads_by)
-    active_region_pileup.secure_inactive_padding_leftward(inactive_padding, extend_pileup_by, extend_fetchedreads_by)
-    augment_inactive_padding(active_region_pileup, inactive_padding, extend_pileup_by, extend_fetchedreads_by)
-
-    if set_row_specs:
-        active_region_pileup.set_row_specs()
-        active_region_pileup.set_row_spec_groups()
+    edited = augment_margins(
+        active_region_pileup, 
+        inactive_padding, 
+        extend_pileup_by, 
+        factor_vcfspec_range=augment_factor_vcfspec_range, 
+        factor_repeat_area=augment_factor_repeat_area,
+        aligner=aligner,
+        allele_portion_threshold=allele_portion_threshold,
+        vcfspec_concat_dist=vcfspec_concat_dist,
+    )
+        # now set_row_specs(), set_row_spec_groups(), save_superseq_alignments(), set_vcfspecs() are done
 
     active_poslist = active_region_pileup.get_active_positions()
     if len(active_poslist) == 0:
@@ -252,8 +311,12 @@ def get_active_region_pileup_multisample(
     fasta,
     active_threshold=DEFAULT_ACTIVE_THRESHOLD,
     inactive_padding=DEFAULT_INACTIVE_PADDING,
-    extend_fetchedreads_by=libpileup.DEFAULT_EXTEND_FETCHEDREADS_BY,
     extend_pileup_by=libpileup.DEFAULT_EXTEND_PILEUP_BY,
+    augment_factor_vcfspec_range=1.5,
+    augment_factor_repeat_area=1.5,
+    aligner=None,
+    allele_portion_threshold=None,
+    vcfspec_concat_dist=None,
 ):
     # initialize pileup_dict
     pileup_dict = dict()
@@ -266,145 +329,223 @@ def get_active_region_pileup_multisample(
             fasta,
             active_threshold=active_threshold,
             inactive_padding=inactive_padding,
-            extend_fetchedreads_by=extend_fetchedreads_by,
             extend_pileup_by=extend_pileup_by,
-            set_row_specs=False,
+            augment_factor_vcfspec_range=augment_factor_vcfspec_range,
+            augment_factor_repeat_area=augment_factor_repeat_area,
+            aligner=aligner,
         )
         pileup_dict[sampleid] = active_region_pileup
 
     # create MultisamplePileup object and postprocess
     active_region_mspileup = libpileup.MultisamplePileup(pileup_dict)
-    active_region_mspileup.secure_inactive_padding_leftward(inactive_padding, extend_fetchedreads_by=extend_fetchedreads_by, extend_pileup_by=extend_pileup_by)
-    active_region_mspileup.secure_inactive_padding_rightward(inactive_padding, extend_fetchedreads_by=extend_fetchedreads_by, extend_pileup_by=extend_pileup_by)
-    active_region_mspileup.set_df()
-    active_region_mspileup.set_row_specs()
+    augment_margins_multisample(
+        active_region_mspileup, 
+        inactive_padding=inactive_padding, 
+        extend_pileup_by=extend_pileup_by, 
+        factor_vcfspec_range=augment_factor_vcfspec_range, 
+        factor_repeat_area=augment_factor_repeat_area, 
+        aligner=aligner,
+        allele_portion_threshold=allele_portion_threshold,
+        vcfspec_concat_dist=vcfspec_concat_dist,
+    )
     active_region_mspileup.set_row_spec_groups()
-    active_region_mspileup.divide_row_spec_groups()
+    active_region_mspileup.save_superseq_alignments()
+    active_region_mspileup.set_vcfspecs(allele_portion_threshold=allele_portion_threshold, concat_dist_le=vcfspec_concat_dist)
 
     # result values
-    active_poslist = active_region_mspileup.get_active_positions()
-    if len(active_poslist) == 0:
-        active_range = None
-    else:
+    if any(
+        len(pileup.get_active_positions()) > 0
+        for pileup in active_region_mspileup.pileup_dict.values()
+    ):
         active_range = active_region_mspileup.range0
+    else:
+        active_range = None
 
     return active_range, active_region_mspileup
 
 
-####################
+# get aligned reads
+
+def get_realigned_reads(active_region_pileup):
+    """Must be run after 'save_superseq_alignments' method"""
+    return get_realigned_reads_helper(
+        active_region_pileup, 
+        active_region_pileup.row_spec_groups, 
+        active_region_pileup._alignment_cache,
+    )
 
 
-def get_realigned_reads(active_region_pileup, active_range, ref_seq, ref_seq_reversed, aligner):
+def get_realigned_reads_multisample(active_region_mspileup):
+    """Must be run after 'save_superseq_alignments' method"""
     realigned_reads = dict()
-    for superseq_rowid, groupinfo in sorted(
-        active_region_pileup.row_spec_groups.items(),
-        key=(lambda x: x[1]['subseq_hits']), 
-        reverse=True,
-    ):
-        realigned_read_super, superseq_aln = realign_superseq(superseq_rowid, active_region_pileup, active_range, ref_seq, ref_seq_reversed, aligner)
-        realigned_reads[superseq_rowid] = realigned_read_super
-        active_region_pileup._alignment_store[superseq_rowid] = superseq_aln
-
-        superseq_row_spec = active_region_pileup.row_specs[superseq_rowid]
-        superseq = superseq_row_spec['seq']
-        for subseq_rowid in groupinfo['subseq_rowids']:
-            if subseq_rowid in realigned_reads.keys():
-                continue
-            realigned_read_sub, subseq_aln = realign_subseq(subseq_rowid, active_region_pileup, active_range, superseq, superseq_aln)
-            realigned_reads[subseq_rowid] = realigned_read_sub
+    for sampleid, pileup in active_region_mspileup.pileup_dict.items():
+        realigned_reads_singlesample = get_realigned_reads_helper(
+            pileup, 
+            active_region_mspileup.row_spec_groups[sampleid], 
+            active_region_mspileup._alignment_cache,
+        )
+        realigned_reads[sampleid] = realigned_reads_singlesample
             
     return realigned_reads
 
 
-def get_vcfspecs(active_region_pileup, allele_portion_threshold):
-    vcfspecs = set()
+def get_realigned_reads_helper(subseq_pileup, row_spec_groups, superseq_alignment_cache):
+    """Must be run after 'save_superseq_alignments' method"""
+    active_range = subseq_pileup.range0
+    realigned_reads = dict()
+#    for superseq_rowid, groupinfo in sorted(
+#        active_region_pileup.row_spec_groups.items(),
+#        key=(lambda x: x[1]['subseq_hits']), 
+#        reverse=True,
+#    ):
+    # sorting is not necessary
+
+    for superseq_rowid, groupinfo in row_spec_groups.items():
+        #realigned_read_superseq = realign_superseq(superseq_rowid, active_region_pileup, active_range)
+        #realigned_reads[superseq_rowid] = realigned_read_superseq
+            # (221019) This is commented out because superseq itself is
+            # included in subseq list.
+        superseq_aln = superseq_alignment_cache[superseq_rowid]
+        for subseq_rowid in groupinfo['subseq_rowids']:
+            #if subseq_rowid in realigned_reads.keys():
+            #    continue
+                # (221019) This is commented out because subseqs with multiple superseq hits are
+                # incoporated into only one superseq group.
+            realigned_read_subseq = realign_subseq(subseq_rowid, subseq_pileup, active_range, superseq_aln)
+            realigned_reads[subseq_rowid] = realigned_read_subseq
+            
+    return realigned_reads
+
+
+# get naive vcfspecs
+
+def get_vcfspecs_from_pileup(active_region_pileup, allele_portion_threshold=None, concat_dist_le=None):
+    """Must be run after row_spec_groups is set and save_superseq_alignments have been run"""
+    if allele_portion_threshold is None:
+        allele_portion_threshold = DEFAULT_VCFSPEC_EXTRACTION_THRESHOLD
+
+    naive_vcfspecs = set()
+
+    chrom = active_region_pileup.chrom
+    active_region_start0 = active_region_pileup.start0
+    fasta = active_region_pileup.fasta
     subseq_hits_sum = sum(x['subseq_hits'] for x in active_region_pileup.row_spec_groups.values())
+
     for superseq_rowid, groupinfo in active_region_pileup.row_spec_groups.items():
         allele_portion = groupinfo['subseq_hits'] / subseq_hits_sum
         if allele_portion < allele_portion_threshold:
             continue
 
         superseq_row_spec = active_region_pileup.row_specs[superseq_rowid]
-        lstrip_query_gaps = not superseq_row_spec["left_filled"]
-        rstrip_query_gaps = not superseq_row_spec["right_filled"]
+        superseq_alignment = active_region_pileup._alignment_cache[superseq_rowid]
 
-        superseq_aln = active_region_pileup._alignment_store[superseq_rowid]
-        superseq_vcfspec_tuple = alignhandler.alignment_to_vcfspec(
-            superseq_aln, 
-            active_region_pileup.start0, 
-            active_region_pileup.chrom, 
-            active_region_pileup.fasta,
-            lstrip_query_gaps=lstrip_query_gaps,
-            rstrip_query_gaps=rstrip_query_gaps,
-        )
-        if len(superseq_vcfspec_tuple) > 0:
-            vcfspecs.add(superseq_vcfspec_tuple)
+        superseq_vcfspecs = get_vcfspecs_helper(superseq_row_spec, superseq_alignment, chrom, active_region_start0, fasta, concat_dist_le)
+        active_region_pileup._vcfspec_cache[superseq_rowid] = superseq_vcfspecs
+        if len(superseq_vcfspecs) > 0:
+            naive_vcfspecs.add(superseq_vcfspecs)
             
-    return vcfspecs
+    return naive_vcfspecs
 
 
-def get_vcfspecs_multisample(active_region_pileup_multisample, allele_portion_threshold):
-    """Must be run after 'active_region_pileup_multisample' has executed 
+def get_vcfspecs_from_pileup_multisample(active_region_mspileup, allele_portion_threshold=None, concat_dist_le=None):
+    """Must be run after 'active_region_mspileup' has executed 
     'divide_row_spec_groups' and 'get_realigned_reads' methods.
         'divide_row_spec_groups' is needed for setting 'row_spec_groups' for
             each single sample Pileup.
-        'get_realigned_reads' is needed for initiating '_alignment_store' attribute.
+        'get_realigned_reads' is needed for initiating '_alignment_cache' attribute.
     """
-    vcfspecs_by_sample = dict()
-    calculated_vcfspecs_cache = dict()
-    #{sampleid: list() for sampleid in active_region_pileup_multisample.pileup_dict.keys()}
-    for sampleid, pileup in active_region_pileup_multisample.pileup_dict.items():
-        vcfspecs_onesample = set()
-        subseq_hits_sum = sum(x['subseq_hits'] for x in pileup.row_spec_groups.values())
+    if allele_portion_threshold is None:
+        allele_portion_threshold = DEFAULT_VCFSPEC_EXTRACTION_THRESHOLD
 
-        for superseq_rowid, groupinfo in pileup.row_spec_groups.items():
+    naive_vcfspecs = set()
+    processed_superseq_ids = set()
+
+    chrom = active_region_mspileup.chrom
+    active_region_start0 = active_region_mspileup.start0
+    fasta = active_region_mspileup.fasta
+
+    for sampleid, pileup in active_region_mspileup.pileup_dict.items():
+        row_spec_groups = active_region_mspileup.row_spec_groups[sampleid]
+        subseq_hits_sum = sum(x['subseq_hits'] for x in row_spec_groups.values())
+        for superseq_rowid, groupinfo in row_spec_groups.items():
+            # first filter
+            if superseq_rowid in processed_superseq_ids:
+                continue
+            # second filter
             allele_portion = groupinfo['subseq_hits'] / subseq_hits_sum
             if allele_portion < allele_portion_threshold:
                 continue
 
-            if superseq_rowid in calculated_vcfspecs_cache.keys():
-                superseq_vcfspec_tuple = calculated_vcfspecs_cache[superseq_rowid]
+            processed_superseq_ids.add(superseq_rowid)
+
+            superseq_row_spec = active_region_mspileup.superseq_row_specs[superseq_rowid]
+            superseq_alignment = active_region_mspileup._alignment_cache[superseq_rowid]
+
+            read_uid = superseq_rowid[1]
+            if read_uid in pileup._vcfspec_cache:
+                superseq_vcfspecs = pileup._vcfspec_cache[read_uid]
             else:
-                superseq_row_spec = active_region_pileup_multisample.row_specs[superseq_rowid]
-                lstrip_query_gaps = not superseq_row_spec["left_filled"]
-                rstrip_query_gaps = not superseq_row_spec["right_filled"]
-                superseq_aln = active_region_pileup_multisample._alignment_store[superseq_rowid]
-                superseq_vcfspec_tuple = alignhandler.alignment_to_vcfspec(
-                    superseq_aln, 
-                    active_region_pileup_multisample.start0, 
-                    active_region_pileup_multisample.chrom, 
-                    active_region_pileup_multisample.fasta,
-                    lstrip_query_gaps=lstrip_query_gaps,
-                    rstrip_query_gaps=rstrip_query_gaps,
-                )
-                calculated_vcfspecs_cache[superseq_rowid] = superseq_vcfspec_tuple
-
-            if len(superseq_vcfspec_tuple) > 0:
-                vcfspecs_onesample.add(superseq_vcfspec_tuple)
-
-        vcfspecs_by_sample[sampleid] = vcfspecs_onesample
-    # final result
-    vcfspecs_allsamples = set(itertools.chain.from_iterable(vcfspecs_by_sample.values()))
+                superseq_vcfspecs = get_vcfspecs_helper(superseq_row_spec, superseq_alignment, chrom, active_region_start0, fasta, concat_dist_le)
+            if len(superseq_vcfspecs) > 0:
+                naive_vcfspecs.add(superseq_vcfspecs)
             
-    return vcfspecs_allsamples
+    return naive_vcfspecs
 
 
-#def get_vcfspec_list_old(active_region_pileup, active_range, ref_seq, allele_portion_threshold=0.05):
-#    # step 1: get selected_superseq_uids
-#    # selected_superseq_uids = list()
-#    vcfspec_list = list()
-#    subseq_hits_sum = sum(x['subseq_hits'] for x in active_region_pileup.row_spec_groups.values())
-#    for superseq_uid, dic in active_region_pileup.row_spec_groups.items():
-#        if dic['subseq_hits'] / subseq_hits_sum > allele_portion_threshold:
-#            row_spec = active_region_pileup.row_specs[superseq_uid]
-#            if ref_seq == row_spec['seq']:
-#                continue
-#            vcfspec = libvcfspec.Vcfspec(active_region_pileup.chrom, active_range.start + 1, ref_seq, (row_spec['seq'],))
-#            vcfspec = vcfspec.normalize(active_region_pileup.fasta)
-#            vcfspec_list.append(vcfspec)
-#            
-#    return vcfspec_list
+def get_vcfspecs_helper(superseq_row_spec, superseq_alignment, chrom, active_region_start0, fasta, concat_dist_le):
+    if concat_dist_le is None:
+        concat_dist_le = DEFAULT_VCFSPEC_CONCAT_DISTANCE
 
+    lstrip_query_gaps = not superseq_row_spec["left_filled"]
+    rstrip_query_gaps = not superseq_row_spec["right_filled"]
+    superseq_vcfspecs = alignhandler.alignment_to_vcfspec(
+        alignment=superseq_alignment, 
+        target_start0=active_region_start0, 
+        chrom=chrom, 
+        fasta=fasta,
+        lstrip_query_gaps=lstrip_query_gaps,
+        rstrip_query_gaps=rstrip_query_gaps,
+    )
+    if len(superseq_vcfspecs) > 0:
+        superseq_vcfspecs = libvcfspec.concat_list(superseq_vcfspecs, distance_le=concat_dist_le)
+    return superseq_vcfspecs
+
+
+# process naive vcfspecs into final product
+
+def process_naive_vcfspecs(naive_vcfspecs):
+    vcfspecs_dict = {
+        x.get_id(): x for x in 
+        itertools.chain.from_iterable(naive_vcfspecs)
+    }
+
+    grlist = list()
+    for idx, row in enumerate(naive_vcfspecs):
+        gr = pr.concat(x.to_gr() for x in row)
+        gr = gr.assign('row_index', lambda df: pd.Series(itertools.repeat(idx, df.shape[0])))
+        grlist.append(gr)
+
+    result = list()
+    clustered_gr = pr.concat(grlist).cluster()
+    for cluster_idx in set(clustered_gr.Cluster):
+        concatenated_vcfspecs = list()
+        gr_subset = clustered_gr[clustered_gr.Cluster == cluster_idx]
+        for row_index in set(gr_subset.row_index):
+            current_vcfspec_list = [
+                vcfspecs_dict[vcfspec_id]
+                for vcfspec_id in gr_subset[gr_subset.row_index == row_index].Id
+            ]
+            vcfspec_concat = libvcfspec.concat_list(current_vcfspec_list, distance_le=None)[0]
+            concatenated_vcfspecs.append(vcfspec_concat)
+        merged_vcfspec = functools.reduce(libvcfspec.merge, concatenated_vcfspecs)
+        result.append(merged_vcfspec)
+
+    result.sort(key=(lambda x: x.pos))
+
+    return result
+
+
+# write realigned bam
 
 def write_realigned_bam(bam_path, realigned_reads, active_region_pileup, padding_width=0):
     """Args:
@@ -414,8 +555,6 @@ def write_realigned_bam(bam_path, realigned_reads, active_region_pileup, padding
         active_region_pileup.start0 - padding_width, 
         active_region_pileup.end0 + padding_width, 
     )
-    # extend fetchedreads if it does not contain the range of reads to be written
-    active_region_pileup.fetchedreads.add_reads(active_region_pileup.chrom, written_reads_range.start, written_reads_range.stop)
     # write reads
     hdr = pysam.AlignmentHeader.from_references(
         reference_names=active_region_pileup.fasta.references,
@@ -423,12 +562,13 @@ def write_realigned_bam(bam_path, realigned_reads, active_region_pileup, padding
     )
     with pysam.AlignmentFile(bam_path, mode='wb', header=hdr) as in_bam:
         # write non-realigned reads
-        for uid, read in active_region_pileup.fetchedreads.fetch(
+        for read in readhandler.get_fetch(
+            active_region_pileup.bam,
             active_region_pileup.chrom,
             written_reads_range.start,
             written_reads_range.stop,
-            with_uid=True,
         ):
+            uid = readhandler.get_uid(read)
             if uid not in realigned_reads.keys():
                 in_bam.write(read)
         # write realigned reads
@@ -452,84 +592,47 @@ def write_realigned_bam_multisample(bam_paths, realigned_reads_multisample, acti
 # helpers for get_realigned_reads #
 ###################################
 
-#def realign_superseq_old(uid, active_region_pileup, active_range, ref_seq, ref_seq_reversed):
-#    read = active_region_pileup.get_read(uid)
-#    row_spec = active_region_pileup.row_specs[uid]
-#    active_region_alignment = align_row_spec(row_spec, ref_seq, ref_seq_reversed)
-#    realigned_read = active_aln_to_full_read(active_region_alignment, read, active_range)
-#    return realigned_read, active_region_alignment
+def save_superseq_alignments(pileup, aligner=None):
+    if aligner is None:
+        aligner = ALIGNER_MAIN
+
+    pileup._alignment_cache = dict()
+    ref_seq = pileup.get_ref_seq()
+    ref_seq_reversed = ref_seq[::-1]
+    for superseq_rowid in pileup.row_spec_groups.keys():
+        row_spec = pileup.row_specs[superseq_rowid]
+        pileup._alignment_cache[superseq_rowid] = align_row_spec_to_ref(row_spec, ref_seq, ref_seq_reversed, aligner)
 
 
-def realign_superseq(row_id, active_region_pileup, active_range, ref_seq, ref_seq_reversed, aligner):
-    # set params
-    original_read = active_region_pileup.get_read(row_id)
-    original_cigar_split = alignhandler.split_cigar(original_read.cigartuples, original_read.reference_start, active_range)
-    row_spec = active_region_pileup.row_specs[row_id]
-    empty_before_active_region = (len(original_cigar_split[0]) == 0)
-    empty_after_active_region = (len(original_cigar_split[2]) == 0)
-    # do alignment
-    active_region_alignment = align_row_spec(row_spec, ref_seq, ref_seq_reversed, aligner, empty_before_active_region, empty_after_active_region)
-    # get active region cigartuples
-    active_region_cigartuples, active_region_offset = alignhandler.alignment_to_cigartuples(
-        active_region_alignment,
-        match_as_78=False, del_as_skip=False, 
-        left_ins_as_clip=empty_before_active_region, right_ins_as_clip=empty_after_active_region,
-        remove_left_del=empty_before_active_region, remove_right_del=empty_after_active_region,
-    )
-    # split cigartuples are merged into one
-    realigned_cigartuples = merge_cigartuples_list(
-        [original_cigar_split[0], active_region_cigartuples, original_cigar_split[2]]
-    )
-    # get new read reference_start
-    if empty_before_active_region:
-        new_reference_start = active_range.start + active_region_offset
-    else:
-        new_reference_start = original_read.reference_start
-        
-    realigned_read = original_read.__copy__()
-    realigned_read.reference_start = new_reference_start
-    realigned_read.cigartuples = realigned_cigartuples
-    readhandler.set_NMMD(realigned_read, active_region_pileup.fasta)
-
-    realigned_cigar_sanity_check(original_read, realigned_read, realigned_cigartuples)
-
-    return realigned_read, active_region_alignment
+def save_superseq_alignments_multisample(mspileup):
+    mspileup._alignment_cache = dict()
+    for superseq_rowid in mspileup.superseq_row_specs.keys():
+        sampleid, read_uid = superseq_rowid
+        superseq_aln = mspileup.pileup_dict[sampleid]._alignment_cache[read_uid]
+        mspileup._alignment_cache[superseq_rowid] = superseq_aln
 
 
-#def realign_subseq_old(uid, active_region_pileup, active_range, superseq, superseq_reversed, superseq_alignment):
-#    # set params
-#    read = active_region_pileup.get_read(uid)
-#    row_spec = active_region_pileup.row_specs[uid]
-#        
-#    sub_to_sup_aln = align_row_spec(row_spec, superseq, superseq_reversed)
+#def realign_superseq(row_id, active_region_pileup, active_range):
+#    active_region_alignment = active_region_pileup._alignment_cache[row_id]
+#    realigned_read = align_row_helper(row_id, active_region_pileup, active_range, active_region_alignment)
 #
-#    # sanity check
-#    active_region_cigartuples, active_region_offset = alignhandler.alignment_to_cigartuples(sub_to_sup_aln)
-#    if set(x[0] for x in active_region_cigartuples) != alignhandler.CIGAROPS_BOTH:
-#        raise Exception(
-#            f'subseq-to-superseq alignment is not match-only.\n'
-#            f'subseq row_spec: {row_spec}\n'
-#            f'subseq-to-superseq alignment: {sub_to_sup_aln}'
-#        )
-#    
-#    active_region_alignment = alignhandler.map_alignments(superseq_alignment, sub_to_sup_aln)   
-#    # superseq_alignment.map(sub_to_sup_aln)
-#    
-#    realigned_read = active_aln_to_full_read(active_region_alignment, read, active_range)
-#    return realigned_read, active_region_alignment
+#    return realigned_read
 
 
-def realign_subseq(row_id, active_region_pileup, active_range, superseq, superseq_alignment):
-    # set params
-    original_read = active_region_pileup.get_read(row_id)
-    original_cigar_split = alignhandler.split_cigar(original_read.cigartuples, original_read.reference_start, active_range)
+def realign_subseq(row_id, active_region_pileup, active_range, superseq_alignment):
     row_spec = active_region_pileup.row_specs[row_id]
+    active_region_alignment = align_subseq_to_ref(row_spec, superseq_alignment)
+    realigned_read = align_row_helper(row_id, active_region_pileup, active_range, active_region_alignment)
+
+    return realigned_read
+
+
+def align_row_helper(row_id, active_region_pileup, active_range, active_region_alignment):
+    # set params
+    original_read = active_region_pileup.read_cache[row_id]
+    original_cigar_split = alignhandler.split_cigar(original_read.cigartuples, original_read.reference_start, active_range)
     empty_before_active_region = (len(original_cigar_split[0]) == 0)
     empty_after_active_region = (len(original_cigar_split[2]) == 0)
-
-    # do initial alignment
-    active_region_alignment = align_subseq_to_ref(row_spec, superseq_alignment)
-
     # get active region cigartuples
     active_region_cigartuples, active_region_offset = alignhandler.alignment_to_cigartuples(
         active_region_alignment,
@@ -538,15 +641,17 @@ def realign_subseq(row_id, active_region_pileup, active_range, superseq, superse
         remove_left_del=empty_before_active_region, remove_right_del=empty_after_active_region,
     )
     # merge split cigartuples
-    realigned_cigartuples = merge_cigartuples_list(
-        [original_cigar_split[0], active_region_cigartuples, original_cigar_split[2]]
+    realigned_cigartuples = functools.reduce(
+        merge_two_cigartuples, 
+        [original_cigar_split[0], active_region_cigartuples, original_cigar_split[2]],
     )
+    
     # get new read reference_start
     if empty_before_active_region:
         new_reference_start = active_range.start + active_region_offset
     else:
         new_reference_start = original_read.reference_start
-        
+    # make new read 
     realigned_read = original_read.__copy__()
     realigned_read.reference_start = new_reference_start
     realigned_read.cigartuples = realigned_cigartuples
@@ -554,7 +659,7 @@ def realign_subseq(row_id, active_region_pileup, active_range, superseq, superse
 
     realigned_cigar_sanity_check(original_read, realigned_read, realigned_cigartuples)
 
-    return realigned_read, active_region_alignment
+    return realigned_read
 
 
 def align_subseq_to_ref(subseq_row_spec, sup_to_ref_aln):
@@ -645,62 +750,66 @@ def align_subseq_to_ref(subseq_row_spec, sup_to_ref_aln):
 # amenders: marginal insdel amendment #
 #######################################
 
-def amender_left_right(alignment):
-    return alignhandler.amend_outer_insdel_right(
-        alignhandler.amend_outer_insdel_left(alignment)
-    )
-
-
-def amender_left(alignment):
-    return alignhandler.amend_outer_insdel_left(alignment)
-
-
-def amender_right(alignment):
-    return alignhandler.amend_outer_insdel_right(alignment)
-
-
-def amender_none(alignment):
-    return alignment
-
-
-def get_amender(empty_before_active_region, empty_after_active_region):
-    if empty_before_active_region:
-        if empty_after_active_region:
-            return amender_left_right
-        else:
-            return amender_left
-    else:
-        if empty_after_active_region:
-            return amender_right
-        else:
-            return amender_none
+#def amender_left_right(alignment):
+#    return alignhandler.amend_outer_insdel_right(
+#        alignhandler.amend_outer_insdel_left(alignment)
+#    )
+#
+#
+#def amender_left(alignment):
+#    return alignhandler.amend_outer_insdel_left(alignment)
+#
+#
+#def amender_right(alignment):
+#    return alignhandler.amend_outer_insdel_right(alignment)
+#
+#
+#def amender_none(alignment):
+#    return alignment
+#
+#
+#def get_amender(empty_before_active_region, empty_after_active_region):
+#    if empty_before_active_region:
+#        if empty_after_active_region:
+#            return amender_left_right
+#        else:
+#            return amender_left
+#    else:
+#        if empty_after_active_region:
+#            return amender_right
+#        else:
+#            return amender_none
 
 
 #######################################
 
 
-def align_row_spec(row_spec, target, target_reversed, aligner, empty_before_active_region, empty_after_active_region):
+def align_row_spec_to_ref(row_spec, ref_seq, ref_seq_reversed, aligner):
     # set params
     query = row_spec['seq']
     reverse_align = (not row_spec['left_filled']) and row_spec['right_filled']
-    amender = get_amender(empty_before_active_region, empty_after_active_region)
     # run aligner
     try:
         if reverse_align:
-            alns = aligner.align(target_reversed, query[::-1])
+            alns = aligner.align(ref_seq_reversed, query[::-1])
         else:
-            alns = aligner.align(target, query)
+            alns = aligner.align(ref_seq, query)
     except Exception as exc:
-        raise Exception(f'Failed alignment:\nrow_spec: {row_spec}\ntarget: {target}') from exc
+        raise Exception(f'Failed alignment:\nrow_spec: {row_spec}\nReference seq: {ref_seq}') from exc
     # recover reversed alignment
     if reverse_align:
         alns = [alignhandler.reverse_alignment(x) for x in alns]
 
     if len(alns) == 1:
         aln = alns[0]
-        aln = amender(aln)
+        aln = alignhandler.amend_outer_insdel_both(aln)
     else:
-        alns = [amender(x) for x in alns]
+        #alns = [alignhandler.amend_outer_insdel_both(x) for x in alns]
+        alns = list(
+            alignhandler.remove_identical_alignments(
+                alignhandler.amend_outer_insdel_both(x) for x in alns
+            )
+        )
         try:
             aln = alignhandler.alignment_tiebreaker(alns, raise_with_failure=True)
         except alignhandler.AlignmentTieError as exc:
@@ -708,36 +817,6 @@ def align_row_spec(row_spec, target, target_reversed, aligner, empty_before_acti
             raise Exception(msg) from exc
         
     return aln
-
-
-#def active_aln_to_full_read(active_region_alignment, read, active_range):
-#    original_cigar_split = alignhandler.split_cigar(read.cigartuples, read.reference_start, active_range)
-#
-#    active_region_cigartuples, active_region_offset = alignhandler.alignment_to_cigartuples(active_region_alignment)
-#    
-#    realigned_cigartuples = merge_cigartuples_list(
-#        [original_cigar_split[0], active_region_cigartuples, original_cigar_split[2]]
-#    )
-#    
-#    if len(original_cigar_split[0]) > 0:
-#        #assert active_region_offset == 0
-#        new_reference_start = read.reference_start
-#    else:
-#        new_reference_start = active_range.start + active_region_offset
-#        
-#    realigned_read = read.__copy__()
-#    realigned_read.reference_start = new_reference_start
-#    realigned_read.cigartuples = realigned_cigartuples
-#
-#    # sanity check
-#    # if len(read.query_sequence) != alignhandler.get_query_length(realigned_cigartuples):
-#    #     raise Exception(
-#    #         f'Read query sequence length and cigar length differs:\n'
-#    #         f'Original read: {read.to_string()}\n'
-#    #         f'Realigned read: {realigned_read.to_string()}\n'
-#    #     )
-#
-#    return realigned_read
 
 
 def merge_two_cigartuples(cigartuples_left, cigartuples_right):
@@ -753,10 +832,6 @@ def merge_two_cigartuples(cigartuples_left, cigartuples_right):
         else:
             return cigartuples_left + cigartuples_right
 
-    
-def merge_cigartuples_list(cigartuples_list):
-    return list(functools.reduce(merge_two_cigartuples, cigartuples_list))
-
 
 def realigned_cigar_sanity_check(original_read, realigned_read, realigned_cigartuples):
     if len(original_read.query_sequence) != alignhandler.get_query_length(realigned_cigartuples):
@@ -767,4 +842,3 @@ def realigned_cigar_sanity_check(original_read, realigned_read, realigned_cigart
         )
 
     
-###################################

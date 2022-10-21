@@ -12,10 +12,12 @@ top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
 
 
-DEFAULT_GCWIG_PATHS = common.RefverDict({
-    'GRCh37': '/home/users/data/01_reference/human_g1k_v37/human_g1k_v37.gc50Base.txt.gz',
-    'GRCh38': '/home/users/pjh/References/reference_genome/GRCh38/GCA_for_alignment_pipelines/no_alt_plus_hs38d1/GCA_000001405.15_GRCh38_no_alt_plus_hs38d1_analysis_set.gc50Base.txt.gz',
-    })
+DEFAULT_GCWIG_PATHS = common.RefverDict(
+    {
+        'GRCh37': '/home/users/data/01_reference/human_g1k_v37/human_g1k_v37.gc50Base.txt.gz',
+        'GRCh38': '/home/users/pjh/References/reference_genome/GRCh38/GCA_for_alignment_pipelines/no_alt_plus_hs38d1/GCA_000001405.15_GRCh38_no_alt_plus_hs38d1_analysis_set.gc50Base.txt.gz',
+    }
+)
 DEFAULT_HOM = 0.9
 DEFAULT_HET = 0.25
 

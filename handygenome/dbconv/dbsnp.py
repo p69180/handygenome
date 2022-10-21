@@ -16,7 +16,6 @@ workflow = importlib.import_module(".".join([top_package_name, "workflow"]))
 assemblyspec = importlib.import_module(".".join([top_package_name, "assemblyspec"]))
 initvcf = importlib.import_module(".".join([top_package_name, "vcfeditor", "initvcf"]))
 libpopfreq = importlib.import_module(".".join([top_package_name, "annotation", "popfreq"]))
-#equivalents = importlib.import_module(".".join([top_package_name, "variant", "equivalents"]))
 varianthandler = importlib.import_module(".".join([top_package_name, "variant", "varianthandler"]))
 indexing = importlib.import_module(".".join([top_package_name, "vcfeditor", "indexing"]))
 libvcfspec = importlib.import_module(".".join([top_package_name, "variant", "vcfspec"]))
@@ -102,14 +101,14 @@ def make_popfreqinfo(original_vr, freq_dict, alt_idx):
     return popinfolist
 
 
-def get_new_vr_list(original_vr, freq_dict, new_chrom, fasta, tmp_new_header):
+def get_new_vr_list(original_vr, freq_dict, new_chrom, tmp_new_header):
     vcfspec = libvcfspec.Vcfspec.from_vr(original_vr)
     #vcfspec = varianthandler.get_vcfspec(original_vr)
     vcfspec.chrom = new_chrom
 
     new_vr_list = list()
     for alt_idx, sub_vcfspec in enumerate(vcfspec.iter_monoalts()):
-        sub_vcfspec = libvcfspec.leftmost(sub_vcfspec, fasta)
+        sub_vcfspec = sub_vcfspec.leftmost()
         new_vr = tmp_new_header.new_record()
         varianthandler.apply_vcfspec(new_vr, sub_vcfspec)
         popinfolist = make_popfreqinfo(original_vr, freq_dict, alt_idx)
@@ -119,7 +118,7 @@ def get_new_vr_list(original_vr, freq_dict, new_chrom, fasta, tmp_new_header):
     return new_vr_list
 
 
-def process_by_chrom(original_vcf, chrom, new_chrom, tmp_outfile_path, popnames, tmp_new_header, fasta, chromdict, logging_lineno):
+def process_by_chrom(original_vcf, chrom, new_chrom, tmp_outfile_path, popnames, tmp_new_header, chromdict, logging_lineno):
     # 1. setup vr dictionary to write to tmp output file
     out_vrs = dict()
     
@@ -129,7 +128,7 @@ def process_by_chrom(original_vcf, chrom, new_chrom, tmp_outfile_path, popnames,
             continue
         freq_dict = handle_freq(original_vr.info["FREQ"])
         popnames.update(freq_dict.keys())
-        new_vr_list = get_new_vr_list(original_vr, freq_dict, new_chrom, fasta, tmp_new_header)
+        new_vr_list = get_new_vr_list(original_vr, freq_dict, new_chrom, tmp_new_header)
         for new_vr in new_vr_list:
             vcfspec = libvcfspec.Vcfspec.from_vr(new_vr)
             #vcfspec = varianthandler.get_vcfspec(new_vr)
@@ -150,7 +149,7 @@ def process_by_chrom(original_vcf, chrom, new_chrom, tmp_outfile_path, popnames,
     gc.collect()
 
 
-def preprocess(original_vcf_path, chromlist, tmpfile_paths, fasta, chromdict, logging_lineno):
+def preprocess(original_vcf_path, chromlist, tmpfile_paths, chromdict, logging_lineno):
     popnames = set()
     original_vcf = pysam.VariantFile(original_vcf_path)
     tmp_new_header = get_tmp_new_header(chromdict)
@@ -158,7 +157,7 @@ def preprocess(original_vcf_path, chromlist, tmpfile_paths, fasta, chromdict, lo
     for chrom, new_chrom in chromlist:
         LOGGER.info(f'BEGINNING preprocessing for chromosome {new_chrom}({chrom})')
         tmp_outfile_path = tmpfile_paths[new_chrom]
-        process_by_chrom(original_vcf, chrom, new_chrom, tmp_outfile_path, popnames, tmp_new_header, fasta, chromdict, logging_lineno)
+        process_by_chrom(original_vcf, chrom, new_chrom, tmp_outfile_path, popnames, tmp_new_header, chromdict, logging_lineno)
 
     original_vcf.close()
     return popnames
@@ -208,7 +207,7 @@ def main(original_vcf_path, outfile_path, refver):
     tmpdir = tempfile.mkdtemp(prefix='dbsnp_converter', dir=os.path.dirname(outfile_path))
     chromlist, tmpfile_paths = get_tmpfile_paths(tmpdir, original_vcf_path, chromdict, chrname_converter)
 
-    popnames = preprocess(original_vcf_path, chromlist, tmpfile_paths, fasta, chromdict, logging_lineno=1_000_000)
+    popnames = preprocess(original_vcf_path, chromlist, tmpfile_paths, chromdict, logging_lineno=1_000_000)
 
     write_final_outfile(popnames, chromdict, tmpfile_paths, outfile_path, chromlist, logging_lineno=1_000_000)
     shutil.rmtree(tmpdir)

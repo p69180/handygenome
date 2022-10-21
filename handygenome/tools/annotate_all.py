@@ -370,7 +370,6 @@ def add_annotations(
         vep_vr_dict,
         distance,
         refver,
-        fasta,
         chromdict,
         dbsnp_vcf,
         cosmic_vcf,
@@ -396,12 +395,12 @@ def add_annotations(
             )
         if do_popfreq:
             popfreqinfo_list = libpopfreq.PopfreqInfoALTlist.from_vcfspec(
-                vcfspec, dbsnp_vcf, fasta, donot_init_metadata=True
+                vcfspec, dbsnp_vcf, donot_init_metadata=True
             )
             popfreqinfo_list.write(vr)
         if do_cosmic:
             cosmicinfo_list = libcosmic.CosmicInfoALTlist.from_vcfspec(
-                vcfspec, cosmic_vcf, fasta, donot_init_metadata=True
+                vcfspec, cosmic_vcf, donot_init_metadata=True
             )
             cosmicinfo_list.write(vr)
 
@@ -452,7 +451,6 @@ def add_annotations(
                 vep_vr_dict,
                 distance,
                 refver,
-                fasta,
                 chromdict,
                 dbsnp_vcf,
                 cosmic_vcf,

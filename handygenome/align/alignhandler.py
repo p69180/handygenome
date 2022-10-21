@@ -260,66 +260,6 @@ def walk_cigar_targetonly(cigartuples, target_start0):
         target_start0 = target_end0
         #query_start0 = query_end0
 
-        
-# def map_alignments(sup_to_ref_aln, sub_to_sup_aln):
-#     # supaln: sup_to_ref_aln 
-#     # subaln: sub_to_sup_aln
-#     sub_to_sup_walks = list(path_to_walks(sub_to_sup_aln.path))
-#     assert len(sub_to_sup_walks) == 1 
-#     target_walk_subaln, query_walk_subaln = sub_to_sup_walks[0]
-#     assert len(target_walk_subaln) == len(query_walk_subaln)
-    
-#     for target_walk_supaln, query_walk_supaln in path_to_walks(sup_to_ref_aln.path):
-#         pass
-    
-    
-#    sup_to_ref_walks = list(path_to_walks(sup_to_ref_aln.path))
-#    sub_to_sup_walks = list(path_to_walks(sub_to_sup_aln.path))
-#    sub_to_sup_cigartuples = alignment_to_cigartuples(sub_to_sup_aln)[0]
-#    
-#    assert len(sub_to_sup_cigartuples) == 1 and sub_to_sup_cigartuples[0][0] == 0
-#    
-#    sub_to_sup_walk = sub_to_sup_walks[0]
-#    
-#    result = list()
-#    
-#    
-#    ref_cursor = sup_to_ref_walks[0].start
-#    superseq_cursor = sub_to_sup_walk[0].start
-#    subseq_cursor = sub_to_sup_walk[1].start
-#    
-#    sub_to_sup_target_end = sub_to_sup_walk[0].stop
-#    finish_loop = False
-#    
-#    for target_walk, query_walk in sup_to_ref_walks:
-#        if finish_loop:
-#            break
-#            
-#        if superseq_cursor in query_walk:
-#            superseq_current_end = min(sub_to_sup_target_end, query_walk.stop)
-#            result_query_walk = range(
-#                subseq_cursor, 
-#                subseq_cursor + (superseq_current_end - superseq_cursor)
-#            )
-#            if len(target_walk) == 0:
-#                result_target_walk = target_walk
-#            elif len(query_walk) == 0:
-#                raise Exception()
-#            else:
-#                result_target_walk = range(ref_cursor, ref_cursor + len(result_query_walk))
-#                
-#            result.append((result_target_walk, result_query_walk))
-#                
-#            if superseq_current_end >= sub_to_sup_target_end:
-#                finish_loop = True
-#                break
-#                
-#            ref_cursor += len(result_target_walk)
-#            superseq_cursor += len(result_query_walk)
-#            subseq_cursor += len(result_query_walk)
-
-#    return result
-
 
 def alignment_to_cigartuples(
     alignment, 
@@ -360,13 +300,16 @@ def alignment_to_cigartuples(
     if remove_right_del:
         if cigartuples[-1][0] == targetonly_cigarop:
             del cigartuples[-1]
-    # get offset
-    for target_range0, query_range0 in walks:
-        if len(query_range0) > 0:
-            offset = target_range0.start 
-            break
+    # get target offset
+    if remove_left_del:
+        for target_range0, query_range0 in walks:
+            if len(query_range0) > 0:
+                target_offset = target_range0.start 
+                break
+    else:
+        target_offset = 0
 
-    return cigartuples, offset
+    return cigartuples, target_offset
 
 
 def _match_handler_78(alignment, target_range0, query_range0, cigartuples):
@@ -398,7 +341,7 @@ def walks_to_path(cigarwalks):
     for target_range0, query_range0 in iterator:
         result.append((target_range0.stop, query_range0.stop))
 
-    return result
+    return tuple(result)
 
 
 def path_to_walks(alignpath):
@@ -433,11 +376,9 @@ def amend_outer_insdel_left(alignment):
         len(walks[1][1]) == 0 and
         (len(walks[2][0]) > 0 and len(walks[2][1]) > 0)
     ):
-        new_walks = [
-            (walks[1][0], range(0, 0)),
-            (range(walks[1][0].stop, walks[1][0].stop), walks[0][1]),
-        ]
-        new_walks.extend(walks[2:])
+        new_walks = walks.copy()
+        new_walks[0] = (walks[1][0], range(0, 0))
+        new_walks[1] = (range(walks[1][0].stop, walks[1][0].stop), walks[0][1])
         return Bio.Align.PairwiseAlignment(
             alignment.target, 
             alignment.query, 
@@ -449,9 +390,37 @@ def amend_outer_insdel_left(alignment):
 
 
 def amend_outer_insdel_right(alignment):
-    rev_alignment = reverse_alignment(alignment)
-    rev_alignment_amended = amend_outer_insdel_left(rev_alignment)
-    return reverse_alignment(rev_alignment_amended)
+    walks = get_walks(alignment, copy=False)
+    if len(walks) < 3:
+        return alignment
+
+    if (
+        len(walks[-1][0]) == 0 and 
+        len(walks[-2][1]) == 0 and
+        (len(walks[-3][0]) > 0 and len(walks[-3][1]) > 0)
+    ):
+        new_walks = walks.copy()
+        new_walks[-1] = (walks[-2][0], range(0, 0))
+        new_walks[-2] = (range(walks[-2][0].start, walks[-2][0].start), walks[-1][1])
+        return Bio.Align.PairwiseAlignment(
+            alignment.target, 
+            alignment.query, 
+            walks_to_path(new_walks),
+            0,
+        )
+    else:
+        return alignment
+
+def amend_outer_insdel_both(alignment):
+    return amend_outer_insdel_right(
+        amend_outer_insdel_left(alignment)
+    )
+
+
+#def amend_outer_insdel_right(alignment):
+#    rev_alignment = reverse_alignment(alignment)
+#    rev_alignment_amended = amend_outer_insdel_left(rev_alignment)
+#    return reverse_alignment(rev_alignment_amended)
 
 
 def show_alignment_with_numbers(alignment):
@@ -587,8 +556,59 @@ def remove_flanking_query_gaps(alignment):
 
 
 def alignment_to_vcfspec(alignment, target_start0, chrom, fasta, lstrip_query_gaps=True, rstrip_query_gaps=True):
-    vcfspec_list = list()
-    # strip
+    def groupkey_walks(x):
+        if len(x[0]) == 0 or len(x[1]) == 0:
+            return 'indel'
+        else:
+            return 'match'
+
+    def groupkey_matches(x):
+        return x[0] != x[1]
+
+    def handle_single_ins(current_pos0, target_idx, query_idx, query_walk, fasta, chrom, new_aln, vcfspec_list):
+        pos = current_pos0
+        if target_idx == 0:
+            ref = fasta.fetch(chrom, current_pos0 - 1, current_pos0)
+        else:
+            ref = new_aln.target[target_idx - 1]
+        inserted_seq = new_aln.query[query_idx:(query_idx + len(query_walk))]
+        alt = ref + inserted_seq
+        vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,), fasta=fasta))
+
+    def handle_single_del(current_pos0, target_idx, target_walk, fasta, chrom, new_aln, vcfspec_list):
+        pos = current_pos0
+        if target_idx == 0:
+            preceding_base = fasta.fetch(chrom, current_pos0 - 1, current_pos0)
+        else:
+            preceding_base = new_aln.target[target_idx - 1]
+        ref = preceding_base + new_aln.target[target_idx:(target_idx + len(target_walk))]
+        alt = ref[0]
+        vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,), fasta=fasta))
+
+    def handle_consecutive_indels(new_aln, walks_subset, target_idx, query_idx, current_pos0, chrom, fasta, vcfspec_list):
+        target_walk_length = sum(len(target_walk) for target_walk, query_walk in walks_subset)
+        query_walk_length = sum(len(query_walk) for target_walk, query_walk in walks_subset)
+        ref = new_aln.target[target_idx:(target_idx + target_walk_length)]
+        alt = new_aln.query[query_idx:(query_idx + query_walk_length)]
+        pos = current_pos0 + 1
+        vcfspec = libvcfspec.Vcfspec(chrom, pos, ref, (alt,), fasta=fasta)
+        #vcfspec = vcfspec.parsimonious()
+        vcfspec_list.append(vcfspec)
+
+    def handle_match(new_aln, target_idx, query_idx, target_walk, current_pos0, chrom, fasta, vcfspec_list):
+        target_seq = new_aln.target[target_idx:(target_idx + len(target_walk))]
+        query_seq = new_aln.query[query_idx:(query_idx + len(target_walk))]
+        idx_offset = 0
+        for is_mismatch, seq_pairs in itertools.groupby(zip(target_seq, query_seq), key=groupkey_matches):
+            seq_pairs = tuple(seq_pairs)
+            if is_mismatch:
+                pos = current_pos0 + idx_offset + 1
+                ref = ''.join(x[0] for x in seq_pairs)
+                alt = ''.join(x[1] for x in seq_pairs)
+                vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,), fasta=fasta))
+            idx_offset += len(seq_pairs)
+
+    # set paramters
     if lstrip_query_gaps:
         if rstrip_query_gaps:
             new_aln, leading_offset = remove_flanking_query_gaps(alignment)
@@ -606,67 +626,61 @@ def alignment_to_vcfspec(alignment, target_start0, chrom, fasta, lstrip_query_ga
     current_pos0 = target_start0
     target_idx = 0
     query_idx = 0
+    vcfspec_list = list()
     
-    for target_walk, query_walk in get_walks(new_aln, copy=False):
-        if len(target_walk) == 0:
-            pos = current_pos0
-            if target_idx == 0:
-                ref = fasta.fetch(chrom, current_pos0 - 1, current_pos0)
-            else:
-                ref = new_aln.target[target_idx - 1]
-            inserted_seq = new_aln.query[query_idx:(query_idx + len(query_walk))]
-            alt = ref + inserted_seq
-            vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,)))
-        elif len(query_walk) == 0:
-            pos = current_pos0
-            if target_idx == 0:
-                preceding_base = fasta.fetch(chrom, current_pos0 - 1, current_pos0)
-                ref = preceding_base + new_aln.target[target_idx:(target_idx + len(target_walk))]
-            else:
-                ref = new_aln.target[(target_idx - 1):(target_idx + len(target_walk))]
-            alt = ref[0]
-            vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,)))
-        else:
-            iterator = (
-                (idx_offset, new_aln.target[target_idx + idx_offset], new_aln.query[query_idx + idx_offset])
-                for idx_offset in range(len(target_walk))
-            )
-            idx_offset, target_base, query_base = next(iterator)
-            while True:
-                if idx_offset is None:
-                    break
+    # main
+    for walktype, walks_subset in itertools.groupby(get_walks(new_aln, copy=False), key=groupkey_walks):
+        walks_subset = tuple(walks_subset)
 
-                if target_base == query_base:
-                    while True:
-                        idx_offset, target_base, query_base = next(iterator, (None, None, None))
-                        if (idx_offset is None) or (target_base != query_base):
-                            break
-                else:
-                    target_base_buffer = [target_base]
-                    query_base_buffer = [query_base]
-                    mismatch_idx_offset_list = [idx_offset]
-                    while True:
-                        idx_offset, target_base, query_base = next(iterator, (None, None, None))
-                        if (idx_offset is None) or (target_base == query_base):
-                            if idx_offset is None:
-                                pos0 = current_pos0 + (mismatch_idx_offset_list[-1] + 1 - len(mismatch_idx_offset_list))
-                            else:
-                                pos0 = current_pos0 + idx_offset - len(mismatch_idx_offset_list)
-                            pos = pos0 + 1
-                            ref = ''.join(target_base_buffer)
-                            alt = ''.join(query_base_buffer)
-                            vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,)))
-                            break
-                        else:
-                            target_base_buffer.append(target_base)
-                            query_base_buffer.append(query_base)
-                            mismatch_idx_offset_list.append(idx_offset)
-                    
-        current_pos0 += len(target_walk)
-        target_idx += len(target_walk)
-        query_idx += len(query_walk)
+        if walktype == 'match':
+            if len(walks_subset) != 1:
+                raise Exception(
+                    f'Longer than one consecutive runs of match walks.\n'
+                    f'Input alignment:\n'
+                    f'{alignment}'
+                )
+            target_walk, query_walk = walks_subset[0]
+            handle_match(new_aln, target_idx, query_idx, target_walk, current_pos0, chrom, fasta, vcfspec_list)
+        elif walktype == 'indel':
+            if len(walks_subset) == 1:
+                target_walk, query_walk = walks_subset[0]
+                if len(target_walk) == 0:  # ins
+                    handle_single_ins(current_pos0, target_idx, query_idx, query_walk, fasta, chrom, new_aln, vcfspec_list)
+                elif len(query_walk) == 0:  # del
+                    handle_single_del(current_pos0, target_idx, target_walk, fasta, chrom, new_aln, vcfspec_list)
+            else:
+                if not (
+                    any(len(target_walk) > 0 for target_walk, query_walk in walks_subset) and 
+                    any(len(query_walk) > 0 for target_walk, query_walk in walks_subset)
+                ):
+                    raise Exception(
+                        f'Consecutive run of indels are composed only of insertion or deletion.\n'
+                        f'Input alignment:\n'
+                        f'{alignment}'
+                    )
+                handle_consecutive_indels(new_aln, walks_subset, target_idx, query_idx, current_pos0, chrom, fasta, vcfspec_list)
+
+        for target_walk, query_walk in walks_subset:
+            current_pos0 += len(target_walk)
+            target_idx += len(target_walk)
+            query_idx += len(query_walk)
         
     return tuple(vcfspec_list)
+
+
+def alignment_hasher(aln):
+    return (aln.target, aln.query, tuple(aln.path))
+
+
+def remove_identical_alignments(alignments):
+    hash_store = set()
+    for x in alignments:
+        hash_val = alignment_hasher(x)
+        if hash_val in hash_store:
+            continue
+        else:
+            hash_store.add(hash_val)
+            yield x
 
 
 ############################
@@ -725,7 +739,12 @@ def tiebreakers_merged_main(alignments):
 def alignment_tiebreaker(alignments, raise_with_failure=True):
     selected_alns = tiebreakers_merged_main(alignments)
     if len(selected_alns) != 1 and raise_with_failure:
-        alignments_string = '\n'.join(str(x) for x in selected_alns)
+        alignments_string = list()
+        for x in selected_alns:
+            alignments_string.append(
+                f'target: {x.target}\nquery: {x.query}\npath: {x.path}\n{str(x)}'
+            )
+        alignments_string = '\n'.join(alignments_string)
         raise AlignmentTieError(
             f'Failed to break alignment tie. Alignments are:\n{alignments_string}'
         )

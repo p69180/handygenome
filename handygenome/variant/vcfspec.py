@@ -3,6 +3,7 @@ import itertools
 import functools
 
 import Bio
+import pyranges as pr
 
 import importlib
 top_package_name = __name__.split('.')[0]
@@ -14,25 +15,53 @@ realign = importlib.import_module('.'.join([top_package_name, 'align', 'realign'
 DEFAULT_FETCH_EXTEND_LENGTH = 10
 SV_ALTS = ('DEL', 'INS', 'DUP', 'INV', 'CNV', 'BND', 'TRA')
 CPGMET_ALT = 'CPGMET'
+#SET_nN = set('nN')
 
 
 class Vcfspec:
     # constructors #
-    def __init__(self, chrom=None, pos=None, ref=None, alts=None, 
-                 somaticindex=1, germlineindexes=(0, 0)):
+    def __init__(
+        self, chrom=None, pos=None, ref=None, alts=None, 
+        somaticindex=1, germlineindexes=(0, 0),
+        refver=None, fasta=None,
+        #is_leftmost=None,
+        #is_rightmost=None,
+        #is_parsimonious=None,
+    ):
+        # sanity check
         if alts is not None:
             if not isinstance(alts, (tuple, list)):
                 raise Exception(f'"alts" argument must be a tuple or a list.')
-
+        # chrom, pos, ref, alt
         self.chrom = chrom
         self.pos = pos
         self.ref = ref
-        if alts is not None:
+        if alts is None:
+            self.alts = alts
+        else:
             self.alts = tuple(alts)
+        # others
         self.somaticindex = somaticindex
         self.germlineindexes = sorted(germlineindexes)
-
+        self.refver = refver
+        if fasta is None:
+            if refver is None:
+                raise Exception(f'When "fasta" is not set, "refver" must be set.')
+            self.fasta = common.DEFAULT_FASTAS[self.refver]
+        else:
+            self.fasta = fasta
+        # non-specifiable attributes
+        self.is_leftmost = None
+        self.is_rightmost = None
+        self.is_parsimonious = None
         self._equivalents = None
+
+        if len(self.alts) == 1:
+            self.concat_components = [[self]]
+            self.merge_components = [self]
+        else:
+            self.concat_components = [[self.spawn(alts=(alt,))] for alt in self.alts]
+            self.merge_components = [self.spawn(alts=(alt,)) for alt in self.alts]
 
     @classmethod
     def from_vr(cls, vr):
@@ -40,14 +69,15 @@ class Vcfspec:
     ################
 
     def __repr__(self):
-        if len(self.alts) == 1:
-            altstring = str(self.alts[0])
-        else:
-            altstring = str(list(self.alts))
-        return f'<Vcfspec ({self.chrom}:{self.pos} {self.ref}>{altstring})>'
+#        if len(self.alts) == 1:
+#            altstring = str(self.alts[0])
+#        else:
+#            altstring = str(list(self.alts))
+#        return f'<Vcfspec ({self.chrom}:{self.pos} {self.ref}>{altstring})>'
+        return f'Vcfspec(chrom={repr(self.chrom)}, pos={self.pos:,}, ref={repr(self.ref)}, alts={repr(self.alts)})'
 
     def __hash__(self):
-        return hash(self.get_tuple())
+        return hash((self.chrom, self.pos, self.ref, self.alts))
 
     def __eq__(self, other):
         return all(
@@ -55,9 +85,42 @@ class Vcfspec:
             for key in ('chrom', 'pos', 'ref', 'alts')
         )
 
+    def spawn(self, **kwargs):
+        default_kwargs = {
+            'chrom': self.chrom, 
+            'pos': self.pos, 
+            'ref': self.ref, 
+            'alts': self.alts,
+            'somaticindex': self.somaticindex,
+            'germlineindexes': self.germlineindexes,
+            'refver': self.refver,
+            'fasta': self.fasta,
+        }
+        default_kwargs.update(kwargs)
+        result = self.__class__(**default_kwargs)
+
+#        for key in (
+#            'is_leftmost',
+#            'is_rightmost',
+#            'is_parsimonious',
+#        ):
+#            setattr(result, key, getattr(self, key))
+#
+#        for key in (
+#            '_equivalents',
+#            '_concat_components',
+#            '_merge_components',
+#        ):
+#            setattr(result, key, getattr(self, key).copy())
+#            # shallow copies of the original
+
+        return result
+
     @property
     def pos0(self):
         return self.pos - 1
+
+    start0 = pos0
 
     @property
     def end0(self):
@@ -77,16 +140,13 @@ class Vcfspec:
         return self.alleles[self.somaticindex]
 
     def get_id(self):
-        return '_'.join([self.chrom, 
-                         str(self.pos), 
-                         self.ref, 
-                         '|'.join(self.alts)])
+        return '_'.join([self.chrom, str(self.pos), self.ref, '|'.join(self.alts)])
 
     def get_mutation_type(self, alt_index=0):
-        return get_mttype(self.ref, self.alts[alt_index])
+        return get_mutation_type(self.ref, self.alts[alt_index])
 
-    def get_mttype_firstalt(self):
-        return self.get_mutation_type(0)
+    #def get_mttype_firstalt(self):
+    #    return self.get_mutation_type(0)
 
     def get_tuple(self):
         return (self.chrom, self.pos, self.ref, self.alts)
@@ -96,31 +156,110 @@ class Vcfspec:
     def REF_range0(self):
         return range(self.pos0, self.end0)
 
-    @functools.cache
-    def get_preflank_range0(self, idx=0, flanklen=1):
-        assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
-
-        if self.alts[idx][0] == self.ref[0]:
-            flanklen = flanklen - 1
-        return range(self.pos0 - flanklen, self.pos0)
+    #def get_preflank_range0(self, flanklen=1):
+    #    assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
 
     @functools.cache
-    def get_postflank_range0(self, flanklen=1):
-        assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
-
-        return range(
-            self.pos0 + len(self.ref),
-            self.pos0 + len(self.ref) + flanklen,
+    def get_flank_range0s_equivalents(self, flanklen=1):
+        preflank_candidates = [
+            self.get_preflank_range0_monoalt_leftmost(alt_index=idx, flanklen=flanklen)
+            for idx in range(len(self.alts))
+        ]
+        preflank_range0 = range(
+            min(x.start for x in preflank_candidates),
+            max(x.stop for x in preflank_candidates)
         )
 
-    # equivalents
-    def normalize(self, fasta, fetch_extend_length=DEFAULT_FETCH_EXTEND_LENGTH):
-        return leftmost(self, fasta, fetch_extend_length=fetch_extend_length)
+        postflank_candidates = [
+            self.get_postflank_range0_rightmost(alt_index=idx, flanklen=flanklen)
+            for idx in range(len(self.alts))
+        ]
+        postflank_range0 = range(
+            min(x.start for x in postflank_candidates),
+            max(x.stop for x in postflank_candidates)
+        )
 
-    def get_equivalents(self, fasta, fetch_extend_length=DEFAULT_FETCH_EXTEND_LENGTH):
+        return preflank_range0, postflank_range0
+
+    @functools.cache
+    def get_flank_range0s(self, flanklen=1):
+        preflank_candidates = [
+            self.get_preflank_range0_monoalt(alt_index=idx, flanklen=flanklen)
+            for idx in range(len(self.alts))
+        ]
+        preflank_range0 = range(
+            min(x.start for x in preflank_candidates),
+            max(x.stop for x in preflank_candidates)
+        )
+
+        postflank_range0 = self.get_postflank_range0(flanklen=flanklen)
+
+        return preflank_range0, postflank_range0
+
+    def get_preflank_range0_monoalt(self, alt_index=0, flanklen=1):
+        assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
+        #if self.alts[alt_index][0] == self.ref[0]:
+        #    end0 = self.pos0 + 1
+        #else:
+        #    end0 = self.pos0
+        return range(self.pos0 - flanklen, self.pos0)
+
+    def get_preflank_range0_monoalt_leftmost(self, alt_index=0, flanklen=1):
+        leftmost_form = self.get_monoalt(alt_index).leftmost()
+        return leftmost_form.get_preflank_range0_monoalt(alt_index=0, flanklen=flanklen)
+
+    def get_postflank_range0(self, flanklen=1):
+        assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
+        return range(self.end0, self.end0 + flanklen)
+
+    def get_postflank_range0_rightmost(self, alt_index=0, flanklen=1):
+        rightmost_form = self.get_monoalt(alt_index).rightmost()
+        return rightmost_form.get_postflank_range0(flanklen=flanklen)
+
+    # conversion
+    def _set_equivalents(self, fetch_extend_length=DEFAULT_FETCH_EXTEND_LENGTH):
+        self._equivalents = equivalents(self, fasta=self.fasta, parsimoniously=True, fetch_extend_length=fetch_extend_length)
+
+    def get_equivalents(self, fetch_extend_length=DEFAULT_FETCH_EXTEND_LENGTH):
         if self._equivalents is None:
-            self._equivalents = indel_equivalents(self, fasta, parsimoniously=True, fetch_extend_length=fetch_extend_length)
+            self._set_equivalents(fetch_extend_length=fetch_extend_length)
         return self._equivalents
+
+    def leftmost(self, fetch_extend_length=DEFAULT_FETCH_EXTEND_LENGTH):
+        if self.is_leftmost:
+            return self
+        else:
+            return self.get_equivalents(fetch_extend_length=fetch_extend_length)[0]
+
+    normalize = leftmost
+
+    def rightmost(self, fetch_extend_length=DEFAULT_FETCH_EXTEND_LENGTH):
+        if self.is_rightmost:
+            return self
+        else:
+            return self.get_equivalents(fetch_extend_length=fetch_extend_length)[-1]
+
+    def parsimonious(self):
+        if self.is_parsimonious:
+            return self
+        else:
+            return make_parsimonious(self)
+
+    def extend_right(self, length):
+        added_seq = self.fasta.fetch(self.chrom, self.end0, self.end0 + length)
+        result = self.spawn(pos=self.pos, ref=(self.ref + added_seq), alts=tuple(x + added_seq for x in self.alts))
+        result.is_parsimonious = False
+        return result
+
+
+    def extend_left(self, length):
+        added_seq = self.fasta.fetch(self.chrom, self.pos0 - length, self.pos0)
+        result = self.spawn(pos=(self.pos - length), ref=(added_seq + self.ref), alts=tuple(added_seq + x for x in self.alts))
+        result.is_parsimonious = False
+        return result
+
+    def merge(self, other):
+        return merge(self, other)
 
     # misc
     def apply_to_vr(self, vr):
@@ -131,18 +270,15 @@ class Vcfspec:
 
     def iter_monoalts(self):
         for alt in self.alts:
-            new_vcfspec = self.__class__(self.chrom, self.pos, self.ref, (alt,))
-            yield new_vcfspec
+            yield self.spawn(alts=(alt,))
 
     def get_monoalt(self, alt_index=0):
-        return self.__class__(
-            self.chrom, self.pos, self.ref, (self.alts[alt_index],)
-        )
+        return self.spawn(alts=(self.alts[alt_index],))
 
     def check_without_N(self):
         return (
-            without_N(self.ref) and
-            all(without_N(x) for x in self.alts)
+            set('nN').isdisjoint(self.ref) and 
+            all(set('nN').isdisjoint(x) for x in self.alts)
         )
 
     def to_hgvsg(self, alt_index=0):
@@ -150,24 +286,24 @@ class Vcfspec:
         pos = self.pos
         ref = self.ref
         alt = self.alts[alt_index]
-        mttype = self.get_mutation_type(alt_index)
+        muttype = self.get_mutation_type(alt_index)
 
-        if mttype == 'snv':
+        if muttype == 'snv':
             result = f'{chrom}:g.{pos}{ref}>{alt}'
-        elif mttype == 'mnv':
+        elif muttype == 'mnv':
             pos2 = pos + (len(ref) - 1)
             result = f'{chrom}:g.{pos}_{pos2}delins{alt}'
-        elif mttype == 'ins':
+        elif muttype == 'ins':
             inserted_seq = alt[1:]
             result = f'{chrom}:g.{pos}_{pos+1}ins{inserted_seq}'
-        elif mttype == 'del':
+        elif muttype == 'del':
             pos1 = pos + 1
             pos2 = pos + (len(ref) - 1)
             if pos1 == pos2:
                 result = f'{chrom}:g.{pos1}del'
             else:
                 result = f'{chrom}:g.{pos1}_{pos2}del'
-        elif mttype == 'delins':
+        elif muttype == 'delins':
             pos1 = pos
             pos2 = pos + (len(ref) - 1)
             if pos1 == pos2:
@@ -178,14 +314,25 @@ class Vcfspec:
         return result
 
     def to_gr(self):
-        ref_range0 = self.REF_range0
         return pr.from_dict(
             {
                 'Chromosome': [self.chrom], 
-                'Start': [ref_range0.start], 
-                'End': [ref_range0.stop],
+                'Start': [self.pos0], 
+                'End': [self.end0],
+                'Id': [self.get_id()],
             }
         )
+
+    def check_monoalt(self, raise_with_false=True):
+        if raise_with_false:
+            if len(self.alts) != 1:
+                raise Exception('Vcfspec is not with a single ALT: {self}')
+        else:
+            return len(self.alts) == 1
+
+
+class VcfspecIdentity:
+    pass
 
 
 def check_vcfspec_monoalt(vcfspec):
@@ -195,7 +342,7 @@ def check_vcfspec_monoalt(vcfspec):
 check_vcfspec_monoallele = check_vcfspec_monoalt
 
 
-def get_mttype(ref, alt):
+def get_mutation_type(ref, alt):
     if common.RE_PATS['nucleobases'].fullmatch(alt) is None:
         if any(
             (re.fullmatch(f'<{x}(:.+)?>', alt) is not None) for x in SV_ALTS
@@ -232,36 +379,131 @@ def get_mttype(ref, alt):
 
     return mttype
 
+get_mttype = get_mutation_type
 
-def merge_vcfspecs(vcfspec_list, fasta, merging_distance_le=3):
-    assert len(set(x.chrom for x in vcfspec_list)) == 1, f'Input vcfspecs belong to more than one chromosomes.'
-    assert all(len(x.alts) == 1 for x in vcfspec_list), f'All input vcfspecs must have one ALT.'
 
+def merge(vcfspec1, vcfspec2):
+    """Intended for use with vcfspecs on different contigs(haplotypes).
+    Args:
+        Input vcfspecs may overlap.
+    Returns:
+        A new vcfspec with multiple ALTs, containing all ALTs of input vcfspecs
+    """
+    assert vcfspec1.chrom == vcfspec2.chrom, f'Two vcfspecs must be on the same chromosome.'
+
+    def helper(original_vcfspec, edited_vcfspec, new_alts, new_components):
+        for idx in range(len(original_vcfspec.alts)):
+        #for idx, vcfspec_component in enumerate(original_vcfspec.merge_components):
+            monoalt_merge_component = original_vcfspec.merge_components[idx]
+            monoalt_concat_components = original_vcfspec.concat_components[idx]
+            new_alt_candidate = edited_vcfspec.alts[idx]
+            if new_alt_candidate not in new_alts:
+                new_alts.append(new_alt_candidate)
+                new_components.append(
+                    (new_alt_candidate, monoalt_merge_component, monoalt_concat_components)
+                )
+
+    vcfspec1_edit = vcfspec1.spawn()
+    vcfspec2_edit = vcfspec2.spawn()
+    # equalize left margins
+    start_diff = vcfspec1_edit.pos - vcfspec2_edit.pos
+    if start_diff > 0:
+        vcfspec1_edit = vcfspec1_edit.extend_left(start_diff)
+    elif start_diff < 0:
+        vcfspec2_edit = vcfspec2_edit.extend_left(-start_diff)
+    # equalize right margins
+    end_diff = vcfspec1_edit.end0 - vcfspec2_edit.end0
+    if end_diff > 0:
+        vcfspec2_edit = vcfspec2_edit.extend_right(end_diff)
+    elif end_diff < 0:
+        vcfspec1_edit = vcfspec1_edit.extend_right(-end_diff)
+
+    new_components = list()
+    new_alts = list()
+    helper(vcfspec1, vcfspec1_edit, new_alts, new_components)
+    helper(vcfspec2, vcfspec2_edit, new_alts, new_components)
+    new_components.sort(key=(lambda x: x[0]))
+
+    result = vcfspec1_edit.spawn(alts=[x[0] for x in new_components])
+    result.merge_components = [x[1] for x in new_components]
+    result.concat_components = [x[2] for x in new_components]
+    return result
+
+
+def concat(vcfspec1, vcfspec2):
+    """Intended for use with vcfspecs on the same contig(haplotype).
+    Args:
+        Must be vcfspecs with single ALT. They must not overlap each other.
+    Returns:
+        A new vcfspec with single ALT, created by filling gap between two input vcfspecs
+    """
+    # sanity check
+    assert vcfspec1.chrom == vcfspec2.chrom, f'Two vcfspecs must be on the same chromosome.'
+    vcfspec1.check_monoalt(raise_with_false=True)
+    vcfspec2.check_monoalt(raise_with_false=True)
+    # set left and right
+    if vcfspec1.pos < vcfspec2.pos:
+        left = vcfspec1
+        right = vcfspec2
+    else:
+        left = vcfspec2
+        right = vcfspec1
+    # overlapping check
+    if right.start0 < left.end0:
+        raise Exception(f'Two vcfspecs are overlapping.')
+    # main
+    new_pos = left.pos
+    if right.start0 == left.end0:
+        new_ref = left.ref + right.ref
+        new_alt = left.alts[0] + right.alts[0]
+    else:
+        intervening_ref = left.fasta.fetch(left.chrom, left.end0, right.start0)
+        new_ref = left.ref + intervening_ref + right.ref
+        new_alt = left.alts[0] + intervening_ref + right.alts[0]
+
+    result = left.spawn(pos=new_pos, ref=new_ref, alts=(new_alt,))
+    # now .merge_components includes self
+    result.concat_components = [
+        sorted(
+            vcfspec1.concat_components[0] + vcfspec2.concat_components[0],
+            key=(lambda x: x.pos),
+        )
+    ]
+    return result
+
+
+def concat_list(vcfspec_list, distance_le=None):
+    """Args:
+        distance_le: Distance less than or equal to this value should
+            be concatenated. When REF range of two vcfspecs are adjacent to 
+            each other, distance is 0.
+            If None, all vcfspecs are concatenated regardless of distance.
+    """
     new_vcfspec_list = list()
 
-    def unit_func(vcfspec1, vcfspec2):
-        num_intervening_bases = vcfspec2.REF_range0.start - vcfspec1.REF_range0.stop
-        if num_intervening_bases <= merging_distance_le:
-            new_pos = vcfspec1.pos
-            if num_intervening_bases == 0:
-                new_ref = vcfspec1.ref + vcfspec2.ref
-                new_alt = vcfspec1.alts[0] + vcfspec2.alts[0]
+    if distance_le is None:
+        unit_func = concat
+    else:
+        def unit_func(vcfspec1, vcfspec2):
+            num_intervening_bases = vcfspec2.start0 - vcfspec1.end0
+            if num_intervening_bases <= distance_le:
+                return concat(vcfspec1, vcfspec2)
             else:
-                intervening_ref = fasta.fetch(vcfspec1.chrom, vcfspec1.REF_range0.stop, vcfspec2.REF_range0.start)
-                new_ref = vcfspec1.ref + intervening_ref + vcfspec2.ref
-                new_alt = vcfspec1.alts[0] + intervening_ref + vcfspec2.alts[0]
-            return Vcfspec(vcfspec1.chrom, new_pos, new_ref, (new_alt,))
-        else:
-            new_vcfspec_list.append(vcfspec1)
-            return vcfspec2
+                new_vcfspec_list.append(vcfspec1)
+                return vcfspec2
 
     final = functools.reduce(unit_func, sorted(vcfspec_list, key=(lambda x: x.pos)))
     new_vcfspec_list.append(final)
 
-    return new_vcfspec_list
+    return tuple(new_vcfspec_list)
 
 
-def split_vcfspec(vcfspec, fasta, splitting_distance_ge=3, show_alignment=False):
+def split(vcfspec, distance_ge, show_alignment=False):
+    """Args:
+        distance_ge: Distance greater than or equal to this value should
+            be split. When REF range of two vcfspecs are adjacent to 
+            each other, distance is 0.
+    """
     check_vcfspec_monoalt(vcfspec)
 
     alignment = alignhandler.alignment_tiebreaker(
@@ -269,8 +511,9 @@ def split_vcfspec(vcfspec, fasta, splitting_distance_ge=3, show_alignment=False)
         raise_with_failure=True,
     )
     vcfspec_list = alignhandler.alignment_to_vcfspec(
-        alignment, target_start0=vcfspec.pos0, chrom=vcfspec.chrom, fasta=fasta, strip_query_gaps=False)
-    merged_vcfspec_list = merge_vcfspecs(vcfspec_list, fasta, merging_distance_le=(splitting_distance_ge - 1))
+        alignment, target_start0=vcfspec.pos0, chrom=vcfspec.chrom, fasta=vcfspec.fasta, strip_query_gaps=False
+    )
+    merged_vcfspec_list = concat(vcfspec_list, merging_distance_le=(distance_ge - 1))
     return merged_vcfspec_list
 
 
@@ -278,22 +521,21 @@ def split_vcfspec(vcfspec, fasta, splitting_distance_ge=3, show_alignment=False)
 # equivalent #
 ##############
 
-
 def leftmost(vcfspec, fasta, fetch_extend_length=DEFAULT_FETCH_EXTEND_LENGTH):
-    return indel_equivalents(vcfspec, fasta, fetch_extend_length)[0]
+    return equivalents(vcfspec, fasta=fasta, fetch_extend_length=fetch_extend_length)[0]
 
 
 def rightmost(vcfspec, fasta, fetch_extend_length=DEFAULT_FETCH_EXTEND_LENGTH):
-    return indel_equivalents(vcfspec, fasta, fetch_extend_length)[-1]
+    return equivalents(vcfspec, fasta=fasta, fetch_extend_length=fetch_extend_length)[-1]
 
 
 def check_equivalent(vcfspec1, vcfspec2, fasta):
     return leftmost(vcfspec1, fasta) == leftmost(vcfspec2, fasta)
 
 
-def indel_equivalents(vcfspec, fasta, parsimoniously=True, fetch_extend_length=DEFAULT_FETCH_EXTEND_LENGTH):
-    if parsimoniously:
-        vcfspec = make_parsimonious(vcfspec)
+def equivalents(vcfspec, fasta, parsimoniously=True, fetch_extend_length=DEFAULT_FETCH_EXTEND_LENGTH):
+    #if parsimoniously:
+    vcfspec = make_parsimonious(vcfspec)
     return shifting_equivalents(vcfspec=vcfspec, fasta=fasta, fetch_extend_length=fetch_extend_length)
 
 
@@ -303,52 +545,67 @@ def make_parsimonious(vcfspec):
     pos = vcfspec.pos
     ref = vcfspec.ref
     alt = vcfspec.alts[0]
-    #ref_alt_samelen = (len(ref) == len(alt))
 
-    # left
+    ########
+    # left #
+    ########
     min_length = min(len(ref), len(alt))
-    action_idx = None
-    for idx in range(0, min_length):
-        # all identical leading bases are searched for
-        if ref[idx] == alt[idx]:
-            action_idx = idx
-            continue
-        else:
+    for left_action_idx in range(0, min_length + 1):
+        if left_action_idx == min_length:
             break
-
-    if action_idx is not None:
-        ref = ref[action_idx:]
-        alt = alt[action_idx:]
-        pos += action_idx
-        # identical leading bases, except the rightmost one, have been removed
-
-    # right
-    min_length = min(len(ref), len(alt))
-    action_idx = None
-    for idx in range(-1, -min_length, -1):
-        # all identical trailing bases, except for the leftmost position, are searched for
-        if ref[idx] == alt[idx]:
-            action_idx = idx
-            continue
-        else:
+        if ref[left_action_idx] != alt[left_action_idx]:
             break
+    # Now "left_action_idx" points to the position next to the last 'leading identical portion'
+    # and is equal to the length of the 'leading identical portion'
 
-    if action_idx is not None:
-        ref = ref[:action_idx]
-        alt = alt[:action_idx]
-        # all searched identical trailing bases have been removed
+    if left_action_idx == min_length:  # This means the shorter of ref and alt is entirely 'leading identical portion'
+        if len(ref) == len(alt):  # Identity
+            new_pos = pos
+            new_ref = ref[0]
+            new_alt = alt[0]
+        else:
+            new_ref = ref[(left_action_idx - 1):]
+            new_alt = alt[(left_action_idx - 1):]
+            new_pos = pos + (left_action_idx - 1)
+        result = vcfspec.spawn(pos=new_pos, ref=new_ref, alts=(new_alt,))
+        result.is_parsimonious = True
+        return result
 
-    # final modificaiton
-    if (
-        (len(ref) == len(alt)) or  # e.g. REF = AGCC ; ALT = ATCG
-        (len(ref) > 1 and len(alt) > 1)  # e.g. REF = ATTTGA ; ALT = AG
-    ):
-        ref = ref[1:]
-        alt = alt[1:]
-        pos += 1
+    #########
+    # right #
+    #########
+    min_length_after_lstrip = min_length - left_action_idx
+    for right_action_idx in range(-1, -min_length_after_lstrip - 2, -1):
+        if right_action_idx == -min_length_after_lstrip - 1:
+            break
+        if ref[right_action_idx] != alt[right_action_idx]:
+            break
+    # Now "right_action_idx" points to the position (counting from the right) next to the last 'trailing identical portion'
 
-    # result
-    return Vcfspec(vcfspec.chrom, pos, ref, (alt,))
+    if right_action_idx == -min_length_after_lstrip - 1:  
+        # This means after stripping leading identical portion, the shorter of ref and alt is entirely 'trailing identical portion'
+        # Now len(ref) != len(alt)
+        if left_action_idx > 0:
+            new_ref = ref[(left_action_idx - 1):(right_action_idx + 1)]
+            new_alt = alt[(left_action_idx - 1):(right_action_idx + 1)]
+            new_pos = pos + (left_action_idx - 1)
+        else:
+            added_seq = vcfspec.fasta.fetch(vcfspec.chrom, vcfspec.pos0 - 1, vcfspec.pos0)
+            new_ref = added_seq + ref[:(right_action_idx + 1)]
+            new_alt = added_seq + alt[:(right_action_idx + 1)]
+            new_pos = pos - 1
+    else:
+        if right_action_idx == -1:
+            slice_stop = None
+        else:
+            slice_stop = right_action_idx + 1
+        new_ref = ref[left_action_idx:slice_stop]
+        new_alt = alt[left_action_idx:slice_stop]
+        new_pos = pos + left_action_idx
+
+    result = vcfspec.spawn(pos=new_pos, ref=new_ref, alts=(new_alt,))
+    result.is_parsimonious = True
+    return result
 
 
 def shifting_equivalents(vcfspec, fasta, fetch_extend_length):
@@ -678,12 +935,12 @@ def shifting_equivalents(vcfspec, fasta, fetch_extend_length):
 
     ##################################################
 
-    def get_result(chrom, pos, ref, alt, fasta, diff_seq, fetch_extend_length, is_ins):
+    def get_result(original_vcfspec, fasta, diff_seq, fetch_extend_length, is_ins):
         # get new_pos_list
         new_pos_list = list()
         navigate(
-            chrom,
-            pos,
+            original_vcfspec.chrom,
+            original_vcfspec.pos,
             fasta,
             diff_seq,
             new_pos_list,
@@ -692,8 +949,8 @@ def shifting_equivalents(vcfspec, fasta, fetch_extend_length):
             forward=True,
         )
         navigate(
-            chrom,
-            pos,
+            original_vcfspec.chrom,
+            original_vcfspec.pos,
             fasta,
             diff_seq,
             new_pos_list,
@@ -703,10 +960,23 @@ def shifting_equivalents(vcfspec, fasta, fetch_extend_length):
         )
         # make result
         result = list()
-        result.append(Vcfspec(chrom, pos, ref, [alt]))
+        result.append(original_vcfspec)
         for new_pos, new_ref, new_alt in new_pos_list:
-            result.append(Vcfspec(chrom, new_pos, new_ref, [new_alt]))
+            result.append(original_vcfspec.spawn(pos=new_pos, ref=new_ref, alts=(new_alt,)))
         result.sort(key=(lambda x: x.pos))
+
+        if len(result) == 1:
+            result[0].is_leftmost = True
+            result[0].is_rightmost = True
+        else:
+            result[0].is_leftmost = True
+            result[0].is_rightmost = False
+            result[-1].is_leftmost = False
+            result[-1].is_rightmost = True
+            if len(result) >= 3:
+                for idx in range(1, len(result) - 1):
+                    result[idx].is_leftmost = False
+                    result[idx].is_rightmost = False
 
         return result
 
@@ -715,26 +985,46 @@ def shifting_equivalents(vcfspec, fasta, fetch_extend_length):
         if vcfspec.ref[0] != vcfspec.alts[0][0]:
             raise Exception(f'Inserted/deleted seq must be on the right side, not left side.')
 
+    def result_postprocess(result):
+        # set is_leftmost and is_rightmost
+        if len(result) == 1:
+            result[0].is_leftmost = True
+            result[0].is_rightmost = True
+        else:
+            result[0].is_leftmost = True
+            result[0].is_rightmost = False
+            result[-1].is_leftmost = False
+            result[-1].is_rightmost = True
+            if len(result) >= 3:
+                for idx in range(1, len(result) - 1):
+                    result[idx].is_leftmost = False
+                    result[idx].is_rightmost = False
+        # set _equivalents
+        for x in result:
+            x._equivalents = result.copy()
+
     # main
     check_vcfspec_monoalt(vcfspec)
 
-    chrom, pos, ref, alts = vcfspec.get_tuple()
-    alt = alts[0]
-
-    if "n" not in ref and "N" not in ref and "n" not in alt and "N" not in alt:
+    if (
+        "n" not in vcfspec.ref and 
+        "N" not in vcfspec.ref and 
+        "n" not in vcfspec.alts[0] and 
+        "N" not in vcfspec.alts[0]
+    ):
         # if set('nN').isdisjoint(ref) and set('nN').isdisjoint(alt):
-        mttype = vcfspec.get_mttype_firstalt()
+        mttype = vcfspec.get_mutation_type(0)
         if mttype in ("ins", "del"):
             sanity_check_indel(vcfspec)
-            is_ins = mttype == "ins"
-            diff_seq = list(alt[1:]) if is_ins else list(ref[1:])
-            result = get_result(
-                chrom, pos, ref, alt, fasta, diff_seq, fetch_extend_length, is_ins
-            )
+            is_ins = (mttype == "ins")
+            diff_seq = list(vcfspec.alts[0][1:]) if is_ins else list(vcfspec.ref[1:])
+            result = get_result(vcfspec, fasta, diff_seq, fetch_extend_length, is_ins)
         else:
             result = [vcfspec]
     else:
         result = [vcfspec]
+
+    result_postprocess(result)
 
     return result
 

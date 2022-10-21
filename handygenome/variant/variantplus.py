@@ -99,16 +99,12 @@ class VariantPlus:
         return result
 
     @classmethod
-    def from_vcfspec(cls, vcfspec, refver, fasta=None, chromdict=None, **kwargs):
+    def from_vcfspec(cls, vcfspec, chromdict=None, **kwargs):
         result = cls()
 
         result.vcfspec = vcfspec
-        result.refver = refver
-        result.fasta = (
-            pysam.FastaFile(common.DEFAULT_FASTA_PATHS[result.refver])
-            if fasta is None
-            else fasta
-        )
+        result.refver = result.vcfspec.refver
+        result.fasta = result.vcfspec.fasta
         result.chromdict = (
             common.ChromDict(fasta=result.fasta) if chromdict is None else chromdict
         )
@@ -119,9 +115,9 @@ class VariantPlus:
         return result
 
     @classmethod
-    def from_bnds(cls, bnds, refver, fasta=None, chromdict=None, **kwargs):
+    def from_bnds(cls, bnds, chromdict=None, **kwargs):
         vcfspec = bnds.get_vcfspec_bnd1()
-        return cls.from_vcfspec(vcfspec, refver, fasta, chromdict, **kwargs)
+        return cls.from_vcfspec(vcfspec, chromdict, **kwargs)
 
     def init_common(
         self, 
@@ -301,7 +297,6 @@ class VariantPlus:
         popfreqlist = libpopfreq.PopfreqInfoALTlist.from_vcfspec(
             vcfspec=self.vcfspec, 
             dbsnp_vcf=dbsnp_vcf,
-            fasta=self.fasta,
             metadata=libpopfreq.PopfreqMetadata.from_vcfheader(dbsnp_vcf.header),
         )
         return popfreqlist
@@ -316,7 +311,6 @@ class VariantPlus:
         cosmiclist = libcosmic.CosmicInfoALTlist.from_vcfspec(
             vcfspec=self.vcfspec, 
             cosmic_vcf=cosmic_vcf,
-            fasta=self.fasta,
             metadata=libcosmic.CosmicMetadata.from_vcfheader(cosmic_vcf.header),
         )
         return cosmiclist
@@ -639,7 +633,9 @@ class VariantPlus:
         return libreadstats.get_readstats(self.vcfspec, bam, self.fasta, self.chromdict, **kwargs)
 
     def set_readstats(self, sampleid, bam):
-        if sampleid not in self.readstats_data_dict.keys():
+        if sampleid in self.readstats_data_dict.keys():
+            pass
+        else:
             self.set_readstats_data(sampleid, bam)
 
         readstats_data = self.readstats_data_dict[sampleid]
@@ -720,9 +716,9 @@ class VariantPlus:
             )
 
     # visualizations
-    @common.get_deco_num_set(('bam', 'sampleid'), 1)
+    #@common.get_deco_num_set(('bam', 'sampleid'), 1)
     def show_igv(
-        self, igv, bam=None, sampleid=None, tmpbam_dir=None, trackname=None,
+        self, igv, bam=None, sampleid=None, tmpbam_name=None,
         rpplist_kwargs={
             'view': True,
             'no_matesearch': True,
@@ -730,6 +726,14 @@ class VariantPlus:
         alleleinfo_kwargs=dict(),
         viewaspairs=True,
     ):
+        """Args:
+            tmpbam_name: Basename of temporary bam. It will be shown as track name on IGV. If not set, when "sampleid" argument is set, it will be "<sampleid>_for_show.bam".
+        """
+        # sanity check
+        if tmpbam_name is not None:
+            if not tmpbam_name.endswith('.bam'):
+                raise Exception(f'"tmpbam_name" must end with ".bam". Otherwise, IGV cannot appropriately load it.')
+
         # get rpplist
         if sampleid is not None:
             if sampleid not in self.rpplist_dict.keys():
@@ -751,23 +755,14 @@ class VariantPlus:
             rpplist.set_alleleinfo_tag_rpp(self.vcfspec)
 
         # set tmpbam_path
-        if tmpbam_dir is None:
-            tmpbam_dir = workflow.get_tmpfile_path(prefix='tmpdir_show_igv_', dir=os.getcwd(), delete=False, is_dir=True)
-
-        if trackname is None:  # trackname is basename of tmpbam_path
+        tmpbam_dir = workflow.get_tmpfile_path(prefix='tmpdir_show_igv_', dir=os.getcwd(), delete=False, is_dir=True)
+        if tmpbam_name is None:  # tmpbam_name is basename of temporary bam path
             if sampleid is None:
                 tmpbam_path = workflow.get_tmpfile_path(suffix='.bam', dir=tmpbam_dir, delete=False)
-                #trackname = os.path.basename(tmpbam_path)
             else:
-                #trackname = f'{sampleid}_for_show.bam'
                 tmpbam_path = os.path.join(tmpbam_dir, f'{sampleid}_for_show.bam')
-                if os.path.exists(tmpbam_path):
-                    tmpbam_path = workflow.get_tmpfile_path(prefix=f'{sampleid}_for_show_', suffix='.bam', dir=tmpbam_dir, delete=False)
-                    #trackname = os.path.basename(tmpbam_path)
         else:
-            tmpbam_path = os.path.join(tmpbam_dir, trackname)
-            if os.path.exists(tmpbam_path):
-                tmpbam_path = workflow.get_tmpfile_path(prefix=re.sub('\.bam$', '', trackname), suffix='.bam', dir=tmpbam_dir, delete=False)
+            tmpbam_path = os.path.join(tmpbam_dir, tmpbam_name)
 
         # main
         rpplist.write_bam(outfile_path=tmpbam_path)

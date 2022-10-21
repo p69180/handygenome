@@ -61,7 +61,7 @@ def read_cytoband(cytoband_path, refver):
     )
     result['Color'] = result['Stain'].apply(lambda x: CYTOBAND_COLORMAP[x])
 
-    refver = common.RefverDict.converter[refver]
+    refver = common.RefverDict.standardize(refver)
     if refver == 'GRCh37':
         result['Chromosome'] = result['Chromosome'].apply(
             lambda x: re.sub('^chr', '', x)

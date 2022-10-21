@@ -378,8 +378,8 @@ def add_fasta_arg(parser, required=True, help=None):
 
 def add_refver_arg(parser, required=True, choices='all', help=None):
     if choices == 'all':
-        allowed_vals = (tuple(common.RefverDict.aliases.keys())
-                        + tuple(common.RefverDict.converter.keys()))
+        #allowed_vals = tuple(common.RefverDict.aliases.keys()) + tuple(common.RefverDict.converter.keys())
+        allowed_vals = common.RefverDict.known_refvers
     elif choices == 'mouse':
         allowed_vals = ('mm9', 'mm10', 'mm39')
     elif choices == 'human':

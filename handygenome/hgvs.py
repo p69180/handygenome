@@ -6,7 +6,6 @@ import Bio.Seq
 import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
-#equivalents = importlib.import_module('.'.join([top_package_name, 'variant', 'equivalents']))
 ensembl_rest = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_rest']))
 ensembl_parser = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_parser']))
 libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
@@ -29,7 +28,7 @@ def vcfspec_to_hgvsg(vcfspec):
     pos = vcfspec.pos
     ref = vcfspec.ref
     alt = vcfspec.alts[0]
-    mttype = vcfspec.get_mttype_firstalt()
+    mttype = vcfspec.get_mutation_type(0)
 
     if mttype == 'snv':
         result = f'{chrom}:g.{pos}{ref}>{alt}'
@@ -180,7 +179,7 @@ def hgvsg_to_vcfspec(hgvsg, fasta, leftmost=True):
     # when ref or alt contains 'n' or 'N', functions below do not 
     #   effectively work
     if leftmost:
-        vcfspec = libvcfspec.leftmost(vcfspec, fasta)
+        vcfspec = vcfspec.leftmost()
 
     return vcfspec
         
@@ -251,9 +250,9 @@ def hgvsc_to_hgvsg(hgvsc, hg19):
     return result
 
 
-def hgvsc_to_vcfspec(hgvsc, hg19, fasta, leftmost = True):
+def hgvsc_to_vcfspec(hgvsc, hg19, fasta, leftmost=True):
     hgvsg = hgvsc_to_hgvsg(hgvsc, hg19)
-    vcfspec = hgvsg_to_vcfspec(hgvsg, fasta, leftmost = leftmost)
+    vcfspec = hgvsg_to_vcfspec(hgvsg, fasta, leftmost=leftmost)
 
     return vcfspec
 

@@ -93,13 +93,13 @@ class PopfreqInfoALTlist(annotitem.AnnotItemVariantInfoALTlist):
         return result
 
     @classmethod
-    def from_vcfspec(cls, vcfspec, dbsnp_vcf, fasta, metadata=None, donot_init_metadata=False):
+    def from_vcfspec(cls, vcfspec, dbsnp_vcf, metadata=None, donot_init_metadata=False):
         if metadata is None:
             if not donot_init_metadata:
                 metadata = PopfreqMetadata.from_vcfheader(dbsnp_vcf.header)
 
         dbsnp_vr_list = customfile.fetch_relevant_vr_multialt(
-            vcfspec, dbsnp_vcf, fasta=fasta, search_equivs=True, allow_multiple=False
+            vcfspec, dbsnp_vcf, search_equivs=True, allow_multiple=False
         )
         result = cls()
         for vr in dbsnp_vr_list:
@@ -130,12 +130,11 @@ def extract_population_names(dbsnp_vcf_header):
     return pop_names
 
 
-def fetch_dbsnp_vr(vcfspec, dbsnp_vcf, fasta, search_equivs=True):
+def fetch_dbsnp_vr(vcfspec, dbsnp_vcf, search_equivs=True):
     """Result may be None"""
     dbsnp_vr = customfile.fetch_relevant_vr(
         vcfspec,
         dbsnp_vcf,
-        fasta=fasta,
         search_equivs=search_equivs,
         allow_multiple=False,
     )

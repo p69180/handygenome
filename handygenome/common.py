@@ -323,7 +323,7 @@ def get_deco_timestamp(msg, logger):
 ###################################################
 
 
-class RefverDict(collections.UserDict):
+class RefverDict_withAllKeys(collections.UserDict):
     standards = ('MGSCv37', 'GRCm38', 'GRCm39', 'NCBI36', 'GRCh37', 'GRCh38')
     aliases = {
         'NCBI36': ('hg18', 'ncbi36'),
@@ -334,6 +334,7 @@ class RefverDict(collections.UserDict):
         'GRCm38': ('mm10', 'grcm38'),
         'GRCm39': ('mm39', 'grcm39'),
         }
+    known_refvers = tuple(aliases.keys()) + tuple(itertools.chain.from_iterable(aliases.values()))
 
     converter = dict()
     for refver, alias_refvers in aliases.items():
@@ -354,6 +355,41 @@ class RefverDict(collections.UserDict):
                     self[new_key] = self[key]
 
 
+class RefverDict(collections.UserDict):
+    standards = ('MGSCv37', 'GRCm38', 'GRCm39', 'NCBI36', 'GRCh37', 'GRCh38')
+    aliases = {
+        'NCBI36': ('hg18', 'ncbi36'),
+        'GRCh37': ('hg19', 'grch37'),
+        'GRCh37_hs37d5': tuple(),
+        'GRCh38': ('hg38', 'grch38'),
+        'MGSCv37': ('mm9',),
+        'GRCm38': ('mm10', 'grcm38'),
+        'GRCm39': ('mm39', 'grcm39'),
+    }
+    known_refvers = tuple(aliases.keys()) + tuple(itertools.chain.from_iterable(aliases.values()))
+
+    @classmethod
+    def standardize(cls, refver):
+        for standard, aliases in cls.aliases.items():
+            if refver == standard:
+                return standard
+            elif refver in aliases:
+                return standard
+        raise Exception(f'Input reference version string ({refver}) is unknown one.')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if not set(self.keys()).issubset(self.__class__.aliases.keys()):
+            raise Exception(
+                f'RefverDict construction keys must be restricted to: '
+                f'{tuple(self.__class__.aliases.keys())}'
+            )
+
+    def __getitem__(self, key):
+        key = self.__class__.standardize(key)
+        return super().__getitem__(key)
+
+
 # chr1 lengths
 CHR1_LENGTHS = {
     'MGSCv37': 197_195_432,
@@ -372,6 +408,7 @@ FASTA_URLS = {
     'GRCh38_1000genomes': 'http://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/GRCh38_reference_genome/GRCh38_full_analysis_set_plus_decoy_hla.fa',
     }
 
+
 DEFAULT_FASTA_PATHS = RefverDict({
     'NCBI36': '/home/users/pjh/References/reference_genome/NCBI36/ucsc/custom_files/hg18.fa',
     'GRCh37': '/home/users/data/01_reference/human_g1k_v37/human_g1k_v37.fasta',
@@ -382,6 +419,9 @@ DEFAULT_FASTA_PATHS = RefverDict({
     'GRCm38': '/home/users/pjh/References/reference_genome/GRCm38/ucsc/custom_files/mm10.fa',
     'GRCm39': '/home/users/pjh/References/reference_genome/GRCm39/ucsc/custom_files/mm39.fa',
     })
+
+DEFAULT_FASTAS = RefverDict({refver: pysam.FastaFile(path) for refver, path in DEFAULT_FASTA_PATHS.items()})
+
 
 AVAILABLE_REFVERS = tuple(DEFAULT_FASTA_PATHS.keys())
 AVAILABLE_REFVERS_PLUSNONE = AVAILABLE_REFVERS + (None,)
@@ -426,13 +466,12 @@ class ChromDict(collections.OrderedDict):
             elif bamheader is not None:
                 wrapper = bamheader
             elif refver is not None:
-                wrapper = pysam.FastaFile(DEFAULT_FASTA_PATHS[refver])
+                wrapper = DEFAULT_FASTAS[refver]
     
             for chrom, length in zip(wrapper.references, wrapper.lengths):
                 self[chrom] = length
     
-            if any(x is not None 
-                   for x in (fasta_path, bam_path, refver)):
+            if any((x is not None) for x in (fasta_path, bam_path)):
                 wrapper.close()
 
         # set contigs, lengths
@@ -1234,13 +1273,41 @@ def infer_refver(chromdict=None, vcfheader=None, bamheader=None):
 
 
 def infer_refver_chromdict(chromdict):
-    if '1' in chromdict.contigs:
-        chr1_length = chromdict.lengths[chromdict.contigs.index('1')]
-    elif 'chr1' in chromdict.contigs:
-        chr1_length = chromdict.lengths[chromdict.contigs.index('chr1')]
+    return infer_refver_base(chromdict.contigs, chromdict.lengths)
+
+
+def infer_refver_vcfheader(vcfheader):
+    contigs = list()
+    lengths = list()
+    for contig in vcfheader.contigs.values():
+        contigs.append(contig.name)
+        lengths.append(contig.length)
+    return infer_refver_base(contigs, lengths)
+
+
+def infer_refver_vr(vr):
+    return infer_refver_vcfheader(vr.header)
+
+
+def infer_refver_fasta(fasta):
+    return infer_refver_pysamwrapper(fasta)
+
+
+def infer_refver_bamheader(bamheader):
+    return infer_refver_pysamwrapper(bamheader)
+
+
+def infer_refver_pysamwrapper(wrapper):
+    return infer_refver_base(wrapper.references, wrapper.lengths)
+
+
+def infer_refver_base(contigs, lengths):
+    if '1' in contigs:
+        chr1_length = lengths[contigs.index('1')]
+    elif 'chr1' in contigs:
+        chr1_length = lengths[contigs.index('chr1')]
     else:
-        raise Exception(
-            f'"1" and "chr1" both absent from the chromosome name list.')
+        raise Exception(f'"1" and "chr1" both absent from contig list.')
     
     if chr1_length in CHR1_LENGTHS_REV:
         refver = CHR1_LENGTHS_REV[chr1_length]
@@ -1249,18 +1316,6 @@ def infer_refver_chromdict(chromdict):
         #refver = None # unknown reference genome
     
     return refver
-
-
-def infer_refver_vcfheader(vcfheader):
-    return infer_refver_chromdict(ChromDict(vcfheader=vcfheader))
-
-
-def infer_refver_bamheader(bamheader):
-    return infer_refver_chromdict(ChromDict(bamheader=bamheader))
-
-
-def infer_refver_vr(vr):
-    return infer_refver_chromdict(ChromDict(vcfheader=vr.header))
 
 
 ###################################################

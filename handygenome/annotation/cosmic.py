@@ -122,12 +122,12 @@ class CosmicInfoALTlist(annotitem.AnnotItemVariantInfoALTlist):
         return result
 
     @classmethod
-    def from_vcfspec(cls, vcfspec, cosmic_vcf, fasta, metadata=None, donot_init_metadata=False):
+    def from_vcfspec(cls, vcfspec, cosmic_vcf, metadata=None, donot_init_metadata=False):
         if metadata is None:
             if not donot_init_metadata:
                 metadata = CosmicMetadata.from_vcfheader(cosmic_vcf.header)
 
-        cosmic_vr_list = customfile.fetch_relevant_vr_multialt(vcfspec, cosmic_vcf, fasta=fasta, search_equivs=True, allow_multiple=False)
+        cosmic_vr_list = customfile.fetch_relevant_vr_multialt(vcfspec, cosmic_vcf, search_equivs=True, allow_multiple=False)
         result = cls()
         for vr in cosmic_vr_list:
             if vr is None:

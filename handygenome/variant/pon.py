@@ -21,7 +21,7 @@ class PanelOfNormal:
             if refver is None:
                 raise Exception(
                     f'When initializing from vcfspec, refver must be given.')
-            vp = variantplus.VariantPlus.from_vcfspec(vcfspec=vcfspec, refver=refver)
+            vp = variantplus.VariantPlus.from_vcfspec(vcfspec=vcfspec)
             
         for sampleid, bam in self.data.items():
             if bam is None:
@@ -30,5 +30,3 @@ class PanelOfNormal:
                     f'objects must be given.')
             readstats = 
 
-    def 
-        
