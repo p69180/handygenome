@@ -54,7 +54,8 @@ ReadUID = collections.namedtuple(
 
 
 def get_uid(read):
-    return ReadUID(read.query_name, read.flag, read.reference_name, read.reference_start)
+    #return ReadUID(read.query_name, read.flag, read.reference_name, read.reference_start)
+    return (read.query_name, read.flag, read.reference_name, read.reference_start)
 
 
 def get_read_dict(read_iter):

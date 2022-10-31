@@ -2,6 +2,7 @@ import re
 import itertools
 import collections
 import functools
+import inspect
 
 import numpy as np
 import pandas as pd
@@ -19,13 +20,47 @@ librealign = importlib.import_module(".".join([top_package_name, "align", "reali
 #fetchcache = importlib.import_module(".".join([top_package_name, "read", "fetchcache"]))
 
 
-DEL_VALUE = "*"
-EMPTY_VALUE = ""
+#DEL_VALUE = "*"
+#EMPTY_VALUE = ""
 #DEFAULT_EXTEND_FETCHEDREADS_BY = 300
-DEFAULT_EXTEND_PILEUP_BY = 20
+#DEFAULT_EXTEND_PILEUP_BY = 20
 
 
 class PileupBase:
+    pat_insclip = re.compile("(\(.+\))?([^()]+)(\(.+\))?")
+    pat_parenthesis = re.compile("[()]")
+    DEL_VALUE = "*"
+    EMPTY_VALUE = ""
+
+    def __init__(self, fasta, bam, chrom, start0=None, end0=None, init_df=True):
+        self.fasta = fasta
+        self.bam = bam
+        self.chrom = chrom
+        if init_df:
+            df, read_store = make_pileup_components(
+                chrom,
+                start0,
+                end0,
+                bam,
+                truncate=True,
+                as_array=False,
+            )
+            self.df = df
+            self.read_store = read_store
+            self._set_MQ()
+        else:
+            self.df = None
+            self.read_store = None
+            self.MQ = None
+
+    def __repr__(self):
+        return (
+            f'<'
+            f'{self.__class__.__name__}'
+            f'(chrom={self.chrom}, start0={self.start0:,}, end0={self.end0:,}, shape={self.df.shape})'
+            f'>'
+        )
+
     def _coord_arg_sanitycheck(self, start0, end0):
         #if start0 is not None:
         if start0 < self.start0:
@@ -38,290 +73,87 @@ class PileupBase:
         if pos0 not in self.df.columns:
             raise Exception('Input "pos0" argument is out of pileup range.')
 
-    @property
-    def range0(self):
-        return range(self.start0, self.end0)
-
-    def get_ref_seq(self):
-        return self.fasta.fetch(self.chrom, self.start0, self.end0)
-
-#    @staticmethod
-#    def get_max_vaf_from_pileupcol(col, with_counts=False, empty_value=EMPTY_VALUE):
-#        counts = collections.Counter(x for x in col if x != empty_value)
-#        total = sum(counts.values())
-#        if total == 0:
-#            raise Exception(f"Pileup column allele count sum is 0.")
-#
-#        max_allele, max_count = max(counts.items(), key=(lambda x: x[1]))
-#        max_vaf = max_count / total
-#
-#        if with_counts:
-#            return max_allele, max_vaf, counts
-#        else:
-#            return max_allele, max_vaf
-#
-#    def get_max_vaf_colindex(self, col_idx, with_counts=False):
-#        col = self.df.iloc[:, col_idx]
-#        return self.get_max_vaf_from_pileupcol(col, with_counts=with_counts)
-#
-#    def get_max_vaf_colpos0(self, col_pos0, with_counts=False):
-#        col = self.df.loc[:, col_pos0]
-#        return self.get_max_vaf_from_pileupcol(col, with_counts=with_counts)
-
-    def get_allele_counter(self, pos0):
-        #self._coord_arg_sanitycheck_pos0(pos0)
-        col = self.df.loc[:, pos0]
-        return collections.Counter(x for x in col if x != EMPTY_VALUE)
-
-    def get_allele_portions(self, pos0):
-        counter = self.get_allele_counter(pos0)
-        counter_sum = sum(counter.values())
-        portions = dict()
-        for key, val in counter.items():
-            portions[key] = val / counter_sum
-        return portions
-
-    # active info related ones #
-    def iter_active_info(self, start0, end0, reverse=False):
-        self._coord_arg_sanitycheck(start0, end0)
-
-        ref_seq = self.fasta.fetch(self.chrom, start0, end0)
-        pos0_range = range(start0, end0)
-        if reverse:
-            ref_seq = ref_seq[::-1]
-            pos0_range = pos0_range[::-1]
-
-        for ref_base, pos0 in zip(ref_seq, pos0_range):
-            counter = self.get_allele_counter(pos0)
-            non_ref_portion = 1 - (counter[ref_base] / sum(counter.values()))
-            is_active = (non_ref_portion >= self.active_threshold)
-            yield is_active 
-
-    def _set_active_info(self, start0=None, end0=None):
-        if start0 is None:
-            start0 = self.start0
-        if end0 is None:
-            end0 = self.end0
-
-        self._coord_arg_sanitycheck(start0, end0)
-        if not hasattr(self, '_active_info'):
-            setattr(self, '_active_info', list())
-
-        active_info_idx_start = start0 - self.start0
-        active_info_idx_end = end0 - self.start0
-
-        self._active_info[
-            active_info_idx_start:active_info_idx_end
-        ] = self.iter_active_info(start0, end0, reverse=False)
-
-    def get_active_info(self, start0=None, end0=None):
-        if start0 is None:
-            start0 = self.start0
-        if end0 is None:
-            end0 = self.end0
-
-        self._coord_arg_sanitycheck(start0, end0)
-
-        active_info_idx_start = start0 - self.start0
-        active_info_idx_end = end0 - self.start0
-
-        return pd.Series(
-            self._active_info[active_info_idx_start:active_info_idx_end], 
-            index=self.df.columns[active_info_idx_start:active_info_idx_end],
+    def _set_MQ(self):
+        MQ_data = {pos0: list() for pos0 in self.df.columns}
+        for read_uid, row in self.df.iterrows():
+            read = self.read_store[read_uid]
+            start0 = max(self.start0, read.reference_start)
+            end0 = min(self.end0, read.reference_end)
+            for pos0 in range(start0, end0):
+                MQ_data[pos0].append(read.mapping_quality)
+        self.MQ = pd.Series(
+            [np.mean(MQ_data[pos0]) for pos0 in self.df.columns],
+            index=self.df.columns,
         )
 
-    def get_active_positions(self):
-        return tuple(
-            itertools.compress(self.df.columns, self._active_info)
-        )
+    def spawn(self):
+        """Make a partial copy of self with essential attributes"""
+        kwargs = dict()
+        for key in inspect.signature(self.__init__).parameters.keys():
+            if key not in ('init_df', 'start0', 'end0'):
+                kwargs[key] = getattr(self, key)
+        kwargs['init_df'] = False
 
-    def check_inactive_margin_right(self, length):
-        if len(self._active_info) < length:
-            return False
+        result = self.__class__(**kwargs)
+        result.read_store = self.read_store
+        return result
+
+    def _split_base(self, start0_list):
+        self_range0 = self.range0
+        assert all((x in self_range0) for x in start0_list)
+        result = list()
+        margins = [self.start0] + start0_list + [self.end0]
+        for new_start0, new_end0 in common.pairwise(margins):
+            result.append(self.subset(new_start0, new_end0, inplace=False))
+        return result
+
+    def _subset_base(self, start0, end0, inplace=False):
+        subset_df = self._get_subset_df(start0, end0)
+        new_MQ = self.MQ.loc[start0:(end0 - 1)]
+        if inplace:
+            self.df = subset_df
+            self.MQ = new_MQ
+            return None
         else:
-            return not any(self._active_info[-length:])
+            result = self.spawn()
+            result.df = subset_df
+            result.MQ = new_MQ
+            return result
 
-    def check_inactive_margin_left(self, length):
-        if len(self._active_info) < length:
-            return False
-        else:
-            return not any(self._active_info[:length])
-
-    # row specs related ones
-    @staticmethod
-    def row_spec_matcher(query, target):
-        if query['left_filled']:
-            if query['right_filled']:
-                if target['left_filled'] and target['right_filled']:
-                    return query['seq'] in target['seq']
-                else:
-                    return False
-            else:
-                if target['left_filled']:
-                    return query['seq'] == target['seq'][:len(query['seq'])]
-                else:
-                    return False
-        else:
-            if query['right_filled']:
-                if target['right_filled']:
-                    return query['seq'] == target['seq'][-len(query['seq']):]
-                else:
-                    return False
-            else:
-                return query['seq'] in target['seq']
-
-    @staticmethod
-    def handle_matching_subseq(superseq_candidates, row_spec_groups, subseq_rowid):
-        if len(superseq_candidates) == 1:
-            superseq_rowid = superseq_candidates[0]
-        elif len(superseq_candidates) > 1:
-            superseq_rowid = max(
-                superseq_candidates, 
-                key=(lambda x: row_spec_groups[x]['subseq_hits']),
-            )
-
-        row_spec_groups[superseq_rowid]['subseq_rowids'].add(subseq_rowid)
-        row_spec_groups[superseq_rowid]['subseq_hits'] += 1
-
-    @classmethod
-    def group_row_specs(cls, row_specs):
-        """row_spec's are grouped by whether one is a substring of another."""
-        row_spec_groups = collections.OrderedDict()
-        for query_rowid, query in sorted(
-            row_specs.items(), 
-            key=(lambda x: x[1]['match_length']), 
-            reverse=True,
-        ):
-            superseq_candidates = list()
-            for superseq_rowid in row_spec_groups.keys():
-                target = row_specs[superseq_rowid]
-                if cls.row_spec_matcher(query, target):
-                    superseq_candidates.append(superseq_rowid)
-                #if len(superseq_candidates) >= 2:
-                #    break
-                    
-            if len(superseq_candidates) == 0:
-                row_spec_groups[query_rowid] = {
-                    'subseq_rowids': set(),
-                    'subseq_hits': 0,
-                }
-                row_spec_groups[query_rowid]['subseq_rowids'].add(query_rowid)
-                row_spec_groups[query_rowid]['subseq_hits'] += 1
-            else:
-                cls.handle_matching_subseq(superseq_candidates, row_spec_groups, query_rowid)
-
-        return row_spec_groups
-
-    def set_refined_vcfspec(self, row_concat_dist_le=np.inf, ):
-        """All vcfspecs in a row are considered to be phased and belonging to a haplotype.
-        """
-        self.refined_vcfspec = None
-
-
-class Pileup(PileupBase):
-    pat_insclip = re.compile("(\(.+\))?([^()]+)(\(.+\))?")
-    pat_parenthesis = re.compile("[()]")
-    row_spec_exluded_vals = {DEL_VALUE, EMPTY_VALUE}
-
-    def __init__(self, df, chrom, fasta, bam, read_cache=None, active_threshold=None):
-        self.df = df
-        self.chrom = chrom
-        self.fasta = fasta
-        self.bam = bam
-        self.read_cache = read_cache
-
-        if active_threshold is None:
-            self.active_threshold = librealign.DEFAULT_ACTIVE_THRESHOLD
-        else:
-            self.active_threshold = active_threshold
-
-        #self._ref_seq_cache = dict()
-        #self._alignment_cache = dict()
-        self._vcfspec_cache = dict()
-
-        self._set_active_info()
-
-    @property
-    def start0(self):
-        return self.df.columns[0]
-
-    @property
-    def end0(self):
-        return self.df.columns[-1] + 1
-
-    def subset(self, start0, end0, inplace=False):
+    def _get_subset_df(self, start0, end0):
         self._coord_arg_sanitycheck(start0, end0)
         # subset dataframe
         new_df = self.df.loc[:, start0:(end0 - 1)]
         # remove out-of-range rows
         row_within_range = list()
         for row_id, row in new_df.iterrows():
-            read = self.read_cache[row_id]
+            read = self.read_store[row_id]
             if read.reference_end <= start0 or read.reference_start >= end0:
                 row_within_range.append(False)
             else:
                 row_within_range.append(True)
         new_df = new_df.loc[row_within_range, :]
-        # active_info
-        active_info_idx_start = start0 - self.start0
-        active_info_idx_end = end0 - self.start0
-        new_active_info = self._active_info[active_info_idx_start:active_info_idx_end]
 
-        # result
-        if inplace:
-            self.df = new_df
-            self._active_info = new_active_info
+        return new_df
+
+    def _merge_base(self, other, other_on_left):
+        if other_on_left:
+            left = other
+            right = self
         else:
-            result = self.__class__(
-                df=new_df, 
-                chrom=self.chrom, 
-                fasta=self.fasta,
-                bam=self.bam,
-                active_threshold=self.active_threshold,
-            )
-            result._active_info = new_active_info
-            #result._ref_seq_cache = self._ref_seq_cache
-            return result
+            left = self
+            right = other
 
-    def get_read(self, read_uid):
-        return self.read_cache[read_uid]
+        assert left.end0 == right.start0
+        border_col_idx_left = left.df.shape[1] - 1
+        self.df = left.df.join(right.df, how="outer")
+        self.MQ = pd.concat([left.MQ, right.MQ])
 
-    ### extend ###  
-    def extend_rightward(self, width):
-        # keep original starts and ends
-        border_col_idx_left = self.df.shape[1] - 1
-        # make new pileup
-        new_pileup = self._extend_helper_make_new_pileup(
-            chrom=self.chrom,
-            start0=self.end0,
-            end0=(self.end0 + width),
-        )
-        # join
-        self.df = self.df.join(new_pileup.df, how="outer")
-        self.df[self.df.isnull()] = EMPTY_VALUE  # turn NaN into EMPTY_VALUE
-        self._active_info.extend(new_pileup._active_info)
-        self.read_cache.update(new_pileup.read_cache)
-        # handle insclips facing each other
-        self._extend_helper_handle_facing_insclip(border_col_idx_left)
+        self.df[self.df.isnull()] = self.__class__.EMPTY_VALUE  # turn NaN into EMPTY_VALUE
+        self._handle_facing_insclips(border_col_idx_left)
+        self.read_store.update(other.read_store)
 
-    def extend_leftward(self, width):
-        # keep original starts and ends
-        border_col_idx_left = width - 1
-        # make new pileup
-        new_pileup = self._extend_helper_make_new_pileup(
-            chrom=self.chrom,
-            start0=(self.start0 - width),
-            end0=self.start0,
-        )
-        # join
-        self.df = new_pileup.df.join(self.df, how="outer")
-        self.df[self.df.isnull()] = EMPTY_VALUE  # turn NaN into EMPTY_VALUE
-        self._active_info = new_pileup._active_info + self._active_info
-        self.read_cache.update(new_pileup.read_cache)
-        # handle insclips facing each other
-        self._extend_helper_handle_facing_insclip(border_col_idx_left)
-
-    def _extend_helper_handle_facing_insclip(self, border_col_idx_left):
+    def _handle_facing_insclips(self, border_col_idx_left):
         border_col_idx_right = border_col_idx_left + 1
         border_col_left = self.df.iloc[:, border_col_idx_left]
         border_col_right = self.df.iloc[:, border_col_idx_right]
@@ -337,109 +169,145 @@ class Pileup(PileupBase):
                     )
                 self.df.iloc[
                     row_idx, border_col_idx_right
-                ] = self.__class__.pat_insclip.sub("\\2\\3", "", val_right)
+                ] = self.__class__.pat_insclip.sub("\\2\\3", val_right)
 
-    def _extend_helper_make_new_pileup(self, chrom, start0, end0):
-        return get_pileup(
-            chrom, 
-            start0, 
-            end0,
-            bam=self.bam,
-            fasta=self.fasta,
-            active_threshold=self.active_threshold,
-            truncate=True,
-            as_array=False,
-            return_range=False,
+    @property
+    def start0(self):
+        return self.df.columns[0]
+
+    @property
+    def end0(self):
+        return self.df.columns[-1] + 1
+
+    @property
+    def range0(self):
+        return range(self.start0, self.end0)
+
+    @property
+    def width(self):
+        return self.df.shape[1]
+
+    def get_ref_seq(self):
+        return self.fasta.fetch(self.chrom, self.start0, self.end0)
+
+    def get_depth(self, pos0):
+        col = self.df.loc[:, pos0]
+        return (col != self.__class__.EMPTY_VALUE).sum()
+        #return sum(x != self.__class__.EMPTY_VALUE for x in col)
+
+    def get_allele_counter(self, pos0):
+        col = self.df.loc[:, pos0]
+        return collections.Counter(col[col != self.__class__.EMPTY_VALUE])
+        #return collections.Counter(x for x in col if x != self.__class__.EMPTY_VALUE)
+
+    def get_allele_portions(self, pos0):
+        counter = self.get_allele_counter(pos0)
+        counter_sum = sum(counter.values())
+        portions = dict()
+        for key, val in counter.items():
+            portions[key] = val / counter_sum
+        return portions
+
+    def get_read(self, read_uid):
+        return self.read_store[read_uid]
+
+    ### extend ###  
+    def _extend_base(self, width, left):
+        new_pileup = self._make_extend_pileup(width, left)
+        self.merge(new_pileup, other_on_left=left)
+
+#    def _extend_rightward_base(self, width):
+#        border_col_idx_left = self.df.shape[1] - 1
+#        new_pileup = self._extend_helper_make_new_pileup(start0=self.end0, end0=(self.end0 + width))
+#        # join
+#        self.df = self.df.join(new_pileup.df, how="outer")
+#        self.df[self.df.isnull()] = EMPTY_VALUE  # turn NaN into EMPTY_VALUE
+#        self.read_store.update(new_pileup.read_store)
+#        # handle insclips facing each other
+#        self._extend_helper_handle_facing_insclip(border_col_idx_left)
+#
+#        #self.active_info = pd.concat([self.active_info, new_pileup.active_info])
+#        return new_pileup
+#
+#    def extend_leftward(self, width):
+#        border_col_idx_left = width - 1
+#        new_pileup = self._extend_helper_make_new_pileup(start0=(self.start0 - width), end0=self.start0)
+#        # join
+#        self.df = new_pileup.df.join(self.df, how="outer")
+#        self.df[self.df.isnull()] = EMPTY_VALUE  # turn NaN into EMPTY_VALUE
+#        self.read_store.update(new_pileup.read_store)
+#        # handle insclips facing each other
+#        self._extend_helper_handle_facing_insclip(border_col_idx_left)
+#        #self.active_info = pd.concat([new_pileup.active_info, self.active_info])
+
+#    def _extend_helper_handle_facing_insclip(self, border_col_idx_left):
+#        border_col_idx_right = border_col_idx_left + 1
+#        border_col_left = self.df.iloc[:, border_col_idx_left]
+#        border_col_right = self.df.iloc[:, border_col_idx_right]
+#        for row_idx, (val_left, val_right) in enumerate(
+#            zip(border_col_left, border_col_right)
+#        ):
+#            if val_right.startswith("(") and val_left.endswith(")"):
+#                mat_left = self.__class__.pat_insclip.fullmatch(val_left)
+#                mat_right = self.__class__.pat_insclip.fullmatch(val_right)
+#                if mat_left.group(3) != mat_right.group(1):
+#                    raise Exception(
+#                        f"Insclip seqs of adjacent entries are different.\n{self.df}"
+#                    )
+#                self.df.iloc[
+#                    row_idx, border_col_idx_right
+#                ] = self.__class__.pat_insclip.sub("\\2\\3", "", val_right)
+
+
+class Pileup(PileupBase):
+    # initializers
+    def __init__(self, fasta, bam, chrom, start0=None, end0=None, init_df=True):
+        PileupBase.__init__(self, fasta, bam, chrom, start0=start0, end0=end0, init_df=init_df)
+
+#    def subset(self, start0, end0, inplace=False):
+#        subset_df = self._get_subset_df(start0, end0)
+#        new_MQ = self.MQ.loc[start0:(end0 - 1)]
+#        if inplace:
+#            self.df = subset_df
+#            self.MQ = new_MQ
+#            return None
+#        else:
+#            result = self.spawn()
+#            result.df = subset_df
+#            result.MQ = new_MQ
+#            return result
+
+    def subset(self, start0, end0, inplace=False):
+        return self._subset_base(self, start0, end0, inplace=inplace)
+
+    def merge(self, other, other_on_left):
+        self._merge_base(other, other_on_left=other_on_left)
+
+    def split(self, start0_list):
+        return self._split_base(start0_list)
+
+    # extend
+    def extend_left(self, width):
+        self._extend_base(width, left=True)
+
+    def extend_right(self, width):
+        self._extend_base(width, left=False)
+
+    def _make_extend_pileup(self, width, left):
+        if left:
+            start0 = self.start0 - width
+            end0 = self.start0
+        else:
+            start0 = self.end0
+            end0 = self.end0 + width
+        return self.__class__(
+            fasta=self.fasta, 
+            bam=self.bam, 
+            chrom=self.chrom, 
+            start0=start0,
+            end0=end0,
+            init_df=True,
         )
-
-    ################################
-    # realignment-related features #
-    ################################
-
-    # secure_inactive_padding
-    def secure_inactive_padding_rightward(self, inactive_padding, extend_pileup_by=DEFAULT_EXTEND_PILEUP_BY):
-        librealign.secure_inactive_padding_rightward(
-            pileup=self,
-            inactive_padding=inactive_padding, 
-            extend_pileup_by=extend_pileup_by, 
-            inplace=True,
-        )
-
-    def secure_inactive_padding_leftward(self, inactive_padding, extend_pileup_by=DEFAULT_EXTEND_PILEUP_BY):
-        librealign.secure_inactive_padding_leftward(
-            pileup=self, 
-            inactive_padding=inactive_padding, 
-            extend_pileup_by=extend_pileup_by, 
-            inplace=True,
-        )
-
-    def secure_inactive_padding(self, inactive_padding, extend_pileup_by=DEFAULT_EXTEND_PILEUP_BY):
-        self.secure_inactive_padding_rightward(inactive_padding, extend_pileup_by=extend_pileup_by)
-        self.secure_inactive_padding_leftward(inactive_padding, extend_pileup_by=extend_pileup_by)
-
-    ### row specs ###
-    def get_row_spec(self, read_uid):
-        row = self.df.loc[read_uid, :]
-        return {
-            "seq": "".join(
-                self.__class__.pat_parenthesis.sub("", x) 
-                for x in row if x not in self.__class__.row_spec_exluded_vals
-            ),
-            "match_length": sum(x != EMPTY_VALUE for x in row),
-            "left_filled": (row.iloc[0] != EMPTY_VALUE),
-            "right_filled": (row.iloc[-1] != EMPTY_VALUE),
-            "id": row.name,
-        }
-
-    def set_row_specs(self):
-        self.row_specs = dict()
-        for read_uid, row in self.df.iterrows():
-            self.row_specs[read_uid] = self.get_row_spec(read_uid)
-
-    def set_row_spec_groups(self):
-        self.row_spec_groups = self.__class__.group_row_specs(self.row_specs)
-
-    # others
-    def save_superseq_alignments(self, aligner=None):
-        librealign.save_superseq_alignments(self, aligner=aligner)
-
-    def set_vcfspecs(self, allele_portion_threshold=None, concat_dist_le=None):
-        self.vcfspecs = librealign.get_vcfspecs_from_pileup(self, allele_portion_threshold=allele_portion_threshold, concat_dist_le=concat_dist_le)
-
-    def get_realigned_reads(self):
-        """Returns:
-            dict (keys ReadUID, values pysam.AlignedSegment)
-        """
-        return librealign.get_realigned_reads(self)
-
-    # for debugging
-    def show_row_spec_alignments(self):
-        subseq_hits_sum = sum(x['subseq_hits'] for x in self.row_spec_groups.values())
-        for superseq_id, groupinfo in sorted(
-            self.row_spec_groups.items(),
-            key=(lambda x: x[1]['subseq_hits']),
-            reverse=True,
-        ):
-            superseq_row_spec = self.row_specs[superseq_id]
-            lstrip_query_gaps = not superseq_row_spec["left_filled"]
-            rstrip_query_gaps = not superseq_row_spec["right_filled"]
-
-            superseq_aln = self._alignment_cache[superseq_id]
-            superseq_vcfspec_list = alignhandler.alignment_to_vcfspec(
-                superseq_aln, 
-                self.start0, 
-                self.chrom, 
-                self.fasta,
-                lstrip_query_gaps=lstrip_query_gaps,
-                rstrip_query_gaps=rstrip_query_gaps,
-            )
-
-            print('subseq hits:', groupinfo['subseq_hits'])
-            print('subseq hits portion:', groupinfo['subseq_hits'] / subseq_hits_sum)
-            print(superseq_row_spec)
-            print(superseq_vcfspec_list)
-            print(superseq_aln)
-            print()
 
 
 class MultisamplePileup(PileupBase):
@@ -482,7 +350,7 @@ class MultisamplePileup(PileupBase):
 
     def get_read(self, row_id):
         sampleid, read_uid = row_id
-        return self.pileup_dict[sampleid].read_cache[read_uid]
+        return self.pileup_dict[sampleid].read_store[read_uid]
 
     ### extend ###
     def extend_rightward(self, width):
@@ -575,76 +443,41 @@ class MultisamplePileup(PileupBase):
         self.vcfspecs = librealign.get_vcfspecs_from_pileup_multisample(self, allele_portion_threshold=allele_portion_threshold, concat_dist_le=concat_dist_le)
 
     # for debugging
-    def show_row_spec_alignments(self, show_subseqs=True):
+    def show_row_spec_alignments(self, skip_zero_hits=True, show_subseqs=True):
         for sampleid, pileup in self.pileup_dict.items():
             print('@@@', sampleid, '@@@')
             print()
-            row_spec_groups = self.row_spec_groups[sampleid]
-            subseq_hits_sum = sum(x['subseq_hits'] for x in row_spec_groups.values())
-            for superseq_id, groupinfo in sorted(
-                row_spec_groups.items(),
-                key=(lambda x: x[1]['subseq_hits']),
-                reverse=True,
-            ):
-                if groupinfo['subseq_hits'] == 0:
-                    continue
-
-                superseq_row_spec = self.superseq_row_specs[superseq_id]
-                lstrip_query_gaps = not superseq_row_spec["left_filled"]
-                rstrip_query_gaps = not superseq_row_spec["right_filled"]
-
-                superseq_aln = self._alignment_cache[superseq_id]
-                superseq_vcfspec_list = alignhandler.alignment_to_vcfspec(
-                    superseq_aln, 
-                    self.start0, 
-                    self.chrom, 
-                    self.fasta,
-                    lstrip_query_gaps=lstrip_query_gaps,
-                    rstrip_query_gaps=rstrip_query_gaps,
-                )
-
-                print('subseq hits:', groupinfo['subseq_hits'])
-                print('subseq hits portion:', groupinfo['subseq_hits'] / subseq_hits_sum)
-                print(superseq_row_spec)
-                print(superseq_vcfspec_list)
-                print(superseq_aln)
-                if show_subseqs:
-                    for readuid in groupinfo['subseq_rowids']:
-                        print(readuid)
-                print()
+            self._show_row_spec_alignments_helper(self.row_spec_groups[sampleid], self.superseq_row_specs, skip_zero_hits, show_subseqs)
 
 
-def get_pileup(
+def make_pileup_components(
     chrom,
     start0,
     end0,
     bam,
-    fasta=None,
-    active_threshold=None,
+    #fasta=None,
+    #active_threshold=None,
     truncate=True,
     as_array=False,
-    return_range=False,
-    del_value=DEL_VALUE,
-    empty_value=EMPTY_VALUE,
+    #return_range=False,
+    del_value=PileupBase.DEL_VALUE,
+    empty_value=PileupBase.EMPTY_VALUE,
 ):
-    def sanity_check():
-        if (not as_array) and (fasta is None):
-            raise Exception(f'If "as_array" is False, "fasta" must be set.')
-
-    def make_readlist(bam, chrom, start0, end0):
+    def make_read_store(bam, chrom, start0, end0):
         readlist = list()
+        uid_list = list()
         start_list = list()
         end_list = list()
-        uid_list = list()
         for read in readhandler.get_fetch(bam, chrom, start0, end0, readfilter=readhandler.readfilter_pileup):
-            uid = readhandler.get_uid(read)
             readlist.append(read)
+            uid_list.append(readhandler.get_uid(read))
             start_list.append(read.reference_start)
             end_list.append(read.reference_end)
-            uid_list.append(uid)
-        tmp_pileup_range = range(min(start_list), max(end_list))
 
-        return readlist, tmp_pileup_range, uid_list
+        tmp_pileup_range = range(min(start_list), max(end_list))
+        read_store = collections.OrderedDict(zip(uid_list, readlist))
+
+        return read_store, tmp_pileup_range
 
     def raise_cigarpattern_error(read):
         raise Exception(f"Unexpected cigar pattern:\n{read.to_string()}")
@@ -662,204 +495,6 @@ def get_pileup(
         if error:
             raise_cigarpattern_error(read)
 
-    def write_read_to_array_row(read, arr, arr_row_idx, initial_arr_col_idx, del_value):
-        def handle_leading_insclip(read):
-            leading_insclip_len = 0
-            cigartup_idx = 0
-            for cigarop, cigarlen in alignhandler.iter_leading_queryonly(read.cigartuples):
-                leading_insclip_len += cigarlen
-                cigartup_idx += 1
-
-            if leading_insclip_len == 0:
-                leading_insseq = None
-            else:
-                leading_insseq = read.query_sequence[:leading_insclip_len]
-            query_idx = leading_insclip_len
-
-            return leading_insseq, cigartup_idx, query_idx
-
-        def handle_queryonly_only_case(read, arr, arr_col_idx, arr_row_idx):
-            arr[arr_row_idx, arr_col_idx] = f"({read.query_sequence})"
-
-        def handle_targetonly_after_match(
-            read,
-            arr,
-            query_idx,
-            arr_col_idx,
-            arr_row_idx,
-            trailing_nonM_cigarlen_sum,
-            del_value,
-        ):
-            arr[arr_row_idx, arr_col_idx] = read.query_sequence[
-                query_idx
-            ]  # query_idx indicates the last base of M
-            arr[
-                arr_row_idx,
-                (arr_col_idx + 1) : (arr_col_idx + 1 + trailing_nonM_cigarlen_sum),
-            ] = del_value
-
-        def handle_queryonly_after_match(
-            read,
-            arr,
-            query_idx,
-            arr_col_idx,
-            arr_row_idx,
-            trailing_nonM_cigarlen_sum,
-        ):
-            last_match_base = read.query_sequence[query_idx]
-            insseq = read.query_sequence[
-                (query_idx + 1) : (query_idx + 1 + trailing_nonM_cigarlen_sum)
-            ]
-            arr[arr_row_idx, arr_col_idx] = f"{last_match_base}({insseq})"
-
-        def handle_nonlast_match(
-            read,
-            arr,
-            cigarlen,
-            query_idx,
-            arr_col_idx,
-            arr_row_idx,
-            cigartup_idx,
-        ):
-            # adds all match seqs except the last one
-            # query_idx and arr_col_idx updated
-            if cigarlen > 1:
-                sl_query = slice(query_idx, query_idx + cigarlen - 1)
-                sl_arr_col = slice(arr_col_idx, arr_col_idx + cigarlen - 1)
-                arr[arr_row_idx, sl_arr_col] = tuple(read.query_sequence[sl_query])
-                query_idx += cigarlen - 1
-                arr_col_idx += cigarlen - 1
-            # get all subsequent non-M cigar units
-            # cigartup_idx updated
-            trailing_nonMs = list()
-            while True:
-                cigartup_idx += 1
-                if cigartup_idx >= len(read.cigartuples):
-                    break
-                else:
-                    next_cigartup = read.cigartuples[cigartup_idx]
-                    if next_cigartup[0] != 0:
-                        trailing_nonMs.append(next_cigartup)
-                    else:
-                        break
-            # add trailing non-M cigar units
-            # query_idx and arr_col_idx updated
-            trailing_nonM_cigarops = set(x[0] for x in trailing_nonMs)
-            trailing_nonM_cigarlen_sum = sum(x[1] for x in trailing_nonMs)
-            if trailing_nonM_cigarops.issubset(alignhandler.CIGAROPS_TARGETONLY):  # D, N
-                handle_targetonly_after_match(
-                    read,
-                    arr,
-                    query_idx,
-                    arr_col_idx,
-                    arr_row_idx,
-                    trailing_nonM_cigarlen_sum,
-                    del_value,
-                )
-                query_idx += 1
-                arr_col_idx += trailing_nonM_cigarlen_sum + 1
-            elif trailing_nonM_cigarops.issubset(alignhandler.CIGAROPS_QUERYONLY):  # I, S
-                handle_queryonly_after_match(
-                    read,
-                    arr,
-                    query_idx,
-                    arr_col_idx,
-                    arr_row_idx,
-                    trailing_nonM_cigarlen_sum,
-                )
-                query_idx += trailing_nonM_cigarlen_sum + 1
-                arr_col_idx += 1
-            else:
-                raise Exception(
-                    f"Consecutive Non-M cigar units are composed of both target-only and query-only ones:\n{read.to_string()}"
-                )
-
-            return cigartup_idx, query_idx, arr_col_idx
-
-        def handle_last_match(
-            read,
-            arr,
-            cigarlen,
-            query_idx,
-            arr_col_idx,
-            arr_row_idx,
-        ):
-            # adds all match seqs to array
-            sl_query = slice(query_idx, query_idx + cigarlen)
-            sl_arr_col = slice(arr_col_idx, arr_col_idx + cigarlen)
-            arr[arr_row_idx, sl_arr_col] = tuple(read.query_sequence[sl_query])
-
-        # main
-        """1) First, leading query-only cigar units are collected.
-        2) Then, cigartuple is iterated on. Initial cigartup_idx is at the 
-            first cigar unit which is not a query-only one. This cigar unit
-            is assumed to be M. (If not, raises an exception)
-        3) What is done in a loop cycle:
-            The cigar unit which cigartup_idx indicates (which should be M)
-            and all subsequent non-M cigarop are treated at single loop cycle.
-            The subsequent non-M cigar units are assumed to be composed of only
-            query-only ones or target-only ones. (If not, raises an exception)
-        """
-
-        # set mutable arr_col_idx. initial one is kept separately.
-        arr_col_idx = initial_arr_col_idx
-
-        # handles leading query-only cigar units. cigartup_idx and query_idx are initialized
-        leading_insseq, cigartup_idx, query_idx = handle_leading_insclip(read)
-
-        if cigartup_idx == len(read.cigartuples):
-            # cigartup is only composed of query-only operations (no M)
-            arr[arr_row_idx, arr_col_idx] = "(" + read.query_sequence + ")"            
-        else:
-            if read.cigartuples[cigartup_idx][0] != 0:
-                raise Exception(
-                    f"The first cigar operation after stripping leading I and S is not M:\n{read.to_string()}"
-                )
-
-            # begins loop
-            while True:
-                if cigartup_idx > len(read.cigartuples) - 1:
-                    raise Exception(
-                        f'"cigartup_idx" became greater than "len(read.cigartuples) - 1" while looping.'
-                    )
-
-                cigarop, cigarlen = read.cigartuples[cigartup_idx]
-                assert (
-                    cigarop == 0
-                ), f'The cigar unit indicated by "cigarop_idx" at the beginning of a loop cycle is not M.'
-
-                if (
-                    cigartup_idx == len(read.cigartuples) - 1
-                ):  # current cigartup is the last one
-                    handle_last_match(
-                        read,
-                        arr,
-                        cigarlen,
-                        query_idx,
-                        arr_col_idx,
-                        arr_row_idx,
-                    )
-                    
-                    break
-                else:
-                    cigartup_idx, query_idx, arr_col_idx = handle_nonlast_match(
-                        read,
-                        arr,
-                        cigarlen,
-                        query_idx,
-                        arr_col_idx,
-                        arr_row_idx,
-                        cigartup_idx,
-                    )
-                    if cigartup_idx == len(read.cigartuples):
-                        break
-
-            # add leading query-only seq
-            if leading_insseq is not None:
-                arr[arr_row_idx, initial_arr_col_idx] = (
-                    f"({leading_insseq})" + arr[arr_row_idx, initial_arr_col_idx]
-                )
-
     def truncate_array(arr, tmp_pileup_range, pileup_range):
         sl_start = tmp_pileup_range.index(pileup_range.start)
         if pileup_range.stop == tmp_pileup_range.stop:
@@ -868,48 +503,19 @@ def get_pileup(
             sl_end = tmp_pileup_range.index(pileup_range.stop)
         return arr[:, slice(sl_start, sl_end)]
 
-    def make_pileup_from_array(
-        chrom,
-        arr,
-        bam,
-        read_cache,
-        uid_list,
-        pileup_range,
-        tmp_pileup_range,
-        truncate,
-        active_threshold,
-        fasta,
-    ):
-        df_columns = pileup_range if truncate else tmp_pileup_range
-        df = pd.DataFrame(arr, columns=list(df_columns), index=uid_list)
-        pileup = Pileup(
-            df=df,
-            chrom=chrom,
-            fasta=fasta,
-            bam=bam,
-            read_cache=read_cache,
-            active_threshold=active_threshold,
-        )
-        return pileup
-
     # main
-    # parameter handling
-    sanity_check()
-    if active_threshold is None:
-        active_threshold = librealign.DEFAULT_ACTIVE_THRESHOLD
-    # prepare pileup_range
     pileup_range = range(start0, end0)
-    readlist, tmp_pileup_range, uid_list = make_readlist(bam, chrom, start0, end0)
+    read_store, tmp_pileup_range = make_read_store(bam, chrom, start0, end0)
     # create array
     arr = np.full(
-        shape=(len(readlist), len(tmp_pileup_range)),
+        shape=(len(read_store), len(tmp_pileup_range)),
         fill_value=empty_value,
         dtype=object,
     )
-    for arr_row_idx, read in enumerate(readlist):
-        initial_arr_col_idx = read.reference_start - tmp_pileup_range.start
+    for arr_row_idx, read in enumerate(read_store.values()):
+        arr_col_idx = read.reference_start - tmp_pileup_range.start
         try:
-            write_read_to_array_row(read, arr, arr_row_idx, initial_arr_col_idx, del_value)
+            _write_read_to_array_row(read, arr, arr_row_idx, arr_col_idx, del_value)
         except Exception as exc:
             try:
                 cigar_sanitycheck(read)
@@ -919,31 +525,286 @@ def get_pileup(
                 raise exc
     # truncate array
     if truncate:
+        ref_span_range = pileup_range
         arr = truncate_array(arr, tmp_pileup_range, pileup_range)
-    # prepare results
-    if as_array:
-        if return_range:
-            return (arr, pileup_range)
-        else:
-            return arr
     else:
-        read_cache = dict(zip(uid_list, readlist))
-        pileup = make_pileup_from_array(
-            chrom,
-            arr,
-            bam,
-            read_cache,
-            uid_list,
-            pileup_range,
-            tmp_pileup_range,
-            truncate,
-            active_threshold,
-            fasta,
+        ref_span_range = tmp_pileup_range
+    # final result
+    if as_array:
+        return arr, ref_span_range, read_store
+    else:
+        return pd.DataFrame(arr, columns=list(ref_span_range), index=tuple(read_store.keys())), read_store
+
+
+def _write_read_to_array_row(read, arr, arr_row_idx, arr_col_idx, del_value):
+    """Helper function for 'make_pileup_components'"""
+    query_idx = 0
+    queryonly_seq = None
+    for idx, (key, subiter) in enumerate(
+        itertools.groupby(
+            read.cigartuples, 
+            key=(lambda x: alignhandler.CIGAR_WALK_DICT[x[0]]),
         )
-        if return_range:
-            return (pileup, pileup_range)
+    ):
+        consume_target, consume_query = key
+        cigarlen_sum = sum(x[1] for x in subiter)
+
+        if consume_target and consume_query:  # match
+            if queryonly_seq is None:
+                sl_query = slice(query_idx, query_idx + cigarlen_sum)
+                sl_arr_col = slice(arr_col_idx, arr_col_idx + cigarlen_sum)
+                arr[arr_row_idx, sl_arr_col] = tuple(read.query_sequence[sl_query])
+            else:
+                # add the first match-base, prefixed with query-only sequence buffer
+                arr[arr_row_idx, arr_col_idx] = f'({queryonly_seq})' + read.query_sequence[query_idx]
+                sl_query = slice(query_idx + 1, query_idx + cigarlen_sum)
+                sl_arr_col = slice(arr_col_idx + 1, arr_col_idx + cigarlen_sum)
+                arr[arr_row_idx, sl_arr_col] = tuple(read.query_sequence[sl_query])
+                queryonly_seq = None
+
+            arr_col_idx += cigarlen_sum
+            query_idx += cigarlen_sum
+
+        elif (not consume_target) and consume_query:  # ins, softclip
+            queryonly_seq = read.query_sequence[query_idx:(query_idx + cigarlen_sum)]
+            query_idx += cigarlen_sum
+
+        elif consume_target and (not consume_query):  # del, skip
+            if queryonly_seq is not None:
+                raise Exception(f'Cigar D or N comes right after I or S. Current read: {read.to_string()}')
+
+            sl_arr_col = slice(arr_col_idx, arr_col_idx + cigarlen_sum)
+            arr[arr_row_idx, sl_arr_col] = del_value
+
+            arr_col_idx += cigarlen_sum
+
+    # Last cigar operation is query-only
+    if queryonly_seq is not None:
+        if idx == 0:  # query-only-only case
+            arr[arr_row_idx, arr_col_idx] = f'({queryonly_seq})'
+        else:  # queryonly_seq is appended to the base on the left
+            arr[arr_row_idx, arr_col_idx - 1] = arr[arr_row_idx, arr_col_idx - 1] + f'({queryonly_seq})'
+
+
+def _write_read_to_array_row_deprecated(read, arr, arr_row_idx, initial_arr_col_idx, del_value):
+    """NOT USED. THIS VERSION ASSIGNS INSCLIP TO THE POSITION ON THE LEFT."""
+    def handle_leading_insclip(read):
+        leading_insclip_len = 0
+        cigartup_idx = 0
+        for cigarop, cigarlen in alignhandler.iter_leading_queryonly(read.cigartuples):
+            leading_insclip_len += cigarlen
+            cigartup_idx += 1
+
+        if leading_insclip_len == 0:
+            leading_insseq = None
         else:
-            return pileup
+            leading_insseq = read.query_sequence[:leading_insclip_len]
+        query_idx = leading_insclip_len
+
+        return leading_insseq, cigartup_idx, query_idx
+
+    def handle_queryonly_only_case(read, arr, arr_col_idx, arr_row_idx):
+        arr[arr_row_idx, arr_col_idx] = "(" + read.query_sequence + ")"            
+
+    def handle_targetonly_after_match(
+        read,
+        arr,
+        query_idx,
+        arr_col_idx,
+        arr_row_idx,
+        trailing_nonM_cigarlen_sum,
+        del_value,
+    ):
+        arr[arr_row_idx, arr_col_idx] = read.query_sequence[
+            query_idx
+        ]  # query_idx indicates the last base of M
+        arr[
+            arr_row_idx,
+            (arr_col_idx + 1) : (arr_col_idx + 1 + trailing_nonM_cigarlen_sum),
+        ] = del_value
+
+    def handle_queryonly_after_match(
+        read,
+        arr,
+        query_idx,
+        arr_col_idx,
+        arr_row_idx,
+        trailing_nonM_cigarlen_sum,
+    ):
+        last_match_base = read.query_sequence[query_idx]
+        insseq = read.query_sequence[
+            (query_idx + 1) : (query_idx + 1 + trailing_nonM_cigarlen_sum)
+        ]
+        arr[arr_row_idx, arr_col_idx] = f"{last_match_base}({insseq})"
+
+    def handle_nonlast_match(
+        read,
+        arr,
+        cigarlen,
+        query_idx,
+        arr_col_idx,
+        arr_row_idx,
+        cigartup_idx,
+    ):
+        # adds all match seqs except the last one
+        # query_idx and arr_col_idx updated
+        if cigarlen > 1:
+            sl_query = slice(query_idx, query_idx + cigarlen - 1)
+            sl_arr_col = slice(arr_col_idx, arr_col_idx + cigarlen - 1)
+            arr[arr_row_idx, sl_arr_col] = tuple(read.query_sequence[sl_query])
+            query_idx += cigarlen - 1
+            arr_col_idx += cigarlen - 1
+        # get all subsequent non-M cigar units
+        # cigartup_idx updated
+        trailing_nonMs = list()
+        while True:
+            cigartup_idx += 1
+            if cigartup_idx >= len(read.cigartuples):
+                break
+            else:
+                next_cigartup = read.cigartuples[cigartup_idx]
+                if next_cigartup[0] != 0:
+                    trailing_nonMs.append(next_cigartup)
+                else:
+                    break
+        # add trailing non-M cigar units
+        # query_idx and arr_col_idx updated
+        trailing_nonM_cigarops = set(x[0] for x in trailing_nonMs)
+        trailing_nonM_cigarlen_sum = sum(x[1] for x in trailing_nonMs)
+        if trailing_nonM_cigarops.issubset(alignhandler.CIGAROPS_TARGETONLY):  # D, N
+            handle_targetonly_after_match(
+                read,
+                arr,
+                query_idx,
+                arr_col_idx,
+                arr_row_idx,
+                trailing_nonM_cigarlen_sum,
+                del_value,
+            )
+            query_idx += 1
+            arr_col_idx += trailing_nonM_cigarlen_sum + 1
+        elif trailing_nonM_cigarops.issubset(alignhandler.CIGAROPS_QUERYONLY):  # I, S
+            handle_queryonly_after_match(
+                read,
+                arr,
+                query_idx,
+                arr_col_idx,
+                arr_row_idx,
+                trailing_nonM_cigarlen_sum,
+            )
+            query_idx += trailing_nonM_cigarlen_sum + 1
+            arr_col_idx += 1
+        else:
+            raise Exception(f"Consecutive Non-M cigar units are composed of both target-only and query-only ones:\n{read.to_string()}")
+
+        return cigartup_idx, query_idx, arr_col_idx
+
+    def handle_last_match(
+        read,
+        arr,
+        cigarlen,
+        query_idx,
+        arr_col_idx,
+        arr_row_idx,
+    ):
+        # adds all match seqs to array
+        sl_query = slice(query_idx, query_idx + cigarlen)
+        sl_arr_col = slice(arr_col_idx, arr_col_idx + cigarlen)
+        arr[arr_row_idx, sl_arr_col] = tuple(read.query_sequence[sl_query])
+
+    # main
+    """1) First, leading query-only cigar units are collected.
+    2) Then, cigartuple is iterated on. Initial cigartup_idx is at the 
+        first cigar unit which is not a query-only one. This cigar unit
+        is assumed to be M. (If not, raises an exception)
+    3) What is done in a loop cycle:
+        The cigar unit which cigartup_idx indicates (which should be M)
+        and all subsequent non-M cigarop are treated at single loop cycle.
+        The subsequent non-M cigar units are assumed to be composed of only
+        query-only ones or target-only ones. (If not, raises an exception)
+    """
+
+    # set mutable arr_col_idx. initial one is kept separately.
+    arr_col_idx = initial_arr_col_idx
+
+    # handles leading query-only cigar units. cigartup_idx and query_idx are initialized
+    leading_insseq, cigartup_idx, query_idx = handle_leading_insclip(read)
+
+    if cigartup_idx == len(read.cigartuples):
+        # cigartup is only composed of query-only operations (I or S)
+        handle_queryonly_only_case(read, arr, arr_col_idx, arr_row_idx)
+    else:
+        if read.cigartuples[cigartup_idx][0] != 0:
+            raise Exception(
+                f"The first cigar operation after stripping leading I and S is not M:\n{read.to_string()}"
+            )
+
+        # begins loop
+        while True:
+            if cigartup_idx > len(read.cigartuples) - 1:
+                raise Exception(f'"cigartup_idx" became greater than "len(read.cigartuples) - 1" while looping.')
+
+            cigarop, cigarlen = read.cigartuples[cigartup_idx]
+            if cigarop != 0:
+                raise Exception(f'The cigar unit indicated by "cigarop_idx" at the beginning of a loop cycle is not M.')
+
+            if cigartup_idx == len(read.cigartuples) - 1:  
+                # current cigartup is the last one
+                handle_last_match(
+                    read,
+                    arr,
+                    cigarlen,
+                    query_idx,
+                    arr_col_idx,
+                    arr_row_idx,
+                )
+                break
+            else:
+                cigartup_idx, query_idx, arr_col_idx = handle_nonlast_match(
+                    read,
+                    arr,
+                    cigarlen,
+                    query_idx,
+                    arr_col_idx,
+                    arr_row_idx,
+                    cigartup_idx,
+                )
+                if cigartup_idx == len(read.cigartuples):
+                    break
+
+        # add leading query-only seq
+        if leading_insseq is not None:
+            arr[arr_row_idx, initial_arr_col_idx] = (
+                f"({leading_insseq})" + arr[arr_row_idx, initial_arr_col_idx]
+            )
+
+
+#def get_pileup(
+#    chrom,
+#    start0,
+#    end0,
+#    bam,
+#    fasta,
+#    truncate=True,
+#    del_value=DEL_VALUE,
+#    empty_value=EMPTY_VALUE,
+#):
+#    df, read_store = make_pileup_components(
+#        chrom,
+#        start0,
+#        end0,
+#        bam,
+#        truncate=truncate,
+#        as_array=False,
+#        del_value=del_value,
+#        empty_value=empty_value,
+#    )
+#    pileup = Pileup(df, chrom, fasta, bam, read_store)
+#
+#    return pileup
+
+
+
 
 
 def get_pileup_multisample(
@@ -953,8 +814,8 @@ def get_pileup_multisample(
     bam_dict,
     fasta,
     active_threshold_onesample=None,
-    del_value=DEL_VALUE,
-    empty_value=EMPTY_VALUE,
+    del_value=PileupBase.DEL_VALUE,
+    empty_value=PileupBase.EMPTY_VALUE,
 ):
     # parameter handling
     if active_threshold_onesample is None:

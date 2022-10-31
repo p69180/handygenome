@@ -387,7 +387,12 @@ class RefverDict(collections.UserDict):
 
     def __getitem__(self, key):
         key = self.__class__.standardize(key)
-        return super().__getitem__(key)
+        try:
+            result = super().__getitem__(key)
+        except KeyError:
+            raise Exception(f'Input reference version is not available.')
+
+        return result
 
 
 # chr1 lengths
@@ -434,7 +439,6 @@ class ChromDict(collections.OrderedDict):
     @get_deco_num_set_differently(
         ('fasta_path', 'fasta', 'bam_path', 'bam', 
          'vcfheader', 'bamheader', 'custom', 'refver'), 1)
-    @get_deco_arg_choices({'refver': AVAILABLE_REFVERS_PLUSNONE})
     def __init__(self, fasta_path=None, fasta=None, bam_path=None, bam=None, 
                  vcfheader=None, bamheader=None, custom=None, refver=None):
         """

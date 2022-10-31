@@ -29,7 +29,7 @@ class IGVHandle:
             elif isinstance(locus, str):
                 locus_sp = locus.split(':')
                 chrom = locus_sp[0]
-                start1, end1 = locus_sp[0].split('-')
+                start1, end1 = locus_sp[1].split('-')
                 start1 = int(start1)
                 end1 = int(end1)
                 cmd_src.append(f'{chrom}:{start1 - width}-{end1 + width}')

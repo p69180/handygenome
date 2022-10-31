@@ -87,6 +87,10 @@ class Cigar:
         )
 
 
+class Walk(collections.namedtuple('Walk', ('target', 'query'))):
+    pass
+
+
 #def get_cigartuples(cigarstring):
 #    return [
 #        (CIGAROPDICT[cigarop], int(count))
@@ -139,8 +143,8 @@ def iter_leading_queryonly(cigartuples):
 def get_query_length(cigartuples):
     result = 0
     for opcode, count in cigartuples:
-        walk_target, walk_query = CIGAR_WALK_DICT[opcode]
-        if walk_query:
+        consume_target, consume_query = CIGAR_WALK_DICT[opcode]
+        if consume_query:
             result += count
     return result
 
@@ -148,13 +152,14 @@ def get_query_length(cigartuples):
 def get_target_length(cigartuples):
     result = 0
     for opcode, count in cigartuples:
-        walk_target, walk_query = CIGAR_WALK_DICT[opcode]
-        if walk_target:
+        consume_target, consume_query = CIGAR_WALK_DICT[opcode]
+        if consume_target:
             result += count
     return result
 
 
 def split_cigar(cigartuples, reference_start0, split_range0):
+    """This function also returns cigartuples within split_range0"""
     tuples_before = list()
     tuples_within = list()
     tuples_after = list()
@@ -211,6 +216,79 @@ def split_cigar(cigartuples, reference_start0, split_range0):
     return tuples_before, tuples_within, tuples_after
 
 
+def get_cigars_before_region(cigartuples, reference_start0, reference_end0, split_range0):
+    return _split_cigars_helper(cigartuples, reference_start0, reference_end0, split_range0, include_queryonly_at_border=False)
+
+
+def get_cigars_after_region(cigartuples, reference_start0, reference_end0, split_range0):
+    new_cigartuples = cigartuples[::-1]
+    new_reference_start0 = 0
+    new_reference_end0 = new_reference_start0 + (reference_end0 - reference_start0)
+    new_split_range0_start = new_reference_start0 + (reference_end0 - split_range0.stop)
+    new_split_range0_end = new_split_range0_start + len(split_range0)
+    new_split_range0 = range(new_split_range0_start, new_split_range0_end)
+
+    reversed_result = _split_cigars_helper(new_cigartuples, new_reference_start0, new_reference_end0, new_split_range0, include_queryonly_at_border=True)
+    return reversed_result[::-1]
+
+
+def split_read_cigartuples(read, split_range0):
+    before_tuples = get_cigars_before_region(read.cigartuples, read.reference_start, read.reference_end, split_range0)
+    after_tuples = get_cigars_after_region(read.cigartuples, read.reference_start, read.reference_end, split_range0)
+
+    return before_tuples, after_tuples
+
+
+def _split_cigars_helper(cigartuples, reference_start0, reference_end0, split_range0, include_queryonly_at_border):
+    """This returns before-region cigartuples
+
+    How softclips or insertions are treated:
+        - Softclip: 
+            - On the left border: To the position on the right
+            - On the right border: To the position on the left
+        - Insertion: To the position on the right, except when on the right border (to the left in this case)
+    """
+    if reference_start0 >= split_range0.start:
+        tuples_before = list()
+    elif reference_end0 <= split_range0.start:
+        tuples_before = cigartuples.copy()
+    else:
+        tuples_before = list()
+        current_start0 = reference_start0
+        iterator = iter(cigartuples)
+        do_further_search = False
+        for cigartup in iterator:
+            consume_target, consume_query = CIGAR_WALK_DICT[cigartup[0]]
+            if consume_target:
+                current_start0 += cigartup[1]
+
+            if current_start0 > split_range0.start:
+                tuples_before.append(
+                    (
+                        cigartup[0], 
+                        cigartup[1] - (current_start0 - split_range0.start)
+                    )
+                )
+                break
+            elif current_start0 == split_range0.start:
+                do_further_search = True
+                tuples_before.append(cigartup)
+                break
+            else:
+                tuples_before.append(cigartup)
+
+        if do_further_search and include_queryonly_at_border:
+            for cigartup in iterator:
+                consume_target, consume_query = CIGAR_WALK_DICT[cigartup[0]]
+                if (not consume_target) and consume_query:
+                    tuples_before.append(cigartup)
+                else:
+                    break
+
+    return tuples_before
+
+
+
 ############################################
 # Bio.Align.PairwiseAlignment-related ones #
 ############################################
@@ -223,16 +301,16 @@ def walk_cigar(cigartuples, target_start0):
 
     for cigartup in cigartuples:
         opcode, count = cigartup
-        walk_target, walk_query = CIGAR_WALK_DICT[opcode]
-        if walk_target:
+        consume_target, consume_query = CIGAR_WALK_DICT[opcode]
+        if consume_target:
             target_end0 += count
-        if walk_query:
+        if consume_query:
             query_end0 += count
 
         target_range0 = range(target_start0, target_end0)
         query_range0 = range(query_start0, query_end0)
 
-        yield target_range0, query_range0
+        yield Walk(target_range0, query_range0)
 
         target_start0 = target_end0
         query_start0 = query_end0
@@ -246,10 +324,10 @@ def walk_cigar_targetonly(cigartuples, target_start0):
 
     for cigartup in cigartuples:
         opcode, count = cigartup
-        walk_target, walk_query = CIGAR_WALK_DICT[opcode]
-        if walk_target:
+        consume_target, consume_query = CIGAR_WALK_DICT[opcode]
+        if consume_target:
             target_end0 += count
-        #if walk_query:
+        #if consume_query:
         #    query_end0 += count
 
         target_range0 = range(target_start0, target_end0)

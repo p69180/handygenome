@@ -127,6 +127,10 @@ class Vcfspec:
         return self.pos0 + len(self.ref)
 
     @property
+    def length(self):
+        return len(self.ref)
+
+    @property
     def alleles(self):
         return (self.ref,) + self.alts
 
