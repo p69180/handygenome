@@ -530,6 +530,10 @@ def split(vcfspec, distance_ge, show_alignment=False):
     return merged_vcfspec_list
 
 
+def diff():
+    pass
+
+
 ##############
 # equivalent #
 ##############
