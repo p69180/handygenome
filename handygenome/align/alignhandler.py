@@ -634,6 +634,7 @@ def remove_flanking_query_gaps(alignment):
 
 
 def alignment_to_vcfspec(alignment, target_start0, chrom, fasta, lstrip_query_gaps=True, rstrip_query_gaps=True):
+    """May return an empty tuple"""
     def groupkey_walks(x):
         if len(x[0]) == 0 or len(x[1]) == 0:
             return 'indel'

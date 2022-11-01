@@ -53,6 +53,7 @@ import itertools
 import functools
 import gzip
 import subprocess
+import signal
 
 import pysam
 import pyranges as pr
@@ -1558,6 +1559,32 @@ def range_subtraction(range1, range2):
                 return range(range1.start, isec.start)
             else:
                 return (range(range1.start, isec.start), range(isec.stop, range1.stop))
+
+
+# timeout (https://daeguowl.tistory.com/139)
+
+class TimeoutError(Exception):
+    pass
+
+
+def timeout(seconds, error_message=''):
+    def decorator(func):
+        def _handle_timeout(signum, frame):
+            raise TimeoutError(error_message)
+        
+        def wrapper(*args, **kwargs):
+            signal.signal(signal.SIGALRM, _handle_timeout)
+            #signal.alarm(seconds)
+            signal.setitimer(signal.ITIMER_REAL, seconds)
+            try:
+                result = func(*args, **kwargs)
+            finally:
+                signal.alarm(0)
+            return result
+
+        return functools.wraps(func)(wrapper)
+
+    return decorator
 
 
 # deprecated; this does not work

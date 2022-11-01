@@ -533,7 +533,12 @@ def make_pileup_components(
     if as_array:
         return arr, ref_span_range, read_store
     else:
-        return pd.DataFrame(arr, columns=list(ref_span_range), index=tuple(read_store.keys())), read_store
+        df = pd.DataFrame(
+            arr, 
+            columns=list(ref_span_range), 
+            index=pd.Index(read_store.keys(), tupleize_cols=False),
+        )
+        return df, read_store
 
 
 def _write_read_to_array_row(read, arr, arr_row_idx, arr_col_idx, del_value):

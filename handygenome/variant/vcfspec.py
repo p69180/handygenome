@@ -452,18 +452,27 @@ def concat(vcfspec1, vcfspec2):
     else:
         left = vcfspec2
         right = vcfspec1
-    # overlapping check
-    if right.start0 < left.end0:
-        raise Exception(f'Two vcfspecs are overlapping.')
+
     # main
-    new_pos = left.pos
-    if right.start0 == left.end0:
-        new_ref = left.ref + right.ref
-        new_alt = left.alts[0] + right.alts[0]
+    if right.start0 < left.end0:
+        if (
+            (left.end0 == right.start0 + 1) and
+            right.ref[0] == right.alts[0][0]
+        ):
+            new_pos = left.pos
+            new_ref = left.ref + right.ref[1:]
+            new_alt = left.alts[0] + right.alts[0][1:]
+        else:
+            raise Exception(f'Two vcfspecs are overlapping and showing unexpected patterns:\nleft: {left}\nright: {right}')
     else:
-        intervening_ref = left.fasta.fetch(left.chrom, left.end0, right.start0)
-        new_ref = left.ref + intervening_ref + right.ref
-        new_alt = left.alts[0] + intervening_ref + right.alts[0]
+        new_pos = left.pos
+        if right.start0 == left.end0:
+            new_ref = left.ref + right.ref
+            new_alt = left.alts[0] + right.alts[0]
+        else:
+            intervening_ref = left.fasta.fetch(left.chrom, left.end0, right.start0)
+            new_ref = left.ref + intervening_ref + right.ref
+            new_alt = left.alts[0] + intervening_ref + right.alts[0]
 
     result = left.spawn(pos=new_pos, ref=new_ref, alts=(new_alt,))
     # now .merge_components includes self
