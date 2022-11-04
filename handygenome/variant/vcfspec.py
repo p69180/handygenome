@@ -64,8 +64,15 @@ class Vcfspec:
             self.merge_components = [self.spawn(alts=(alt,)) for alt in self.alts]
 
     @classmethod
-    def from_vr(cls, vr):
-        return cls(chrom=vr.contig, pos=vr.pos, ref=vr.ref, alts=vr.alts)
+    def from_vr(cls, vr, refver=None):
+        return cls(
+            chrom=vr.contig, pos=vr.pos, ref=vr.ref, alts=vr.alts,
+            refver=(
+                common.infer_refver_vcfheader(vr.header)
+                if refver is None else
+                refver
+            ),
+        )
     ################
 
     def __repr__(self):
@@ -84,6 +91,14 @@ class Vcfspec:
             getattr(self, key) == getattr(other, key)
             for key in ('chrom', 'pos', 'ref', 'alts')
         )
+
+    def show_components(self):
+        for idx in range(len(self.alts)):
+            print(self.get_monoalt(idx))
+            print('Concat components:')
+            for x in self.concat_components[idx]:
+                print('\t', x, sep='')
+            print('-----------------')
 
     def spawn(self, **kwargs):
         default_kwargs = {
@@ -160,6 +175,10 @@ class Vcfspec:
     def REF_range0(self):
         return range(self.pos0, self.end0)
 
+    @property
+    def range0(self):
+        return range(self.pos0, self.end0)
+
     #def get_preflank_range0(self, flanklen=1):
     #    assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
 
@@ -171,7 +190,8 @@ class Vcfspec:
         ]
         preflank_range0 = range(
             min(x.start for x in preflank_candidates),
-            max(x.stop for x in preflank_candidates)
+            self.pos0
+            #max(x.stop for x in preflank_candidates)
         )
 
         postflank_candidates = [
@@ -179,9 +199,18 @@ class Vcfspec:
             for idx in range(len(self.alts))
         ]
         postflank_range0 = range(
-            min(x.start for x in postflank_candidates),
+            #min(x.start for x in postflank_candidates),
+            self.end0,
             max(x.stop for x in postflank_candidates)
         )
+
+        if len(preflank_range0) == 0 or len(postflank_range0) == 0:
+            raise Exception(
+                f'Length 0 range.'
+                f'self: {self}\n'
+                f'preflank_candidates: {preflank_candidates}\n'
+                f'postflank_candidates: {postflank_candidates}\n'
+            )
 
         return preflank_range0, postflank_range0
 
@@ -210,7 +239,8 @@ class Vcfspec:
 
     def get_preflank_range0_monoalt_leftmost(self, alt_index=0, flanklen=1):
         leftmost_form = self.get_monoalt(alt_index).leftmost()
-        return leftmost_form.get_preflank_range0_monoalt(alt_index=0, flanklen=flanklen)
+        rng = leftmost_form.get_preflank_range0_monoalt(alt_index=0, flanklen=flanklen)
+        return range(min(rng.start, self.pos0 - flanklen), self.pos0)
 
     def get_postflank_range0(self, flanklen=1):
         assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
@@ -218,7 +248,8 @@ class Vcfspec:
 
     def get_postflank_range0_rightmost(self, alt_index=0, flanklen=1):
         rightmost_form = self.get_monoalt(alt_index).rightmost()
-        return rightmost_form.get_postflank_range0(flanklen=flanklen)
+        rng = rightmost_form.get_postflank_range0(flanklen=flanklen)
+        return range(self.end0, max(rng.stop, self.end0 + flanklen))
 
     # conversion
     def _set_equivalents(self, fetch_extend_length=DEFAULT_FETCH_EXTEND_LENGTH):
@@ -359,6 +390,8 @@ def get_mutation_type(ref, alt):
             mttype = 'sv'
         elif alt == f'<{CPGMET_ALT}>':
             mttype = 'cpgmet'
+        elif alt == '*':
+            mttype = 'overlap_del'
         else:
             raise Exception(f'Unexpected symbolic ALT allele: {alt}')
     else:
@@ -455,15 +488,21 @@ def concat(vcfspec1, vcfspec2):
 
     # main
     if right.start0 < left.end0:
-        if (
-            (left.end0 == right.start0 + 1) and
-            right.ref[0] == right.alts[0][0]
-        ):
-            new_pos = left.pos
-            new_ref = left.ref + right.ref[1:]
-            new_alt = left.alts[0] + right.alts[0][1:]
+        if right.ref[0] == right.alts[0][0]:
+            first_pos_same = right
+            other = left
+        elif left.ref[0] == left.alts[0][0]:
+            first_pos_same = left
+            other = right
         else:
             raise Exception(f'Two vcfspecs are overlapping and showing unexpected patterns:\nleft: {left}\nright: {right}')
+
+        if other.end0 != first_pos_same.start0 + 1:
+            raise Exception(f'Two vcfspecs are overlapping and showing unexpected patterns:\nleft: {left}\nright: {right}')
+
+        new_pos = other.pos
+        new_ref = other.ref + first_pos_same.ref[1:]
+        new_alt = other.alts[0] + first_pos_same.alts[0][1:]
     else:
         new_pos = left.pos
         if right.start0 == left.end0:

@@ -848,7 +848,7 @@ class VariantPlus:
 class VariantPlusList(list):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._gr = None
+        #self._gr = None
 
     def sample(self, n=1):
         if n == 1:
@@ -930,6 +930,25 @@ class VariantPlusList(list):
             vcfspec_iter, refver=refver, catalogue_type=catalogue_type, **kwargs
         )
         return sigresult
+
+    def select_by_mutation_type(self, muttype):
+        result = VariantPlusList()
+        for vp in self:
+            if vp.vcfspec.get_mutation_type() == muttype:
+                result.append(vp)
+        return result
+
+    def select_ins(self):
+        return self.select_by_mutation_type('ins')
+
+    def select_del(self):
+        return self.select_by_mutation_type('del')
+
+    def select_indel(self):
+        result = VariantPlusList()
+        result.extend(self.select_ins())
+        result.extend(self.select_del())
+        return result
 
 
 def get_vp_sortkey(chromdict):

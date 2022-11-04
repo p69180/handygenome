@@ -90,7 +90,7 @@ ALIGNER_MAIN = ALIGNER_EQUAL_MM_GAP
 
 def get_logger(verbose):
     formatter = logging.Formatter(
-        fmt='[%(asctime)s.%(msecs)03d] PileupRealigner: %(message)s', 
+        fmt='[%(asctime)s.%(msecs)03d] RealignerPileup: %(message)s', 
         datefmt='%Z %Y-%m-%d %H:%M:%S'
     )
     return workflow.get_logger(
@@ -116,6 +116,10 @@ def parse_rpileup_kwargs(**kwargs):
     return rpileup_init_kwargs
 
 
+class AlignmentFailureError(Exception):
+    pass
+
+
 class RealignerPileupBase(libpileup.PileupBase):
     row_spec_exluded_vals = (
         libpileup.PileupBase.DEL_VALUE, libpileup.PileupBase.EMPTY_VALUE
@@ -132,9 +136,13 @@ class RealignerPileupBase(libpileup.PileupBase):
 
         for ref_base, pos0 in zip(ref_seq, pos0_range):
             counter = self.get_allele_counter(pos0)
-            non_ref_portion = 1 - (counter[ref_base] / sum(counter.values()))
-            is_active = (non_ref_portion >= self.active_threshold)
-            yield is_active 
+            if len(counter) == 0:
+                is_active = False
+            else:
+                non_ref_portion = 1 - (counter[ref_base] / sum(counter.values()))
+                is_active = (non_ref_portion >= self.active_threshold)
+
+            yield is_active
 
     def _set_active_info(self):
         self.active_info = pd.Series(
@@ -143,17 +151,16 @@ class RealignerPileupBase(libpileup.PileupBase):
         )
 
     # row specs related ones
-    @classmethod
-    def _make_row_spec(cls, row):
+    def _make_row_spec(self, row):
         result = dict()
         result['seq'] = "".join(
-            cls.pat_parenthesis.sub("", x) 
+            self.pat_parenthesis.sub("", x) 
             for x in row 
-            if x not in cls.row_spec_exluded_vals
+            if x not in self.row_spec_exluded_vals
         )
         result['id'] = row.name
 
-        row_is_not_empty = row != cls.EMPTY_VALUE
+        row_is_not_empty = row != self.EMPTY_VALUE
         non_empty_index = row.index[row_is_not_empty]
         result['span_start0'] = non_empty_index.min()
         result['span_end0'] = non_empty_index.max() + 1
@@ -161,10 +168,13 @@ class RealignerPileupBase(libpileup.PileupBase):
         result['left_filled'] = row_is_not_empty.iloc[0]
         result['right_filled'] = row_is_not_empty.iloc[-1]
 
+        read = self.read_getter(row.name)
+        result['cliplen'] = read.get_cigar_stats()[0][4]
+
         return result
 
     @staticmethod
-    def row_spec_matcher(query, target):
+    def row_spec_matcher_old(query, target):
         if (
             target['span_start0'] <= query['span_start0'] and
             target['span_end0'] >= query['span_end0']
@@ -177,47 +187,77 @@ class RealignerPileupBase(libpileup.PileupBase):
             return False
 
     @staticmethod
-    def handle_matching_subseq(superseq_candidates, row_spec_groups, subseq_rowid):
+    def row_spec_matcher(query, target):
+        return query['seq'] in target['seq']
+
+    @staticmethod
+    def tiebreak_key(superseq_row_spec, groupinfo):
+        #return (len(superseq_row_spec['seq']), superseq_row_spec['span_length'], groupinfo['subseq_hits'])
+        return (superseq_row_spec['span_length'], -superseq_row_spec['cliplen'], groupinfo['subseq_hits'])
+
+    @classmethod
+    def superseq_candidates_tiebreak(cls, superseq_candidates, superseq_row_spec_getter, row_spec_groups):
         if len(superseq_candidates) == 1:
             superseq_rowid = superseq_candidates[0]
         elif len(superseq_candidates) > 1:
             superseq_rowid = max(
                 superseq_candidates, 
-                key=(lambda x: row_spec_groups[x]['subseq_hits']),
+                key=(lambda x: cls.tiebreak_key(superseq_row_spec_getter(x), row_spec_groups[x])),
             )
 
-        row_spec_groups[superseq_rowid]['subseq_rowids'].append(subseq_rowid)
-        row_spec_groups[superseq_rowid]['subseq_hits'] += 1
+        return superseq_rowid
 
-    @classmethod
-    def group_row_specs(cls, subseq_row_specs):
-        """row_spec's are grouped by whether one is a substring of another."""
-        initial_row_spec_groups = collections.OrderedDict()
-
-        for query_rowid, query in sorted(
-            subseq_row_specs.items(), 
-            key=(lambda x: x[1]['span_length']), 
-            reverse=True,
-        ):
-            superseq_candidates = list()
-            for superseq_rowid in initial_row_spec_groups.keys():
-                target = subseq_row_specs[superseq_rowid]
-                if cls.row_spec_matcher(query, target):
-                    superseq_candidates.append(superseq_rowid)
-                #if len(superseq_candidates) >= 2:
-                #    break
-                    
-            if len(superseq_candidates) == 0:
-                initial_row_spec_groups[query_rowid] = {
-                    'subseq_rowids': list(),
-                    'subseq_hits': 0,
-                }
-                initial_row_spec_groups[query_rowid]['subseq_rowids'].append(query_rowid)
-                initial_row_spec_groups[query_rowid]['subseq_hits'] += 1
+    def decorate_groupinfo(self, row_spec_groups, read_getter):
+        subseq_hits_sum = sum(x['subseq_hits'] for x in row_spec_groups.values())
+        for groupinfo in row_spec_groups.values():
+            if subseq_hits_sum == 0:
+                groupinfo['subseq_hits_portion'] = np.nan
             else:
-                cls.handle_matching_subseq(superseq_candidates, initial_row_spec_groups, query_rowid)
+                groupinfo['subseq_hits_portion'] = groupinfo['subseq_hits'] / subseq_hits_sum
 
-        return initial_row_spec_groups
+            MQs = [
+                read_getter(key).mapping_quality
+                for key in groupinfo['subseq_rowids']
+            ]
+            if len(MQs) == 0:
+                groupinfo['mean_MQ'] = np.nan
+            else:
+                groupinfo['mean_MQ'] = np.mean(MQs)
+
+
+        #groupinfo = superseq_groupinfo_getter(superseq_rowid)
+        #groupinfo['subseq_rowids'].append(subseq_rowid)
+        #groupinfo['subseq_hits'] += 1
+
+#    @classmethod
+#    def group_row_specs(cls, subseq_row_specs):
+#        """row_spec's are grouped by whether one is a substring of another."""
+#        initial_row_spec_groups = collections.OrderedDict()
+#
+#        for query_rowid, query in sorted(
+#            subseq_row_specs.items(), 
+#            key=(lambda x: x[1]['span_length']), 
+#            reverse=True,
+#        ):
+#            superseq_candidates = list()
+#            for superseq_rowid in initial_row_spec_groups.keys():
+#                target = subseq_row_specs[superseq_rowid]
+#                if cls.row_spec_matcher(query, target):
+#                    superseq_candidates.append(superseq_rowid)
+#                #if len(superseq_candidates) >= 2:
+#                #    break
+#                    
+#            if len(superseq_candidates) == 0:
+#                initial_row_spec_groups[query_rowid] = {
+#                    'subseq_rowids': list(),
+#                    'subseq_hits': 0,
+#                }
+#                initial_row_spec_groups[query_rowid]['subseq_rowids'].append(query_rowid)
+#                initial_row_spec_groups[query_rowid]['subseq_hits'] += 1
+#            else:
+#                cls.superseq_candidates_tiebreak(superseq_candidates, initial_row_spec_groups, query_rowid, subseq_row_specs)
+#
+#        return initial_row_spec_groups
 
     @staticmethod
     def align_subseq_to_ref(subseq_row_spec, sup_to_ref_aln):
@@ -314,11 +354,16 @@ class RealignerPileupBase(libpileup.PileupBase):
             lstrip_query_gaps=lstrip_query_gaps,
             rstrip_query_gaps=rstrip_query_gaps,
         )
-        #if len(superseq_vcfspecs) > 0:
-        if len(superseq_vcfspecs) > 0:
-            superseq_vcfspec = libvcfspec.concat_list(superseq_vcfspecs, distance_le=None)[0]
-        else:
+
+        # remove those with N in ALT
+        superseq_vcfspecs = [x for x in superseq_vcfspecs if 'N' not in x.alts[0]]
+
+        if len(superseq_vcfspecs) == 0:
+            # convert identity variant to None
             superseq_vcfspec = None
+        else:
+            # concat
+            superseq_vcfspec = libvcfspec.concat_list(superseq_vcfspecs, distance_le=None)[0]
 
         return superseq_vcfspec
 
@@ -331,31 +376,31 @@ class RealignerPileupBase(libpileup.PileupBase):
             ):
                 yield row_id, contig_vcfspec
 
-    def get_result_vcfspecs(self, as_components=False, merge=True, subseq_portion_threshold=None, MQ_threshold=40): 
-        if subseq_portion_threshold is None:
-            subseq_portion_threshold = self.allele_portion_threshold
-
-        if as_components:
-            result = list()
-            for row_id, contig_vcfspec in self.iter_contig_vcfspecs(subseq_portion_threshold=subseq_portion_threshold, MQ_threshold=MQ_threshold):
-                if contig_vcfspec is None:
-                    continue
-
-                if len(contig_vcfspec.concat_components[0]) == 0:
-                    result.append(contig_vcfspec)
-                else:
-                    result.extend(contig_vcfspec.concat_components[0])
-        else:
-            result = list(
-                x[1] for x in self.iter_contig_vcfspecs(subseq_portion_threshold, MQ_threshold)
-                if x[1] is not None
-            )
-
-        if merge:
-            if len(result) > 0:
-                result = functools.reduce(lambda x, y: libvcfspec.merge(x, y), result)
-
-        return result
+#    def get_result_vcfspecs(self, as_components=False, merge=True, subseq_portion_threshold=None, MQ_threshold=40): 
+#        if subseq_portion_threshold is None:
+#            subseq_portion_threshold = self.allele_portion_threshold
+#
+#        if as_components:
+#            result = list()
+#            for row_id, contig_vcfspec in self.iter_contig_vcfspecs(subseq_portion_threshold=subseq_portion_threshold, MQ_threshold=MQ_threshold):
+#                if contig_vcfspec is None:
+#                    continue
+#
+#                if len(contig_vcfspec.concat_components[0]) == 0:
+#                    result.append(contig_vcfspec)
+#                else:
+#                    result.extend(contig_vcfspec.concat_components[0])
+#        else:
+#            result = list(
+#                x[1] for x in self.iter_contig_vcfspecs(subseq_portion_threshold, MQ_threshold)
+#                if x[1] is not None
+#            )
+#
+#        if merge:
+#            if len(result) > 0:
+#                result = functools.reduce(lambda x, y: libvcfspec.merge(x, y), result)
+#
+#        return result
 
     def show_contig_vcfspecs(self):
         contig_vcfspecs_sorted = sorted(
@@ -371,10 +416,11 @@ class RealignerPileupBase(libpileup.PileupBase):
                 subseq_hits_portion = self.row_spec_groups[row_id]['subseq_hits_portion']
                 print(contig_vcfspec)
                 print(f'subseq_hits: {subseq_hits}; portion: {subseq_hits_portion}')
-                print('components:')
-                for component in contig_vcfspec.concat_components[0]:
-                    print(f'\t{component}')
-                print()
+                if contig_vcfspec is not None:
+                    print('components:')
+                    for component in contig_vcfspec.concat_components[0]:
+                        print(f'\t{component}')
+                print('\n@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n')
 
     # for debugging
     def _show_row_spec_alignments_helper(self, row_spec_groups, row_spec_getter, aln_getter, skip_zero_hits, show_subseqs):
@@ -393,6 +439,7 @@ class RealignerPileupBase(libpileup.PileupBase):
             superseq_aln = aln_getter(superseq_id)
             superseq_vcfspec = self.superseq_to_vcfspecs(superseq_row_spec, superseq_aln)
             # show superseq row spec and alignment
+            print('superseq id:', superseq_id)
             print('row_spec:', superseq_row_spec)
             print(f'alignment:\n{superseq_aln}')
             # show vcfspec
@@ -402,7 +449,11 @@ class RealignerPileupBase(libpileup.PileupBase):
                 for component in superseq_vcfspec.concat_components[0]:
                     print('\t', component)
             # show other groupinfo attrs
-            for key, val in groupinfo.items():
+            for key, val in sorted(
+                groupinfo.items(),
+                key=(lambda x: x[0] in ('subseq_hits_portion', 'subseq_hits')),
+                reverse=True,
+            ):
                 if key == 'subseq_rowids':
                     if show_subseqs:
                         print('subseq row ids:')
@@ -412,6 +463,9 @@ class RealignerPileupBase(libpileup.PileupBase):
                     print(key, val)
 
             print('\n@@@@@@@@@@@@@@@@@@@@@\n')
+
+    def show_alns(self, **kwargs):
+        self.show_row_spec_alignments(**kwargs)
 
 
 #class SecureResult(
@@ -629,15 +683,9 @@ class RealignerPileup(RealignerPileupBase):
         MQ_limit=DEFAULT_MQ_LIMIT,  # This value is allowed
         depth_limit=DEFAULT_DEPTH_LIMIT,  # This value is allowed
     ):
-        # set logger
-        self.verbose = verbose
-        if logger is None:
-            self.logger = get_logger(self.verbose)
-        else:
-            self.logger = logger
 
         # initiation
-        libpileup.PileupBase.__init__(self, fasta, bam, chrom, start0=start0, end0=end0, init_df=init_df)
+        libpileup.PileupBase.__init__(self, fasta, bam, chrom, start0=start0, end0=end0, init_df=init_df, verbose=verbose, logger=logger)
         # set active_threshold
         self.active_threshold = active_threshold
         if init_df:
@@ -827,17 +875,29 @@ class RealignerPileup(RealignerPileupBase):
         self.subset(gen.current_start0, gen.current_end0, inplace=True)
 
     def secure_margins(self):
+        self.logger.debug(f'Began secure_margins')
+
         while True:
+            self.logger.debug(f'Began secure_inactive_padding')
             result_inactive = self.secure_inactive_padding()
+            self.logger.debug(f'Finished secure_inactive_padding. Margins: {self.range0}')
+
             self.logger.debug(f'Began prepare_vcfspecs')
             self.prepare_vcfspecs()
             self.logger.debug(f'Finished prepare_vcfspecs')
+
+            self.logger.debug(f'Began secure_vcfspec_margins')
             result_vcfspec = self.secure_vcfspec_margins()
+            self.logger.debug(f'Finished secure_vcfspec_margins. Margins: {self.range0}')
+
             if not result_vcfspec.edited:
                 break
             #if (not result_inactive.left_okay) and (not result_inactive.right_okay):
             #    break
             #else:
+
+        self.logger.debug(f'Finished secure_margins')
+
         return result_inactive, result_vcfspec
 
     # extension reduction helpers
@@ -1163,22 +1223,111 @@ class RealignerPileup(RealignerPileupBase):
             row = self.df.loc[read_uid, :]
             self.row_specs[read_uid] = self._make_row_spec(row)
 
-    def set_row_spec_groups(self):
-        self.row_spec_groups = self.__class__.group_row_specs(self.row_specs)
+    def row_spec_getter(self, rowid):
+        return self.row_specs[rowid]
 
-        # decorate groupinfos
-        subseq_hits_sum = sum(x['subseq_hits'] for x in self.row_spec_groups.values())
-        for groupinfo in self.row_spec_groups.values():
-            groupinfo['subseq_hits_portion'] = groupinfo['subseq_hits'] / subseq_hits_sum
-            groupinfo['mean_MQ'] = np.mean(
-                [
-                    self.read_store[read_uid].mapping_quality
-                    for read_uid in groupinfo['subseq_rowids']
-                ]
+    def set_row_spec_groups(self):
+        """row_spec's are grouped by whether one is a substring of another."""
+        self.row_spec_groups = collections.OrderedDict()
+
+        for query_rowid, query in sorted(
+            self.row_specs.items(), 
+            #key=(lambda x: (len(x[1]['seq']), x[1]['span_length'])), 
+            #key=(lambda x: (x[1]['span_length'], -len(x[1]['seq']))), 
+            key=(lambda x: (x[1]['span_length'], -x[1]['cliplen'])), 
+            reverse=True,
+        ):
+            superseq_candidates = list()
+            for superseq_rowid in self.row_spec_groups.keys():
+                target = self.row_specs[superseq_rowid]
+                if self.row_spec_matcher(query, target):
+                    superseq_candidates.append(superseq_rowid)
+                #if len(superseq_candidates) >= 2:
+                #    break
+                    
+            if len(superseq_candidates) == 0:
+                self.row_spec_groups[query_rowid] = {
+                    'subseq_rowids': list(),
+                    'subseq_hits': 0,
+                }
+                self.row_spec_groups[query_rowid]['subseq_rowids'].append(query_rowid)
+                self.row_spec_groups[query_rowid]['subseq_hits'] += 1
+            else:
+                superseq_rowid = self.superseq_candidates_tiebreak(superseq_candidates, self.row_spec_getter, self.row_spec_groups)
+                groupinfo = self.row_spec_groups[superseq_rowid]
+                groupinfo['subseq_rowids'].append(query_rowid)
+                groupinfo['subseq_hits'] += 1
+
+        self.decorate_groupinfo(self.row_spec_groups, self.read_getter)
+
+    def read_getter(self, key):
+        return self.read_store[key]
+
+    # alignment #
+    def align_row_spec_to_ref(self, row_spec, ref_seq, ref_seq_reversed, raise_with_tie):
+        if row_spec['seq'] == '':
+            return Bio.Align.PairwiseAlignment(
+                target=ref_seq,
+                query='',
+                path=[(0, 0), (len(ref_seq), 0)],
+                score=0,
             )
 
-    # alignment and vcfspec related
-    def align_row_spec_to_ref(self, row_spec, ref_seq, ref_seq_reversed, aligner, raise_with_tie):
+        reverse_align = (not row_spec['left_filled']) and row_spec['right_filled']
+        if reverse_align:
+            target = ref_seq_reversed
+            query = row_spec['seq'][::-1]
+        else:
+            target = ref_seq
+            query = row_spec['seq']
+
+        return self.main_aligner(target, query, aligner=self.aligner, reverse_align=reverse_align, raise_with_tie=raise_with_tie, logger=self.logger, row_spec=row_spec)
+
+    @classmethod
+    def main_aligner(cls, target, query, aligner=ALIGNER_MAIN, reverse_align=False, raise_with_tie=False, logger=None, row_spec=None):
+        try:
+            alns = aligner.align(target, query)
+        except Exception as exc:
+            #raise Exception(f'Failed alignment:\nrow_spec: {row_spec}\nReference seq: {ref_seq}') from exc
+            raise AlignmentFailureError() from exc
+
+        try:
+            aln = cls.main_aligner_helper(alns, raise_with_tie, reverse_align)
+        except common.TimeoutError:
+            #if logger is not None:
+            #    logger.debug(
+            #        f'Skipping alignments tiebreaking due to timeout;\nrow_spec: {row_spec}\n'
+            #        f'Num of alignments: {len(alns)}; row_spec: {row_spec}'
+            #    )
+            aln = alns[0]
+            aln = alignhandler.amend_outer_insdel_both(aln)
+            if reverse_align:
+                aln = alignhandler.reverse_alignment(aln)
+            
+        return aln
+
+    @staticmethod
+    @common.timeout(0.05)
+    def main_aligner_helper(alns, raise_with_tie, reverse_align):
+        # amend outer insdel, remove duplicates
+        alns = list(
+            alignhandler.remove_identical_alignments(
+                alignhandler.amend_outer_insdel_both(x) for x in alns
+            )
+        )
+        # select one
+        if len(alns) == 1:
+            aln = alns[0]
+        else:
+            # tiebreaking
+            aln = alignhandler.alignment_tiebreaker(alns, raise_with_failure=raise_with_tie)
+        # reverse - should be done after tiebreaking
+        if reverse_align:
+            aln = alignhandler.reverse_alignment(aln)
+
+        return aln
+
+    def align_row_spec_to_ref_old(self, row_spec, ref_seq, ref_seq_reversed, aligner, raise_with_tie):
         # set params
         query = row_spec['seq']
         reverse_align = (not row_spec['left_filled']) and row_spec['right_filled']
@@ -1241,7 +1390,7 @@ class RealignerPileup(RealignerPileupBase):
         ref_seq_reversed = ref_seq[::-1]
         for superseq_rowid in self.row_spec_groups.keys():
             row_spec = self.row_specs[superseq_rowid]
-            self._superseq_alignments[superseq_rowid] = self.align_row_spec_to_ref(row_spec, ref_seq, ref_seq_reversed, self.aligner, raise_with_tie)
+            self._superseq_alignments[superseq_rowid] = self.align_row_spec_to_ref(row_spec, ref_seq, ref_seq_reversed, raise_with_tie)
 
     def save_subseq_alignments(self):
         self._subseq_alignments = dict()
@@ -1251,6 +1400,7 @@ class RealignerPileup(RealignerPileupBase):
                 subseq_row_spec = self.row_specs[subseq_rowid]
                 self._subseq_alignments[subseq_rowid] = self.align_subseq_to_ref(subseq_row_spec, sup_to_ref_aln)
 
+    # vcfspec #
     def set_contig_vcfspecs(self):
         """- Must be run after row_spec_groups is set and save_superseq_alignments have been run
         """
@@ -1296,34 +1446,38 @@ class RealignerPileup(RealignerPileupBase):
 
     # split point generation
     def get_split_points(self):
+        """Result may be empty"""
         # without splitting contig vcfspec
-        splittable_region_best = self.get_vcfspec_margins_gr(
+        splittable_region = self.get_vcfspec_margins_gr(
             subseq_portion_threshold=(self.allele_portion_threshold * 2),
             inverse=True,
             split_contig_vcfspec=False,
         )
 
-        if splittable_region_best.empty:
-            # split contig vcfspec
-            splittable_region_split_contig = self.get_vcfspec_margins_gr(
-                subseq_portion_threshold=(self.allele_portion_threshold * 2),
-                inverse=True,
-                split_contig_vcfspec=True,
-            )
-            if splittable_region_split_contig.empty:
-                logging.info(f'Getting Pileup splitting point from inactive runs because splitting with vcfspec margins failed. Pileup object being split: {self}')
-                # from inactive runs
-                split_points = [self.get_split_point_from_inactive_runs()]
-            else:
-                logging.info(f'Getting Pileup splitting point, splitting contig vcfspecs. Pileup object being split: {self}')
-                split_points = list()
-                for idx, row in splittable_region_split_contig.df.iterrows():
-                    split_points.append(int((row.Start + row.End) / 2))
+        if splittable_region.empty:
+            return list()
+#            # split contig vcfspec
+#            splittable_region = self.get_vcfspec_margins_gr(
+#                subseq_portion_threshold=(self.allele_portion_threshold * 2),
+#                inverse=True,
+#                split_contig_vcfspec=True,
+#            )
+#            if splittable_region.empty:
+#                logging.info(f'Getting Pileup splitting point from inactive runs because splitting with vcfspec margins failed. Pileup object being split: {self}')
+#                # from inactive runs
+#                #split_points = [self.get_split_point_from_inactive_runs()]
+#                return list()
+#            else:
+#                logging.info(f'Getting Pileup splitting point, splitting contig vcfspecs. Pileup object being split: {self}')
+#                pass
         else:
-            # from region free of vcfspec flanks
-            split_points = list()
-            for idx, row in splittable_region_best.df.iterrows():
-                split_points.append(int((row.Start + row.End) / 2))
+            pass
+
+        split_points = list()
+        for idx, row in splittable_region.df.iterrows():
+            point = int((row.Start + row.End) / 2)
+            if point != self.start0:
+                split_points.append(point)
 
         return split_points
 
@@ -1338,6 +1492,32 @@ class RealignerPileup(RealignerPileupBase):
         max_width_index = inactive_gr.lengths().argmax()
         max_width_row = inactive_gr.df.iloc[max_width_index, :]
         return int((max_width_row.Start + max_width_row.End) / 2)
+
+    def get_result_vcfspecs(self, as_components=False, merge=True, subseq_portion_threshold=None, MQ_threshold=40): 
+        if subseq_portion_threshold is None:
+            subseq_portion_threshold = self.allele_portion_threshold
+
+        if as_components:
+            result = list()
+            for row_id, contig_vcfspec in self.iter_contig_vcfspecs(subseq_portion_threshold=subseq_portion_threshold, MQ_threshold=MQ_threshold):
+                if contig_vcfspec is None:
+                    continue
+
+                if len(contig_vcfspec.concat_components[0]) == 0:
+                    result.append(contig_vcfspec)
+                else:
+                    result.extend(contig_vcfspec.concat_components[0])
+        else:
+            result = list(
+                x[1] for x in self.iter_contig_vcfspecs(subseq_portion_threshold, MQ_threshold)
+                if x[1] is not None
+            )
+
+        if merge:
+            if len(result) > 0:
+                result = functools.reduce(lambda x, y: libvcfspec.merge(x, y), result)
+
+        return result
 
     # for debugging
     def show_row_spec_alignments(self, skip_zero_hits=True, show_subseqs=False):
@@ -1373,6 +1553,7 @@ class MultisampleRealignerPileup(RealignerPileupBase):
         self.set_row_spec_groups()
         self.save_subseq_alignments()
         self.allocate_subseq_alignments()
+        self.set_row_spec_groups_bysample()
 
     @property
     def first_pileup(self):
@@ -1397,20 +1578,28 @@ class MultisampleRealignerPileup(RealignerPileupBase):
             names=['SampleID', 'ReadUID'],
         )
 
+    def row_spec_getter(self, key):
+        return self.pileup_dict[key[0]].row_specs[key[1]]
+
     def set_row_spec_groups(self):
         # initialize row_spec_groups
         self.row_spec_groups = dict()
+        candidates = dict()
         for superseq_sampleid, sub_pileup in self.pileup_dict.items():
             for superseq_readuid, groupinfo in sub_pileup.row_spec_groups.items():
+                superseq_key = (superseq_sampleid, superseq_readuid)
                 supserseq_row_spec = sub_pileup.row_specs[superseq_readuid]
-                if not any (
-                    self.pileup_dict[key[0]].row_specs[key[1]]['seq'] == supserseq_row_spec['seq']
-                    for key in self.row_spec_groups.keys()
-                ):
-                    self.row_spec_groups[(superseq_sampleid, superseq_readuid)] = {
-                        'subseq_rowids': list(),
-                        'subseq_hits': 0,
-                    }
+                candidates.setdefault(supserseq_row_spec['seq'], list())
+                candidates[supserseq_row_spec['seq']].append((superseq_key, supserseq_row_spec))
+        for key, val in candidates.items():
+            selected_superseq_key = max(
+                val, 
+                key=(lambda x: (x[1]['span_length'], -x[1]['cliplen'])),
+            )[0]
+            self.row_spec_groups[selected_superseq_key] = {
+                'subseq_rowids': list(),
+                'subseq_hits': 0,
+            }
         # add subseq entries
         for subseq_sampleid, sub_pileup in self.pileup_dict.items():
             for subseq_readuid, subseq_row_spec in sub_pileup.row_specs.items():
@@ -1424,8 +1613,10 @@ class MultisampleRealignerPileup(RealignerPileupBase):
                 if len(superseq_candidates) == 0:
                     raise Exception(f'Subseq row_spec does not match with any of superseq row_specs')
                 else:
-                    subseq_key = (subseq_sampleid, subseq_readuid)
-                    self.handle_matching_subseq(superseq_candidates, self.row_spec_groups, subseq_key)
+                    superseq_key = self.superseq_candidates_tiebreak(superseq_candidates, self.row_spec_getter, self.row_spec_groups)
+                    groupinfo = self.row_spec_groups[superseq_key]
+                    groupinfo['subseq_rowids'].append((subseq_sampleid, subseq_readuid))
+                    groupinfo['subseq_hits'] += 1
 
         # discard 0-hit groups
         no_hits = [
@@ -1435,15 +1626,10 @@ class MultisampleRealignerPileup(RealignerPileupBase):
         for subseq_key in no_hits:
             del self.row_spec_groups[subseq_key]
 
-        # decorate groupinfos
-        subseq_hits_sum = sum(x['subseq_hits'] for x in self.row_spec_groups.values())
-        for groupinfo in self.row_spec_groups.values():
-            groupinfo['subseq_hits_portion'] = groupinfo['subseq_hits'] / subseq_hits_sum
-            MQs = [
-                self.pileup_dict[sampleid].read_store[read_uid].mapping_quality
-                for sampleid, read_uid in groupinfo['subseq_rowids']
-            ]
-            groupinfo['mean_MQ'] = np.mean(MQs)
+        self.decorate_groupinfo(self.row_spec_groups, self.read_getter)
+
+    def read_getter(self, key):
+        return self.pileup_dict[key[0]].read_store[key[1]]
 
     def save_subseq_alignments(self):
         self._subseq_alignments = dict()
@@ -1451,7 +1637,12 @@ class MultisampleRealignerPileup(RealignerPileupBase):
             sup_to_ref_aln = self.pileup_dict[superseq_key[0]]._superseq_alignments[superseq_key[1]]
             for subseq_key in groupinfo['subseq_rowids']:
                 subseq_row_spec = self.pileup_dict[subseq_key[0]].row_specs[subseq_key[1]]
-                self._subseq_alignments[subseq_key] = self.align_subseq_to_ref(subseq_row_spec, sup_to_ref_aln)
+                try:
+                    self._subseq_alignments[subseq_key] = self.align_subseq_to_ref(subseq_row_spec, sup_to_ref_aln)
+                except:
+                    print(superseq_key)
+                    print(subseq_key)
+                    raise
 
     def allocate_subseq_alignments(self):
         subseq_alignments_bysample = {sampleid: dict() for sampleid in self.pileup_dict.keys()}
@@ -1461,13 +1652,67 @@ class MultisampleRealignerPileup(RealignerPileupBase):
         for sampleid, sub_pileup in self.pileup_dict.items():
             sub_pileup._subseq_alignments = subseq_alignments_bysample[sampleid]
 
-    def iter_contig_vcfspecs(self, subseq_portion_threshold, MQ_threshold):
+    def set_row_spec_groups_bysample(self):
+        self.row_spec_groups_bysample = {sampleid: dict() for sampleid in self.pileup_dict.keys()}
+        for sampleid, subgroups in self.row_spec_groups_bysample.items():
+            for superseq_key, groupinfo in self.row_spec_groups.items():
+                subgroups[superseq_key] = {
+                    'subseq_rowids': list(),
+                    'subseq_hits': 0,
+                }
+            
         for superseq_key, groupinfo in self.row_spec_groups.items():
-            if (
-                (groupinfo['subseq_hits_portion'] >= subseq_portion_threshold) and
-                (groupinfo['mean_MQ'] >= MQ_threshold)
-            ):
-                yield superseq_key, self.pileup_dict[superseq_key[0]].contig_vcfspecs[superseq_key[1]]
+            for subseq_key in groupinfo['subseq_rowids']:
+                subgroups = self.row_spec_groups_bysample[subseq_key[0]]
+                subgroups[superseq_key]['subseq_rowids'].append(subseq_key)
+                subgroups[superseq_key]['subseq_hits'] += 1
+
+        for sampleid, subgroups in self.row_spec_groups_bysample.items():
+            self.decorate_groupinfo(subgroups, self.read_getter)
+
+    def iter_contig_vcfspecs(self, subseq_portion_threshold, MQ_threshold, threshold_bysample=True):
+        if threshold_bysample:
+            for superseq_key, groupinfo in self.row_spec_groups.items():
+                if any(
+                    (subgroups[superseq_key]['subseq_hits_portion'] >= subseq_portion_threshold) and
+                    (subgroups[superseq_key]['mean_MQ'] >= MQ_threshold)
+                    for subgroups in self.row_spec_groups_bysample.values()
+                ):
+                    yield superseq_key, self.pileup_dict[superseq_key[0]].contig_vcfspecs[superseq_key[1]]
+        else:
+            for superseq_key, groupinfo in self.row_spec_groups.items():
+                if (
+                    (groupinfo['subseq_hits_portion'] >= subseq_portion_threshold) and
+                    (groupinfo['mean_MQ'] >= MQ_threshold)
+                ):
+                    yield superseq_key, self.pileup_dict[superseq_key[0]].contig_vcfspecs[superseq_key[1]]
+
+    def get_result_vcfspecs(self, as_components=False, merge=True, subseq_portion_threshold=None, MQ_threshold=40, threshold_bysample=True):
+        if subseq_portion_threshold is None:
+            subseq_portion_threshold = self.allele_portion_threshold
+
+        if as_components:
+            result = list()
+            for row_id, contig_vcfspec in self.iter_contig_vcfspecs(subseq_portion_threshold=subseq_portion_threshold, MQ_threshold=MQ_threshold, threshold_bysample=threshold_bysample):
+                if contig_vcfspec is None:
+                    continue
+
+                if len(contig_vcfspec.concat_components[0]) == 0:
+                    result.append(contig_vcfspec)
+                else:
+                    result.extend(contig_vcfspec.concat_components[0])
+        else:
+            result = list(
+                x[1] for x in self.iter_contig_vcfspecs(subseq_portion_threshold=subseq_portion_threshold, MQ_threshold=MQ_threshold, threshold_bysample=threshold_bysample)
+                if x[1] is not None
+            )
+
+        if merge:
+            if len(result) > 0:
+                result = functools.reduce(lambda x, y: libvcfspec.merge(x, y), result)
+
+        return result
+
 
     def show_row_spec_alignments(self, skip_zero_hits=True, show_subseqs=False):
         self._show_row_spec_alignments_helper(
@@ -1519,41 +1764,33 @@ class RealignerPileupSeries:
 
     def _init_pileup_list(self, start0, end0):
         # initiate pileup_list
+        self.logger.debug(f'Initial pileup generation')
         initial_pileup, result_inactive, result_vcfspec = get_realigner_pileup(
             self.fasta, self.bam, self.chrom, start0, end0, 
             verbose=self.verbose, 
             logger=self.logger,
             **self.rpileup_init_kwargs,
         )
+        self.logger.debug(f'Initial pileup: {initial_pileup}')
+        self.logger.debug(f'result_inactive: {result_inactive}')
+        self.logger.debug(f'result_vcfspec: {result_vcfspec}')
+        self.logger.debug(f'Initial pileup generation Finished\n')
 
-        #self.logger.debug('Initial pileup generation')
-        #self.logger.debug(initial_pileup)
-        #self.logger.debug('result_inactive', result_inactive)
-        #self.logger.debug('result_vcfspec', result_vcfspec)
+        self.pileup_list = [initial_pileup]
 
-        if initial_pileup is None:
-            self.pileup_list = list()
+        if (result_inactive is None) and (result_vcfspec is None):
+            # When there is no active region in the initial pileup
             return
 
         left_insufficient = (not result_inactive.left_okay) or (not result_vcfspec.left_okay)
         right_insufficient = (not result_inactive.right_okay) or (not result_vcfspec.right_okay)
 
-        if (not left_insufficient) and (not right_insufficient):
-            self.pileup_list = [initial_pileup]
-        else:
-            split_points = initial_pileup.get_split_points()
-            if len(split_points) > 1:
-                if (not left_insufficient) and right_insufficient:
-                    split_points = split_points[-1:]
-                elif left_insufficient and (not right_insufficient):
-                    split_points = split_points[0][:1]
-            self.pileup_list = initial_pileup.split(split_points)
-
-            #self.logger.debug('Initial pileup list')
-            #self.logger.debug(self.pileup_list)
-
+        if left_insufficient:
             self.secure_left()
+        if right_insufficient:
             self.secure_right()
+
+        self.logger.debug(f'Finished initial pileup generation\n')
 
     def __repr__(self):
         string = '\n'.join(
@@ -1650,13 +1887,14 @@ class RealignerPileupSeries:
 
     # init helpers #
     def secure_left(self):
+        self.logger.debug(f'Beginning RealignerPileupSeries secure_left')
+
         left_pileup = self.pileup_list[0]
         left_pileup.end0_limit = left_pileup.end0
         while True:
             result_inactive, result_vcfspec = left_pileup.secure_margins()
 
-            self.logger.debug(f'secure_leftward loop')
-            #self.logger.debug(self.pileup_list)
+            self.logger.debug(self.pileup_list)
             self.logger.debug(f'self.start0: {self.start0}')
             self.logger.debug(f'result_inactive: {result_inactive}')
             self.logger.debug(f'result_vcfspec: {result_vcfspec}')
@@ -1672,25 +1910,35 @@ class RealignerPileupSeries:
             ):
                 break
             else:
-                split_pileups = left_pileup.split(left_pileup.get_split_points()[:1])
-                del self.pileup_list[0]
-                self.pileup_list = split_pileups + self.pileup_list
+                assert result_vcfspec.touched_width_limit
+                split_points = left_pileup.get_split_points()
+                if len(split_points) == 0:
+                    rpileup_init_kwargs = self.rpileup_init_kwargs.copy()
+                    new_pileup = RealignerPileup(self.fasta, self.bam, self.chrom, (left_pileup.start0 - 1), left_pileup.start0, **rpileup_init_kwargs)
+                    self.pileup_list.insert(0, new_pileup)
+                else:
+                    split_pileups = left_pileup.split(split_points[:1])
+                    del self.pileup_list[0]
+                    self.pileup_list = split_pileups + self.pileup_list
+
                 left_pileup = self.pileup_list[0]
                 left_pileup.end0_limit = left_pileup.end0
 
         touched_width_limit = self.width >= self.max_series_width
+
+        self.logger.debug(f'Finished RealignerPileupSeries secure_left')
+
         return result_inactive, result_vcfspec, touched_width_limit
 
     def secure_right(self):
-        #self.logger.debug('BEGINNING of secure_right')
+        self.logger.debug(f'Beginning RealignerPileupSeries secure_right')
 
         right_pileup = self.pileup_list[-1]
         right_pileup.start0_limit = right_pileup.start0
         while True:
             result_inactive, result_vcfspec = right_pileup.secure_margins()
 
-            self.logger.debug(f'secure_right loop')
-            #self.logger.debug(self.pileup_list)
+            self.logger.debug(self.pileup_list)
             self.logger.debug(f'self.end0: {self.end0}')
             self.logger.debug(f'result_inactive: {result_inactive}')
             self.logger.debug(f'result_vcfspec: {result_vcfspec}')
@@ -1706,14 +1954,24 @@ class RealignerPileupSeries:
             ):
                 break
             else:
-                #split_pileups = self.split_right_pileup(right_pileup)
-                split_pileups = right_pileup.split(right_pileup.get_split_points()[-1:])
-                del self.pileup_list[-1]
-                self.pileup_list.extend(split_pileups)
+                assert result_vcfspec.touched_width_limit
+                split_points = right_pileup.get_split_points()
+                if len(split_points) == 0:
+                    rpileup_init_kwargs = self.rpileup_init_kwargs.copy()
+                    new_pileup = RealignerPileup(self.fasta, self.bam, self.chrom, right_pileup.end0, (right_pileup.end0 + 1), **rpileup_init_kwargs)
+                    self.pileup_list.append(new_pileup)
+                else:
+                    split_pileups = right_pileup.split(split_points[-1:])
+                    del self.pileup_list[-1]
+                    self.pileup_list.extend(split_pileups)
+
                 right_pileup = self.pileup_list[-1]
                 right_pileup.start0_limit = right_pileup.start0
 
         touched_width_limit = self.width >= self.max_series_width
+
+        self.logger.debug(f'Finished RealignerPileupSeries secure_right')
+
         return result_inactive, result_vcfspec, touched_width_limit
 
     def get_splittable_region_best(self):
@@ -1958,9 +2216,16 @@ class MultisampleRealignerPileupSeries:
         self.set_multisample_pileups()  # self.mspileup_list
         self.set_realigned_reads()
 
+    def __repr__(self):
+        return str(self.pileupseries_dict)
+
     @property
     def series_length(self):
         return len(next(iter(self.pileupseries_dict.values())))
+
+    @property
+    def ranges(self):
+        return [x.range0 for x in next(iter(self.pileupseries_dict.values())).pileup_list]
 
     def set_multisample_pileups(self):
         self.mspileup_list = list()
@@ -1982,7 +2247,7 @@ class MultisampleRealignerPileupSeries:
 
         # initialize
         for sampleid, bam in self.bam_dict.items():
-            self.logger.debug(f'Initializing RealignerPileupSeries of sample {sampleid}')
+            self.logger.debug(f'@@@ Initializing RealignerPileupSeries of sample {sampleid} @@@\n')
             self.pileupseries_dict[sampleid] = RealignerPileupSeries(
                 self.fasta, bam, self.chrom, seed_start0, seed_end0, 
                 max_series_width=self.max_series_width,
@@ -1990,11 +2255,18 @@ class MultisampleRealignerPileupSeries:
                 logger=self.logger,
                 **kwargs,
             )
+            self.logger.debug(f'@@@ Finished initialization of RealignerPileupSeries of sample {sampleid} @@@\n\n')
+
         # equalize whole margins
         self.equalize_left()
         self.equalize_right()
 
         # equalize sub-pileup margins
+        self.logger.debug(f'@@@ Beginning inner margin equalization @@@\n')
+        self.equalize_inner_margins()
+        self.logger.debug(f'@@@ Finished inner margin equalization @@@\n')
+
+    def equalize_inner_margins(self):
         # set interim parameters
         first_pileupseries = next(iter(self.pileupseries_dict.values()))
         series_start0 = first_pileupseries.start0
@@ -2167,43 +2439,61 @@ class MultisampleRealignerPileupSeries:
         return start0_list, all_splittable
 
     def equalize_left(self):
+        self.logger.debug(f'@@@ Beginning equalize_left @@@\n')
+
         # equalize left
         while True:
             if len(set(x.start0 for x in self.pileupseries_dict.values())) == 1:
                 break
             # extend
             target_start0 = min(x.start0 for x in self.pileupseries_dict.values())
-            for pileup_ser in self.pileupseries_dict.values():
+            self.logger.debug(f'target_start0: {target_start0}')
+            for sampleid, pileup_ser in self.pileupseries_dict.items():
                 width = pileup_ser.start0 - target_start0
                 if width > 0:
+                    self.logger.debug(f'Beginning EXTEND of {sampleid}')
+                    self.logger.debug(f'current start0 of {sampleid}: {pileup_ser.start0}')
                     pileup_ser.extend_left(width)
+                    self.logger.debug(f'Finished EXTEND of {sampleid}\n')
 
-            self.logger.debug(f'equalize_left: {target_start0}')
             # check if hit width limit
             if any(pileup_ser.width >= self.max_series_width for pileup_ser in self.pileupseries_dict.values()):
                 break
             # secure
-            for pileup_ser in self.pileupseries_dict.values():
+            for sampleid, pileup_ser in self.pileupseries_dict.items():
+                self.logger.debug(f'Beginning SECURE of {sampleid}')
                 pileup_ser.secure_left()
+                self.logger.debug(f'Finished SECURE of {sampleid}\n')
+
+        self.logger.debug(f'@@@ Finished equalize_left @@@\n')
 
     def equalize_right(self):
+        self.logger.debug(f'@@@ Beginning equalize_right @@@\n')
+
         while True:
             if len(set(x.end0 for x in self.pileupseries_dict.values())) == 1:
                 break
             # extend
             target_end0 = max(x.end0 for x in self.pileupseries_dict.values())
-            for pileup_ser in self.pileupseries_dict.values():
+            self.logger.debug(f'target_end0: {target_end0}')
+            for sampleid, pileup_ser in self.pileupseries_dict.items():
                 width = target_end0 - pileup_ser.end0
                 if width > 0:
+                    self.logger.debug(f'Beginning EXTEND of {sampleid}')
+                    self.logger.debug(f'current end0 of {sampleid}: {pileup_ser.end0}')
                     pileup_ser.extend_right(width)
+                    self.logger.debug(f'Finished EXTEND of {sampleid}\n')
 
-            self.logger.debug(f'equalize_right: {target_end0}')
             # check if hit width limit
             if any(pileup_ser.width >= self.max_series_width for pileup_ser in self.pileupseries_dict.values()):
                 break
             # secure
             for pileup_ser in self.pileupseries_dict.values():
+                self.logger.debug(f'Beginning SECURE of {sampleid}')
                 pileup_ser.secure_right()
+                self.logger.debug(f'Finished SECURE of {sampleid}\n')
+
+        self.logger.debug(f'@@@ Finished equalize_right @@@\n')
 
     @property
     def start0(self):
@@ -2233,9 +2523,9 @@ class MultisampleRealignerPileupSeries:
             for msrpileup in self.mspileup_list
         )
 
-    def get_result_vcfspecs(self, as_components=False, merge=True, subseq_portion_threshold=None, MQ_threshold=40): 
+    def get_result_vcfspecs(self, as_components=False, merge=True, subseq_portion_threshold=None, MQ_threshold=40, threshold_bysample=True): 
         return list(
-            msrpileup.get_result_vcfspecs(as_components=as_components, merge=merge, subseq_portion_threshold=subseq_portion_threshold, MQ_threshold=MQ_threshold)
+            msrpileup.get_result_vcfspecs(as_components=as_components, merge=merge, subseq_portion_threshold=subseq_portion_threshold, MQ_threshold=MQ_threshold, threshold_bysample=threshold_bysample)
             for msrpileup in self.mspileup_list
         )
 
@@ -2248,7 +2538,7 @@ class RealignmentCigarError(Exception):
     pass
 
 
-def get_realigner_pileup(fasta, bam, chrom, start0, end0, verbose, logger, **kwargs):
+def get_realigner_pileup(fasta, bam, chrom, start0, end0, verbose=False, logger=None, **kwargs):
     rpileup = RealignerPileup(
         fasta, bam, chrom, start0, end0, 
         verbose=verbose, 
@@ -2256,9 +2546,9 @@ def get_realigner_pileup(fasta, bam, chrom, start0, end0, verbose, logger, **kwa
         **kwargs,
     )
     result_inactive, result_vcfspec = rpileup.augment_margins()
-    if (result_inactive is None) and (result_vcfspec is None):
+    #if (result_inactive is None) and (result_vcfspec is None):
         # No active region found
-        rpileup = None
+    #    rpileup = None
 
     return rpileup, result_inactive, result_vcfspec
 

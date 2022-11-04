@@ -3,6 +3,8 @@ import itertools
 import collections
 import functools
 import inspect
+import logging
+import uuid
 
 import numpy as np
 import pandas as pd
@@ -12,11 +14,13 @@ import importlib
 
 top_package_name = __name__.split(".")[0]
 common = importlib.import_module(".".join([top_package_name, "common"]))
+workflow = importlib.import_module(".".join([top_package_name, "workflow"]))
 readhandler = importlib.import_module(
     ".".join([top_package_name, "read", "readhandler"])
 )
 alignhandler = importlib.import_module(".".join([top_package_name, "align", "alignhandler"]))
 librealign = importlib.import_module(".".join([top_package_name, "align", "realign"]))
+readplus = importlib.import_module(".".join([top_package_name, "read", "readplus"]))
 #fetchcache = importlib.import_module(".".join([top_package_name, "read", "fetchcache"]))
 
 
@@ -26,13 +30,32 @@ librealign = importlib.import_module(".".join([top_package_name, "align", "reali
 #DEFAULT_EXTEND_PILEUP_BY = 20
 
 
+def get_logger(verbose):
+    formatter = logging.Formatter(
+        fmt='[%(asctime)s.%(msecs)03d] Pileup: %(message)s', 
+        datefmt='%Z %Y-%m-%d %H:%M:%S'
+    )
+    return workflow.get_logger(
+        name=str(uuid.uuid4()),
+        level=('debug' if verbose else 'info'),
+        formatter=formatter,
+    )
+
+
 class PileupBase:
     pat_insclip = re.compile("(\(.+\))?([^()]+)(\(.+\))?")
     pat_parenthesis = re.compile("[()]")
     DEL_VALUE = "*"
     EMPTY_VALUE = ""
 
-    def __init__(self, fasta, bam, chrom, start0=None, end0=None, init_df=True):
+    def __init__(self, fasta, bam, chrom, start0=None, end0=None, init_df=True, verbose=False, logger=None):
+        # set logger
+        self.verbose = verbose
+        if logger is None:
+            self.logger = get_logger(self.verbose)
+        else:
+            self.logger = logger
+
         self.fasta = fasta
         self.bam = bam
         self.chrom = chrom
@@ -44,6 +67,8 @@ class PileupBase:
                 bam,
                 truncate=True,
                 as_array=False,
+                verbose=self.verbose,
+                logger=self.logger,
             )
             self.df = df
             self.read_store = read_store
@@ -99,8 +124,7 @@ class PileupBase:
         return result
 
     def _split_base(self, start0_list):
-        self_range0 = self.range0
-        assert all((x in self_range0) for x in start0_list)
+        assert all((x in range(self.start0 + 1, self.end0)) for x in start0_list)
         result = list()
         margins = [self.start0] + start0_list + [self.end0]
         for new_start0, new_end0 in common.pairwise(margins):
@@ -462,19 +486,37 @@ def make_pileup_components(
     #return_range=False,
     del_value=PileupBase.DEL_VALUE,
     empty_value=PileupBase.EMPTY_VALUE,
+    verbose=False,
+    logger=None,
 ):
+    # set logger
+    if logger is None:
+        logger = get_logger(verbose)
+    else:
+        logger = logger
+
     def make_read_store(bam, chrom, start0, end0):
+        target_range0 = range(start0, end0)
         readlist = list()
         uid_list = list()
         start_list = list()
         end_list = list()
         for read in readhandler.get_fetch(bam, chrom, start0, end0, readfilter=readhandler.readfilter_pileup):
+            logger.debug(f'Read query name: {read.query_name}')
+            target_seq = readplus.ReadPlus(read, minimal=True).get_seq_from_range0(target_range0)
+            logger.debug(f'Got target seq of {read.query_name}')
+            if target_seq == '':
+                continue
+
             readlist.append(read)
             uid_list.append(readhandler.get_uid(read))
             start_list.append(read.reference_start)
             end_list.append(read.reference_end)
 
-        tmp_pileup_range = range(min(start_list), max(end_list))
+        tmp_pileup_range = range(
+            min(min(start_list), start0), 
+            max(max(end_list), end0),
+        )
         read_store = collections.OrderedDict(zip(uid_list, readlist))
 
         return read_store, tmp_pileup_range

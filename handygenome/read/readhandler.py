@@ -74,7 +74,11 @@ def readfilter_bad_read(read):
 
 
 def readfilter_pileup(read):
-    return readfilter_bad_read(read) and (not read.is_supplementary) and (not read.is_secondary)
+    return (
+        readfilter_bad_read(read) and 
+        (not read.is_supplementary) and 
+        (not read.is_secondary)
+    )
 
 
 def get_fetch(bam, chrom, start, end, readfilter=None):
@@ -319,7 +323,7 @@ def get_aligned_pairs(pos, cigartuples):
     return aligned_pairs
 
 
-def get_pairs_dict(read, fasta):
+def get_pairs_dict(read, fasta=None, skip_refseq=False):
     """Returns:
     Dict {
         'querypos0': A tuple of query positions
@@ -335,14 +339,16 @@ def get_pairs_dict(read, fasta):
         pairs_dict = dict()
         pairs_dict["querypos0"] = next(zipped)
         pairs_dict["refpos0"] = next(zipped)
-        pairs_dict["refseq"] = next(zipped)
+        if not skip_refseq:
+            pairs_dict["refseq"] = next(zipped)
     else:
         raw = read.get_aligned_pairs(with_seq=False)
         zipped = zip(*raw)
         pairs_dict = dict()
         pairs_dict["querypos0"] = next(zipped)
         pairs_dict["refpos0"] = next(zipped)
-        pairs_dict["refseq"] = get_pairs_dict_refseq(read, fasta, raw)
+        if not skip_refseq:
+            pairs_dict["refseq"] = get_pairs_dict_refseq(read, fasta, raw)
 
     # cigarop
     pairs_dict["cigarop"] = tuple(
@@ -380,7 +386,11 @@ def get_pairs_dict_refseq(read, fasta, raw_aligned_pairs):
         if refpos0 is None:
             refseq.append(None)
         else:
-            read_base = read.query_sequence[querypos0].upper()
+            if querypos0 is None:
+                read_base = None
+            else:
+                read_base = read.query_sequence[querypos0].upper()
+
             ref_base = next(it).upper()
             if read_base == ref_base:
                 refseq.append(ref_base)

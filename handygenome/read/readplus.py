@@ -34,40 +34,30 @@ ALLELEINFO_TAG_RP = 'a1'
 
 class ReadPlus:
 
-    def __init__(self, read, fasta=None, skip_attrs_setting=False, recalc_NMMD=False):
+    def __init__(self, read, fasta=None, minimal=False, skip_attrs_setting=False, recalc_NMMD=False):
         self.read = read
-        if not skip_attrs_setting:
-            self._init_attrs(fasta, recalc_NMMD)
+        #if not skip_attrs_setting:
+        #    self._init_attrs(fasta, recalc_NMMD)
 
-    def _init_attrs(self, fasta, recalc_NMMD):
-        self.fasta = (
-            pysam.FastaFile(
-                common.DEFAULT_FASTA_PATHS[
-                    common.infer_refver(bamheader=self.read.header)
+        # fasta
+        if minimal:
+            self.fasta = fasta
+        else:
+            if fasta is None:
+                self.fasta = common.DEFAULT_FASTAS[
+                    common.infer_refver_bamheader(self.read.header)
                 ]
-            )
-            if fasta is None else 
-            fasta
-        )
-
+            else:
+                self.fasta = fasta
+        # pairs_dict
+        self.set_pairs_dict(skip_refseq=minimal)
+        # NMMD
         if recalc_NMMD:
             self._set_NMMD()
         else:
             if (not self.read.has_tag('NM')) or (not self.read.has_tag('MD')):
                 self._set_NMMD()
-
-        #self._set_SAlist()
-        self.pairs_dict = readhandler.get_pairs_dict(self.read, self.fasta)
-            # keys: 'querypos0', 'refpos0','refseq'
-
-        self.fiveprime_end = readhandler.get_fiveprime_end(self.read)
-        self.threeprime_end = readhandler.get_threeprime_end(self.read)
-        self.cigarstats = self.read.get_cigar_stats()[0] 
-            # length 11 array which contains value for M, I, D, N, S, ...
-        self.ref_range0 = range(self.read.reference_start, 
-                                self.read.reference_end)
-        self.range0 = self.ref_range0  # alias
-        self.softclip_range0 = None
+        # others
         self.alleleinfo = dict()
 
     def __repr__(self):
@@ -78,6 +68,34 @@ class ReadPlus:
         region = f'{chrom}:{start1:,}-{end1:,}'
         infostring = f'{qname}; {region}; alleleinfo: {self.alleleinfo}'
         return (f'<ReadPlus object ({infostring})>')
+
+    def set_pairs_dict(self, skip_refseq=False):
+        self.pairs_dict = readhandler.get_pairs_dict(self.read, fasta=self.fasta, skip_refseq=skip_refseq)
+            # keys: 'querypos0', 'refpos0','refseq'
+
+    @property
+    def fiveprime_end(self):
+        return readhandler.get_fiveprime_end(self.read)
+
+    @property
+    def threeprime_end(self):
+        return readhandler.get_threeprime_end(self.read)
+
+    @functools.cached_property
+    def cigarstats(self):
+        return self.read.get_cigar_stats()[0]
+
+    @property
+    def range0(self):
+        return range(self.read.reference_start, self.read.reference_end)
+
+    @property
+    def ref_range0(self):  # alias
+        return self.range0
+
+    @functools.cache
+    def softclip_range0(self):
+        return readhandler.get_softclip_ends_range0(self.read)
 
     # publics
     @functools.cache
@@ -148,7 +166,7 @@ class ReadPlus:
 
         return distance
 
-    def get_pairs_indexes(self, range0):
+    def get_pairs_indexes_old(self, range0):
         """Args:
             range0: A directional range
         Returns:
@@ -172,7 +190,57 @@ class ReadPlus:
             
         return range(start, stop, step)
 
+    def get_pairs_indexes(self, range0):
+        """Args:
+            range0: A directional range
+        Returns:
+            A directional range composed of pairs_dict indexes.
+                (0-length range if the input range0 is 0-length)
+        """
+        assert range0.step == 1
+        assert len(range0) > 0
+
+        min_ref_pos0 = max(self.read.reference_start, range0.start)
+        max_ref_pos0 = min(self.read.reference_end - 1, range0.stop - 1)
+        if max_ref_pos0 < min_ref_pos0:
+            return None
+
+        first = self.pairs_dict['refpos0'].index(min_ref_pos0)
+        last = self.pairs_dict['refpos0'].index(max_ref_pos0)
+
+        # search for leading query-only cigarops
+        for offset in itertools.count(1):
+            pairs_idx = first - offset
+            if pairs_idx < 0:
+                break
+            if not (
+                (self.pairs_dict['refpos0'][pairs_idx] is None) and
+                (self.pairs_dict['querypos0'][pairs_idx] is not None)
+            ):
+                # current position is not query-only
+                break
+        first = pairs_idx + 1
+
+        # search for trailing query-only cigarops
+        for offset in itertools.count(1):
+            pairs_idx = last + offset
+            if pairs_idx == len(self.pairs_dict['refpos0']):
+                break
+            if not (
+                (self.pairs_dict['refpos0'][pairs_idx] is None) and
+                (self.pairs_dict['querypos0'][pairs_idx] is not None)
+            ):
+                # current position is not query-only
+                break
+        if pairs_idx == len(self.pairs_dict['refpos0']):
+            last = len(self.pairs_dict['refpos0']) - 1
+
+        return range(first, last + 1)
+
     def check_matches_with_pairs_indexes(self, pairs_indexes):
+        if pairs_indexes is None:
+            return False
+
         for pairs_idx in pairs_indexes:
             querypos0 = self.pairs_dict['querypos0'][pairs_idx]
             refseq = self.pairs_dict['refseq'][pairs_idx]
@@ -223,12 +291,23 @@ class ReadPlus:
         return self.get_seq_from_pairs_indexes(pairs_indexes)
 
     def get_seq_from_pairs_indexes(self, pairs_indexes):
-        pairs_slice = slice(pairs_indexes.start, pairs_indexes.stop, 
-                            pairs_indexes.step)
-        querypos0_list = [x for x in self.pairs_dict['querypos0'][pairs_slice]
-                          if x is not None]
+        #pairs_slice = slice(pairs_indexes.start, pairs_indexes.stop, 
+        #                    pairs_indexes.step)
+        #querypos0_list = [x for x in self.pairs_dict['querypos0'][pairs_slice]
+        #                  if x is not None]
+        if pairs_indexes is None:
+            return None
 
-        return self.get_seq_from_querypos0_list(querypos0_list)
+        query_idx_list = list()
+        for pairs_idx in pairs_indexes:
+            query_idx = self.pairs_dict['querypos0'][pairs_idx]
+            if query_idx is not None:
+                query_idx_list.append(query_idx)
+
+        if len(query_idx_list) == 0:
+            return ''
+        else:
+            return self.read.query_sequence[query_idx_list[0]:(query_idx_list[-1] + 1)]
         
     def get_seq_from_querypos0_list(self, querypos0_list):
         if len(querypos0_list) == 0:
