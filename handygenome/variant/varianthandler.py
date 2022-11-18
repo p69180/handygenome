@@ -88,6 +88,15 @@ def reheader(vr, vcfheader):
     _copy_info(vr, new_vr, dont_copy_if_exist=False)
     _copy_format(vr, new_vr, dont_copy_if_exist=False)
 
+    # amend missing values in new_vr which are
+        # erroneously represented by .................
+    new_vr_format_keys = tuple(new_vr.header.formats.keys())
+    new_vr_samples = tuple(new_vr.samples.keys())
+    for sampleid in new_vr_samples:
+        for key in new_vr_format_keys:
+            if infoformat.check_NA_format(vr, sampleid, key):
+                infoformat.set_NA_format(new_vr, sampleid, key)
+
     return new_vr
 
 
@@ -97,8 +106,7 @@ def rename(vr, samples):
             f'The number of samples must be the same.')
 
     chromdict = common.ChromDict(vcfheader=vr.header)
-    new_header = initvcf.create_header(chromdict=chromdict, samples=samples, 
-                                       vcfheader=vr.header)
+    new_header = initvcf.create_header(chromdict=chromdict, samples=samples, vcfheader=vr.header)
     new_vr = new_header.new_record()
     _copy_basic_attrs(vr, new_vr)
     _copy_filter(vr, new_vr, skip_pass=False)
@@ -107,14 +115,15 @@ def rename(vr, samples):
     for old_sampleid, new_sampleid in zip(vr.header.samples, samples):
         for key in vr.samples[old_sampleid]:
             if key == 'GT':
-                new_vr.samples[new_sampleid].allele_indices = (
-                    vr.samples[old_sampleid].allele_indices)
-                new_vr.samples[new_sampleid].phased = (
-                    vr.samples[old_sampleid].phased)
+                new_vr.samples[new_sampleid].allele_indices = vr.samples[old_sampleid].allele_indices
+                new_vr.samples[new_sampleid].phased = vr.samples[old_sampleid].phased
             else:
                 infoformat.set_format(
-                    new_vr, key, new_sampleid,
-                    infoformat.get_format(vr, old_sampleid, key))
+                    vr=new_vr, 
+                    sampleid=new_sampleid,
+                    key=key, 
+                    val=infoformat.get_format(vr, old_sampleid, key),
+                )
 
     return new_vr
 
@@ -160,16 +169,15 @@ def _copy_info(old_vr, new_vr, dont_copy_if_exist=True):
 def _copy_format(old_vr, new_vr, dont_copy_if_exist=True):
     def assign_val(old_vr, new_vr, key, sampleid):
         if key == 'GT':
-            new_vr.samples[sampleid].allele_indices = \
-                old_vr.samples[sampleid].allele_indices
+            new_vr.samples[sampleid].allele_indices = old_vr.samples[sampleid].allele_indices
             new_vr.samples[sampleid].phased = old_vr.samples[sampleid].phased
         else:
-            infoformat.set_format(new_vr, sampleid, key, 
-                                  infoformat.get_format(old_vr, sampleid, key))
+            infoformat.set_format(new_vr, sampleid, key, infoformat.get_format(old_vr, sampleid, key))
 
+    new_vr_samples = tuple(new_vr.samples)
     for sampleid in old_vr.samples:
         # check if the new vr header defines the sample id of input vr
-        if sampleid in tuple(new_vr.samples):
+        if sampleid in new_vr_samples:
             for key in old_vr.samples[sampleid]:
                 # check if new vr header defines the key
                 if key in new_vr.header.formats:

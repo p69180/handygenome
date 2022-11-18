@@ -3,108 +3,112 @@ import re
 import importlib
 top_package_name = __name__.split('.')[0]
 common = importlib.import_module('.'.join([top_package_name, 'common']))
-hgvs_module = importlib.import_module('.'.join([top_package_name, 'hgvs']))
 
 
-REFVERS_ALLOWED = ('hg19', 'hg38', 'mm39')
+SPECIES = common.RefverDict({
+    'GRCh37': 'homo_sapiens',
+    'GRCh38': 'homo_sapiens',
+    'GRCm39': 'mus_musculus',
+})
 
-SPECIES = {
-    'hg19': 'homo_sapiens',
-    'hg38': 'homo_sapiens',
-    'mm39': 'mus_musculus',
-    }
+PREFIX_LOOKUP_ID = common.RefverDict({
+    'GRCh37': 'http://grch37.rest.ensembl.org/lookup/id',
+    'GRCh38': 'http://rest.ensembl.org/lookup/id',
+})
+
+PREFIX_LOOKUP_SYMBOL = common.RefverDict({
+    'GRCh37': 'http://grch37.rest.ensembl.org/lookup/symbol',
+    'GRCh38': 'http://rest.ensembl.org/lookup/symbol',
+})
+
+PREFIX_REGULATORY = common.RefverDict({
+    'GRCh37': 'http://grch37.rest.ensembl.org/regulatory/species/homo_sapiens/id',
+    'GRCh38': 'http://rest.ensembl.org/regulatory/species/homo_sapiens/id',
+})
+
+PREFIX_VEP = common.RefverDict({
+    'GRCh37': 'http://grch37.rest.ensembl.org/vep/human/hgvs',
+    'GRCh38': 'http://rest.ensembl.org/vep/human/hgvs',
+    'GRCm39': 'http://rest.ensembl.org/vep/mouse/hgvs',
+})
+
+PREFIX_OVERLAP = common.RefverDict({
+    'GRCh37': 'http://grch37.rest.ensembl.org/overlap/region',
+    'GRCh38': 'http://rest.ensembl.org/overlap/region',
+})
+
+PREFIX_MAP = common.RefverDict({
+    'GRCh37': 'https://grch37.rest.ensembl.org/map',
+    'GRCh38': 'https://rest.ensembl.org/map',
+})
+
+HTTP_HEADERS_POST = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+}
+
+HTTP_HEADERS_GET = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+}
+
+MAX_POST_SIZE = {
+    'lookup_id': 1000,
+    'lookup_symbol': 1000,
+    'vep': 200,
+}
 
 
-def into_37(s):
-    return re.sub('http://', 'http://grch37.', s)
-
-PREFIX_ID = 'http://rest.ensembl.org/lookup/id'
-PREFIX_ID_37 = into_37(PREFIX_ID)
-
-PREFIX_SYMBOL = 'http://rest.ensembl.org/lookup/symbol'
-PREFIX_SYMBOL_37 = into_37(PREFIX_SYMBOL)
-
-PREFIX_REGULATORY = 'http://rest.ensembl.org/regulatory/species/homo_sapiens/id'
-PREFIX_REGULATORY_37 = into_37(PREFIX_REGULATORY)
-
-PREFIX_VEP = 'http://rest.ensembl.org/vep/human/hgvs'
-PREFIX_VEP_37 = into_37(PREFIX_VEP)
-PREFIX_VEP_MOUSE = 'http://rest.ensembl.org/vep/mouse/hgvs'
-
-PREFIX_OVERLAP = 'http://rest.ensembl.org/overlap/region'
-PREFIX_OVERLAP_37 = into_37(PREFIX_OVERLAP)
-
-PREFIX_MAP = 'https://rest.ensembl.org/map'
-PREFIX_MAP_37 = into_37(PREFIX_MAP)
-
-HTTP_HEADERS_POST = {'Content-Type': 'application/json', 
-                     'Accept': 'application/json'}
-HTTP_HEADERS_GET = {'Content-Type': 'application/json', 
-                    'Accept': 'application/json'}
-
-
-@common.get_deco_arg_choices({'refver': REFVERS_ALLOWED})
 def lookup_id(ID, refver, expand=True):
     """start, end are 1-based inclusive coordinates"""
-
-    if refver == 'hg19':
-        prefix = PREFIX_ID_37
-    else:
-        prefix = PREFIX_ID
-
+    prefix = PREFIX_LOOKUP_ID[refver]
     url = '/'.join([prefix, ID])
     params = {'expand': int(expand)}
 
     return common.http_get(url, params, HTTP_HEADERS_GET)
 
 
-@common.get_deco_arg_choices({'refver': REFVERS_ALLOWED})
-def lookup_id_post(IDs, refver, expand=True):
-    """
-    start, end are 1-based inclusive coordinates
-    """
+def lookup_id_post(ID_list, refver, expand=True):
+    """start, end are 1-based inclusive coordinates"""
+    result = list()
 
-    if refver == 'hg19':
-        url = PREFIX_ID_37
-    else:
-        url = PREFIX_ID
+    url = PREFIX_LOOKUP_ID[refver]
+    params = {'expand' : int(expand)}
+    for sublist in common.grouper(ID_list, MAX_POST_SIZE['lookup_id']):
+        data = {'ids' : sublist}
+        result.extend(common.http_post(url, data, params, HTTP_HEADERS_POST))
 
-    params = { 'expand' : int(expand) }
-    data = { 'ids' : IDs }
-
-    return common.http_post(url, data, params, HTTP_HEADERS_POST)
+    return result
 
 
-@common.get_deco_arg_choices({'refver': REFVERS_ALLOWED})
 def lookup_symbol(symbol, refver, expand=False):
-    prefix = PREFIX_SYMBOL_37 if (refver == 'hg19') else PREFIX_SYMBOL
+    prefix = PREFIX_LOOKUP_SYMBOL[refver]
     species = SPECIES[refver]
-    url = '/'.join( [ prefix, species, symbol ] )
-    params = { 'expand' : int(expand) }
+    url = '/'.join([prefix, species, symbol])
+    params = {'expand' : int(expand)}
 
     return common.http_get(url, params, HTTP_HEADERS_GET)
 
 
-@common.get_deco_arg_choices({'refver': REFVERS_ALLOWED})
 def lookup_symbol_post(symbols, refver, expand=False):
+    result = list()
+
+    prefix = PREFIX_LOOKUP_SYMBOL[refver]
     species = SPECIES[refver]
-    if refver == 'hg19':
-        url = '/'.join([PREFIX_SYMBOL_37, species])
-    else:
-        url = '/'.join([PREFIX_SYMBOL, species])
+    url = '/'.join([prefix, species])
+    params = {'expand' : int(expand)}
 
-    params = { 'expand' : int(expand) }
-    data = { 'symbols' : list(symbols) }
+    for sublist in common.grouper(symbols, MAX_POST_SIZE['lookup_symbol']):
+        data = {'symbols' : sublist}
+        result.extend(common.http_post(url, data, params, HTTP_HEADERS_POST))
 
-    return common.http_post(url, data, params, HTTP_HEADERS_POST)
+    return result
 
 
-# unavailable for mouse
-@common.get_deco_arg_choices({'refver': ('hg19', 'hg38')})
-def regulatory(ID, refver):
-    prefix = PREFIX_REGULATORY_37 if (refver == 'hg19') else PREFIX_REGULATORY
+def regulatory(ID, refver, activity=True):
+    prefix = PREFIX_REGULATORY[refver]
     url = '/'.join([prefix, ID])
-    params = { 'activity' : 1 }
+    params = {'activity' : int(activity)}
 
     result = common.http_get(url, params, HTTP_HEADERS_GET)
     if isinstance(result, list) and len(result) == 1:
@@ -114,28 +118,25 @@ def regulatory(ID, refver):
 
     return result
 
-@common.get_deco_arg_choices({'refver': REFVERS_ALLOWED})
-#@common.get_deco_num_set_differently(('vcfspec', 'hgvsg'), 1)
-def vep(refver, hgvsg=None, vcfspec=None, distance=5000, 
-        with_CADD=True, with_Phenotypes=False, with_canonical=True, 
-        with_mane=True, with_miRNA=False, with_numbers=True, 
-        with_protein=True, with_ccds=True, with_hgvs=True):
-    if refver == 'hg19':
-        prefix = PREFIX_VEP_37
-    elif refver == 'hg38':
-        prefix = PREFIX_VEP
-    elif refver == 'mm39':
-        prefix = PREFIX_VEP_MOUSE
-    
-    if hgvsg is None:
-        hgvsg = hgvs_module.vcfspec_to_hgvsg(vcfspec)
 
+def vep(
+    refver, hgvsg=None, vcfspec=None, distance=5000, 
+    with_CADD=True, with_Phenotypes=False, with_canonical=True, 
+    with_mane=True, with_miRNA=False, with_numbers=True, 
+    with_protein=True, with_ccds=True, with_hgvs=True,
+):
+    if hgvsg is None:
+        if vcfspec is None: 
+            raise Exception(f'When "hgvsg" is not set, "vcfspec" must be set.')
+        vcfspec.check_monoalt(raise_with_false=True)
+        hgvsg = vcfspec.to_hgvsg(alt_index=0)
+
+    prefix = PREFIX_VEP[refver]
     url = '/'.join([prefix, hgvsg])
 
     params = {
         'distance' : distance,
         'CADD' : int(with_CADD),
-        #'Phenotypes' : int(with_Phenotypes),
         'canonical' : int(with_canonical),
         'mane' : int(with_mane),
         'miRNA' : int(with_miRNA),
@@ -145,34 +146,37 @@ def vep(refver, hgvsg=None, vcfspec=None, distance=5000,
         'hgvs' : int(with_hgvs),
     }
     if with_Phenotypes:
-        params.update( { 'Phenotypes' : int(with_Phenotypes) } )
+        # Adding 'Phenotypes' to params results in phenotype annotation
+            # even when it is set to False
+        params.update({'Phenotypes' : int(with_Phenotypes)})
 
     return common.http_get(url, params, HTTP_HEADERS_GET)
 
 
-@common.get_deco_arg_choices({'refver': REFVERS_ALLOWED})
-@common.get_deco_num_set_differently(('vcfspec_list', 'hgvsg_list'), 1)
-def vep_post(refver, vcfspec_list=None, hgvsg_list=None, distance=5000,
-             with_CADD=True, with_Phenotypes=False, with_canonical=True,
-             with_mane=True, with_miRNA=False, with_numbers=True, 
-             with_protein=True, with_ccds=True, with_hgvs=True):
-    if refver == 'hg19':
-        url = PREFIX_VEP_37
-    elif refver == 'hg38':
-        url = PREFIX_VEP
-    elif refver == 'mm39':
-        url = PREFIX_VEP_MOUSE
+def vep_post(
+    refver, vcfspec_list=None, hgvsg_list=None, distance=5000,
+    with_CADD=True, with_Phenotypes=False, with_canonical=True,
+    with_mane=True, with_miRNA=False, with_numbers=True, 
+    with_protein=True, with_ccds=True, with_hgvs=True,
+):
+    result = list()
 
+    url = PREFIX_VEP[refver]
     if hgvsg_list is None:
-        hgvsg_list = [hgvs_module.vcfspec_to_hgvsg(vcfspec) 
-                      for vcfspec in vcfspec_list]
-
-    data = {'hgvs_notations': hgvsg_list}
+        if vcfspec_list is None: 
+            raise Exception(
+                f'When "hgvsg_list" is not set, "vcfspec_list" must be set.'
+            )
+        if not all(
+            vcfspec.check_monoalt(raise_with_false=False)
+            for vcfspec in vcfspec_list
+        ):
+            raise Exception(f'Components of "vcfspec_list" must be all monoalt.')
+        hgvsg_list = [vcfspec.to_hgvsg(alt_index=0) for vcfspec in vcfspec_list]
 
     params = {
         'distance': distance,
         'CADD': int(with_CADD),
-        #'Phenotypes': int(with_Phenotypes),
         'canonical': int(with_canonical),
         'mane': int(with_mane),
         'miRNA': int(with_miRNA),
@@ -180,19 +184,24 @@ def vep_post(refver, vcfspec_list=None, hgvsg_list=None, distance=5000,
         'protein': int(with_protein),
         'ccds': int(with_ccds),
         'hgvs': int(with_hgvs),
-        }
+    }
     if with_Phenotypes:
         params.update({'Phenotypes': int(with_Phenotypes)})
 
-    return common.http_post(url, data, params, HTTP_HEADERS_POST)
+    for sublist in common.grouper(hgvsg_list, MAX_POST_SIZE['vep']):
+        data = {'hgvs_notations': sublist}
+        result.extend(common.http_post(url, data, params, HTTP_HEADERS_POST))
+
+    return result
 
 
-@common.get_deco_arg_choices({'refver': REFVERS_ALLOWED})
-def overlap(chrom, start1, end1, refver,
-            transcript=True, regulatory=True, motif=False, repeat=False):
+def overlap(
+    chrom, start1, end1, refver,
+    transcript=True, regulatory=True, motif=False, repeat=False,
+):
     """start1, end1: 1-based closed system"""
 
-    prefix = PREFIX_OVERLAP_37 if (refver == 'hg19') else PREFIX_OVERLAP
+    prefix = PREFIX_OVERLAP[refver]
     species = SPECIES[refver]
 
     suffix_list = list()
@@ -204,22 +213,17 @@ def overlap(chrom, start1, end1, refver,
         suffix_list.append('feature=motif')
     if repeat: 
         suffix_list.append('feature=repeat')
-    suffix = '?' + ';'.join(suffix_list)
 
-    url = '/'.join([prefix, species, f'{chrom}:{start1}-{end1}']) + suffix
+    url = '/'.join([prefix, species, f'{chrom}:{start1}-{end1}'])
+    if len(suffix_list) > 0:
+        url += '?' + ';'.join(suffix_list)
 
     return common.http_get(url, headers=HTTP_HEADERS_GET)
 
 
-@common.get_deco_arg_choices({'refver': REFVERS_ALLOWED, 
-                              'mode': ('cdna', 'cds', 'translation')})
+@common.get_deco_arg_choices({'mode': ('cdna', 'cds', 'translation')})
 def map(ID, start1, end1, mode, refver):
-    if refver == 'hg19':
-        prefix = '/'.join([PREFIX_MAP_37, mode])
-    else:
-        prefix = '/'.join([PREFIX_MAP, mode])
-
-    url = '/'.join([prefix, ID, f'{start1}..{end1}'])
-
+    prefix = PREFIX_MAP[refver]
+    url = '/'.join([prefix, mode, ID, f'{start1}..{end1}'])
     return common.http_get(url, headers=HTTP_HEADERS_GET)
     

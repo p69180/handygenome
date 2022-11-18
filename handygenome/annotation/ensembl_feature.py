@@ -2,6 +2,7 @@ import operator
 import functools
 import itertools
 import time
+import re
 
 import pysam
 
@@ -348,22 +349,33 @@ BIOTYPE_TRANSCRIPT_VALUES = set(
 )
 
 
-###############################################
+################
+# Base classes #
+################
 
-
-class EnsemblFeature(annotitem.AnnotItemVariantInfoSingle):
+class EnsemblFeature(annotitem.AnnotItemInfoSingle):
     @property
     def is_overlapping(self):
         return self["distance"] is None
 
 
-class EnsemblFeatureSetBase(annotitem.AnnotItemVariantInfoSingle):
+class EnsemblFeatureSetBase(annotitem.AnnotItemInfoSingle):
+    #@classmethod
+    #def from_vr_base_EnsemblFeatureSet(cls, vr):
+    #    result = cls.from_vr_base(vr)
+    #    for key in tuple(result.keys()):
+    #        result[key] = cls.unit_class.from_dict(result[key])
+#
+#        return result
+
     @classmethod
-    def from_annotstring_base(cls, annotstring, feature_class):
-        result = cls()
-        tmp = cls.decode(annotstring)
-        for key, val in tmp.items():
-            result[key] = feature_class.from_dict(val)
+    def from_raw_value(cls, vr_value):
+        result = cls.init_nonmissing()
+        decoded_raw = cls.decode(vr_value)
+        for key, val in decoded_raw.items():
+            unit = cls.unit_class.init_nonmissing()
+            unit.update(val)
+            result[key] = unit
         return result
 
     @property
@@ -475,8 +487,9 @@ class EnsemblFeatureSetBreakend(EnsemblFeatureSetBase):
     pass
 
 
-########
-
+##################
+# Higher classes #
+##################
 
 class Transcript(EnsemblFeature):
     def __getitem__(self, key):
@@ -565,12 +578,35 @@ class Transcript(EnsemblFeature):
                         )
         return result
 
+    @property
+    def hgvsc_genename(self):
+        if self['hgvsc'] is None:
+            return None
+        else:
+            if self['gene_name'] is None:
+                return self['hgvsc']
+            else: 
+                return re.sub(r'^(.+)(:.\.)(.+)$', self['gene_name'] + r'\2\3', self['hgvsc'])
+                #return self['gene_name'] + ':c.' + self['hgvsc'].split(':c.')[1]
+
+    @property
+    def hgvsp_genename(self):
+        if self['hgvsp'] is None:
+            return None
+        else:
+            if self['gene_name'] is None:
+                return self['hgvsp']
+            else:
+                return re.sub(r'^(.+)(:.\.)(.+)$', self['gene_name'] + r'\2\3', self['hgvsp'])
+                #return self['gene_name'] + ':p.' + self['hgvsp'].split(':p.')[1]
+
 
 class TranscriptSet(EnsemblFeatureSetPlain):
-    # constructor
-    @classmethod
-    def from_annotstring(cls, annotstring):
-        return cls.from_annotstring_base(annotstring, Transcript)
+    unit_class = Transcript
+
+    @property
+    def list(self):
+        return list(self.values())
 
     @property
     def canonical(self):
@@ -587,6 +623,18 @@ class TranscriptSet(EnsemblFeatureSetPlain):
             if (val['is_canonical'] and val.is_overlapping):
                 result[key] = val
         return result
+
+    @property
+    def is_exonic(self):
+        return any(tr['is_exon_involved'] for tr in self.canon_ovlp.values())
+
+    @property
+    def is_intronic(self):
+        return any(tr['is_intron_involved'] for tr in self.canon_ovlp.values())
+
+    @property
+    def is_protein_altering(self):
+        return any(tr['consequence_flags']['protein_altering'] for tr in self.canon_ovlp.values())
 
     def get_gene_names(self, canonical=True, overlap=True):
         if canonical:
@@ -631,7 +679,7 @@ class TranscriptSet(EnsemblFeatureSetPlain):
         self.update_ensembl_gff(vcfspec, chromdict, distance, tabixfile_geneset, refver=None, fill_missing_canonical=False)
 
 
-class TranscriptSetALTlist(annotitem.AnnotItemVariantInfoALTlist):
+class TranscriptSetALTlist(annotitem.AnnotItemInfoALTlist):
     meta = {
         "ID": "transcripts",
         "Number": "A",
@@ -639,13 +687,19 @@ class TranscriptSetALTlist(annotitem.AnnotItemVariantInfoALTlist):
         "Description": "Transcript annotations encoded as a string, one for each ALT allele",
     }
 
-    @classmethod
-    def annotstring_parser(cls, annotstring):
-        return TranscriptSet.from_annotstring(annotstring)
+    unit_class = TranscriptSet
 
     @classmethod
     def from_vr(cls, vr):
         return cls.from_vr_base(vr)
+        #result = cls.from_vr_base(vr)
+        #for feature_set in result:
+        #    for key in tuple(feature_set.keys()):
+        #        feature_set[key] = cls.unit_class.unit_class.from_dict(feature_set[key])
+        #return result
+
+    def write(self, vr):
+        self.write_base(vr)
 
 
 class Regulatory(EnsemblFeature):
@@ -686,15 +740,14 @@ class RegulatorySet(EnsemblFeatureSetPlain):
         "Type": "String",
         "Description": "Regulatory element annotations encoded as a string.",
     }
+    unit_class = Regulatory
 
-    @classmethod
-    def annotstring_parser(cls, annotstring):
-        return cls.from_annotstring_base(annotstring, Regulatory)
-
-    # constructor
     @classmethod
     def from_vr(cls, vr):
         return cls.from_vr_base(vr)
+
+    def write(self, vr):
+        self.write_base(vr)
 
     def update_ensembl_gff(self, vcfspec, chromdict, distance, tabixfile_regulatory):
         fetch_interval = self.get_fetch_interval(vcfspec, distance, chromdict)
@@ -719,15 +772,14 @@ class MotifSet(EnsemblFeatureSetPlain):
         "Type": "String",
         "Description": "Transcription factor binding motif annotations encoded as a string.",
     }
+    unit_class = Motif
 
-    @classmethod
-    def annotstring_parser(cls, annotstring):
-        return cls.from_annotstring_base(annotstring, Motif)
-
-    # constructor
     @classmethod
     def from_vr(cls, vr):
         return cls.from_vr_base(vr)
+
+    def write(self, vr):
+        self.write_base(vr)
 
 
 class Repeat(EnsemblFeature):
@@ -767,15 +819,14 @@ class RepeatSet(EnsemblFeatureSetPlain):
         "Type": "String",
         "Description": "Repeat sequence annotations encoded as a string.",
     }
+    unit_class = Repeat
 
-    @classmethod
-    def annotstring_parser(cls, annotstring):
-        return cls.from_annotstring_base(annotstring, Repeat)
-
-    # constructor
     @classmethod
     def from_vr(cls, vr):
         return cls.from_vr_base(vr)
+
+    def write(self, vr):
+        self.write_base(vr)
 
     def update_repeatmasker_bed(self, vcfspec, chromdict, distance, tabixfile_repeats):
         fetch_interval = self.get_fetch_interval(vcfspec, distance, chromdict)
@@ -788,75 +839,3 @@ class RepeatSet(EnsemblFeatureSetPlain):
         self.update_other(repeat_set, overwrite=False, create_new=True)
 
 
-###################
-
-
-#class EnsemblFeatureDict(annotitem.AnnotItemDict):
-#    @common.get_deco_arg_choices({"annotation_type": ANNOTATION_TYPES})
-#    def __init__(self, annotation_type="plain", **kwargs):
-#        super().__init__(**kwargs)
-#        self.annotation_type = annotation_type
-#
-#    def __setitem__(self, key, val):
-#        # assert isinstance(val, EnsemblFeature)
-#        super().__setitem__(key, val)
-#
-#    def get_showdict(self):
-#        showdict = dict()
-#        for key, val in sorted(self.items(), key=(lambda x: x[1]["start0"])):
-#            showdict[key] = dict(val)
-#
-#        return showdict
-#
-#    def get_list(self):
-#        return sorted(self.values(), key=operator.attrgetter("start0"))
-#
-#    def get_annotitem_id(self, annotitem):
-#        return annotitem["id"]
-#
-#    def add_meta(self, vcfheader):
-#        vcfheader.add_meta(key="INFO", items=self.get_meta().items())
-#
-#
-#class TranscriptDict(EnsemblFeatureDict):
-#    def get_meta(self):
-#        return INFOMETAS[self.annotation_type]["transcript"]
-#
-#    def get_canon(self):
-#        result = self.__class__()
-#        for ID, transcript in self.items():
-#            if transcript.check_canonical():
-#                result[ID] = transcript
-#
-#        return result
-#
-#    def get_ovlp(self):
-#        result = self.__class__()
-#        for ID, transcript in self.items():
-#            if transcript.check_overlapping():
-#                result[ID] = transcript
-#
-#        return result
-#
-#    def get_canon_ovlp(self):
-#        result = self.__class__()
-#        for ID, transcript in self.items():
-#            if transcript.check_canonical() and transcript.check_overlapping():
-#                result[ID] = transcript
-#
-#        return result
-#
-#
-#class RegulatoryDict(EnsemblFeatureDict):
-#    def get_meta(self):
-#        return INFOMETAS[self.annotation_type]["regulatory"]
-#
-#
-#class MotifDict(EnsemblFeatureDict):
-#    def get_meta(self):
-#        return INFOMETAS[self.annotation_type]["motif"]
-#
-#
-#class RepeatDict(EnsemblFeatureDict):
-#    def get_meta(self):
-#        return INFOMETAS[self.annotation_type]["repeat"]

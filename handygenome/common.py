@@ -66,7 +66,7 @@ TOP_PACKAGE = importlib.import_module(TOP_PACKAGE_NAME)
 PROJECT_PATH = os.path.dirname(os.path.dirname(TOP_PACKAGE.__file__))
 PACKAGE_LOCATION = PROJECT_PATH
 DATA_DIR = os.path.join(PROJECT_PATH, 'data')
-UTILS_DIR = os.path.join(PROJECT_PATH, 'utils')
+UTILS_DIR = os.path.join(PROJECT_PATH, 'externals')
 
 DEFAULT_VCFVER = '4.3'
 
@@ -91,7 +91,8 @@ RE_PATS = {
 BASH = '/usr/bin/bash'
 BWA = os.path.join(UTILS_DIR, 'bwa')
 BEDTOOLS = os.path.join(UTILS_DIR, 'bedtools')
-GATK = os.path.join(UTILS_DIR, 'gatk')
+GATK = os.path.join(UTILS_DIR, 'gatk_wrapper.sh')
+
 PERL = '/home/users/pjh/scripts/conda_wrapper/perl'
 PYTHON = '/home/users/pjh/tools/miniconda/210821/miniconda3/envs/genome_v5/bin/python'
 
@@ -404,7 +405,7 @@ CHR1_LENGTHS = {
     'NCBI36': 247_249_719,
     'GRCh37': 249_250_621,
     'GRCh38': 248_956_422,
-    }
+}
 CHR1_LENGTHS_REV = {val: key for key, val in CHR1_LENGTHS.items()}
 
 # default fasta paths
@@ -412,7 +413,7 @@ FASTA_URLS = {
     'GRCh37_1000genomes': 'http://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/human_g1k_v37.fasta.gz',
     'GRCh37_ucsc': 'https://hgdownload.soe.ucsc.edu/goldenPath/hg19/bigZips/analysisSet/hg19.p13.plusMT.no_alt_analysis_set.fa.gz',
     'GRCh38_1000genomes': 'http://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/GRCh38_reference_genome/GRCh38_full_analysis_set_plus_decoy_hla.fa',
-    }
+}
 
 
 DEFAULT_FASTA_PATHS = RefverDict({
@@ -497,6 +498,13 @@ class ChromDict(collections.OrderedDict):
             intvlist.append(interval)
 
         return intvlist
+
+
+DEFAULT_CHROMDICTS = RefverDict({
+    key: ChromDict(fasta=val) for key, val in DEFAULT_FASTAS.items()
+    if key != 'GRCh37_hs37d5'
+})
+
 
 
 #class Vcfspec:
@@ -1585,6 +1593,29 @@ def timeout(seconds, error_message=''):
         return functools.wraps(func)(wrapper)
 
     return decorator
+
+
+def grouper(iterable, n):
+    args = [iter(iterable)] * n
+    for subiter in itertools.zip_longest(*args, fillvalue=None):
+        yield tuple(x for x in subiter if x is not None)
+
+
+# from Itertools Recipes
+def grouper_Itertools_Recipes(iterable, n, *, incomplete='fill', fillvalue=None):
+    "Collect data into non-overlapping fixed-length chunks or blocks"
+    # grouper('ABCDEFG', 3, fillvalue='x') --> ABC DEF Gxx
+    # grouper('ABCDEFG', 3, incomplete='strict') --> ABC DEF ValueError
+    # grouper('ABCDEFG', 3, incomplete='ignore') --> ABC DEF
+    args = [iter(iterable)] * n
+    if incomplete == 'fill':
+        return itertools.zip_longest(*args, fillvalue=fillvalue)
+    if incomplete == 'strict':
+        return zip(*args, strict=True)
+    if incomplete == 'ignore':
+        return zip(*args)
+    else:
+        raise ValueError('Expected fill, strict, or ignore')
 
 
 # deprecated; this does not work

@@ -188,7 +188,10 @@ class RealignerPileupBase(libpileup.PileupBase):
 
     @staticmethod
     def row_spec_matcher(query, target):
-        return query['seq'] in target['seq']
+        if query['left_filled'] and query['right_filled'] and target['left_filled'] and target['right_filled']:
+            return query['seq'] == target['seq']
+        else:
+            return query['seq'] in target['seq']
 
     @staticmethod
     def tiebreak_key(superseq_row_spec, groupinfo):
@@ -1672,7 +1675,11 @@ class MultisampleRealignerPileup(RealignerPileupBase):
 
     def iter_contig_vcfspecs(self, subseq_portion_threshold, MQ_threshold, threshold_bysample=True):
         if threshold_bysample:
-            for superseq_key, groupinfo in self.row_spec_groups.items():
+            for superseq_key, groupinfo in sorted(
+                self.row_spec_groups.items(),
+                key=(lambda x: x[1]['subseq_hits']),
+                reverse=True,
+            ):
                 if any(
                     (subgroups[superseq_key]['subseq_hits_portion'] >= subseq_portion_threshold) and
                     (subgroups[superseq_key]['mean_MQ'] >= MQ_threshold)
@@ -1680,7 +1687,11 @@ class MultisampleRealignerPileup(RealignerPileupBase):
                 ):
                     yield superseq_key, self.pileup_dict[superseq_key[0]].contig_vcfspecs[superseq_key[1]]
         else:
-            for superseq_key, groupinfo in self.row_spec_groups.items():
+            for superseq_key, groupinfo in sorted(
+                self.row_spec_groups.items(),
+                key=(lambda x: x[1]['subseq_hits']),
+                reverse=True,
+            ):
                 if (
                     (groupinfo['subseq_hits_portion'] >= subseq_portion_threshold) and
                     (groupinfo['mean_MQ'] >= MQ_threshold)

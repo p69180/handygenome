@@ -55,14 +55,13 @@ def merge_vcfheaders(vcfheader_list):
     """Any conflicting INFO or FORMAT keys 
     (with regard to any of Type, Number, or Description) are discarded."""
     
-    for idx, vcfheader in enumerate(vcfheader_list):
-        if idx == 0:
-            result = vcfheader.copy()
-        else:
-            result.merge(vcfheader)
-            for sampleid in vcfheader.samples:
-                if sampleid not in result.samples:
-                    result.add_sample(sampleid)
+    vcfheader_list = list(vcfheader_list)
+    result = vcfheader_list[0].copy()
+    for vcfheader in vcfheader_list[1:]:
+        result.merge(vcfheader)
+        for sampleid in vcfheader.samples:
+            if sampleid not in result.samples:
+                result.add_sample(sampleid)
 
     # get conflicting keys
     conflicting_keys_sum = {'info': set(), 'format': set()}

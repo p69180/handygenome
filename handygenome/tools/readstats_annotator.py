@@ -17,7 +17,7 @@ toolsetup = importlib.import_module('.'.join([top_package_name, 'workflow', 'too
 libreadstats = importlib.import_module('.'.join([top_package_name, 'annotation', 'readstats']))
 varianthandler = importlib.import_module('.'.join([top_package_name, 'variant', 'varianthandler']))
 variantplus = importlib.import_module('.'.join([top_package_name, 'variant', 'variantplus']))
-vpfilter = importlib.import_module('.'.join([top_package_name, 'variant', 'vpfilter']))
+libfilter = importlib.import_module('.'.join([top_package_name, 'variant', 'filter']))
 infoformat = importlib.import_module('.'.join([top_package_name, 'variant', 'infoformat']))
 indexing = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'indexing']))
 libsplit = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'split']))
@@ -59,7 +59,7 @@ def mean(array, round_digits=3):
 
 def update_header(vcfheader, id_list):
     libreadstats.ReadStats.add_meta(vcfheader)
-    vpfilter.add_format_filter_meta(vcfheader)
+    libfilter.add_format_filter_meta(vcfheader)
     for sampleid in id_list:
         if sampleid not in vcfheader.samples:
             vcfheader.samples.add(sampleid)

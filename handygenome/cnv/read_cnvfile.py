@@ -1,3 +1,6 @@
+import gzip
+import subprocess
+
 import pandas as pd
 import pyranges as pr
 
@@ -40,5 +43,6 @@ def read_depth_bed(bed_path, as_gr=False):
         return df
 
 
-def read_seqz(seqz_path):
+def read_seqz_baf(seqz_path):
     pass
+

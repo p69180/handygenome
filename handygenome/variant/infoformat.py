@@ -9,6 +9,7 @@ common = importlib.import_module('.'.join([top_package_name, 'common']))
 
 
 NA_VALUES = ('', '.', None)
+NA_VALUES_SET = set(NA_VALUES)
 
 
 def show_info(vr):
@@ -109,19 +110,22 @@ def get_genotype(vr, sampleid):
 
 def check_NA_info(vr, key):
     if key in vr.info:
-        return _check_InfoFormatValue_isNA(vr.info[key])
+        return check_InfoFormatValue_isNA(vr.info[key])
     else:
         return True
 
 
 def check_NA_format(vr, sampleid, key):
-    if key in vr.samples[sampleid]:
-        return _check_InfoFormatValue_isNA(vr.samples[sampleid][key])
-    else:
+    if sampleid not in vr.samples.keys():
         return True
+    else:
+        if key in vr.samples[sampleid]:
+            return check_InfoFormatValue_isNA(vr.samples[sampleid][key])
+        else:
+            return True
 
 
-def _check_InfoFormatValue_isNA(val):
+def check_InfoFormatValue_isNA(val):
     """
     Args:
         val: A raw value obtained from vr.info[key] 
@@ -138,9 +142,9 @@ def _check_InfoFormatValue_isNA(val):
             """
             return True
         else:
-            return set(val).issubset(set(NA_VALUES))
+            return set(val).issubset(NA_VALUES_SET)
     else:
-        return val in NA_VALUES
+        return val in NA_VALUES_SET
 
 
 #############################################
@@ -364,7 +368,7 @@ def modify_InfoFormatValue(
         else:
             len_val = 1
 
-        isNA = _check_InfoFormatValue_isNA(val)
+        isNA = check_InfoFormatValue_isNA(val)
             # True with zero-length tuple
             # True with a non-length-zero tuple composed of NA equivalents
 

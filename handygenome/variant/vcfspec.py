@@ -24,9 +24,6 @@ class Vcfspec:
         self, chrom=None, pos=None, ref=None, alts=None, 
         somaticindex=1, germlineindexes=(0, 0),
         refver=None, fasta=None,
-        #is_leftmost=None,
-        #is_rightmost=None,
-        #is_parsimonious=None,
     ):
         # sanity check
         if alts is not None:
@@ -366,7 +363,7 @@ class Vcfspec:
             return len(self.alts) == 1
 
 
-class VcfspecIdentity:
+class IdentityVcfspec:
     pass
 
 

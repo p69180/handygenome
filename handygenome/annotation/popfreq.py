@@ -15,27 +15,31 @@ annotitem = importlib.import_module(
 customfile = importlib.import_module(
     ".".join([top_package_name, "annotation", "customfile"])
 )
-annotation_misc = importlib.import_module(
-    ".".join([top_package_name, "annotation", "misc"])
+annotation_data = importlib.import_module(
+    ".".join([top_package_name, "annotation", "data"])
 )
 
 
-DBSNP_VCFS = annotation_misc.VCFS_DBSNP
+#from handygenome.annotation.annotitem import AnnotItemInfoALTlist
 
 
-class PopfreqInfo(annotitem.AnnotItemVariantInfoSingle):
+DBSNP_VCFS = annotation_data.VCFS_DBSNP
+
+
+class PopfreqInfo(annotitem.AnnotItemInfoSingle):
     # constructors
-    def __init__(self, metadata=None, **kwargs):
-        super().__init__(**kwargs)
-        self.metadata = metadata
+    #def __init__(self, metadata=None, **kwargs):
+    #    super().__init__(**kwargs)
+    #    self.metadata = metadata
 
     @classmethod
-    def init_blank(cls):
+    def init_blank(cls, metadata=None):
         result = cls()
         result['id'] = None
         result['dbSNPBuild'] = None
         result['common'] = None
         result['freqs'] = dict()
+        result.metadata = metadata
         return result
     ##############
 
@@ -68,7 +72,19 @@ class PopfreqInfo(annotitem.AnnotItemVariantInfoSingle):
                 for popname in self.metadata['popnames']}
 
 
-class PopfreqInfoALTlist(annotitem.AnnotItemVariantInfoALTlist):
+class PopfreqMetadata(annotitem.AnnotItemHeader):
+    meta = {"ID": "popfreq_metadata"}
+
+    @classmethod
+    def from_vcfheader(cls, vcfheader):
+        return cls.from_vcfheader_base(vcfheader)
+
+    def write(self, vcfheader):
+        self.write_base(vcfheader)
+
+
+class PopfreqInfoALTlist(annotitem.AnnotItemInfoALTlist):
+#class PopfreqInfoALTlist(AnnotItemInfoALTlist):
     meta = {
         "ID": "popfreq",
         "Number": "A",
@@ -76,19 +92,17 @@ class PopfreqInfoALTlist(annotitem.AnnotItemVariantInfoALTlist):
         "Description": "Population frequencies encoded as a string, one for each ALT allele",
     }
 
-    @classmethod
-    def annotstring_parser(cls, annotstring, metadata):
-        result = PopfreqInfo.from_annotstring(annotstring)
-        result.metadata = metadata
-        return result
+    unit_class = PopfreqInfo
+    metadata_class = PopfreqMetadata
 
     @classmethod
     def from_vr(cls, vr, metadata=None):
         if metadata is None:
-            metadata = PopfreqMetadata.from_vcfheader(vr.header)
+            metadata = cls.metadata_class.from_vcfheader(vr.header)
 
-        annotstring_parser_kwargs = {'metadata': metadata}
-        result = cls.from_vr_base(vr, annotstring_parser_kwargs)
+        result = cls.from_vr_base(vr)
+        for unit in result:
+            unit.metadata = metadata
 
         return result
 
@@ -96,23 +110,23 @@ class PopfreqInfoALTlist(annotitem.AnnotItemVariantInfoALTlist):
     def from_vcfspec(cls, vcfspec, dbsnp_vcf, metadata=None, donot_init_metadata=False):
         if metadata is None:
             if not donot_init_metadata:
-                metadata = PopfreqMetadata.from_vcfheader(dbsnp_vcf.header)
+                metadata = cls.metadata_class.from_vcfheader(dbsnp_vcf.header)
 
         dbsnp_vr_list = customfile.fetch_relevant_vr_multialt(
-            vcfspec, dbsnp_vcf, search_equivs=True, allow_multiple=False
+            vcfspec, dbsnp_vcf, search_equivs=True, raise_with_multihit=True,
         )
         result = cls()
         for vr in dbsnp_vr_list:
             if vr is None:
-                result.append(PopfreqInfo.init_blank())
+                #result.append(cls.unit_class.init_blank(metadata=metadata))
+                result.append(cls.unit_class.init_missing())
             else:
                 result.extend(cls.from_vr(vr, metadata=metadata))
 
         return result
 
-
-class PopfreqMetadata(annotitem.AnnotItemHeader):
-    meta = {"ID": "popfreq_metadata"}
+    def write(self, vr):
+        self.write_base(vr)
 
 
 def update_vcfheader(vcfheader, dbsnp_vcf):
@@ -132,11 +146,10 @@ def extract_population_names(dbsnp_vcf_header):
 
 def fetch_dbsnp_vr(vcfspec, dbsnp_vcf, search_equivs=True):
     """Result may be None"""
-    dbsnp_vr = customfile.fetch_relevant_vr(
+    return customfile.fetch_relevant_vr(
         vcfspec,
         dbsnp_vcf,
         search_equivs=search_equivs,
-        allow_multiple=False,
+        raise_with_multihit=True,
     )
 
-    return dbsnp_vr

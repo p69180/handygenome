@@ -31,8 +31,8 @@ variantplus = importlib.import_module(
 breakends = importlib.import_module(
     ".".join([top_package_name, "sv", "breakends"])
 )
-annotation_misc = importlib.import_module(
-    ".".join([top_package_name, "annotation", "misc"])
+annotation_data = importlib.import_module(
+    ".".join([top_package_name, "annotation", "data"])
 )
 
 veplib = importlib.import_module(".".join([top_package_name, "annotation", "veplib"]))
@@ -67,9 +67,9 @@ def unit_job(
     fasta = pysam.FastaFile(fasta_path)
     chromdict = common.ChromDict(fasta=fasta)
     # setup for features
-    tabixfile_geneset = annotation_misc.TABIXFILES_GENESET[refver]
-    tabixfile_regulatory = annotation_misc.TABIXFILES_REGULATORY[refver]
-    tabixfile_repeats = annotation_misc.TABIXFILES_REPEATS[refver]
+    tabixfile_geneset = annotation_data.TABIXFILES_GENESET[refver]
+    tabixfile_regulatory = annotation_data.TABIXFILES_REGULATORY[refver]
+    tabixfile_repeats = annotation_data.TABIXFILES_REPEATS[refver]
     # run VEP
     if do_features:
         vep_vr_dict = setup_vep(
@@ -78,9 +78,9 @@ def unit_job(
     else:
         vep_vr_dict = None
     # setup for popfreq
-    dbsnp_vcf = annotation_misc.VCFS_DBSNP[refver]
+    dbsnp_vcf = annotation_data.VCFS_DBSNP[refver]
     # setup for COSMIC
-    cosmic_vcf = annotation_misc.VCFS_COSMIC[refver]
+    cosmic_vcf = annotation_data.VCFS_COSMIC[refver]
 
     add_annotations(
         split_infile_path,

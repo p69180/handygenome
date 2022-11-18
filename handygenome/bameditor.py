@@ -39,3 +39,6 @@ def write_readlist(bam_path, readlist, chromdict, sort=True, index=True):
     else:
         os.rename(tmp_bam_path, bam_path)
 
+
+def get_bam_sampleID(bam):
+    pass

@@ -503,7 +503,10 @@ def make_pileup_components(
         end_list = list()
         for read in readhandler.get_fetch(bam, chrom, start0, end0, readfilter=readhandler.readfilter_pileup):
             logger.debug(f'Read query name: {read.query_name}')
-            target_seq = readplus.ReadPlus(read, minimal=True).get_seq_from_range0(target_range0)
+            target_seq = readplus.ReadPlus(read, minimal=True).get_seq_from_range0(
+                target_range0,
+                flanking_queryonly_default_mode=True,
+            )
             logger.debug(f'Got target seq of {read.query_name}')
             if target_seq == '':
                 continue

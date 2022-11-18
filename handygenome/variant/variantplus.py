@@ -4,6 +4,9 @@ import os
 import itertools
 import random
 import shutil
+import uuid
+import logging
+import multiprocessing
 
 import pysam
 import pyranges as pr
@@ -26,28 +29,39 @@ varianthandler = importlib.import_module(
 variantviz = importlib.import_module(
     ".".join([top_package_name, "variant", "variantviz"])
 )
-vpfilter = importlib.import_module(
-    ".".join([top_package_name, "variant", "vpfilter"])
+libfilter = importlib.import_module(
+    ".".join([top_package_name, "variant", "filter"])
 )
 infoformat = importlib.import_module(
     ".".join([top_package_name, "variant", "infoformat"])
 )
 initvcf = importlib.import_module(".".join([top_package_name, "vcfeditor", "initvcf"]))
+headerhandler = importlib.import_module(".".join([top_package_name, "vcfeditor", "headerhandler"]))
+
 
 #annotationdb = importlib.import_module(
 #    ".".join([top_package_name, "annotation", "annotationdb"])
 #)
+annotation_data = importlib.import_module(
+    ".".join([top_package_name, "annotation", "data"])
+)
 ensembl_feature = importlib.import_module(
     ".".join([top_package_name, "annotation", "ensembl_feature"])
 )
 ensembl_parser = importlib.import_module(
     ".".join([top_package_name, "annotation", "ensembl_parser"])
 )
+ensembl_rest = importlib.import_module(
+    ".".join([top_package_name, "annotation", "ensembl_rest"])
+)
 libpopfreq = importlib.import_module(
     ".".join([top_package_name, "annotation", "popfreq"])
 )
 libcosmic = importlib.import_module(
     ".".join([top_package_name, "annotation", "cosmic"])
+)
+liboncokb = importlib.import_module(
+    ".".join([top_package_name, "annotation", "oncokb"])
 )
 
 readplus = importlib.import_module(".".join([top_package_name, "read", "readplus"]))
@@ -57,10 +71,15 @@ libreadstats = importlib.import_module(
 libvcfspec = importlib.import_module(
     ".".join([top_package_name, "variant", "vcfspec"])
 )
+indexing = importlib.import_module(
+    ".".join([top_package_name, "vcfeditor", "indexing"])
+)
+cnvmisc = importlib.import_module(
+    ".".join([top_package_name, "cnv", "misc"])
+)
 
 
-
-READCOUNT_FORMAT_KEY = "allele_readcounts"
+#READCOUNT_FORMAT_KEY = "allele_readcounts"
 
 
 class VariantPlus:
@@ -77,7 +96,7 @@ class VariantPlus:
         annotdb_bnd1
         annotdb_bnd2
     """
-    # constructors
+    # CONSTRUCTORS
     @classmethod
     def from_vr(cls, vr, refver=None, fasta=None, chromdict=None, **kwargs):
         result = cls()
@@ -123,247 +142,281 @@ class VariantPlus:
         self, 
         init_popfreq=True, 
         init_cosmic=True,
-        init_transcript=True,
-        init_regulatory=True,
-        init_motif=False,
-        init_repeat=True,
-        init_readstats=True,
         popfreq_metadata=None, 
         cosmic_metadata=None,
+
+        init_transcript=True,
+        init_regulatory=True,
+        init_motif=True,
+        init_repeat=True,
+
+        init_readstats=True,
+
+        init_oncokb=True,
     ):
         # SV attrs
         self.is_sv = varianthandler.check_SV(self.vr)
         self.set_bnds_attributes()  # is_bnd1, bnds
 
         # popfreq & cosmic
-        if init_popfreq:
-            self._init_popfreq(metadata=popfreq_metadata)
-        if init_cosmic:
-            self._init_cosmic(metadata=cosmic_metadata)
+        self._init_popfreq(metadata=popfreq_metadata, init_blank=(not init_popfreq))
+        self._init_cosmic(metadata=cosmic_metadata, init_blank=(not init_cosmic))
 
-        # transcript, regulatory, motif, repeat
-        if init_transcript:
-            self._init_transcript()
-        if init_regulatory:
-            self._init_regulatory()
-        if init_motif:
-            self._init_motif()
-        if init_repeat:
-            self._init_repeat()
+        # features
+        self._init_transcript(init_blank=(not init_transcript))
+        self._init_regulatory(init_blank=(not init_regulatory))
+        self._init_motif(init_blank=(not init_motif))
+        self._init_repeat(init_blank=(not init_repeat))
 
-        # readstats_data_dict, rpplists
+        # readstats, readstats_data, rpplists
         self.rpplist_dict = dict()
         self.readstats_data_dict = dict()
-        if init_readstats:
-            self._init_readstats()
+        self._init_readstats(init_blank=(not init_readstats))
 
-        # sampleids
-        self.sampleids = tuple(self.vr.header.samples)
-
-#    @common.get_deco_num_set(("vr", "vcfspec", "bnds"), 1)
-#    def __init__(
-#        self,
-#        vr=None,
-#        vcfspec=None,
-#        bnds=None,
-#        refver=None,
-#        fasta=None,
-#        chromdict=None,
-#        #add_annotdb_infometas=True,
-#        #set_annotdb=True,
-#        init_popfreq=True,
-#        init_cosmic=True,
-#        init_transcript=True,
-#        init_regulatory=True,
-#        init_motif=False,
-#        init_repeat=True,
-#        init_readstats=True,
-#        #annotitem_septype=annotationdb.DEFAULT_SEPTYPE,
-#        popfreq_metadata=None, 
-#        cosmic_metadata=None,
-#    ):
-#        """Args:
-#            vr: pysam.VariantRecord instance
-#            fasta: pysam.FastaFile instance
-#            chromdict: handygenome.common.Chromdict instance
-#        How to initialize:
-#            1) "vr"
-#            2) "vcfspec" and "refver"
-#            3) "bnds" and "refver"
-#        """
-#
-#        def init_from_vr(self, vr, refver, fasta, chromdict):
-#            self.vr = vr
-#            self.refver = common.infer_refver_vr(self.vr) if refver is None else refver
-#            self.fasta = (
-#                pysam.FastaFile(common.DEFAULT_FASTA_PATHS[self.refver])
-#                if fasta is None
-#                else fasta
-#            )
-#            self.chromdict = (
-#                common.ChromDict(fasta=self.fasta) if chromdict is None else chromdict
-#            )
-#            self.vcfspec = varianthandler.get_vcfspec(self.vr)
-#
-#        def init_from_vcfspec(self, vcfspec, refver, fasta, chromdict):
-#            if refver is None:
-#                raise Exception(f"If initializing with vcfspec, refver must be given.")
-#
-#            self.vcfspec = vcfspec
-#            self.refver = refver
-#
-#            self.fasta = (
-#                pysam.FastaFile(common.DEFAULT_FASTA_PATHS[self.refver])
-#                if fasta is None
-#                else fasta
-#            )
-#            self.chromdict = (
-#                common.ChromDict(fasta=self.fasta) if chromdict is None else chromdict
-#            )
-#
-#            self.vr = initvcf.create_vr(chromdict=self.chromdict, vcfspec=self.vcfspec)
-#
-#        def init_from_bnds(self, bnds, refver, fasta, chromdict):
-#            if refver is None:
-#                raise Exception(
-#                    f"If initializing with Breakends, refver must be given."
-#                )
-#
-#            vcfspec = bnds.get_vcfspec_bnd1()
-#            init_from_vcfspec(self, vcfspec, refver, fasta, chromdict)
-#
-#        # MAIN
-#        if vr is not None:
-#            init_from_vr(self, vr, refver, fasta, chromdict)
-#        elif vcfspec is not None:
-#            init_from_vcfspec(self, vcfspec, refver, fasta, chromdict)
-#        elif bnds is not None:
-#            init_from_bnds(self, bnds, refver, fasta, chromdict)
-#
-#        # SV attrs
-#        self.is_sv = varianthandler.check_SV(self.vr)
-#        self.set_bnds_attributes()  # is_bnd1, bnds
-#
-#        # annotdb
-##        self.annotitem_septype = annotitem_septype
-##        if add_annotdb_infometas:
-##            annotationdb.add_infometas(self.vr.header)
-##        if set_annotdb:
-##            self.set_annotdb()
-#
-#        # popfreq & cosmic
-#        if init_popfreq:
-#            self._init_popfreq(metadata=popfreq_metadata)
-#        if init_cosmic:
-#            self._init_cosmic(metadata=cosmic_metadata)
-#
-#        # transcript, regulatory, motif, repeat
-#        if init_transcript:
-#            self._init_transcript()
-#        if init_regulatory:
-#            self._init_regulatory()
-#        if init_motif:
-#            self._init_motif()
-#        if init_repeat:
-#            self._init_repeat()
-#
-#        # readstats_data_dict, rpplists
-#        self.rpplist_dict = dict()
-#        self.readstats_data_dict = dict()
-#        if init_readstats:
-#            self._init_readstats()
-#
-#        # sampleids
-#        self.sampleids = tuple(self.vr.header.samples)
+        # oncokb
+        self._init_oncokb(init_blank=(not init_oncokb))
 
     def __repr__(self):
-        vr_string = "\t".join(str(self.vr).split("\t")[:5])
-        return f"<VariantPlus object ({vr_string})>"
+        if self.transcript is None:
+            gene_string = str(None)
+        else:
+            gene_string_buffer = {alt_idx: set() for alt_idx in range(len(self.vcfspec.alts))}
+            for alt_idx, tr_set in enumerate(self.transcript):
+                for tr in tr_set.canon_ovlp.values():
+                    if tr.hgvsp_genename is None:
+                        if tr.hgvsc_genename is None:
+                            gene_string_buffer[alt_idx].add(str(None))
+                        else:
+                            gene_string_buffer[alt_idx].add(tr.hgvsc_genename)
+                    else:
+                        gene_string_buffer[alt_idx].add(tr.hgvsp_genename)
 
-    # popfreq & cosmic
-    def _init_popfreq(self, metadata=None):
-        self.popfreq = libpopfreq.PopfreqInfoALTlist.from_vr(self.vr, metadata=metadata)
+                if (len(gene_string_buffer[alt_idx]) > 1) and (str(None) in gene_string_buffer[alt_idx]):
+                    gene_string_buffer[alt_idx].remove(str(None))
+                
+            gene_string = '; '.join(f'alt_index {key}: {", ".join(val)}' for key, val in gene_string_buffer.items())
 
-    def _init_cosmic(self, metadata=None):
-        self.cosmic = libcosmic.CosmicInfoALTlist.from_vr(self.vr, metadata=metadata)
+        return f'<VariantPlus(chrom={self.vcfspec.chrom}, pos={self.vcfspec.pos}, ref={self.vcfspec.ref}, alts={self.vcfspec.alts}, gene={gene_string})>'
+
+    # BASICS
+    @property
+    def chrom(self):
+        return self.vcfspec.chrom
+
+    @property
+    def pos(self):
+        return self.vcfspec.pos
+
+    @property
+    def ref(self):
+        return self.vcfspec.ref
+
+    @property
+    def alts(self):
+        return self.vcfspec.alts
+
+    @property
+    def start0(self):
+        return self.vcfspec.start0
+
+    @property
+    def end0(self):
+        return self.vcfspec.end0
+
+    @property
+    def sampleids(self):
+        return tuple(self.vr.header.samples)
+
+    # BREAKENDS
+    def get_vr_bnd2(self):
+        assert self.bnds is not None, f'"bnds" attribute must be set.'
+
+        vr_bnd2 = self.vr.header.new_record()
+        vr_bnd2.id = self.bnds.get_id_bnd2()
+        vcfspec_bnd2 = self.bnds.get_vcfspec_bnd2()
+        varianthandler.apply_vcfspec(vr_bnd2, vcfspec_bnd2)
+        vr_bnd2.info["MATEID"] = self.vr.id
+
+        return vr_bnd2
+
+    def set_bnds_attributes(self):
+        if self.is_sv:
+            vr_svinfo = libbreakends.get_vr_svinfo_standard_vr(
+                self.vr,
+                self.fasta,
+                self.chromdict,
+            )
+            self.is_bnd1 = vr_svinfo["is_bnd1"]
+            self.bnds = libbreakends.get_bnds_from_vr_svinfo(
+                self.vr, vr_svinfo, self.fasta, self.chromdict
+            )
+        else:
+            self.is_bnd1 = None
+            self.bnds = None
+
+    # ANNOTATION GENERAL
+    def write_annots_to_vr(self, fill_missing_sample=True):
+        # INFO
+        for key in (
+            'popfreq',
+            'cosmic',
+            'transcript',
+            'regulatory',
+            'motif',
+            'repeat',
+            'oncokb',
+        ):
+            annot = getattr(self, key)
+            if not annot.is_missing:
+                annot.write(self.vr)
+        # FORMAT
+        for key in (
+            'readstats_dict',
+        ):
+            annot = getattr(self, key)
+            if not annot.is_missing:
+                if fill_missing_sample:
+                    self.vr = annot.get_sample_augmented_vr(self.vr)
+                self.vr = annot.write(self.vr)
+
+    # ANNOTATION - popfreq & cosmic
+    def _init_popfreq(self, metadata=None, init_blank=False):
+        if init_blank:
+            self.popfreq = libpopfreq.PopfreqInfoALTlist.init_missing()
+        else:
+            self.popfreq = libpopfreq.PopfreqInfoALTlist.from_vr(self.vr, metadata=metadata)
+
+    def _init_cosmic(self, metadata=None, init_blank=False):
+        if init_blank:
+            self.cosmic = libpopfreq.CosmicInfoALTlist.init_missing()
+        else:
+            self.cosmic = libcosmic.CosmicInfoALTlist.from_vr(self.vr, metadata=metadata)
 
     def create_popfreq(self):
-        if self.refver == 'GRCh37':
-            refver = 'hg19'
-        else:
-            refver = self.refver
-
-        dbsnp_vcf = libpopfreq.POPFREQ_VCFS[refver]
-        popfreqlist = libpopfreq.PopfreqInfoALTlist.from_vcfspec(
+        dbsnp_vcf = annotation_data.VCFS_DBSNP[self.refver]
+        self.popfreq = libpopfreq.PopfreqInfoALTlist.from_vcfspec(
             vcfspec=self.vcfspec, 
             dbsnp_vcf=dbsnp_vcf,
             metadata=libpopfreq.PopfreqMetadata.from_vcfheader(dbsnp_vcf.header),
         )
-        return popfreqlist
 
     def create_cosmic(self):
-        if self.refver == 'GRCh37':
-            refver = 'hg19'
-        else:
-            refver = self.refver
-
-        cosmic_vcf = libcosmic.COSMIC_VCFS[refver]
-        cosmiclist = libcosmic.CosmicInfoALTlist.from_vcfspec(
+        cosmic_vcf = annotation_data.VCFS_COSMIC[self.refver]
+        self.cosmic = libcosmic.CosmicInfoALTlist.from_vcfspec(
             vcfspec=self.vcfspec, 
             cosmic_vcf=cosmic_vcf,
             metadata=libcosmic.CosmicMetadata.from_vcfheader(cosmic_vcf.header),
         )
-        return cosmiclist
 
-    # ensembl feature annotations
-    def set_annotdb(self):
-        if self.is_sv:
-            self.annotdb = None
-            self.annotdb_bnd1 = annotationdb.AnnotDB(
-                "bnd1",
-                self.refver,
-                self.fasta,
-                self.chromdict,
-                vr=self.vr,
-                septype=self.annotitem_septype,
-            )
-            self.annotdb_bnd2 = annotationdb.AnnotDB(
-                "bnd2",
-                self.refver,
-                self.fasta,
-                self.chromdict,
-                vr=self.vr,
-                septype=self.annotitem_septype,
-            )
+    # ANNOTATION - oncokb
+    def _init_oncokb(self, init_blank=False):
+        if init_blank:
+            self.oncokb = liboncokb.OncoKBInfoALTlist.init_missing()
         else:
-            self.annotdb = annotationdb.AnnotDB(
-                "plain",
-                self.refver,
-                self.fasta,
-                self.chromdict,
-                vr=self.vr,
-                septype=self.annotitem_septype,
+            self.oncokb = liboncokb.OncoKBInfoALTlist.from_vr(self.vr)
+
+    def create_oncokb(self, token):
+        oncokb_altlist = liboncokb.OncoKBInfoALTlist()
+        oncokb_altlist.extend(
+            liboncokb.query_hgvsg_post(
+                hgvsg_list=list(x.to_hgvsg() for x in self.vcfspec.iter_monoalts()), 
+                token=token, tumor_type=None, evidence_types=None,
             )
-            self.annotdb_bnd1 = None
-            self.annotdb_bnd2 = None
+        )
+        self.oncokb = oncokb_altlist
 
-    def init_features(self):
-        self._init_transcript()
-        self._init_regulatory()
-        self._init_motif()
-        self._init_repeat()
+    # ANNOTATION - ensembl features
+    def _init_transcript(self, init_blank=False):
+        if init_blank:
+            self.transcript = ensembl_feature.TranscriptSetALTlist.init_missing()
+        else:
+            self.transcript = ensembl_feature.TranscriptSetALTlist.from_vr(self.vr)
 
-    def _init_transcript(self):
-        self.transcript = ensembl_feature.TranscriptSetALTlist.from_vr(self.vr)
+    def _init_regulatory(self, init_blank=False):
+        if init_blank:
+            self.regulatory = ensembl_feature.RegulatorySet.init_missing()
+        else:
+            self.regulatory = ensembl_feature.RegulatorySet.from_vr(self.vr)
 
-    def _init_regulatory(self):
-        self.regulatory = ensembl_feature.RegulatorySet.from_vr(self.vr)
+    def _init_motif(self, init_blank=False):
+        if init_blank:
+            self.motif = ensembl_feature.MotifSet.init_missing()
+        else:
+            self.motif = ensembl_feature.MotifSet.from_vr(self.vr)
 
-    def _init_motif(self):
-        self.motif = ensembl_feature.MotifSet.from_vr(self.vr)
+    def _init_repeat(self, init_blank=False):
+        if init_blank:
+            self.repeat = ensembl_feature.RepeatSet.init_missing()
+        else:
+            self.repeat = ensembl_feature.RepeatSet.from_vr(self.vr)
 
-    def _init_repeat(self):
-        self.repeat = ensembl_feature.RepeatSet.from_vr(self.vr)
+    def _init_features(self, init_blank=False):
+        self._init_transcript(init_blank=init_blank)
+        self._init_regulatory(init_blank=init_blank)
+        self._init_motif(init_blank=init_blank)
+        self._init_repeat(init_blank=init_blank)
+
+    def create_features(
+        self, vep_method='rest', distance=5000, 
+        with_CADD=True, with_Phenotypes=False, with_canonical=True,
+        with_mane=True, with_miRNA=False, with_numbers=True, 
+        with_protein=True, with_ccds=True, with_hgvs=True,
+    ):
+        assert vep_method in ('rest', 'local')
+
+        # run vep and parse the result
+        rest_vep_results = ensembl_rest.vep_post(
+            refver=self.refver,
+            vcfspec_list=list(self.vcfspec.iter_monoalts()),
+            distance=distance, 
+            with_CADD=with_CADD, with_Phenotypes=with_Phenotypes, with_canonical=with_canonical,
+            with_mane=with_mane, with_miRNA=with_miRNA, with_numbers=with_numbers, 
+            with_protein=with_protein, with_ccds=with_ccds, with_hgvs=with_hgvs,
+        )
+        parsed = [ensembl_parser.parse_rest_vep(x) for x in rest_vep_results]
+        transcript = ensembl_feature.TranscriptSetALTlist()
+        for x in parsed:
+            transcript.append(x['transcript'])
+        regulatory = parsed[0]['regulatory']
+        motif = parsed[0]['motif']
+        # postprocess
+        tabixfile_geneset = annotation_data.TABIXFILES_GENESET[self.refver]
+        tabixfile_regulatory = annotation_data.TABIXFILES_REGULATORY[self.refver]
+        tabixfile_repeats = annotation_data.TABIXFILES_REPEATS[self.refver]
+        # transcript
+        for alt_idx, tr_set in enumerate(transcript):
+            tr_set.update_ensembl_gff(
+                vcfspec=self.vcfspec,
+                chromdict=self.chromdict,
+                distance=distance,
+                tabixfile_geneset=tabixfile_geneset,
+                refver=self.refver,
+                fill_missing_canonical=True,
+            )
+            tr_set.set_missing_distances(vcfspec=self.vcfspec, alt_idx=alt_idx)
+        # regulatory
+        regulatory.update_ensembl_gff(
+            vcfspec=self.vcfspec,
+            chromdict=self.chromdict,
+            distance=distance,
+            tabixfile_regulatory=tabixfile_regulatory,
+        )
+        regulatory.set_missing_distances(vcfspec=self.vcfspec, alt_idx=0)
+        # repeat
+        repeat = ensembl_feature.RepeatSet.init_nonmissing()
+        repeat.update_repeatmasker_bed(
+            vcfspec=self.vcfspec,
+            chromdict=self.chromdict,
+            distance=distance,
+            tabixfile_repeats=tabixfile_repeats,
+        )
+        repeat.set_missing_distances(vcfspec=self.vcfspec, alt_idx=0)
+
+        # assign attributes
+        self.transcript = transcript
+        self.regulatory = regulatory
+        self.motif = motif
+        self.repeat = repeat
 
     def update_vep(self, vep_vr, alt_idx, distance, tabixfile_geneset, tabixfile_regulatory, tabixfile_repeats):
         self.update_cmdline_vep(vep_vr, alt_idx, overwrite=True, create_new=True)
@@ -415,95 +468,39 @@ class VariantPlus:
         self.repeat.set_missing_distances(vcfspec=self.vcfspec, alt_idx=alt_idx)
 
     # alleleindexes
-    def get_other_alleleindexes(self, allele_index):
-        """Returns all integer allele indexes other than the input"""
+#    def get_other_alleleindexes(self, allele_index):
+#        """Returns all integer allele indexes other than the input"""
+#
+#        all_alleleindexes = set(range(len(self.vr.alleles)))
+#        other_alleleindexes = all_alleleindexes.difference([allele_index])
+#        return tuple(sorted(other_alleleindexes))
 
-        all_alleleindexes = set(range(len(self.vr.alleles)))
-        other_alleleindexes = all_alleleindexes.difference([allele_index])
-        return tuple(sorted(other_alleleindexes))
-
-    # miscellaneous
-    def get_gr(self):
-        return pr.from_dict(
-            {
-                "Chromosome": [self.vr.contig],
-                "Start": [self.vr.pos - 1],
-                "End": [self.vr.pos],
-            }
-        )
-
-    def get_gene_names(self, canonical_only=True):
-        if canonical_only:
-            return [
-                feature["gene_name"]
-                for feature in self.annotdb.transcript_canon_ovlp.values()
-            ]
+    # ANNOTATION - readstats and related
+    def _init_readstats(self, init_blank=False):
+        if init_blank:
+            self.readstats_dict = libreadstats.ReadStatsSampledict.init_missing()
         else:
-            return [
-                feature["gene_name"]
-                for feature in self.annotdb.transcript_ovlp.values()
-            ]
+            self.readstats_dict = libreadstats.ReadStatsSampledict.from_vr(self.vr)
 
-    def check_intergenic(self):
-        return len(self.annotdb.transcript) == 0
-
-    def get_info(self, key, collapse_tuple=True):
-        return infoformat.get_value_info(self.vr, key, collapse_tuple=collapse_tuple)
-
-    def get_format(self, sampleid, key, collapse_tuple=True):
-        return infoformat.get_value_format(
-            self.vr, sampleid, key, collapse_tuple=collapse_tuple
-        )
-
-    def set_info(self, key, val, typeconv=True):
-        infoformat.set_info(self.vr, key, val, typeconv=typeconv)
-
-    def set_format(self, sampleid, key, val, typeconv=True):
-        infoformat.set_format(self.vr, sampleid, key, val, typeconv=typeconv)
-
-    def check_NA_info(self, key):
-        return infoformat.check_NA_info(self.vr, key)
-
-    def check_NA_format(self, sampleid, key):
-        return infoformat.check_NA_format(self.vr, sampleid, key)
-
-    def show_info(self):
-        infoformat.show_info(self.vr)
-
-    def show_format(self):
-        infoformat.show_format(self.vr)
-
-    def _refine_vr_InfoFormatValues(self):
-        infoformat.refine_vr_InfoFormatValue(self.vr)
-
-    # breakends
-    def get_vr_bnd2(self):
-        assert self.bnds is not None, f'"bnds" attribute must be set.'
-
-        vr_bnd2 = self.vr.header.new_record()
-        vr_bnd2.id = self.bnds.get_id_bnd2()
-        vcfspec_bnd2 = self.bnds.get_vcfspec_bnd2()
-        varianthandler.apply_vcfspec(vr_bnd2, vcfspec_bnd2)
-        vr_bnd2.info["MATEID"] = self.vr.id
-
-        return vr_bnd2
-
-    def set_bnds_attributes(self):
-        if self.is_sv:
-            vr_svinfo = libbreakends.get_vr_svinfo_standard_vr(
-                self.vr,
-                self.fasta,
-                self.chromdict,
+    def create_readstats(
+        self, bam_dict,
+        rpplist_kwargs={
+            'view': False,
+            'no_matesearch': True,
+        },
+    ):
+        """Args:
+            bam_dict: keys - sample ID, values - pysam.AlignmentFile
+        Makes a ReadStatsSampledict object, keys of which are the same as the
+            keys of "bam_dict" parameter.
+        """
+        self.readstats_dict = libreadstats.ReadStatsSampledict()
+        for sampleid, bam in bam_dict.items():
+            #readstats_data = self.make_readstats_data(bam)
+            self.readstats_dict[sampleid] = libreadstats.ReadStats.from_bam(
+                vcfspec=self.vcfspec, bam=bam, fasta=self.fasta, chromdict=self.chromdict,
             )
-            self.is_bnd1 = vr_svinfo["is_bnd1"]
-            self.bnds = libbreakends.get_bnds_from_vr_svinfo(
-                self.vr, vr_svinfo, self.fasta, self.chromdict
-            )
-        else:
-            self.is_bnd1 = None
-            self.bnds = None
 
-    # rpplist
     def make_rpplist(
         self,
         bam,
@@ -523,10 +520,7 @@ class VariantPlus:
                 **rpplist_kwargs,
             )
             if set_alleleinfo:
-                rpplist.update_alleleinfo_sv(
-                    bnds=self.bnds,
-                    **alleleinfo_kwargs,
-                )
+                rpplist.update_alleleinfo_sv(bnds=self.bnds, **alleleinfo_kwargs)
         else:
             rpplist = readplus.get_rpplist_nonsv(
                 bam=bam,
@@ -538,10 +532,7 @@ class VariantPlus:
                 **rpplist_kwargs,
             )
             if set_alleleinfo:
-                rpplist.update_alleleinfo(
-                    vcfspec=self.vcfspec, 
-                    **alleleinfo_kwargs,
-                )
+                rpplist.update_alleleinfo(vcfspec=self.vcfspec, **alleleinfo_kwargs)
 
         return rpplist
 
@@ -560,16 +551,6 @@ class VariantPlus:
             alleleinfo_kwargs=alleleinfo_kwargs,
         )
 
-#    @common.get_deco_num_set(('bam', 'sampleid'), 1)
-#    def get_rpplist(self, sampleid=None, bam=None):
-#        if sampleid is not None:
-#            if sampleid not in self.rpplist_dict:
-#                raise Exception(f"rpplist for the sampleid {sampleid} is not created. To make it, run VariantPlus.set_rpplist method.")
-#            return self.rpplist_dict[sampleid]
-#        elif bam is not None:
-#            return self.make_rpplist(bam=bam)
-
-    # readstats_data
     def make_readstats_data(self, bam, **kwargs):
         return libreadstats.get_readstats_data(
             self.vcfspec,
@@ -593,55 +574,24 @@ class VariantPlus:
         if verbose:
             print(f"Getting readstats_data for the sample {sampleid}")
 
-        if sampleid not in self.rpplist_dict.keys():
-            self.set_rpplist(
-                sampleid, 
-                bam, 
-                set_alleleinfo=True,
-                rpplist_kwargs=rpplist_kwargs,
-                alleleinfo_kwargs=alleleinfo_kwargs,
-            )
+        #if sampleid not in self.rpplist_dict.keys():
+        self.set_rpplist(
+            sampleid, 
+            bam, 
+            set_alleleinfo=True,
+            rpplist_kwargs=rpplist_kwargs,
+            alleleinfo_kwargs=alleleinfo_kwargs,
+        )
 
-        readstats_data = libreadstats.rpplist_to_readstats_data(
+#        readstats_data = libreadstats.rpplist_to_readstats_data(
+#            self.rpplist_dict[sampleid],
+#            self.vcfspec,
+#        )
+        self.readstats_data_dict[sampleid] = libreadstats.rpplist_to_readstats_data(
             self.rpplist_dict[sampleid],
             self.vcfspec,
         )
-        self.readstats_data_dict[sampleid] = readstats_data
 
-#    def get_readstats_data(self, sampleid, bam=None):
-#        if sampleid not in self.readstats_data_dict:
-#            if bam is None:
-#                raise Exception(
-#                    f"readstats_data for the sampleid {sampleid} is not "
-#                    f"prepared. To make it, bam is required."
-#                )
-#            self.set_readstats_data(sampleid, bam, verbose=False)
-#        return self.readstats_data_dict[sampleid]
-
-    # readstats
-    def _init_readstats(self):
-        self.readstats_dict = dict()
-        for sampleid in self.vr.samples.keys():
-            if self.check_NA_format(sampleid, libreadstats.ReadStats.meta["ID"]):
-                self.readstats_dict[sampleid] = None
-            else:
-                readstats = libreadstats.ReadStats.from_vr(self.vr, sampleid)
-                readstats.postprocess()
-                self.readstats_dict[sampleid] = readstats
-
-    def make_readstats(self, bam, **kwargs):
-        return libreadstats.get_readstats(self.vcfspec, bam, self.fasta, self.chromdict, **kwargs)
-
-    def set_readstats(self, sampleid, bam):
-        if sampleid in self.readstats_data_dict.keys():
-            pass
-        else:
-            self.set_readstats_data(sampleid, bam)
-
-        readstats_data = self.readstats_data_dict[sampleid]
-        self.readstats_dict[sampleid] = libreadstats.summarize_readstats_data(readstats_data)
-
-    # readstats-related-others
     def calc_readcounts(self, bam, no_matesearch=True):
         """Designed only for non-sv"""
 
@@ -651,16 +601,6 @@ class VariantPlus:
         readcounts = rpplist.get_readcounts(self.vcfspec)
 
         return readcounts
-
-    def get_ponfilter(self, sampleids=None, **kwargs):
-        if sampleids is None:
-            readstats_dict = self.readstats_dict
-        else:
-            readstats_dict = {
-                sampleid: self.readstats_dict[sampleid] for sampleid in sampleids
-            }
-
-        return vpfilter.PonFilter(self.vcfspec, readstats_dict, **kwargs)
 
     def get_total_rppcount(self, sampleid):
         """Sum of rpp counts for all alleleclasses except None"""
@@ -678,9 +618,55 @@ class VariantPlus:
             else:
                 return round(vaf, ndigits)
 
+    # PON
+    def get_ponfilter(self, sampleids=None, **kwargs):
+        if sampleids is None:
+            readstats_dict = self.readstats_dict
+        else:
+            readstats_dict = {
+                sampleid: self.readstats_dict[sampleid] for sampleid in sampleids
+            }
+
+        return libfilter.PonFilter(self.vcfspec, readstats_dict, **kwargs)
+
+    # CNV-RELATED
+    def fetch_cnvinfo(self, segments_df):
+        nearest = self.get_gr().nearest(pr.PyRanges(segments_df))
+        seg_row = nearest.df.iloc[0, :]
+        return int(seg_row.CNt), int(seg_row.A), int(seg_row.B)
+
+    def get_ccf_CNm(self, segments_df, is_female, cellularity, sampleid, allele_index=1, likelihood='diff'):
+        # set params
+        CNt, A, B = self.fetch_cnvinfo(segments_df)
+        if cnvmisc.check_haploid(is_female, self.chrom):
+            CNn = 1
+            CNB = None
+        else:
+            CNn = 2
+            CNB = B
+
+        if likelihood == 'binom':
+            readstats = self.readstats_dict[sampleid]
+            total_read = readstats.get_total_rppcount()
+            var_read = readstats['rppcounts'][allele_index]
+        elif likelihood == 'diff':
+            total_read = None
+            var_read = None
+
+        return cnvmisc.get_ccf_CNm(
+            vaf=self.get_vaf(sampleid, allele_index), 
+            cellularity=cellularity, 
+            CNt=CNt, 
+            CNB=CNB, 
+            likelihood=likelihood, 
+            total_read=total_read, 
+            var_read=var_read, 
+            CNn=CNn,
+        )
+
     # filters
     def reset_sample_filter(self, sampleid):
-        self.set_format(sampleid, vpfilter.FORMAT_FILTER_META["ID"], None)
+        self.set_format(sampleid, libfilter.FORMAT_FILTER_META["ID"], None)
 
     def reset_sample_filter_all(self):
         for sampleid in self.vr.header.samples:
@@ -688,30 +674,30 @@ class VariantPlus:
 
     def check_sample_filter(self, sampleid):
         sample_filter = self.get_format(
-            sampleid, vpfilter.FORMAT_FILTER_META["ID"], collapse_tuple=False
+            sampleid, libfilter.FORMAT_FILTER_META["ID"], collapse_tuple=False
         )
         return sample_filter == ("PASS",)
 
     def add_sample_filter(self, sampleid, value: str):
         if value == "PASS":
-            self.set_format(sampleid, vpfilter.FORMAT_FILTER_META["ID"], ("PASS",))
+            self.set_format(sampleid, libfilter.FORMAT_FILTER_META["ID"], ("PASS",))
         else:
-            if self.check_NA_format(sampleid, vpfilter.FORMAT_FILTER_META["ID"]):
+            if self.check_NA_format(sampleid, libfilter.FORMAT_FILTER_META["ID"]):
                 new_val = (value,)
             else:
                 old_val = self.get_format(
-                    sampleid, vpfilter.FORMAT_FILTER_META["ID"], collapse_tuple=False
+                    sampleid, libfilter.FORMAT_FILTER_META["ID"], collapse_tuple=False
                 )
                 new_val = tuple(set(old_val + (value,)))
 
-            self.set_format(sampleid, vpfilter.FORMAT_FILTER_META["ID"], new_val)
+            self.set_format(sampleid, libfilter.FORMAT_FILTER_META["ID"], new_val)
 
     def show_sample_filters(self):
         for sampleid in self.vr.header.samples:
             print(
                 sampleid,
                 self.get_format(
-                    sampleid, vpfilter.FORMAT_FILTER_META["ID"], collapse_tuple=False
+                    sampleid, libfilter.FORMAT_FILTER_META["ID"], collapse_tuple=False
                 ),
             )
 
@@ -745,6 +731,9 @@ class VariantPlus:
                 rpplist_kwargs=rpplist_kwargs,
                 alleleinfo_kwargs=alleleinfo_kwargs,
             )
+
+        if len(rpplist) == 0:
+            return
 
         # add alleleinfo tag to ReadPlus and ReadPlusPair objects
         if self.is_sv:
@@ -814,41 +803,262 @@ class VariantPlus:
             self, sampleid_order=sampleids, title=str(self.vcfspec), **kwargs
         )
 
-#    @common.get_deco_num_set(("sampleid", "bam"), 1)
-#    def show_readstats_data(self, sampleid=None, bam=None, varpos_key="left"):
-#        if sampleid is None:
-#            readstats_data = libreadstats.get_readstats_data(
-#                self.vcfspec, bam, self.fasta, self.chromdict
-#            )
-#        else:
-#            readstats_data = self.get_readstats_data(sampleid, bam=bam)
-#
-#        variantviz.show_readstats_data(
-#            readstats_data, title=sampleid, varpos_key=varpos_key
-#        )
+    # miscellaneous
+    def get_gr(self):
+        return pr.from_dict(
+            {
+                "Chromosome": [self.vr.contig],
+                "Start": [self.vr.pos - 1],
+                "End": [self.vr.pos],
+            }
+        )
 
-    ##################################################################
+    def get_gene_names(self, canonical=True, overlap=True):
+        return set(
+            itertools.chain.from_iterable(
+                tr_set.get_gene_names(canonical=canonical, overlap=overlap)
+                for tr_set in self.transcript
+            )
+        )
 
-    # others
-    def get_popfreq(self, popname):
-        val = self.annotdb.popfreq[popname]
-        if val is None:
-            val = 0
+    #def check_intergenic(self):
+    #    return len(self.annotdb.transcript) == 0
 
-        return val
+    def get_info(self, key, collapse_tuple=True):
+        return infoformat.get_value_info(self.vr, key, collapse_tuple=collapse_tuple)
 
-    def get_cosmic_total_occur(self):
-        val = self.annotdb.cosmic["total_occurrence"]
-        if val is None:
-            val = 0
+    def get_format(self, sampleid, key, collapse_tuple=True):
+        return infoformat.get_value_format(
+            self.vr, sampleid, key, collapse_tuple=collapse_tuple
+        )
 
-        return val
+    def set_info(self, key, val, typeconv=True):
+        infoformat.set_info(self.vr, key, val, typeconv=typeconv)
+
+    def set_format(self, sampleid, key, val, typeconv=True):
+        infoformat.set_format(self.vr, sampleid, key, val, typeconv=typeconv)
+
+    def check_NA_info(self, key):
+        return infoformat.check_NA_info(self.vr, key)
+
+    def check_NA_format(self, sampleid, key):
+        return infoformat.check_NA_format(self.vr, sampleid, key)
+
+    def show_info(self):
+        infoformat.show_info(self.vr)
+
+    def show_format(self):
+        infoformat.show_format(self.vr)
+
+    def _refine_vr_InfoFormatValues(self):
+        infoformat.refine_vr_InfoFormatValue(self.vr)
 
 
 class VariantPlusList(list):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        #self._gr = None
+    def __init__(
+        self, vcf_path=None, vcf=None, refver=None,
+        fasta=None, chromdict=None,
+        logging_lineno=10000, preview_lineno=10000, 
+        verbose=True, logger=None,
+    ):
+        # vcf_path, vcf
+        self.vcf_path = vcf_path
+        if vcf is None:
+            if self.vcf_path is None:
+                self.vcf = None
+            else:
+                self.vcf = pysam.VariantFile(self.vcf_path, "r")
+        else:
+            self.vcf = vcf
+
+        # refver, fasta, chromdict
+        if refver is None:
+            if self.vcf is None:
+                raise Exception(f'When "refver" is not set, "vcf_path" must be set.')
+            self.refver = common.infer_refver_vcfheader(self.vcf.header)
+        else:
+            self.refver = refver
+
+        if fasta is None:
+            self.fasta = common.DEFAULT_FASTAS[self.refver]
+        else:
+            self.fasta = fasta
+
+        if chromdict is None:
+            self.chromdict = common.ChromDict(fasta=self.fasta)
+        else:
+            self.chromdict = chromdict
+
+        # lineno, verbose, logger
+        self.logging_lineno = logging_lineno
+        self.preview_lineno = preview_lineno
+        self.verbose = verbose
+        if logger is None:
+            self.logger = self.get_logger(self.verbose)
+        else:
+            self.logger = logger
+
+    @classmethod
+    def concat(cls, others, **kwargs):
+        others = list(others)
+        if len(set(x.refver for x in others)) != 1:
+            raise Exception(f'Different refvers of input VariantPlusList objects')
+
+        result = cls(refver=others[0].refver, **kwargs)
+        for other in others:
+            result.extend(other)
+
+        return result
+
+    @classmethod
+    def from_vps(cls, vps, **kwargs):
+        vp_iterator = iter(vps)
+        vp = next(vp_iterator)
+        result = cls(refver=vp.refver, **kwargs)
+        result.append(vp)
+        result.extend(vp_iterator)
+        return result
+
+    @classmethod
+    def from_vcf(
+        cls,
+        vcf_path,
+        init_all_attrs=True,
+        init_popfreq=False,
+        init_cosmic=False,
+        init_transcript=False,
+        init_regulatory=False,
+        init_motif=False,
+        init_repeat=False,
+        init_readstats=False,
+        init_oncokb=False,
+        **kwargs,
+    ):
+        # initialize results
+        result = cls(vcf_path=vcf_path, **kwargs)
+
+        # set params
+        if init_all_attrs:
+            init_popfreq = True
+            init_cosmic = True
+            init_transcript = True
+            init_regulatory = True
+            init_motif = True
+            init_repeat = True
+            init_readstats = True
+            init_oncokb = True
+
+        if init_popfreq:
+            popfreq_metadata = libpopfreq.PopfreqMetadata.from_vcfheader(result.vcf.header)
+        else:
+            popfreq_metadata = None
+
+        if init_cosmic:
+            cosmic_metadata = libcosmic.CosmicMetadata.from_vcfheader(result.vcf.header)
+        else:
+            cosmic_metadata = None
+
+        '''
+        Following code is a failed attempt to parallelize using multiprocessing.
+        Many custom classes cannot be pickled.
+
+        def vr_iterator(vcf):
+            for vr in vcf.fetch():
+                if varianthandler.check_SV(vr):
+                    vr_svinfo = libbreakends.get_vr_svinfo_standard_vr(vr, result.fasta, result.chromdict)
+                    if vr_svinfo["is_bnd1"]:
+                        yield vr
+                else:
+                    yield vr
+
+        refver, fasta, chromdict = result.refver, result.fasta, result.chromdict
+        with multiprocessing.Pool(ncore) as p:
+            NR = 0
+            for vr_subiter in common.grouper(vr_iterator(result.vcf), result.logging_lineno):
+                vp_sublist = p.starmap(
+                    _init_helper_make_vp, 
+                    (
+                        (
+                            vr, 
+                            refver, 
+                            fasta, 
+                            chromdict, 
+                            init_popfreq, 
+                            init_cosmic,
+                            popfreq_metadata, 
+                            cosmic_metadata,
+                            init_transcript,
+                            init_regulatory,
+                            init_motif,
+                            init_repeat,
+                            init_readstats,
+                            init_oncokb,
+                        )
+                        for vr in vr_subiter
+                    )
+                )
+                NR += len(vp_sublist)
+                result.logger.info(f'Processing {NR:,}th line')
+                result.extend(vp_sublist)
+
+        '''
+
+        # create vps
+        for vr in common.iter_lineno_logging(result.vcf.fetch(), result.logger, result.logging_lineno):
+            if varianthandler.check_SV(vr):
+                vr_svinfo = libbreakends.get_vr_svinfo_standard_vr(vr, result.fasta, result.chromdict)
+                if not vr_svinfo["is_bnd1"]:
+                    continue
+
+            vp = VariantPlus.from_vr(
+                vr=vr,
+                refver=result.refver,
+                fasta=result.fasta,
+                chromdict=result.chromdict,
+
+                init_popfreq=init_popfreq,
+                init_cosmic=init_cosmic,
+                popfreq_metadata=popfreq_metadata, 
+                cosmic_metadata=cosmic_metadata,
+
+                init_transcript=init_transcript,
+                init_regulatory=init_regulatory,
+                init_motif=init_motif,
+                init_repeat=init_repeat,
+                init_readstats=init_readstats,
+                init_oncokb=init_oncokb,
+            )
+            result.append(vp)
+
+        return result
+
+    def __repr__(self):
+        return self.show(self.preview_lineno)
+
+    def show(self, lineno):
+        tmp = list()
+        tmp.append(f'<VariantPlusList of length {len(self)} [')
+        for idx, vp in enumerate(self):
+            if idx == lineno:
+                break
+            tmp.append(f'\t{idx}\t{vp}')
+        if len(self) > lineno:
+            tmp.append(f'\t...')
+        tmp.append(f']')
+        return '\n'.join(tmp)
+
+    @staticmethod
+    def get_logger(verbose):
+        formatter = logging.Formatter(
+            fmt='[%(asctime)s.%(msecs)03d] VariantPlusList: %(message)s', 
+            datefmt='%Z %Y-%m-%d %H:%M:%S'
+        )
+        return workflow.get_logger(
+            name=str(uuid.uuid4()),
+            level=('info' if verbose else 'error'),
+            #level='info',
+            formatter=formatter,
+        )
 
     def sample(self, n=1):
         if n == 1:
@@ -865,7 +1075,7 @@ class VariantPlusList(list):
                 vaf_sampleid = sample_ids[0]
 
         chroms = list()
-        poss = list()
+        pos1s = list()
         starts = list()
         ends = list()
         refs = list()
@@ -874,7 +1084,7 @@ class VariantPlusList(list):
 
         for vp in self:
             chroms.append(vp.vcfspec.chrom)
-            poss.append(vp.vcfspec.pos)
+            pos1s.append(vp.vcfspec.pos)
             starts.append(vp.vcfspec.pos0)
             ends.append(vp.vcfspec.end0)
             refs.append(vp.vcfspec.ref)
@@ -902,7 +1112,7 @@ class VariantPlusList(list):
             return pd.DataFrame.from_dict(
                 {
                     'CHROM': chroms,
-                    'POS': poss,
+                    'POS': pos1s,
                     'REF': refs,
                     'ALT': alts,
                     'VAF': vafs,
@@ -912,12 +1122,31 @@ class VariantPlusList(list):
     def get_gr(self, vaf_sampleid=None):
         return self.get_df(vaf_sampleid=vaf_sampleid, as_gr=True)
 
-    def get_isec(self, gr):
+    def spawn(self):
+        kwargs = {
+            key: getattr(self, key) for key in 
+            (
+                'vcf_path', 'vcf', 'refver', 
+                'logging_lineno', 'preview_lineno', 'verbose', 
+                'fasta', 'chromdict',
+            )
+        }
+        result = self.__class__(**kwargs)
+        return result
+
+    def filter(self, key):
+        result = self.spawn()
+        for vp in self:
+            if key(vp):
+                result.append(vp)
+        return result
+    
+    def isec(self, gr):
         overlaps = self.get_gr().count_overlaps(gr, overlap_col="count")
         marks = overlaps.df.loc[:, "count"] > 0
-        vplist_filtered = VariantPlusList()
-        vplist_filtered.extend(itertools.compress(self, marks))
-        return vplist_filtered
+        result = self.spawn()
+        result.extend(itertools.compress(self, marks))
+        return result
 
     def get_sigresult(self, catalogue_type="sbs96", **kwargs):
         libsig = importlib.import_module(
@@ -950,11 +1179,90 @@ class VariantPlusList(list):
         result.extend(self.select_del())
         return result
 
+    def get_vp_sortkey(self):
+        vr_sortkey = common.get_vr_sortkey(self.chromdict)
+        def vp_sortkey(vp):
+            return vr_sortkey(vp.vr)
+        return vp_sortkey
 
-def get_vp_sortkey(chromdict):
-    vr_sortkey = common.get_vr_sortkey(chromdict)
+    def sort(self):
+        super().sort(key=self.get_vp_sortkey())
 
-    def vp_sortkey(vp):
-        return vr_sortkey(vp.vr)
+    # writing related methods
+    def get_output_header(self):
+        if len(self) == 0:
+            return initvcf.create_header(self.chromdict)
+        else:
+            return headerhandler.merge_vcfheaders(vp.vr.header for vp in self)
 
-    return vp_sortkey
+    def write(self, outfile_path, mode_bcftools="z", mode_pysam=None, index=True):
+        # write annotation items to vr
+        for vp in self:
+            vp.write_annots_to_vr(fill_missing_sample=True)
+        # prepare header
+        header = self.get_output_header()
+        # decide if reheadering is needed
+        reheader_needed = any(
+            tuple(vp.vr.header.samples) != tuple(header.samples)
+            for vp in self
+        )
+        if reheader_needed:
+            def writer(vr, out_vcf, header):
+                out_vcf.write(varianthandler.reheader(vr, header))
+        else:
+            def writer(vr, out_vcf, header):
+                out_vcf.write(vr)
+        # main
+        self.sort()
+        mode_pysam = common.write_mode_arghandler(mode_bcftools, mode_pysam)
+        with pysam.VariantFile(outfile_path, mode=mode_pysam, header=header) as out_vcf:
+            for vp in self:
+                if vp.is_sv:
+                    writer(vp.vr, out_vcf, header)
+                    writer(vp.get_vr_bnd2(), out_vcf, header)
+                else:
+                    writer(vp.vr, out_vcf, header)
+
+        if index:
+            indexing.index_vcf(outfile_path)
+
+
+def _init_helper_make_vp(
+    vr, refver, fasta, chromdict, 
+
+    init_popfreq, 
+    init_cosmic,
+    popfreq_metadata, 
+    cosmic_metadata,
+
+    init_transcript,
+    init_regulatory,
+    init_motif,
+    init_repeat,
+    init_readstats,
+    init_oncokb,
+):
+    return VariantPlus.from_vr(
+        vr=vr,
+        refver=result.refver,
+        fasta=result.fasta,
+        chromdict=result.chromdict,
+
+        init_popfreq=init_popfreq,
+        init_cosmic=init_cosmic,
+        popfreq_metadata=popfreq_metadata, 
+        cosmic_metadata=cosmic_metadata,
+
+        init_transcript=init_transcript,
+        init_regulatory=init_regulatory,
+        init_motif=init_motif,
+        init_repeat=init_repeat,
+        init_readstats=init_readstats,
+        init_oncokb=init_oncokb,
+    )
+
+
+def load_vcf(vcf_path):
+    return VariantPlusList.from_vcf(vcf_path)
+
+

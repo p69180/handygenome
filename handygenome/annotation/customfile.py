@@ -37,26 +37,28 @@ class NoVcfIndexError(Exception):
     pass
 
 
-def fetch_relevant_vr_multialt(vcfspec, vcf, search_equivs=True, allow_multiple=False):
+def fetch_relevant_vr_multialt(vcfspec, vcf, search_equivs=True, raise_with_multihit=True):
     result = list()
-    for alt in vcfspec.alts:
-        new_vcfspec = libvcfspec.Vcfspec(vcfspec.chrom, vcfspec.pos, vcfspec.ref, (alt,))
+    for vcfspec_monoalt in vcfspec.iter_monoalts():
         result.append(
-            fetch_relevant_vr(new_vcfspec, vcf, search_equivs=search_equivs, allow_multiple=allow_multiple)
+            fetch_relevant_vr(
+                vcfspec_monoalt, 
+                vcf, 
+                search_equivs=search_equivs, 
+                raise_with_multihit=raise_with_multihit,
+            )
         )
 
     return result
 
 
-def fetch_relevant_vr(vcfspec, vcf, search_equivs=True, allow_multiple=False):
+def fetch_relevant_vr(vcfspec, vcf, search_equivs=True, raise_with_multihit=True):
     """Args:
         vcfspec: Must be with one ALT allele.
         vcf: pysam.VariantFile object
         search_equivs: If True, all equivalent forms are fetched. If False, 
             only vrs with identical chrom, pos, ref, alt are fetched.
     """
-    assert len(vcfspec.alts) == 1, (
-        f'Argument "vcfspec" must be with one ALT allele.')
 
     def matcher_exact(query_vcfspec, target_vcfspec):
         return query_vcfspec == target_vcfspec
@@ -101,25 +103,26 @@ def fetch_relevant_vr(vcfspec, vcf, search_equivs=True, allow_multiple=False):
     
         return relevant_vr_candidates
 
-    def get_relevant_vr(relevant_vr_candidates, allow_multiple):
+    def get_relevant_vr(relevant_vr_candidates, raise_with_multihit):
         if len(relevant_vr_candidates) == 0:
             relevant_vr = None
         elif len(relevant_vr_candidates) == 1:
             relevant_vr = relevant_vr_candidates[0]
         else:
-            if allow_multiple:
-                relevant_vr = relevant_vr_candidates[0]
-            else:
+            if raise_with_multihit:
                 e_msg = list()
-                e_msg.append(f'There are more than one relevant variant '
-                             f'records:')
+                e_msg.append(f'There are more than one relevant variant records:')
                 for vr in relevant_vr_candidates:
                     e_msg.append(str(vr))
                 raise Exception('\n'.join(e_msg))
+            else:
+                relevant_vr = relevant_vr_candidates[0]
 
         return relevant_vr
 
     # main
+    vcfspec.check_monoalt(raise_with_false=True)
+
     if vcf.index is None:
         raise NoVcfIndexError(f'Input vcf is not indexed.')
 
@@ -130,7 +133,7 @@ def fetch_relevant_vr(vcfspec, vcf, search_equivs=True, allow_multiple=False):
     else:
         relevant_vr_candidates = search_identical(vcfspec, vcf, matcher)
 
-    relevant_vr = get_relevant_vr(relevant_vr_candidates, allow_multiple)
+    relevant_vr = get_relevant_vr(relevant_vr_candidates, raise_with_multihit)
 
     return relevant_vr
 

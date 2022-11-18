@@ -49,14 +49,14 @@ class ReadPlus:
                 ]
             else:
                 self.fasta = fasta
-        # pairs_dict
-        self.set_pairs_dict(skip_refseq=minimal)
         # NMMD
         if recalc_NMMD:
             self._set_NMMD()
         else:
             if (not self.read.has_tag('NM')) or (not self.read.has_tag('MD')):
                 self._set_NMMD()
+        # pairs_dict
+        self.set_pairs_dict(skip_refseq=minimal)
         # others
         self.alleleinfo = dict()
 
@@ -115,7 +115,12 @@ class ReadPlus:
         BQlist = list()
         REF_range0 = vcfspec.REF_range0
         if self.check_spans(REF_range0):
-            pairs_indexes = self.get_pairs_indexes(REF_range0)
+            pairs_indexes = self.get_pairs_indexes(
+                REF_range0,
+                flanking_queryonly_default_mode=False,
+                include_leading_queryonly=True, 
+                include_trailing_queryonly=True,
+            )
             for idx in pairs_indexes:
                 querypos0 = self.pairs_dict['querypos0'][idx]
                 if querypos0 is not None:
@@ -190,7 +195,12 @@ class ReadPlus:
             
         return range(start, stop, step)
 
-    def get_pairs_indexes(self, range0):
+    def get_pairs_indexes(
+        self, range0, 
+        flanking_queryonly_default_mode=True,
+        include_leading_queryonly=False, 
+        include_trailing_queryonly=False,
+    ):
         """Args:
             range0: A directional range
         Returns:
@@ -199,6 +209,10 @@ class ReadPlus:
         """
         assert range0.step == 1
         assert len(range0) > 0
+
+        if flanking_queryonly_default_mode:
+            include_leading_queryonly = True
+            include_trailing_queryonly = True
 
         min_ref_pos0 = max(self.read.reference_start, range0.start)
         max_ref_pos0 = min(self.read.reference_end - 1, range0.stop - 1)
@@ -209,31 +223,38 @@ class ReadPlus:
         last = self.pairs_dict['refpos0'].index(max_ref_pos0)
 
         # search for leading query-only cigarops
-        for offset in itertools.count(1):
-            pairs_idx = first - offset
-            if pairs_idx < 0:
-                break
-            if not (
-                (self.pairs_dict['refpos0'][pairs_idx] is None) and
-                (self.pairs_dict['querypos0'][pairs_idx] is not None)
-            ):
-                # current position is not query-only
-                break
-        first = pairs_idx + 1
+        if include_leading_queryonly:
+            for offset in itertools.count(1):
+                pairs_idx = first - offset
+                if pairs_idx < 0:
+                    break
+                if not (
+                    (self.pairs_dict['refpos0'][pairs_idx] is None) and
+                    (self.pairs_dict['querypos0'][pairs_idx] is not None)
+                ):
+                    # current position is not query-only
+                    break
+
+            first = pairs_idx + 1
 
         # search for trailing query-only cigarops
-        for offset in itertools.count(1):
-            pairs_idx = last + offset
-            if pairs_idx == len(self.pairs_dict['refpos0']):
-                break
-            if not (
-                (self.pairs_dict['refpos0'][pairs_idx] is None) and
-                (self.pairs_dict['querypos0'][pairs_idx] is not None)
-            ):
-                # current position is not query-only
-                break
-        if pairs_idx == len(self.pairs_dict['refpos0']):
-            last = len(self.pairs_dict['refpos0']) - 1
+        if include_trailing_queryonly:
+            for offset in itertools.count(1):
+                pairs_idx = last + offset
+                if pairs_idx == len(self.pairs_dict['refpos0']):
+                    break
+                if not (
+                    (self.pairs_dict['refpos0'][pairs_idx] is None) and
+                    (self.pairs_dict['querypos0'][pairs_idx] is not None)
+                ):
+                    # current position is not query-only
+                    break
+
+            if flanking_queryonly_default_mode:
+                if pairs_idx == len(self.pairs_dict['refpos0']):
+                    last = pairs_idx - 1
+            else:
+                last = pairs_idx - 1
 
         return range(first, last + 1)
 
@@ -251,13 +272,33 @@ class ReadPlus:
                 return False
         return True
 
-    def check_matches(self, range0):
-        pairs_indexes = self.get_pairs_indexes(range0)
+    def check_matches(
+        self, range0, 
+        flanking_queryonly_default_mode=True,
+        include_leading_queryonly=False, 
+        include_trailing_queryonly=False,
+    ):
+        pairs_indexes = self.get_pairs_indexes(
+            range0, 
+            flanking_queryonly_default_mode=flanking_queryonly_default_mode,
+            include_leading_queryonly=include_leading_queryonly,
+            include_trailing_queryonly=include_trailing_queryonly,
+        )
         return self.check_matches_with_pairs_indexes(pairs_indexes)
 
-    def check_spans_and_matches(self, range0):
+    def check_spans_and_matches(
+        self, range0,
+        flanking_queryonly_default_mode=True,
+        include_leading_queryonly=False, 
+        include_trailing_queryonly=False,
+    ):
         if self.check_spans(range0):
-            pairs_indexes = self.get_pairs_indexes(range0)
+            pairs_indexes = self.get_pairs_indexes(
+                range0,
+                flanking_queryonly_default_mode=flanking_queryonly_default_mode,
+                include_leading_queryonly=include_leading_queryonly,
+                include_trailing_queryonly=include_trailing_queryonly,
+            )
             return self.check_matches_with_pairs_indexes(pairs_indexes)
         else:
             return False
@@ -286,8 +327,18 @@ class ReadPlus:
 
         return self.get_seq_from_querypos0_list(querypos0_list)
 
-    def get_seq_from_range0(self, range0):
-        pairs_indexes = self.get_pairs_indexes(range0)
+    def get_seq_from_range0(
+        self, range0,
+        flanking_queryonly_default_mode=True,
+        include_leading_queryonly=False, 
+        include_trailing_queryonly=False,
+    ):
+        pairs_indexes = self.get_pairs_indexes(
+            range0,
+            flanking_queryonly_default_mode=flanking_queryonly_default_mode,
+            include_leading_queryonly=include_leading_queryonly,
+            include_trailing_queryonly=include_trailing_queryonly,
+        )
         return self.get_seq_from_pairs_indexes(pairs_indexes)
 
     def get_seq_from_pairs_indexes(self, pairs_indexes):
@@ -537,30 +588,41 @@ class ReadPlusPair:
                  threshold_tlen=THRESHOLD_TEMPLATE_LENGTH):
         self._set_rp1_rp2(rplist_primary, chromdict)
         self.rplist_nonprimary = rplist_nonprimary
-
-        # query_name
-        self.query_name = self.rp1.read.query_name
-
-        # mate_chroms_differ
-        if self.rp2 is None:
-            self.mate_chroms_differ = None
-        else:
-            self.mate_chroms_differ = (
-                self.rp1.read.reference_name != self.rp2.read.reference_name)
-        self.is_TRA = self.mate_chroms_differ # alias
-
-        self.pairorient = readhandler.get_pairorient(self.rp1.read)
-            # may be None when: mate unmapped, TLEN == 0
-        self.tlen = (None 
-                     if self.mate_chroms_differ else 
-                     abs(self.rp1.read.template_length))
-        self.template_length = self.tlen  # alias
-
         self.alleleinfo = dict()
 
         #self._set_is_proper_pair()
         #self._set_sv_supporting()
         #self.irrelevant = (self.rp1.irrelevant or self.rp2.irrelevant)
+
+    @property
+    def query_name(self):
+        return self.rp1.read.query_name
+
+    @property
+    def mate_chroms_differ(self):
+        if self.rp2 is None:
+            return None
+        else:
+            return self.rp1.read.reference_name != self.rp2.read.reference_name
+
+    is_TRA = mate_chroms_differ  # alias
+
+    @property
+    def tlen(self):
+        if self.rp2 is None:
+            return None
+        else:
+            if self.mate_chroms_differ:
+                return None
+            else:
+                return abs(self.rp1.read.template_length)
+
+    template_length = tlen  # alias
+
+    @property
+    def pairorient(self):
+        return readhandler.get_pairorient(self.rp1.read)
+            # may be None when: mate unmapped, TLEN == 0
 
     # non-alleleinfo methods
     def check_softclip_overlaps_vcfspec(self, vcfspec):
@@ -675,6 +737,19 @@ class ReadPlusPair:
             else:
                 self.rp1 = rplist_primary[1]
                 self.rp2 = rplist_primary[0]
+
+    def get_MQ(self):
+        if self.rp2 is None:
+            return self.rp1.read.mapping_quality
+        else:
+            return (self.rp1.read.mapping_quality + self.rp2.read.mapping_quality) / 2
+
+    def get_cliplen(self):
+        if self.rp2 is None:
+            return self.rp1.cigarstats[4]
+        else:
+            return self.rp1.cigarstats[4] + self.rp2.cigarstats[4]
+
 
 #    def _set_is_proper_pair(self):
 #        if self.pairorient is None:
@@ -842,7 +917,8 @@ def get_rpplist_nonsv(bam, fasta, chromdict, chrom, start0, end0,
                       fetch_padding_common=FETCH_PADDING_COMMON,
                       fetch_padding_view=FETCH_PADDING_VIEW,
                       new_fetch_padding=NEW_FETCH_PADDING,
-                      long_insert_threshold=LONG_INSERT_THRESHOLD):
+                      long_insert_threshold=LONG_INSERT_THRESHOLD,
+                      recalc_NMMD=False):
     LOGGER_RPPLIST.info('Beginning initial fetch')
     (relevant_qname_set, new_fetch_range) = initial_fetch_nonsv(
         bam=bam, 
@@ -864,8 +940,9 @@ def get_rpplist_nonsv(bam, fasta, chromdict, chrom, start0, end0,
 
         LOGGER_RPPLIST.info('Beginning assembly into readpluspair')
         for readlist in fetchresult_dict.values():
-            rpp = get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict,
-                                            no_matesearch)
+            rpp = get_rpp_from_refinedfetch(
+                readlist, bam, fasta, chromdict, no_matesearch, recalc_NMMD=recalc_NMMD,
+            )
             if rpp is not None:
                 rpplist.append(rpp)
 
@@ -1204,7 +1281,7 @@ def refined_fetch_sv(bam, bnds, new_fetch_range_bnd1, new_fetch_range_bnd2,
     return fetchresult_dict
 
 
-def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch):
+def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch, recalc_NMMD=False):
     # classify reads into primary and non-primary ones
     readlist_primary = list()
     readlist_nonprimary = list()
@@ -1225,11 +1302,11 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch):
         # supplementary reads overlapping pos0 can be missed
         rpp = None
     else:
-        rplist_nonprimary = [ReadPlus(x, fasta)
+        rplist_nonprimary = [ReadPlus(x, fasta, recalc_NMMD=recalc_NMMD)
                              for x in readlist_nonprimary]
         if len(readlist_primary) == 1: # mate read is somewhere far away
             if no_matesearch:
-                rplist_primary = [ReadPlus(readlist_primary[0], fasta)]
+                rplist_primary = [ReadPlus(readlist_primary[0], fasta, recalc_NMMD=recalc_NMMD)]
             else:
                 mate = readhandler.get_primary_mate(readlist_primary[0], bam)
                 if mate is None:
@@ -1237,11 +1314,11 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch):
                         f'Mate not found for this read:\n'
                         f'{readlist_primary[0].to_string()}')
                 rplist_primary = [
-                    ReadPlus(readlist_primary[0], fasta), 
-                    ReadPlus(mate, fasta)]
+                    ReadPlus(readlist_primary[0], fasta, recalc_NMMD=recalc_NMMD), 
+                    ReadPlus(mate, fasta, recalc_NMMD=recalc_NMMD)]
 
         else: # len(readlist_primary) == 2
-            rplist_primary = [ReadPlus(x, fasta) 
+            rplist_primary = [ReadPlus(x, fasta, recalc_NMMD=recalc_NMMD) 
                               for x in readlist_primary]
 
         rpp = ReadPlusPair(rplist_primary, rplist_nonprimary, chromdict)

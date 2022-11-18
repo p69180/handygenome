@@ -699,9 +699,9 @@ def parse_cmdline_vep(vr):
             return True
 
     # main
-    transcriptset = ensembl_feature.TranscriptSet()
-    regulatoryset = ensembl_feature.RegulatorySet()
-    motifset = ensembl_feature.MotifSet()
+    transcriptset = ensembl_feature.TranscriptSet.init_nonmissing()
+    regulatoryset = ensembl_feature.RegulatorySet.init_nonmissing()
+    motifset = ensembl_feature.MotifSet.init_nonmissing()
 
     raw_result = extract_cmdline_vep_annotation(vr)
     if raw_result is not None:
@@ -779,7 +779,7 @@ def parse_rest_lookup_transcript(raw_result, refver, set_gene_name=True):
     transcript = _parse_rest_lookup_transcript_singleitem(
         raw_result, refver=refver, set_gene_name=set_gene_name)
 
-    transcriptset = ensembl_feature.TranscriptSet()
+    transcriptset = ensembl_feature.TranscriptSet.init_nonmissing()
     transcriptset[transcript['id']] = transcript
     parsed = {'transcript': transcriptset}
 
@@ -787,7 +787,7 @@ def parse_rest_lookup_transcript(raw_result, refver, set_gene_name=True):
 
 
 def parse_rest_lookup_transcript_post(raw_result, refver, set_gene_name=True):
-    transcriptset = ensembl_feature.TranscriptSet()
+    transcriptset = ensembl_feature.TranscriptSet.init_nonmissing()
     for val in raw_result.values():
         transcript = _parse_rest_lookup_transcript_singleitem(
             val, refver=refver, set_gene_name=set_gene_name)
@@ -817,7 +817,7 @@ def parse_rest_regulatory(raw_result):
     regulatory['biotype'] = raw_result['feature_type']
     regulatory['activity'] = raw_result['activity']
 
-    regulatoryset = ensembl_feature.RegulatorySet()
+    regulatoryset = ensembl_feature.RegulatorySet.init_nonmissing()
     regulatoryset[regulatory['id']] = regulatory
 
     parsed = {'regulatory': regulatoryset}
@@ -899,10 +899,10 @@ def parse_rest_overlap(raw_result, refver, include_motif_without_evidence=False,
         return repeat
 
     # main
-    transcriptset = ensembl_feature.TranscriptSet()
-    regulatoryset = ensembl_feature.RegulatorySet()
-    motifset = ensembl_feature.MotifSet()
-    repeatset = ensembl_feature.RepeatSet()
+    transcriptset = ensembl_feature.TranscriptSet.init_nonmissing()
+    regulatoryset = ensembl_feature.RegulatorySet.init_nonmissing()
+    motifset = ensembl_feature.MotifSet.init_nonmissing()
+    repeatset = ensembl_feature.RepeatSet.init_nonmissing()
 
     for raw_result_item in raw_result:
         feature_type = raw_result_item['feature_type']
@@ -1114,11 +1114,11 @@ def parse_rest_vep(raw_result):
         return motif
 
     # main
-    transcriptset = ensembl_feature.TranscriptSet()
-    regulatoryset = ensembl_feature.RegulatorySet()
-    motifset = ensembl_feature.MotifSet()
+    transcriptset = ensembl_feature.TranscriptSet.init_nonmissing()
+    regulatoryset = ensembl_feature.RegulatorySet.init_nonmissing()
+    motifset = ensembl_feature.MotifSet.init_nonmissing()
 
-    raw_result = raw_result[0]
+    #raw_result = raw_result[0]
     # 'intergenic_consequences' is ignored
     if 'transcript_consequences' in raw_result:
         for dic in raw_result['transcript_consequences']:

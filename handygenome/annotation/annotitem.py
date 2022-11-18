@@ -5,6 +5,7 @@ import collections
 import copy
 import json
 import functools
+import textwrap
 
 import pysam
 
@@ -16,9 +17,9 @@ common = importlib.import_module(".".join([top_package_name, "common"]))
 infoformat = importlib.import_module(
     ".".join([top_package_name, "variant", "infoformat"])
 )
-#varianthandler = importlib.import_module(
-#    ".".join([top_package_name, "variant", "varianthandler"])
-#)
+varianthandler = importlib.import_module(
+    ".".join([top_package_name, "variant", "varianthandler"])
+)
 
 # annotation = importlib.import_module('.'.join([top_package_name, 'annotation']))
 #ensembl_parser = importlib.import_module(
@@ -869,14 +870,26 @@ def _decode(string, handle_percent=True, convert_key=True):
 #                    annotitem.exon_ranges, annotitem
 #                )
 
+##############################
+# Base classes - AnnotItemBase
+##############################
 
-class AnnotItemBaseAll:
+class AllBase:
     def __repr__(self):
-        return common.cpformat(self.get_self_show(), sort_dicts=False)
+        if self.is_missing:
+            return (
+                f'<{self.__class__.__name__}(MISSING)>'
+            )
+        else:
+            return (
+                f'<{self.__class__.__name__}(\n'
+                f'{textwrap.indent(common.cpformat(self.get_self_show(), sort_dicts=False), " " * 4)}'
+                f'\n)>'
+            )
 
-#    @property
-#    def annotkey(self):
-#        return self.__class__.meta["ID"]
+    @property
+    def annotkey(self):
+        return self.__class__.meta["ID"]
 
     @staticmethod
     def decode(infostring):
@@ -886,95 +899,126 @@ class AnnotItemBaseAll:
     def get_annotkey(cls):
         return cls.meta["ID"]
 
-#    @classmethod
-#    def add_meta_info(cls, vcfheader):
-#        vcfheader.add_meta(key="INFO", items=cls.meta.items())
-#
-#    @classmethod
-#    def add_meta_format(cls, vcfheader):
-#        vcfheader.add_meta(key="FORMAT", items=cls.meta.items())
 
-#    def write_header(self, vcfheader):
-#        vcfheader.add_meta(key=self.annotkey, value=self.encode())
-
-#    def write_info(self, vr, key=None, add_meta=False):
-#        if key is None:
-#            key = self.annotkey
-#        if add_meta:
-#            self.__class__.add_meta_info(vr.header)
-#
-#        infoformat.set_info(vr, key, self.encode())
-#
-#    def write_format(self, vr, sampleid, key=None, add_meta=False):
-#        if key is None:
-#            key = self.annotkey
-#        if add_meta:
-#            self.__class__.add_meta_format(vr.header)
-#
-#        infoformat.set_format(vr, sampleid, key, self.encode())
-
-
-class AnnotItemBaseHeader:
-    def write(self, vcfheader):
-        vcfheader.add_meta(key=self.get_annotkey(), value=self.encode())
-
-
-class AnnotItemBaseInfo:
+class InfoBase:
     @classmethod
     def add_meta(cls, vcfheader):
         vcfheader.add_meta(key="INFO", items=cls.meta.items())
 
-    def write(self, vr, key=None, add_meta=False):
-        if key is None:
-            key = self.get_annotkey()
-        if add_meta:
-            self.__class__.add_meta(vr.header)
+    def write_base(self, vr):
+        if self.annotkey not in vr.header.info.keys():
+            self.add_meta(vr.header)
+        infoformat.set_info(vr, self.annotkey, self.encode())
 
-        infoformat.set_info(vr, key, self.encode())
+    @staticmethod
+    def get_Number(cls, vr, annotkey):
+        if annotkey in vr.header.info.keys():
+            result = infoformat.get_translated_number_info(vr, annotkey)
+            if isinstance(result, int):
+                return result
+            else:
+                return None
+        else:
+            return None
 
 
-class AnnotItemBaseFormat:
+class FormatBase:
     @classmethod
     def add_meta(cls, vcfheader):
         vcfheader.add_meta(key="FORMAT", items=cls.meta.items())
 
-    def write(self, vr, sampleid, key=None, add_meta=False):
-        if key is None:
-            key = self.get_annotkey()
-        if add_meta:
-            self.__class__.add_meta(vr.header)
+    #def get_sample_augmented_vr_onesample(self, vr, sampleid):
+    #    if sampleid in vr.samples.keys():
+    #        return vr
+    #    else:
+    #        new_header = vr.header.copy()
+    #        new_header.add_sample(sampleid)
+    #        return varianthandler.reheader(vr, new_header)
 
-        infoformat.set_format(vr, sampleid, key, self.encode())
+    def write_base(self, vr, sampleid, annotkey):
+        #if augment_sampleid:
+        #    edited_vr = self.get_sample_augmented_vr_onesample(vr, sampleid)
+        #else:
+        #    edited_vr = vr
+
+        #if self.annotkey not in edited_vr.header.formats.keys():
+        #    self.add_meta(edited_vr.header)
+
+        infoformat.set_format(vr, sampleid, annotkey, self.encode())
+        #return vr
+
+    @staticmethod
+    def get_Number(vr, annotkey):
+        if annotkey in vr.header.formats.keys():
+            result = infoformat.get_translated_number_format(vr, annotkey)
+            if isinstance(result, int):
+                return result
+            else:
+                return None
+        else:
+            return None
 
 
-class AnnotItemSingle(AnnotItemBaseAll, dict):
+##############################
+
+
+
+############################################################################
+# Base classes - SingleItemBase, ALTlistBase #
+############################################################################
+
+class SingleItemBase(AllBase, dict):
     ##### constructors #####
-    @classmethod
-    def from_annotstring(cls, annotstring):
-        result = cls()
-        result.update(cls.decode(annotstring))
-        return result
+    def __init__(self, is_missing=False):
+        self.is_missing = is_missing
 
+    @classmethod
+    def from_raw_value(cls, vr_value):
+        if infoformat.check_InfoFormatValue_isNA(vr_value):
+            return cls(is_missing=True)
+        else:
+            result = cls(is_missing=False)
+            result.update(cls.decode(vr_value))
+            return result
+
+    from_annotstring = from_raw_value
     from_infostring = from_annotstring
 
     @classmethod
     def from_dict(cls, data):
         return cls(data)
-    ########################
 
     @classmethod
-    def annotstring_parser(cls, annotstring):
-        return cls.from_annotstring(annotstring)
+    def init_missing(cls):
+        return cls(is_missing=True)
+
+    @classmethod
+    def init_nonmissing(cls):
+        return cls(is_missing=False)
+    ########################
 
     def get_self_show(self):
         return dict(self)
 
+    #def repr_base(self):
+    #    return common.cpformat(dict(self), sort_dicts=False)
+
+    def set_is_missing(self):
+        self.is_missing = True
+
+    def set_is_not_missing(self):
+        self.is_missing = False
+
     def encode(self):
-        return _encode(dict(self))
+        if self.is_missing:
+            return None
+        else:
+            return _encode(dict(self))
 
-    def update_annotstring(self, annotstring, overwrite=True):
-        self.update_dict(self.__class__.decode(annotstring), overwrite=overwrite)
+    def update_vr_value(self, vr_value, overwrite=True):
+        self.update_dict(self.__class__.decode(vr_value), overwrite=overwrite)
 
+    update_annotstring = update_vr_value
     update_infostring = update_annotstring
     load_infostring = update_annotstring
 
@@ -997,9 +1041,6 @@ class AnnotItemSingle(AnnotItemBaseAll, dict):
 
     load_other = update_dict
 
-    def init_missing(cls):
-        return None
-
     def _update_conflict_handler(self, key, old_val, new_val):
         values = {'3prime_overlapping_ncRNA', '3prime_overlapping_ncrna'}
         if (
@@ -1012,19 +1053,76 @@ class AnnotItemSingle(AnnotItemBaseAll, dict):
             raise Exception(f"Old value and new value are different; key: {key}; old_val: {old_val}; new_val: {new_val}")
 
 
-class AnnotItemALTlist(AnnotItemBaseAll, list):
-    #meta = None
+class ALTlistBase(AllBase, list):
+    @classmethod
+    def from_raw_value(cls, vr_value):
+        assert isinstance(vr_value, tuple)
+        result = cls()
+        for x in vr_value:
+            unit = cls.unit_class.from_raw_value(x)
+            result.append(unit)
+
+        return result
+
+    from_annotstring_tuple = from_raw_value
+
+    @classmethod
+    def init_missing(cls, vr):
+        result = cls()
+        for _ in range(len(vr.alts)):
+            result.append(cls.unit_class(is_missing=True))
+
+        return result
+
+#    def repr_base(self):
+#        return pprint.pformat([x.repr_base() for x in self])
+#        #return '[' + '\n'.join(x.repr_base() for x in self) + ']'
+#        #return tuple(x.get_self_show() for x in self)
+
     def get_self_show(self):
-        return [(None if (x is None) else x.get_self_show()) for x in self]
+        return list(self)
 
     def encode(self):
-        return tuple((None if (x is None) else x.encode()) for x in self)
+        return tuple(x.encode() for x in self)
 
-#########
+    @property
+    def is_missing(self):
+        return all(x.is_missing for x in self)
 
-class AnnotItemHeader(AnnotItemSingle, AnnotItemBaseHeader):
+    #def append(self, x):
+    #    assert isinstance(x, self.__class__.unit_class), f'Only an instance of unit_class can be appended.'
+    #    super().append(x)
+#
+#    def extend(self, seq):
+#        assert all(isinstance(x, self.__class__.unit_class) for x in seq), f'Only an instance of unit_class can be appended.'
+#        super().extend(seq)
+
+############################################################################
+
+
+######################################################
+# Intermediate level base classes for FORMAT entries #
+######################################################
+
+class AnnotItemFormatSingle(SingleItemBase, FormatBase):
+    pass
+
+AnnotItemVariantFormatSingle = AnnotItemFormatSingle
+
+
+class AnnotItemFormatALTList(ALTlistBase, FormatBase):
+    pass
+
+AnnotItemVariantFormatALTList = AnnotItemFormatALTList
+
+
+################################################################################
+# Objects which can be read from and written to VariantRecord or VariantHeader #
+################################################################################
+
+class AnnotItemHeader(SingleItemBase):
     @classmethod
-    def from_vcfheader(cls, vcfheader):
+    def from_vcfheader_base(cls, vcfheader):
         """Returns:
             None if the vcfheader does not contain annotkey
         """
@@ -1032,83 +1130,104 @@ class AnnotItemHeader(AnnotItemSingle, AnnotItemBaseHeader):
         annotkey = cls.get_annotkey()
         for rec in vcfheader.records:
             if rec.key == annotkey:
-                result = cls.from_annotstring(rec.value)
+                result = cls.from_raw_value(rec.value)
 
         return result
 
+    def write_base(self, vcfheader):
+        vcfheader.add_meta(key=self.get_annotkey(), value=self.encode())
 
-class AnnotItemVariantInfoSingle(AnnotItemSingle, AnnotItemBaseInfo):
+
+class AnnotItemInfoSingle(SingleItemBase, InfoBase):
     @classmethod
-    def from_vr_base(cls, vr, annotstring_parser_kwargs=dict()):
-        if infoformat.check_NA_info(vr, cls.get_annotkey()):
-            return None
+    def from_vr_base(cls, vr):
+        annotkey = cls.get_annotkey()
+        if infoformat.check_NA_info(vr, annotkey):
+            return cls.init_missing()
         else:
-            annotstring = vr.info[cls.get_annotkey()]
-            return cls.annotstring_parser(annotstring, **annotstring_parser_kwargs)
+            raw_val = vr.info[annotkey]
+            assert not isinstance(raw_val, tuple)
+            return cls.from_raw_value(raw_val)
 
 
-class AnnotItemVariantFormatSingle(AnnotItemSingle, AnnotItemBaseFormat):
+AnnotItemVariantInfoSingle = AnnotItemInfoSingle
+
+
+class AnnotItemInfoALTlist(ALTlistBase, InfoBase):
     @classmethod
-    def from_vr_base(cls, vr, sampleid, annotstring_parser_kwargs=dict()):
-        if infoformat.check_NA_format(vr, sampleid, cls.get_annotkey()):
-            return None
+    def from_vr_base(cls, vr):
+        annotkey = cls.get_annotkey()
+        if infoformat.check_NA_info(vr, annotkey):
+            return cls.init_missing(vr)
         else:
-            annotstring = vr.samples[sampleid][cls.get_annotkey()]
-            return cls.annotstring_parser(annotstring, **annotstring_parser_kwargs)
+            raw_val = vr.info[annotkey]
+            assert isinstance(raw_val, tuple)
+            return cls.from_raw_value(raw_val)
 
 
-class AnnotItemVariantInfoALTlist(AnnotItemALTlist, AnnotItemBaseInfo):
+AnnotItemVariantInfoALTlist = AnnotItemInfoALTlist
+
+
+class AnnotItemFormatSampledict(AllBase, FormatBase, dict):
+    @classmethod
+    def from_vr_base(cls, vr):
+        result = cls()
+        annotkey = cls.get_annotkey()
+        for sampleid in vr.samples.keys():
+            if infoformat.check_NA_format(vr, sampleid, annotkey):
+                result[sampleid] = cls.unit_class.init_missing()
+            else:
+                result[sampleid] = cls.unit_class.from_raw_value(
+                    vr.samples[sampleid][annotkey]
+                )
+
+        return result
+
     @classmethod
     def init_missing(cls, vr):
-        annotkey = cls.get_annotkey()
-        if annotkey in vr.header.info.keys():
-            result = cls()
-            transl_num = infoformat.get_translated_number_info(vr, annotkey)
-            for _ in range(transl_num):
-                result.append(None)
-            return result
-        else:
-            return None
+        result = cls()
+        for sampleid in vr.samples.keys():
+            result[sampleid] = cls.unit_class.init_missing()
 
-    @classmethod
-    def from_vr_base(cls, vr, annotstring_parser_kwargs=dict()):
-        if infoformat.check_NA_info(vr, cls.get_annotkey()):
-            result = cls.init_missing(vr)
-        else:
-            result = cls()
-            for annotstring in vr.info[cls.get_annotkey()]:
-                if annotstring in infoformat.NA_VALUES:
-                    result.append(None)
-                else:
-                    result.append(cls.annotstring_parser(annotstring, **annotstring_parser_kwargs))
         return result
 
+    def get_self_show(self):
+        return dict(self)
 
-class AnnotItemVariantFormatALTList(AnnotItemALTlist, AnnotItemBaseFormat):
-    @classmethod
-    def init_missing(cls, vr):
-        annotkey = cls.get_annotkey()
-        if annotkey in vr.header.formats.keys():
-            result = cls()
-            transl_num = infoformat.get_translated_number_format(vr, cls.get_annotkey())
-            for _ in range(transl_num):
-                result.append(None)
-            return result
-        else:
-            return None
+    @property
+    def is_missing(self):
+        return all(x.is_missing for x in self.values())
 
-    @classmethod
-    def from_vr_base(cls, vr, sampleid, annotstring_parser_kwargs=dict()):
-        if infoformat.check_NA_format(vr, sampleid, cls.get_annotkey()):
-            result = cls.init_missing(vr)
+    def get_sample_augmented_vr(self, vr):
+        """When some of sample IDs of self are missing from input vr, make
+        a copy of input vr with the missing sample IDs added. Otherwise,
+        returns the input vr.
+        """
+        self_samples = set(self.keys())
+        vr_samples = set(vr.samples.keys())
+        diff_samples = self_samples.difference(vr_samples)
+        if len(diff_samples) > 0:
+            new_header = vr.header.copy()
+            for sampleid in diff_samples:
+                new_header.add_sample(sampleid)
+            return varianthandler.reheader(vr, new_header)
         else:
-            result = cls()
-            for annotstring in vr.samples[sampleid][cls.get_annotkey()]:
-                if annotstring in infoformat.NA_VALUES:
-                    result.append(None)
-                else:
-                    result.append(cls.annotstring_parser(annotstring, **annotstring_parser_kwargs))
-        return result
+            return vr
+
+    def write_base(self, vr, donot_write_missing=True):
+        edited_vr = self.get_sample_augmented_vr(vr)
+
+        if self.annotkey not in edited_vr.header.formats.keys():
+            self.add_meta(edited_vr.header)
+
+        for sampleid, annotitem in self.items():
+            if donot_write_missing:
+                if not annotitem.is_missing:
+                    annotitem.write(edited_vr, sampleid, self.annotkey)
+            else:
+                annotitem.write(edited_vr, sampleid, self.annotkey)
+
+        return edited_vr
 
 
 ##########################

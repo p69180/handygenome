@@ -54,8 +54,26 @@ def get_alleleclass(vcfspec, rp, preflank_range0, postflank_range0):
         ...
     """
 
-    if rp.check_matches(preflank_range0) and rp.check_matches(postflank_range0):
-        allele_seq = rp.get_seq_from_range0(vcfspec.REF_range0)
+    if (
+        rp.check_matches(
+            preflank_range0,
+            flanking_queryonly_default_mode=False,
+            include_leading_queryonly=True, 
+            include_trailing_queryonly=False,
+        ) and 
+        rp.check_matches(
+            postflank_range0,
+            flanking_queryonly_default_mode=False,
+            include_leading_queryonly=False, 
+            include_trailing_queryonly=True,
+        )
+    ):
+        allele_seq = rp.get_seq_from_range0(
+            vcfspec.REF_range0,
+            flanking_queryonly_default_mode=False,
+            include_leading_queryonly=True, 
+            include_trailing_queryonly=True,
+        )
 
         alleles = vcfspec.alleles
         if allele_seq in alleles:

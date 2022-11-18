@@ -8,25 +8,21 @@ common = importlib.import_module('.'.join([top_package_name, 'common']))
 infoformat = importlib.import_module('.'.join([top_package_name, 'variant', 'infoformat']))
 annotitem = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotitem']))
 customfile = importlib.import_module('.'.join([top_package_name, 'annotation', 'customfile']))
-annotation_misc = importlib.import_module(".".join([top_package_name, "annotation", "misc"]))
+annotation_data = importlib.import_module(".".join([top_package_name, "annotation", "data"]))
 
-COSMIC_VCFS = annotation_misc.VCFS_COSMIC
+COSMIC_VCFS = annotation_data.VCFS_COSMIC
 
 
 class CosmicInfo(annotitem.AnnotItemVariantInfoSingle):
-    # constructors
-    def __init__(self, metadata=None, **kwargs):
-        super().__init__(**kwargs)
-        self.metadata = metadata
-
     @classmethod
-    def init_blank(cls):
+    def init_blank(cls, metadata=None):
         result = cls()
         result['id'] = None
         result['occurrence'] = None
         result['occurrence_somatic'] = None
         result['coding_score'] = None
         result['noncoding_score'] = None
+        result.metadata = metadata
         return result
     ##############
 
@@ -102,22 +98,36 @@ class CosmicInfo(annotitem.AnnotItemVariantInfoSingle):
             return total_occurrence / num_sample_allsites
 
 
-class CosmicInfoALTlist(annotitem.AnnotItemVariantInfoALTlist):
-    meta = {'ID': 'cosmic_info', 'Number': 'A', 'Type': 'String', 'Description': 'COSMIC information encoded as a string, one for each ALT allele'}
+class CosmicMetadata(annotitem.AnnotItemHeader):
+    meta = {'ID': 'cosmic_metadata'}
 
     @classmethod
-    def annotstring_parser(cls, annotstring, metadata):
-        result = CosmicInfo.from_annotstring(annotstring)
-        result.metadata = metadata
-        return result
+    def from_vcfheader(cls, vcfheader):
+        return cls.from_vcfheader_base(vcfheader)
+
+    def write(self, vcfheader):
+        self.write_base(vcfheader)
+
+
+class CosmicInfoALTlist(annotitem.AnnotItemVariantInfoALTlist):
+    meta = {
+        'ID': 'cosmic_info', 
+        'Number': 'A', 
+        'Type': 'String', 
+        'Description': 'COSMIC information encoded as a string, one for each ALT allele',
+    }
+
+    unit_class = CosmicInfo
+    metadata_class = CosmicMetadata
 
     @classmethod
     def from_vr(cls, vr, metadata=None):
         if metadata is None:
-            metadata = CosmicMetadata.from_vcfheader(vr.header)
+            metadata = cls.metadata_class.from_vcfheader(vr.header)
 
-        annotstring_parser_kwargs = {'metadata': metadata}
-        result = cls.from_vr_base(vr, annotstring_parser_kwargs)
+        result = cls.from_vr_base(vr)
+        for unit in result:
+            unit.metadata = metadata
 
         return result
 
@@ -125,21 +135,23 @@ class CosmicInfoALTlist(annotitem.AnnotItemVariantInfoALTlist):
     def from_vcfspec(cls, vcfspec, cosmic_vcf, metadata=None, donot_init_metadata=False):
         if metadata is None:
             if not donot_init_metadata:
-                metadata = CosmicMetadata.from_vcfheader(cosmic_vcf.header)
+                metadata = cls.metadata_class.from_vcfheader(cosmic_vcf.header)
 
-        cosmic_vr_list = customfile.fetch_relevant_vr_multialt(vcfspec, cosmic_vcf, search_equivs=True, allow_multiple=False)
+        cosmic_vr_list = customfile.fetch_relevant_vr_multialt(
+            vcfspec, cosmic_vcf, search_equivs=True, raise_with_multihit=True,
+        )
         result = cls()
         for vr in cosmic_vr_list:
             if vr is None:
-                result.append(CosmicInfo.init_blank())
+                #result.append(cls.unit_class.init_blank(metadata=metadata))
+                result.append(cls.unit_class.init_missing())
             else:
-                result.extend(CosmicInfoALTlist.from_vr(vr, metadata=metadata))
+                result.extend(cls.from_vr(vr, metadata=metadata))
 
         return result
 
-
-class CosmicMetadata(annotitem.AnnotItemHeader):
-    meta = {'ID': 'cosmic_metadata'}
+    def write(self, vr):
+        self.write_base(vr)
 
 
 def update_vcfheader(vcfheader, cosmic_vcf):

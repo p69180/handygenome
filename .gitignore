@@ -11,3 +11,4 @@ __pycache__/
 /indel_realigner_test/
 /sequenza_source_modified/
 /tests/
+/utils/

@@ -53,7 +53,10 @@ class SamplewiseFilter(VariantPlusFilter):
         self, readstats_key, vp, sampleid, alleleindex, cutoff
     ):
         readstats = vp.readstats_dict[sampleid]
-        other_alleleindexes = vp.get_other_alleleindexes(alleleindex)
+        #other_alleleindexes = vp.get_other_alleleindexes(alleleindex)
+        other_alleleindexes = tuple(sorted(
+            set(range(len(vp.vr.alleles))).difference({alleleindex})
+        ))
 
         target_value = readstats[readstats_key][alleleindex]
         other_value = readstats.get_alleleindexes_mean(
@@ -121,8 +124,11 @@ class PonFilter(SamplewiseFilter):
     @common.get_deco_arg_choices({"mode": ("mean", "max", "median")})
     def __init__(
         self,
-        vcfspec,
-        readstats_dict,
+        samples,
+
+        #vcfspec,
+        #readstats_dict,
+
         valid_sample_num_cutoff=20,
         min_germline_vaf=0.2,
         germline_sample_ratio_cutoff=0.1,
@@ -141,14 +147,15 @@ class PonFilter(SamplewiseFilter):
             raise Exception(
                 f'"nearby_ratio" argument must be equal to or greater than 1.'
             )
-        if len(readstats_dict) < valid_sample_num_cutoff:
-            raise Exception(f'The number of samples in "readstats_dict" is less than "valid_sample_num_cutoff" argument. Please use a PON cohort with a larger number of samples, or decrease "valid_sample_num_cutoff" parameter.')
+        #if len(readstats_dict) < valid_sample_num_cutoff:
+        #    raise Exception(f'The number of samples in "readstats_dict" is less than "valid_sample_num_cutoff" argument. Please use a PON cohort with a larger number of samples, or decrease "valid_sample_num_cutoff" parameter.')
 
         # main
-        self.vcfspec = vcfspec
-        self.readstats_dict = readstats_dict
-        self.sampleids = tuple(sorted(self.readstats_dict.keys()))
-        self.nsample = len(self.readstats_dict)
+        self.samples = samples
+        #self.vcfspec = vcfspec
+        #self.readstats_dict = readstats_dict
+        #self.sampleids = tuple(sorted(self.readstats_dict.keys()))
+        #self.nsample = len(self.readstats_dict)
         self.params = {
             "valid_sample_num_cutoff": valid_sample_num_cutoff,
             "min_germline_vaf": min_germline_vaf,
@@ -167,71 +174,122 @@ class PonFilter(SamplewiseFilter):
     def __repr__(self):
         infostr = ", ".join(
             [
-                f"{self.vcfspec}",
-                f"sample number: {self.nsample}",
+                #f"{self.vcfspec}",
+                #f"sample number: {self.nsample}",
+                f"samples: {self.samples}",
                 f"params: {self.params}",
             ]
         )
         return f"<PonFilter ({infostr})>"
 
-    # @functools.cache
-    def get_vaf_dict(self, alleleindex):
-        vaf_dict = dict()
-        for sampleid in self.sampleids:
-            readstats = self.readstats_dict[sampleid]
+#    # @functools.cache
+#    def get_vaf_dict(self, alleleindex, readstats_dict, excluded_pon_samples):
+#        vaf_dict = dict()
+#        for sampleid in self.samples:
+#            if sampleid in excluded_pon_samples:
+#                continue
+#
+#            readstats = readstats_dict[sampleid]
+#            denom = readstats.get_total_rppcount()
+#            if denom == 0:
+#                vaf = np.nan
+#            else:
+#                numer = readstats["rppcounts"][alleleindex]
+#                vaf = numer / denom
+#            vaf_dict[sampleid] = vaf
+#
+#        return vaf_dict
+#
+#    @functools.cache
+#    def get_vafs_old(self, alleleindex, excluded_pon_samples, verbose, readstats_dict):
+#        """Returns:
+#        np.ndarray composed of VAFs of PON samples, where samples in
+#            "excluded_pon_samples" and samples with nan vafs are excluded.
+#        Result is sorted in ascending order.
+#        """
+#        #vaf_dict = self.get_vaf_dict(alleleindex, readstats_dict, excluded_pon_samples)  # This does not include excluded_pon_samples
+#        #vafs = [x for x in vaf_dict.values() if not np.isnan(x)]
+#        #for sampleid in self.samples:
+#        #    vaf = vaf_dict[sampleid]
+#        #    if (sampleid not in excluded_pon_samples) and (not np.isnan(vaf)):
+#        #        vafs.append(vaf)
+#        vafs = list()
+#        for sampleid in self.samples:
+#            if sampleid in excluded_pon_samples:
+#                continue
+#
+#            readstats = readstats_dict[sampleid]
+#            denom = readstats.get_total_rppcount()
+#            if denom == 0:
+#                vaf = np.nan
+#            else:
+#                numer = readstats["rppcounts"][alleleindex]
+#                vaf = numer / denom
+#
+#            if not np.isnan(vaf):
+#                vafs.append(vaf)
+#
+#        if verbose:
+#            if len(vafs) < self.params["valid_sample_num_cutoff"]:
+#                print('The number of valid PON samples ({len(vafs)}) is less than the parameter "valid_sample_num_cutoff" ({self.params["valid_sample_num_cutoff"]}).')
+#
+#        vafs.sort()
+#        vafs = np.array(vafs)
+#
+#        return vafs
+
+    @staticmethod
+    def get_vaf_array(alleleindex, readstats_dict):
+        """Returns:
+        np.ndarray composed of VAFs of PON samples, where samples in
+            "excluded_pon_samples" and samples with nan vafs are excluded.
+        Result is sorted in ascending order.
+        """
+        pon_vafs = list()
+        for sampleid, readstats in readstats_dict.items():
+            readstats = readstats_dict[sampleid]
             denom = readstats.get_total_rppcount()
             if denom == 0:
                 vaf = np.nan
             else:
                 numer = readstats["rppcounts"][alleleindex]
                 vaf = numer / denom
-            vaf_dict[sampleid] = vaf
 
-        return vaf_dict
+            if not np.isnan(vaf):
+                pon_vafs.append(vaf)
 
-    @functools.cache
-    def get_vafs(self, alleleindex, excluded_pon_samples, verbose):
-        """Returns:
-        np.ndarray composed of VAFs of PON samples, where samples in
-            "excluded_pon_samples" and samples with nan vafs are excluded.
-        Result is sorted in ascending order.
-        """
-        vaf_dict = self.get_vaf_dict(alleleindex)
-        vafs = list()
-        for sampleid in self.sampleids:
-            vaf = vaf_dict[sampleid]
-            if (sampleid not in excluded_pon_samples) and (not np.isnan(vaf)):
-                vafs.append(vaf)
+        pon_vafs.sort()
+        pon_vaf_array = np.array(pon_vafs)
 
-        if verbose:
-            if len(vafs) < self.params["valid_sample_num_cutoff"]:
-                print('The number of valid PON samples ({len(vafs)}) is less than the parameter "valid_sample_num_cutoff" ({self.params["valid_sample_num_cutoff"]}).')
+        return pon_vaf_array
 
-        vafs.sort()
-        vafs = np.array(vafs)
+#    # @functools.cache
+#    def get_rppcount_dict(self, alleleindex, readstats_dict):
+#        rppcount_dict = dict()
+#        for sampleid, readstats in readstats_dict.items():
+#        #for sampleid in self.samples:
+#            readstats = readstats_dict[sampleid]
+#            rppcount_dict[sampleid] = readstats["rppcounts"][alleleindex]
+#
+#        return rppcount_dict
+#
+#    # @functools.cache
+#    def get_rppcounts_old(self, alleleindex, readstats_dict):
+#        rppcount_dict = self.get_rppcount_dict(alleleindex, readstats_dict)
+#        rppcounts = np.array([rppcount_dict[key] for key in self.samples])
+#
+#        return rppcounts
 
-        return vafs
-
-    # @functools.cache
-    def get_rppcount_dict(self, alleleindex):
-        rppcount_dict = dict()
-        for sampleid in self.sampleids:
-            readstats = self.readstats_dict[sampleid]
-            rppcount_dict[sampleid] = readstats["rppcounts"][alleleindex]
-
-        return rppcount_dict
+    def get_rppcount_array(self, alleleindex, readstats_dict):
+        return np.array([
+            readstats["rppcounts"][alleleindex]
+            for readstats in readstats_dict.values()
+        ])
 
     # @functools.cache
-    def get_rppcounts(self, alleleindex):
-        rppcount_dict = self.get_rppcount_dict(alleleindex)
-        rppcounts = np.array([rppcount_dict[key] for key in self.sampleids])
-
-        return rppcounts
-
-    # @functools.cache
-    def get_lowest_summary_count(self, alleleindex):
-        rppcounts = self.get_rppcounts(alleleindex)
-        rppcounts_nonzero = rppcounts[rppcounts > 0]
+    def get_lowest_summary_count(self, pon_rppcount_array):
+        #rppcounts = self.get_rppcounts(alleleindex, readstats_dict)
+        rppcounts_nonzero = pon_rppcount_array[pon_rppcount_array > 0]
         subset_num = int(len(rppcounts_nonzero) * self.params["subset_fraction"])
 
         if subset_num >= self.params["subset_num_cutoff"]:
@@ -242,27 +300,25 @@ class PonFilter(SamplewiseFilter):
 
         return noise_summary
 
-    def check_greater_than_lowest_count(self, vp, sampleid, alleleindex):
-        noise_summary = self.get_lowest_summary_count(alleleindex)
+    def check_greater_than_lowest_count(self, query_rppcount, pon_rppcount_array):
+        noise_summary = self.get_lowest_summary_count(pon_rppcount_array)
         if noise_summary is None:
             return True
         else:
-            rppcount = vp.readstats_dict[sampleid]["rppcounts"][alleleindex]
-            snr = rppcount / noise_summary
+            snr = query_rppcount / noise_summary
             return snr >= self.params["lowest_subset_snr_cutoff"]
 
     # @functools.cache
-    def get_lowest_summary_vaf(self, alleleindex, excluded_pon_samples, verbose):
-        vafs = self.get_vafs(alleleindex, excluded_pon_samples, verbose)
-        subset_num = int(len(vafs) * self.params["lowest_subset_fraction"])
+    def get_lowest_summary_vaf(self, pon_vaf_array):
+        subset_num = int(pon_vaf_array.shape[0] * self.params["lowest_subset_fraction"])
         if subset_num == 0:
             lowest_summary = None
         else:
-            subset = vafs[:subset_num]
+            subset = pon_vaf_array[:subset_num]
             lowest_summary = getattr(np, self.params["mode"])(subset)
 
 #            if subset_num >= self.params["lowest_subset_num_cutoff"]:
-#                subset = vafs[:subset_num]
+#                subset = pon_vaf_array[:subset_num]
 #                lowest_summary = getattr(np, self.params["mode"])(subset)
 #            else:
 #                lowest_summary = None
@@ -271,7 +327,7 @@ class PonFilter(SamplewiseFilter):
 
     #    @functools.cache
     #    def get_noise_summary_vaf_deprecated(self, alleleindex, excluded_pon_samples):
-    #        vafs = self.get_vafs(alleleindex, excluded_pon_samples, verbose)
+    #        vafs = self.get_vaf_array(alleleindex, excluded_pon_samples, verbose)
     #        vafs_nonzero = vafs[vafs > 0]
     #        subset_num = int(len(vafs_nonzero) * self.params["lowest_subset_fraction"])
     #        if subset_num >= self.params["lowest_subset_num_cutoff"]:
@@ -282,16 +338,11 @@ class PonFilter(SamplewiseFilter):
     #
     #        return noise_summary
 
-    def check_greater_than_lowest_vaf(
-        self, vp, sampleid, alleleindex, excluded_pon_samples, verbose
-    ):
-        query_vaf = vp.get_vaf(sampleid, alleleindex)
+    def check_greater_than_lowest_vaf(self, query_vaf, pon_vaf_array, verbose):
         if np.isnan(query_vaf):
             return True
         else:
-            lowest_summary = self.get_lowest_summary_vaf(
-                alleleindex, excluded_pon_samples, verbose
-            )
+            lowest_summary = self.get_lowest_summary_vaf(pon_vaf_array)
             if verbose:
                 print("lowest_summary", lowest_summary)
 
@@ -304,18 +355,14 @@ class PonFilter(SamplewiseFilter):
 
                 return snr >= self.params["lowest_subset_snr_cutoff"]
 
-    def check_greater_than_nearby(
-        self, vp, sampleid, alleleindex, excluded_pon_samples, verbose
-    ):
-        query_vaf = vp.get_vaf(sampleid, alleleindex)
+    def check_greater_than_nearby(self, query_vaf, pon_vaf_array, verbose):
         if np.isnan(query_vaf):
             return True
         else:
-            vafs = self.get_vafs(alleleindex, excluded_pon_samples, verbose)
             upper_bound = query_vaf * self.params["nearby_ratio"]
             lower_bound = query_vaf / self.params["nearby_ratio"]
-            vafs_nearby_query = vafs[
-                np.logical_and(vafs <= upper_bound, vafs >= lower_bound)
+            vafs_nearby_query = pon_vaf_array[
+                np.logical_and(pon_vaf_array <= upper_bound, pon_vaf_array >= lower_bound)
             ]
             if verbose:
                 print("upper_bound", upper_bound)
@@ -325,7 +372,7 @@ class PonFilter(SamplewiseFilter):
             if len(vafs_nearby_query) == 0:
                 return True
             else:
-                #if len(vafs_nearby_query) >= len(vafs) * self.params["nearby_subset_fraction_cutoff"]:
+                #if len(vafs_nearby_query) >= len(pon_vafs) * self.params["nearby_subset_fraction_cutoff"]:
                 if len(vafs_nearby_query) >= self.params["nearby_subset_num_cutoff"]:
                     nearby_summary = getattr(np, self.params["mode"])(vafs_nearby_query)
                     if verbose:
@@ -343,14 +390,12 @@ class PonFilter(SamplewiseFilter):
                     return True
 
     # @functools.cache
-    def check_germline_pattern(self, alleleindex, excluded_pon_samples, verbose):
-        vafs = self.get_vafs(alleleindex, excluded_pon_samples, verbose)
-
-        n_germline_vaf = (vafs >= self.params["min_germline_vaf"]).sum()
-        germline_sample_ratio = n_germline_vaf / len(vafs)
-
+    def check_germline_pattern(self, pon_vaf_array, verbose):
+        n_germline_vaf = (pon_vaf_array >= self.params["min_germline_vaf"]).sum()
+        germline_sample_ratio = n_germline_vaf / pon_vaf_array.shape[0]
         if verbose:
             print("germline_sample_ratio", germline_sample_ratio)
+
         return germline_sample_ratio >= self.params["germline_sample_ratio_cutoff"]
 
     def check(
@@ -365,10 +410,7 @@ class PonFilter(SamplewiseFilter):
         do_lowest=True,
         do_nearby=True,
     ):
-        assert (
-            self.vcfspec == vp.vcfspec
-        ), f"Vcfspecs are different between PON and input VariantPlus object."
-        # subtract self if required
+        # set excluded_pon_samples
         if excluded_pon_samples is None:
             excluded_pon_samples = set()
         else:
@@ -377,40 +419,38 @@ class PonFilter(SamplewiseFilter):
         if exclude_target:
             excluded_pon_samples.add(sampleid)
 
-        # turn "excluded_pon_samples" argument into tuple for caching
-        excluded_pon_samples = tuple(sorted(excluded_pon_samples))
+        used_pon_samples = set(self.samples).difference(excluded_pon_samples)
+        if verbose:
+            if len(used_pon_samples) < self.params["valid_sample_num_cutoff"]:
+                print('The number of valid PON samples ({len(used_pon_samples)}) is less than the parameter "valid_sample_num_cutoff" ({self.params["valid_sample_num_cutoff"]}).')
+
+        # sanity check
+        if not used_pon_samples.issubset(set(vp.readstats_dict.keys())):
+            raise Exception(f'Not all of PON sample IDs are included in the VariantPlus object.')
+    
+        # set params
+        readstats_dict = {
+            sampleid: vp.readstats_dict[sampleid] for sampleid in self.samples
+            if sampleid not in excluded_pon_samples
+        }
+        #pon_rppcount_array = self.get_rppcount_array(alleleindex, readstats_dict)
+        pon_vaf_array = self.get_vaf_array(alleleindex, readstats_dict)  # nan is removed from "pon_vaf_array"
+        query_vaf = vp.get_vaf(sampleid, alleleindex)
+        #query_rppcount = vp.readstats_dict[sampleid]["rppcounts"][alleleindex]
 
         # main
         subtests = list()
         if do_germlinepat:
             subtests.append(
-                not self.check_germline_pattern(
-                    alleleindex,
-                    excluded_pon_samples,
-                    verbose,
-                )
+                not self.check_germline_pattern(pon_vaf_array, verbose)
             )
         if do_lowest:
             subtests.append(
-                # is_gt_noise = self.check_greater_than_lowest_count(vp, sampleid, alleleindex)
-                self.check_greater_than_lowest_vaf(
-                    vp,
-                    sampleid,
-                    alleleindex,
-                    excluded_pon_samples,
-                    verbose,
-                )
+                # is_gt_noise = self.check_greater_than_lowest_count(query_rppcount, pon_rppcount_array)
+                self.check_greater_than_lowest_vaf(query_vaf, pon_vaf_array, verbose)
             )
         if do_nearby:
-            subtests.append(
-                self.check_greater_than_nearby(
-                    vp,
-                    sampleid,
-                    alleleindex,
-                    excluded_pon_samples,
-                    verbose,
-                )
-            )
+            subtests.append(self.check_greater_than_nearby(query_vaf, pon_vaf_array, verbose))
 
         return all(subtests)
 
