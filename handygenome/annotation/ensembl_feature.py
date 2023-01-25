@@ -4,6 +4,7 @@ import itertools
 import time
 import re
 
+import Bio.SeqUtils
 import pysam
 
 import importlib
@@ -54,6 +55,9 @@ META_DESCRIPTIONS_SUFFIXES = {
     "bnd1": "for breakend 1",
     "bnd2": "for breakend 2",
 }
+
+HGVSP_PAT = re.compile('^(.+):p.([^0-9]+)([0-9]+)([^0-9]+)$')
+
 
 
 ###############################################
@@ -589,15 +593,43 @@ class Transcript(EnsemblFeature):
                 return re.sub(r'^(.+)(:.\.)(.+)$', self['gene_name'] + r'\2\3', self['hgvsc'])
                 #return self['gene_name'] + ':c.' + self['hgvsc'].split(':c.')[1]
 
-    @property
-    def hgvsp_genename(self):
+    def get_hgvsp_genename(self, one_letter=False):
         if self['hgvsp'] is None:
             return None
         else:
-            if self['gene_name'] is None:
-                return self['hgvsp']
-            else:
-                return re.sub(r'^(.+)(:.\.)(.+)$', self['gene_name'] + r'\2\3', self['hgvsp'])
+            raw_split = self['hgvsp'].split(':p.')
+            aachange = raw_split[1]
+            if one_letter:
+                aachange = re.sub(
+                    '[A-Z][a-z]{2}', 
+                    lambda x: Bio.SeqUtils.seq1(x.group(0)), 
+                    aachange,
+                )
+            return self['gene_name'] + ' ' + aachange
+            #hgvsp_raw = self['hgvsp']
+            #ensembl_id, protein_string = hgvsp_raw.split(':p.')
+#            mat = re.fullmatch(HGVSP_PAT, self['hgvsp'])
+#            if mat is None:
+#                print(self['hgvsp'])
+#            ensembl_id = mat.group(1)
+#            aa3_from = mat.group(2)
+#            aa_position = int(mat.group(3))
+#            aa3_to = mat.group(4)
+#
+#            aa1_from = Bio.SeqUtils.seq1(aa3_from)
+#            aa1_to = Bio.SeqUtils.seq1(aa3_to)
+#            if self['gene_name'] is None:
+#                gene_name = ensembl_id
+#            else:
+#                gene_name = self['gene_name']
+#
+#            if oneletter:
+#                return f'{gene_name} {aa1_from}{aa_position}{aa1_to}'
+#            else:
+#                return f'{gene_name} {aa3_from}{aa_position}{aa3_to}'
+
+            #else:
+                #return re.sub(r'^(.+)(:.\.)(.+)$', self['gene_name'] + r'\2\3', self['hgvsp'])
                 #return self['gene_name'] + ':p.' + self['hgvsp'].split(':p.')[1]
 
 
@@ -610,7 +642,7 @@ class TranscriptSet(EnsemblFeatureSetPlain):
 
     @property
     def canonical(self):
-        result = self.__class__()
+        result = self.__class__.init_nonmissing()
         for key, val in self.items():
             if val['is_canonical']:
                 result[key] = val
@@ -618,7 +650,7 @@ class TranscriptSet(EnsemblFeatureSetPlain):
 
     @property
     def canon_ovlp(self):
-        result = self.__class__()
+        result = self.__class__.init_nonmissing()
         for key, val in self.items():
             if (val['is_canonical'] and val.is_overlapping):
                 result[key] = val

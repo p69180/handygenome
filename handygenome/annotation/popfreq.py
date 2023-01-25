@@ -1,6 +1,7 @@
 import re
 
 import pysam
+import numpy as np
 
 import importlib
 
@@ -34,7 +35,7 @@ class PopfreqInfo(annotitem.AnnotItemInfoSingle):
 
     @classmethod
     def init_blank(cls, metadata=None):
-        result = cls()
+        result = cls.init_nonmissing()
         result['id'] = None
         result['dbSNPBuild'] = None
         result['common'] = None
@@ -63,13 +64,16 @@ class PopfreqInfo(annotitem.AnnotItemInfoSingle):
             return self['freqs'][popname]
         except KeyError:
             if popname in self.metadata['popnames']:
-                return 0
+                #return 0
+                return np.nan
             else:
                 raise Exception(f'Unsupported population name')
 
     def get_freqs_show(self):
-        return {popname: self.get_freq(popname)
-                for popname in self.metadata['popnames']}
+        return {
+            popname: self.get_freq(popname)
+            for popname in self.metadata['popnames']
+        }
 
 
 class PopfreqMetadata(annotitem.AnnotItemHeader):
@@ -91,7 +95,6 @@ class PopfreqInfoALTlist(annotitem.AnnotItemInfoALTlist):
         "Type": "String",
         "Description": "Population frequencies encoded as a string, one for each ALT allele",
     }
-
     unit_class = PopfreqInfo
     metadata_class = PopfreqMetadata
 
@@ -118,8 +121,8 @@ class PopfreqInfoALTlist(annotitem.AnnotItemInfoALTlist):
         result = cls()
         for vr in dbsnp_vr_list:
             if vr is None:
-                #result.append(cls.unit_class.init_blank(metadata=metadata))
-                result.append(cls.unit_class.init_missing())
+                result.append(cls.unit_class.init_blank(metadata=metadata))
+                #result.append(cls.unit_class.init_missing())
             else:
                 result.extend(cls.from_vr(vr, metadata=metadata))
 

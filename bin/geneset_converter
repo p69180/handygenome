@@ -1,4 +1,4 @@
-#!/home/users/pjh/tools/miniconda/210821/miniconda3/envs/genome_v5/bin/python
+#!/home/users/pjh/tools/miniconda/221104/miniconda3/envs/genome_v7/bin/python
 import sys
 sys.path.append('/home/users/pjh/scripts/python_genome_package_dev')
 from handygenome.tools.database_converter.geneset_converter import main

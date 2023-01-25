@@ -114,8 +114,7 @@ def create_header(chromdict, samples=None, vcfheader=None):
 #    return new_header
 
 
-def create_vr(chromdict, vcfspec=None, end=None, samples=None, 
-              vcfheader=None, use_header=False):
+def create_vr(chromdict, *, vcfspec=None, end=None, samples=None, vcfheader=None, use_header=False):
     if use_header:
         vr = vcfheader.new_record()
     else:
@@ -123,7 +122,8 @@ def create_vr(chromdict, vcfspec=None, end=None, samples=None,
         vr = hdr.new_record()
 
     if vcfspec is not None:
-        varianthandler.apply_vcfspec(vr, vcfspec)
+        vcfspec.apply_to_vr(vr)
+        #varianthandler.apply_vcfspec(vr, vcfspec)
 
     if end is not None:
         vr.stop = end

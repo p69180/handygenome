@@ -9,8 +9,9 @@ import functools
 import numpy as np
 import pandas as pd
 import pysam
-from SigProfilerAssignment.single_sample import add_remove_signatures
-from SigProfilerMatrixGenerator.scripts.SigProfilerMatrixGeneratorFunc import SigProfilerMatrixGeneratorFunc
+
+from handygenome.sigprofiler_clone.SigProfilerAssignment.single_sample import add_remove_signatures
+from handygenome.sigprofiler_clone.SigProfilerMatrixGenerator.scripts.SigProfilerMatrixGeneratorFunc import SigProfilerMatrixGeneratorFunc
 
 import importlib
 top_package_name = __name__.split('.')[0]

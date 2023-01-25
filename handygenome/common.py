@@ -221,6 +221,41 @@ def get_deco_num_set(names, n):
     return decorator
 
 
+def get_deco_num_notNone(names, n):
+    def decorator(func):
+        sig = inspect.signature(func)
+        if not set(names).issubset(sig.parameters.keys()):
+            raise Exception(
+                f'The names of parameters given to '
+                f'"get_deco_num_set_differently" function '
+                f'is not included in the parameter names of '
+                f'the function "{func.__name__}".')
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            ba = sig.bind(*args, **kwargs)
+            ba.apply_defaults()
+
+            n_notNone = 0
+            for name in names:
+                set_val = ba.arguments[name]
+                if set_val is not None:
+                    n_notNone += 1
+
+            if n_notNone != n:
+                raise ValueError(
+                    f'For the function "{func.__name__}", the '
+                    f'number of parameters, among {tuple(names)}, '
+                    f'being set as a value different from the default, '
+                    f'must be {n}.')
+
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 def get_deco_num_set_differently(names, n):
     def decorator(func):
         sig = inspect.signature(func)
@@ -238,11 +273,13 @@ def get_deco_num_set_differently(names, n):
 
             n_diff = 0
             for name in names:
-                if sig.parameters[name].default is None:
-                    if sig.parameters[name].default is not ba.arguments[name]:
+                default_val = sig.parameters[name].default
+                set_val = ba.arguments[name]
+                if default_val is None:
+                    if set_val is not None:
                         n_diff += 1
                 else:
-                    if sig.parameters[name].default != ba.arguments[name]:
+                    if set_val != default_val:
                         n_diff += 1
 
             if n_diff != n:
@@ -322,11 +359,27 @@ def get_deco_timestamp(msg, logger):
 
     return decorator
 
+
+###################################################
+
+
+def repr_base(obj, keylist, comma_sep_int=False):
+    string_list = list()
+    for key in keylist:
+        val = getattr(obj, key)
+        if isinstance(val, int) and comma_sep_int:
+            string_list.append(f'{key}={val:,}')
+        else:
+            string_list.append(f'{key}={repr(val)}')
+
+    return ', '.join(string_list)
+
+
 ###################################################
 
 
 class RefverDict_withAllKeys(collections.UserDict):
-    standards = ('MGSCv37', 'GRCm38', 'GRCm39', 'NCBI36', 'GRCh37', 'GRCh38')
+    standards = ('MGSCv37', 'GRCm38', 'GRCm39', 'NCBI36', 'GRCh37', 'GRCh38', 'banana')
     aliases = {
         'NCBI36': ('hg18', 'ncbi36'),
         'GRCh37': ('hg19', 'grch37'),
@@ -335,6 +388,7 @@ class RefverDict_withAllKeys(collections.UserDict):
         'MGSCv37': ('mm9',),
         'GRCm38': ('mm10', 'grcm38'),
         'GRCm39': ('mm39', 'grcm39'),
+        'banana': tuple(),
         }
     known_refvers = tuple(aliases.keys()) + tuple(itertools.chain.from_iterable(aliases.values()))
 
@@ -358,7 +412,7 @@ class RefverDict_withAllKeys(collections.UserDict):
 
 
 class RefverDict(collections.UserDict):
-    standards = ('MGSCv37', 'GRCm38', 'GRCm39', 'NCBI36', 'GRCh37', 'GRCh38')
+    standards = ('MGSCv37', 'GRCm38', 'GRCm39', 'NCBI36', 'GRCh37', 'GRCh38', 'banana')
     aliases = {
         'NCBI36': ('hg18', 'ncbi36'),
         'GRCh37': ('hg19', 'grch37'),
@@ -367,6 +421,7 @@ class RefverDict(collections.UserDict):
         'MGSCv37': ('mm9',),
         'GRCm38': ('mm10', 'grcm38'),
         'GRCm39': ('mm39', 'grcm39'),
+        'banana': tuple(),
     }
     known_refvers = tuple(aliases.keys()) + tuple(itertools.chain.from_iterable(aliases.values()))
 
@@ -396,16 +451,24 @@ class RefverDict(collections.UserDict):
 
         return result
 
+    def get_valid_keys(self):
+        result = list()
+        for key in self.keys():
+            result.append(key)
+            result.extend(self.__class__.aliases[key])
+        return result
+
 
 # chr1 lengths
-CHR1_LENGTHS = {
+CHR1_LENGTHS = RefverDict({
     'MGSCv37': 197_195_432,
     'GRCm38': 195_471_971,
     'GRCm39': 195_154_279,
     'NCBI36': 247_249_719,
     'GRCh37': 249_250_621,
     'GRCh38': 248_956_422,
-}
+    'banana': 41_765_374,
+})
 CHR1_LENGTHS_REV = {val: key for key, val in CHR1_LENGTHS.items()}
 
 # default fasta paths
@@ -425,6 +488,8 @@ DEFAULT_FASTA_PATHS = RefverDict({
     'MGSCv37': '/home/users/pjh/References/reference_genome/mm9/ucsc/custom_files/mm9.fa',
     'GRCm38': '/home/users/pjh/References/reference_genome/GRCm38/ucsc/custom_files/mm10.fa',
     'GRCm39': '/home/users/pjh/References/reference_genome/GRCm39/ucsc/custom_files/mm39.fa',
+
+    'banana': '/home/users/yeonjin/practice/banana/reference/Musa_acuminata_pahang_v4_cp.fasta',
     })
 
 DEFAULT_FASTAS = RefverDict({refver: pysam.FastaFile(path) for refver, path in DEFAULT_FASTA_PATHS.items()})
@@ -685,7 +750,7 @@ class Interval:
         length
     """
 
-    def __init__(self, chrom, start1=None, end1=None, start0=None, end0=None, is_reverse=False):
+    def __init__(self, chrom, *, start1=None, end1=None, start0=None, end0=None, is_reverse=False):
         """Args:
             'chrom' is mandatory.
             ('start1' and 'end1') or ('start0' and 'end0') must 
@@ -985,7 +1050,9 @@ def without_N(seq):
 
 
 def zrange(n):
-    width = len(str(n-1))
+    assert n > 0
+
+    width = len(str(n - 1))
     for idx in range(n):
         zidx = str(idx).zfill(width)
         yield zidx
@@ -998,6 +1065,13 @@ def zenumerate(iterable):
     for idx, item in enumerate(iterable_tup):
         zidx = str(idx).zfill(width)
         yield zidx, item
+
+
+def zidx_to_idx(zidx):
+    if re.match('^0+$', zidx):
+        return 0
+    else:
+        return int(re.sub(r'^0*', '', zidx))
 
 
 def round_sig(num, n):
@@ -1080,17 +1154,12 @@ def get_datestring():
 
 
 def get_timestamp():
-    """
-    Returns a string like 'KST 2021-12-06 11:51:36'
-    """
-
+    """Returns a string like 'KST 2021-12-06 11:51:36'"""
     dt = datetime.datetime.now().astimezone()
-    timestamp = f'{str(dt.tzinfo)} {str(dt).split(".")[0]}'
-
-    return timestamp
+    return f'{str(dt.tzinfo)} {str(dt).split(".")[0]}'
 
 
-def print_err(*args, stderr = True, files = None, **kwargs):
+def print_err(*args, stderr=True, files=None, **kwargs):
     """
     Args:
         stderr: (Bool) Whether to write to stderr
@@ -1098,12 +1167,12 @@ def print_err(*args, stderr = True, files = None, **kwargs):
     """
 
     if stderr:
-        print(*args, file = sys.stderr, flush = True, **kwargs)
+        print(*args, file=sys.stderr, flush=True, **kwargs)
 
     if files is not None:
         for fname in files:
             with open(fname, 'a') as f:
-                print(*args, file = f, flush = True, **kwargs)
+                print(*args, file=f, flush=True, **kwargs)
 
 
 def printerr(*args, **kwargs):
@@ -1315,18 +1384,19 @@ def infer_refver_pysamwrapper(wrapper):
 
 
 def infer_refver_base(contigs, lengths):
-    if '1' in contigs:
-        chr1_length = lengths[contigs.index('1')]
-    elif 'chr1' in contigs:
-        chr1_length = lengths[contigs.index('chr1')]
-    else:
-        raise Exception(f'"1" and "chr1" both absent from contig list.')
+    chr1_names_candidates = {'1', 'chr1', 'chr01'}
+    intersection = chr1_names_candidates.intersection(contigs)
+    if len(intersection) == 0:
+        raise Exception(f'There is no chromosome name which looks like "chr1"')
+    elif len(intersection) > 1:
+        raise Exception(f'There is more than one  chromosome names which looks like "chr1"')
+    chr1_name = intersection.pop()
+    chr1_length = lengths[contigs.index(chr1_name)]
     
     if chr1_length in CHR1_LENGTHS_REV:
         refver = CHR1_LENGTHS_REV[chr1_length]
     else:
         raise Exception(f'Cannot infer refver: unknown chr1 length')
-        #refver = None # unknown reference genome
     
     return refver
 
@@ -1334,41 +1404,58 @@ def infer_refver_base(contigs, lengths):
 ###################################################
 
 
-def http_get(url, params=None, headers=dict(), text=False):
+def http_get(url, params=None, headers=None, text=False, retry_count=10, retry_interval=1):
+    # set params
     if params is not None:
         url = url + '?' + urllib.parse.urlencode(params)
-
+    if headers is None:
+        if text:
+            headers = {'Accept': 'text/plain'}
+        else:
+            headers = {'Accept': 'application/json'}
+    # main
     req = urllib.request.Request(url, headers=headers, method='GET')
-    try:
-        with urllib.request.urlopen(req) as response:
-            if text:
-                result = str(response.read(), 'utf-8')
-            else:
-                result = json.loads(response.read())
-    except urllib.error.HTTPError as e:
-        print(str(e.read(), 'utf-8'))
-        raise
-
-    return result
+    return http_send_request(req, text, retry_count, retry_interval)
 
 
-def http_post(url, data, params=None, headers=dict(), text=False):
+def http_post(url, data, params=None, headers=None, text=False, retry_count=10, retry_interval=1):
+    # set params
     data = json.dumps(data).encode('ascii')
-
     if params is not None:
         url = url + '?' + urllib.parse.urlencode(params)
+    if headers is None:
+        if text:
+            headers = {'Accept': 'text/plain'}
+        else:
+            headers = {'Accept': 'application/json'}
+    # main
+    req = urllib.request.Request(url, data=data, headers=headers, method='POST')
+    return http_send_request(req, text, retry_count, retry_interval)
 
-    req = urllib.request.Request(url, data=data, headers=headers, 
-                                 method='POST')
-    try:
-        with urllib.request.urlopen(req) as response:
-            if text:
-                result = str(response.read(), 'utf-8')
+
+def http_send_request(req, text, retry_count, retry_interval):
+    n_try = 0
+    while True:
+        n_try += 1
+        try:
+            with urllib.request.urlopen(req) as response:
+                if text:
+                    result = response.read().decode('utf-8')
+                else:
+                    result = json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            if exc.code == 500:  # internal server error
+                if n_try > retry_count:
+                    print(exc.read().decode('utf-8'))
+                    raise Exception(f'Exceeded maximum retry count.') from exc
+                else:
+                    time.sleep(retry_interval)
+                    continue
             else:
-                result = json.loads(response.read())
-    except urllib.error.HTTPError as e:
-        print(str(e.read(), 'utf-8'))
-        raise
+                print(exc.read().decode('utf-8'))
+                raise
+        else:
+            break
 
     return result
 
@@ -1454,12 +1541,16 @@ def iter_lineno_logging(line_iterator, logger, logging_lineno, msgfunc=None):
         def msgfunc(NR):
             return f'Processing {NR:,}th line'
 
-    NR = 0
-    for line in line_iterator:
-        NR += 1
-        if NR % logging_lineno == 0:
-            logger.info(msgfunc(NR))
-        yield line
+    if logging_lineno is None:
+        for line in line_iterator:
+            yield line
+    else:
+        NR = 0
+        for line in line_iterator:
+            NR += 1
+            if NR % logging_lineno == 0:
+                logger.info(msgfunc(NR))
+            yield line
 
 
 def gr_iterrows(gr):

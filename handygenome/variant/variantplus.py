@@ -2,11 +2,12 @@ import re
 import pprint
 import os
 import itertools
+import functools
 import random
 import shutil
-import uuid
 import logging
-import multiprocessing
+import uuid
+#import multiprocessing
 
 import pysam
 import pyranges as pr
@@ -19,32 +20,27 @@ top_package_name = __name__.split(".")[0]
 common = importlib.import_module(".".join([top_package_name, "common"]))
 workflow = importlib.import_module(".".join([top_package_name, "workflow"]))
 
-libbreakends = importlib.import_module(
-    ".".join([top_package_name, "sv", "breakends"])
-)
 
 varianthandler = importlib.import_module(
     ".".join([top_package_name, "variant", "varianthandler"])
 )
-variantviz = importlib.import_module(
-    ".".join([top_package_name, "variant", "variantviz"])
-)
-libfilter = importlib.import_module(
-    ".".join([top_package_name, "variant", "filter"])
-)
+
+import handygenome.variant.filter as libfilter
+import handygenome.variant.infoformat as infoformat
+import handygenome.sv.breakends as libbnd
+import handygenome.plot.filterinfo as plot_filterinfo
+
 infoformat = importlib.import_module(
     ".".join([top_package_name, "variant", "infoformat"])
 )
+
 initvcf = importlib.import_module(".".join([top_package_name, "vcfeditor", "initvcf"]))
 headerhandler = importlib.import_module(".".join([top_package_name, "vcfeditor", "headerhandler"]))
 
 
-#annotationdb = importlib.import_module(
-#    ".".join([top_package_name, "annotation", "annotationdb"])
-#)
-annotation_data = importlib.import_module(
-    ".".join([top_package_name, "annotation", "data"])
-)
+import handygenome.annotation.data as annotdata
+
+
 ensembl_feature = importlib.import_module(
     ".".join([top_package_name, "annotation", "ensembl_feature"])
 )
@@ -77,6 +73,9 @@ indexing = importlib.import_module(
 cnvmisc = importlib.import_module(
     ".".join([top_package_name, "cnv", "misc"])
 )
+
+from handygenome.variant.filter import FilterResultInfo, FilterResultFormat
+import handygenome.variant.ponbams as libponbams
 
 
 #READCOUNT_FORMAT_KEY = "allele_readcounts"
@@ -111,7 +110,7 @@ class VariantPlus:
         result.chromdict = (
             common.ChromDict(fasta=result.fasta) if chromdict is None else chromdict
         )
-        result.vcfspec = libvcfspec.Vcfspec.from_vr(result.vr)
+        result.vcfspec = libvcfspec.Vcfspec.from_vr(result.vr, refver=result.refver)
 
         result.init_common(**kwargs)
 
@@ -125,7 +124,10 @@ class VariantPlus:
         result.refver = result.vcfspec.refver
         result.fasta = result.vcfspec.fasta
         result.chromdict = (
-            common.ChromDict(fasta=result.fasta) if chromdict is None else chromdict
+            #common.ChromDict(fasta=result.fasta) 
+            common.DEFAULT_CHROMDICTS[result.refver]
+            if chromdict is None else 
+            chromdict
         )
         result.vr = initvcf.create_vr(chromdict=result.chromdict, vcfspec=result.vcfspec)
 
@@ -153,6 +155,10 @@ class VariantPlus:
         init_readstats=True,
 
         init_oncokb=True,
+
+        init_filterresult=True,
+
+        sampleid_list=None,
     ):
         # SV attrs
         self.is_sv = varianthandler.check_SV(self.vr)
@@ -171,10 +177,13 @@ class VariantPlus:
         # readstats, readstats_data, rpplists
         self.rpplist_dict = dict()
         self.readstats_data_dict = dict()
-        self._init_readstats(init_blank=(not init_readstats))
+        self._init_readstats(init_blank=(not init_readstats), sampleid_list=sampleid_list)
 
         # oncokb
         self._init_oncokb(init_blank=(not init_oncokb))
+
+        # filter result
+        self._init_filterresult(init_blank=(not init_filterresult))
 
     def __repr__(self):
         if self.transcript is None:
@@ -183,20 +192,21 @@ class VariantPlus:
             gene_string_buffer = {alt_idx: set() for alt_idx in range(len(self.vcfspec.alts))}
             for alt_idx, tr_set in enumerate(self.transcript):
                 for tr in tr_set.canon_ovlp.values():
-                    if tr.hgvsp_genename is None:
+                    if tr.get_hgvsp_genename(one_letter=True) is None:
                         if tr.hgvsc_genename is None:
                             gene_string_buffer[alt_idx].add(str(None))
                         else:
                             gene_string_buffer[alt_idx].add(tr.hgvsc_genename)
                     else:
-                        gene_string_buffer[alt_idx].add(tr.hgvsp_genename)
+                        gene_string_buffer[alt_idx].add(tr.get_hgvsp_genename(one_letter=True))
 
                 if (len(gene_string_buffer[alt_idx]) > 1) and (str(None) in gene_string_buffer[alt_idx]):
                     gene_string_buffer[alt_idx].remove(str(None))
                 
             gene_string = '; '.join(f'alt_index {key}: {", ".join(val)}' for key, val in gene_string_buffer.items())
 
-        return f'<VariantPlus(chrom={self.vcfspec.chrom}, pos={self.vcfspec.pos}, ref={self.vcfspec.ref}, alts={self.vcfspec.alts}, gene={gene_string})>'
+        #return f'<VariantPlus(chrom={self.vcfspec.chrom}, pos={self.vcfspec.pos}, ref={self.vcfspec.ref}, alts={self.vcfspec.alts}, gene={gene_string})>'
+        return f'<VariantPlus(vcfspec={self.vcfspec}, gene=({gene_string}))>'
 
     # BASICS
     @property
@@ -214,6 +224,10 @@ class VariantPlus:
     @property
     def alts(self):
         return self.vcfspec.alts
+
+    @property
+    def alleles(self):
+        return self.vcfspec.alleles
 
     @property
     def start0(self):
@@ -241,13 +255,13 @@ class VariantPlus:
 
     def set_bnds_attributes(self):
         if self.is_sv:
-            vr_svinfo = libbreakends.get_vr_svinfo_standard_vr(
+            vr_svinfo = libbnd.get_vr_svinfo_standard_vr(
                 self.vr,
                 self.fasta,
                 self.chromdict,
             )
             self.is_bnd1 = vr_svinfo["is_bnd1"]
-            self.bnds = libbreakends.get_bnds_from_vr_svinfo(
+            self.bnds = libbnd.get_bnds_from_vr_svinfo(
                 self.vr, vr_svinfo, self.fasta, self.chromdict
             )
         else:
@@ -256,6 +270,10 @@ class VariantPlus:
 
     # ANNOTATION GENERAL
     def write_annots_to_vr(self, fill_missing_sample=True):
+        # Vcfspec
+        if not self.vcfspec.components.is_missing:
+            self.vcfspec.components.write(vr)
+
         # INFO
         for key in (
             'popfreq',
@@ -265,6 +283,7 @@ class VariantPlus:
             'motif',
             'repeat',
             'oncokb',
+            #'filter',
         ):
             annot = getattr(self, key)
             if not annot.is_missing:
@@ -272,28 +291,38 @@ class VariantPlus:
         # FORMAT
         for key in (
             'readstats_dict',
+            #'filter_bysample',
         ):
             annot = getattr(self, key)
             if not annot.is_missing:
                 if fill_missing_sample:
                     self.vr = annot.get_sample_augmented_vr(self.vr)
                 self.vr = annot.write(self.vr)
+    
+    # ANNOTATION - filterresult
+    def _init_filterresult(self, init_blank=False):
+        if init_blank:
+            self.filter = FilterResultInfo.init_missing()
+            self.filter_bysample = FilterResultFormat.init_missing(self.vr)
+        else:
+            self.filter = FilterResultInfo.from_vr(self.vr)
+            self.filter_bysample = FilterResultFormat.from_vr(self.vr)
 
     # ANNOTATION - popfreq & cosmic
     def _init_popfreq(self, metadata=None, init_blank=False):
         if init_blank:
-            self.popfreq = libpopfreq.PopfreqInfoALTlist.init_missing()
+            self.popfreq = libpopfreq.PopfreqInfoALTlist.init_missing(self.vr)
         else:
             self.popfreq = libpopfreq.PopfreqInfoALTlist.from_vr(self.vr, metadata=metadata)
 
     def _init_cosmic(self, metadata=None, init_blank=False):
         if init_blank:
-            self.cosmic = libpopfreq.CosmicInfoALTlist.init_missing()
+            self.cosmic = libcosmic.CosmicInfoALTlist.init_missing(self.vr)
         else:
             self.cosmic = libcosmic.CosmicInfoALTlist.from_vr(self.vr, metadata=metadata)
 
     def create_popfreq(self):
-        dbsnp_vcf = annotation_data.VCFS_DBSNP[self.refver]
+        dbsnp_vcf = annotdata.VCFS_DBSNP[self.refver]
         self.popfreq = libpopfreq.PopfreqInfoALTlist.from_vcfspec(
             vcfspec=self.vcfspec, 
             dbsnp_vcf=dbsnp_vcf,
@@ -301,7 +330,7 @@ class VariantPlus:
         )
 
     def create_cosmic(self):
-        cosmic_vcf = annotation_data.VCFS_COSMIC[self.refver]
+        cosmic_vcf = annotdata.VCFS_COSMIC[self.refver]
         self.cosmic = libcosmic.CosmicInfoALTlist.from_vcfspec(
             vcfspec=self.vcfspec, 
             cosmic_vcf=cosmic_vcf,
@@ -311,7 +340,7 @@ class VariantPlus:
     # ANNOTATION - oncokb
     def _init_oncokb(self, init_blank=False):
         if init_blank:
-            self.oncokb = liboncokb.OncoKBInfoALTlist.init_missing()
+            self.oncokb = liboncokb.OncoKBInfoALTlist.init_missing(self.vr)
         else:
             self.oncokb = liboncokb.OncoKBInfoALTlist.from_vr(self.vr)
 
@@ -328,7 +357,7 @@ class VariantPlus:
     # ANNOTATION - ensembl features
     def _init_transcript(self, init_blank=False):
         if init_blank:
-            self.transcript = ensembl_feature.TranscriptSetALTlist.init_missing()
+            self.transcript = ensembl_feature.TranscriptSetALTlist.init_missing(self.vr)
         else:
             self.transcript = ensembl_feature.TranscriptSetALTlist.from_vr(self.vr)
 
@@ -380,9 +409,9 @@ class VariantPlus:
         regulatory = parsed[0]['regulatory']
         motif = parsed[0]['motif']
         # postprocess
-        tabixfile_geneset = annotation_data.TABIXFILES_GENESET[self.refver]
-        tabixfile_regulatory = annotation_data.TABIXFILES_REGULATORY[self.refver]
-        tabixfile_repeats = annotation_data.TABIXFILES_REPEATS[self.refver]
+        tabixfile_geneset = annotdata.TABIXFILES_GENESET[self.refver]
+        tabixfile_regulatory = annotdata.TABIXFILES_REGULATORY[self.refver]
+        tabixfile_repeats = annotdata.TABIXFILES_REPEATS[self.refver]
         # transcript
         for alt_idx, tr_set in enumerate(transcript):
             tr_set.update_ensembl_gff(
@@ -476,11 +505,11 @@ class VariantPlus:
 #        return tuple(sorted(other_alleleindexes))
 
     # ANNOTATION - readstats and related
-    def _init_readstats(self, init_blank=False):
+    def _init_readstats(self, init_blank=False, sampleid_list=None):
         if init_blank:
-            self.readstats_dict = libreadstats.ReadStatsSampledict.init_missing()
+            self.readstats_dict = libreadstats.ReadStatsSampledict.init_missing(self.vr)
         else:
-            self.readstats_dict = libreadstats.ReadStatsSampledict.from_vr(self.vr)
+            self.readstats_dict = libreadstats.ReadStatsSampledict.from_vr(self.vr, sampleid_list=sampleid_list)
 
     def create_readstats(
         self, bam_dict,
@@ -494,22 +523,42 @@ class VariantPlus:
         Makes a ReadStatsSampledict object, keys of which are the same as the
             keys of "bam_dict" parameter.
         """
+
         self.readstats_dict = libreadstats.ReadStatsSampledict()
         for sampleid, bam in bam_dict.items():
-            #readstats_data = self.make_readstats_data(bam)
             self.readstats_dict[sampleid] = libreadstats.ReadStats.from_bam(
-                vcfspec=self.vcfspec, bam=bam, fasta=self.fasta, chromdict=self.chromdict,
+                vcfspec=self.vcfspec, 
+                bam=bam, 
+                fasta=self.fasta, 
+                chromdict=self.chromdict,
+                rpplist_kwargs=rpplist_kwargs,
+            )
+
+    def update_readstats(
+        self, bam_dict, 
+        rpplist_kwargs={
+            'view': False,
+            'no_matesearch': True,
+        },
+    ):
+        for sampleid, bam in bam_dict.items():
+            self.readstats_dict[sampleid] = libreadstats.ReadStats.from_bam(
+                vcfspec=self.vcfspec, 
+                bam=bam, 
+                fasta=self.fasta, 
+                chromdict=self.chromdict,
+                rpplist_kwargs=rpplist_kwargs,
             )
 
     def make_rpplist(
         self,
         bam,
-        set_alleleinfo=True,
+        set_alleleclass=True,
         rpplist_kwargs={
             'view': False,
             'no_matesearch': True,
         },
-        alleleinfo_kwargs=dict(),
+        alleleclass_kwargs=dict(),
     ):
         if self.is_sv:
             rpplist = readplus.get_rpplist_sv(
@@ -519,7 +568,7 @@ class VariantPlus:
                 bnds=self.bnds,
                 **rpplist_kwargs,
             )
-            if set_alleleinfo:
+            if set_alleleclass:
                 rpplist.update_alleleinfo_sv(bnds=self.bnds, **alleleinfo_kwargs)
         else:
             rpplist = readplus.get_rpplist_nonsv(
@@ -531,24 +580,24 @@ class VariantPlus:
                 end0=self.vcfspec.end0,
                 **rpplist_kwargs,
             )
-            if set_alleleinfo:
-                rpplist.update_alleleinfo(vcfspec=self.vcfspec, **alleleinfo_kwargs)
+            if set_alleleclass:
+                rpplist.update_alleleclass(vcfspec=self.vcfspec, **alleleclass_kwargs)
 
         return rpplist
 
     def set_rpplist(
         self, sampleid, bam, 
-        set_alleleinfo=True,
+        set_alleleclass=True,
         rpplist_kwargs={
             'view': False,
             'no_matesearch': True,
         },
-        alleleinfo_kwargs=dict(),
+        alleleclass_kwargs=dict(),
     ):
         self.rpplist_dict[sampleid] = self.make_rpplist(
-            bam, set_alleleinfo=set_alleleinfo,
+            bam, set_alleleclass=set_alleleclass,
             rpplist_kwargs=rpplist_kwargs,
-            alleleinfo_kwargs=alleleinfo_kwargs,
+            alleleclass_kwargs=alleleclass_kwargs,
         )
 
     def make_readstats_data(self, bam, **kwargs):
@@ -569,7 +618,7 @@ class VariantPlus:
             'view': False,
             'no_matesearch': True,
         },
-        alleleinfo_kwargs=dict(),
+        alleleclass_kwargs=dict(),
     ):
         if verbose:
             print(f"Getting readstats_data for the sample {sampleid}")
@@ -578,9 +627,9 @@ class VariantPlus:
         self.set_rpplist(
             sampleid, 
             bam, 
-            set_alleleinfo=True,
+            set_alleleclass=True,
             rpplist_kwargs=rpplist_kwargs,
-            alleleinfo_kwargs=alleleinfo_kwargs,
+            alleleclass_kwargs=alleleclass_kwargs,
         )
 
 #        readstats_data = libreadstats.rpplist_to_readstats_data(
@@ -592,24 +641,24 @@ class VariantPlus:
             self.vcfspec,
         )
 
-    def calc_readcounts(self, bam, no_matesearch=True):
-        """Designed only for non-sv"""
+#    def calc_readcounts(self, bam, no_matesearch=True):
+#        """Designed only for non-sv"""
+#
+#        rpplist = self.make_rpplist(
+#            bam, no_matesearch=no_matesearch, set_alleleclass=True,
+#        )
+#        readcounts = rpplist.get_readcounts(self.vcfspec)
+#
+#        return readcounts
 
-        rpplist = self.make_rpplist(
-            bam, no_matesearch=no_matesearch, set_alleleinfo=True
-        )
-        readcounts = rpplist.get_readcounts(self.vcfspec)
-
-        return readcounts
-
-    def get_total_rppcount(self, sampleid):
+    def get_total_rppcount(self, sampleid, exclude_other=False):
         """Sum of rpp counts for all alleleclasses except None"""
         readstats = self.readstats_dict[sampleid]
-        return readstats.get_total_rppcount()
+        return readstats.get_total_rppcount(exclude_other=exclude_other)
 
-    def get_vaf(self, sampleid, allele_index=1, ndigits=None):
+    def get_vaf(self, sampleid, allele_index=1, exclude_other=False, ndigits=None):
         readstats = self.readstats_dict[sampleid]
-        vaf = readstats.get_vaf(allele_index)
+        vaf = readstats.get_vaf(alleleclass=allele_index, exclude_other=exclude_other)
         if np.isnan(vaf):
             return vaf
         else:
@@ -618,16 +667,12 @@ class VariantPlus:
             else:
                 return round(vaf, ndigits)
 
-    # PON
-    def get_ponfilter(self, sampleids=None, **kwargs):
-        if sampleids is None:
-            readstats_dict = self.readstats_dict
-        else:
-            readstats_dict = {
-                sampleid: self.readstats_dict[sampleid] for sampleid in sampleids
-            }
+    def get_sorted_vafs(self, sampleid, exclude_other=True, reverse=True):
+        return self.readstats_dict[sampleid].get_sorted_vafs(exclude_other=exclude_other, reverse=reverse)
 
-        return libfilter.PonFilter(self.vcfspec, readstats_dict, **kwargs)
+    def show_vafs(self, sampleid, exclude_other=False):
+        for allele_index, allele in enumerate(self.alleles):
+            print(allele, self.get_vaf(sampleid, allele_index=allele_index, exclude_other=exclude_other))
 
     # CNV-RELATED
     def fetch_cnvinfo(self, segments_df):
@@ -702,106 +747,214 @@ class VariantPlus:
             )
 
     # visualizations
-    #@common.get_deco_num_set(('bam', 'sampleid'), 1)
     def show_igv(
-        self, igv, bam=None, sampleid=None, tmpbam_name=None,
+        self, igv, bam_dict, 
+        max_width_oneside=200,
+        new=True,
+        readheight='collapse',
+        viewaspairs=True,
         rpplist_kwargs={
             'view': True,
             'no_matesearch': True,
         },
-        alleleinfo_kwargs=dict(),
-        viewaspairs=True,
+        alleleclass_kwargs=dict(),
     ):
-        """Args:
-            tmpbam_name: Basename of temporary bam. It will be shown as track name on IGV. If not set, when "sampleid" argument is set, it will be "<sampleid>_for_show.bam".
-        """
-        # sanity check
-        if tmpbam_name is not None:
-            if not tmpbam_name.endswith('.bam'):
-                raise Exception(f'"tmpbam_name" must end with ".bam". Otherwise, IGV cannot appropriately load it.')
+        if self.is_sv:
+            raise Exception(f'SV is not supported yet')
 
-        # get rpplist
-        if sampleid is not None:
-            if sampleid not in self.rpplist_dict.keys():
-                raise Exception(f"rpplist for the sampleid {sampleid} is not created. To bypass this problem, 1) run this method with 'bam' argument, or 2) run VariantPlus.set_rpplist method first.")
-            rpplist = self.rpplist_dict[sampleid]
-        elif bam is not None:
+        assert readheight in ('collapse', 'expand', 'squish')
+
+        # make rpplists
+        rpplist_dict = dict()
+        for sampleid, bam in bam_dict.items():
             rpplist = self.make_rpplist(
-                bam, set_alleleinfo=True,
+                bam, 
+                set_alleleclass=True,
                 rpplist_kwargs=rpplist_kwargs,
-                alleleinfo_kwargs=alleleinfo_kwargs,
+                alleleclass_kwargs=alleleclass_kwargs,
             )
-
-        if len(rpplist) == 0:
-            return
-
-        # add alleleinfo tag to ReadPlus and ReadPlusPair objects
-        if self.is_sv:
-            rpplist.set_alleleinfo_tag_rp_sv(self.bnds)
-            rpplist.set_alleleinfo_tag_rpp_sv(self.bnds)
-        else:
-            rpplist.set_alleleinfo_tag_rp(self.vcfspec)
-            rpplist.set_alleleinfo_tag_rpp(self.vcfspec)
-
-        # set tmpbam_path
-        tmpbam_dir = workflow.get_tmpfile_path(prefix='tmpdir_show_igv_', dir=os.getcwd(), delete=False, is_dir=True)
-        if tmpbam_name is None:  # tmpbam_name is basename of temporary bam path
-            if sampleid is None:
-                tmpbam_path = workflow.get_tmpfile_path(suffix='.bam', dir=tmpbam_dir, delete=False)
+            if self.is_sv:
+                rpplist.set_alleleinfo_tag_rp_sv(self.bnds)
+                rpplist.set_alleleinfo_tag_rpp_sv(self.bnds)
             else:
-                tmpbam_path = os.path.join(tmpbam_dir, f'{sampleid}_for_show.bam')
+                rpplist.set_alleleclass_tag_rp(self.vcfspec)
+                rpplist.set_alleleclass_tag_rpp(self.vcfspec)
+
+            rpplist_dict[sampleid] = rpplist
+
+        # make temporary directory and write temp bam files
+        tmpbam_dir = workflow.get_tmpfile_path(prefix='tmpdir_show_igv_', dir=os.getcwd(), delete=False, is_dir=True)
+        tmpbam_paths = {
+            sampleid: os.path.join(tmpbam_dir, f'{sampleid}_for_show.bam')
+            for sampleid in bam_dict.keys()
+        }
+        for sampleid, rpplist in rpplist_dict.items():
+            rpplist.write_bam(outfile_path=tmpbam_paths[sampleid])
+        # igv manipulation
+        if new:
+            igv.cmd('new')
+        igv.load(tuple(tmpbam_paths.values()))
+
+        if not self.is_sv:
+            mins = list()
+            maxs = list()
+            for rpplist in rpplist_dict.values():
+                reads_ref_range0 = rpplist.get_ref_range0(self.vcfspec.chrom)
+                mins.append(reads_ref_range0.start)
+                maxs.append(reads_ref_range0.stop)
+
+            show_range_start = max(self.vcfspec.start0 - max_width_oneside, min(mins))
+            show_range_end = min(self.vcfspec.end0 + max_width_oneside, max(maxs))
+            show_locus = (self.vcfspec.chrom, show_range_start, show_range_end)
+
+            igv.goto([show_locus], width=0)
         else:
-            tmpbam_path = os.path.join(tmpbam_dir, tmpbam_name)
-
-        # main
-        rpplist.write_bam(outfile_path=tmpbam_path)
-        igv.load([tmpbam_path])
-
-        if self.is_sv:
-            (reads_range0_bnd1, reads_range0_bnd2) = rpplist.get_ref_range0_sv(
-                self.bnds
-            )
-            pos_range0_bnd1 = self.bnds.get_pos_range0_bnd1()
-            pos_range0_bnd2 = self.bnds.get_pos_range0_bnd2()
-
-            width_bnd1 = max(
-                pos_range0_bnd1.start - reads_range0_bnd1.start,
-                reads_range0_bnd1.stop - pos_range0_bnd1.stop,
-            )
-            width_bnd2 = max(
-                pos_range0_bnd2.start - reads_range0_bnd2.start,
-                reads_range0_bnd2.stop - pos_range0_bnd2.stop,
-            )
-            width = max(width_bnd1, width_bnd2)
-
-            igv.goto([self.bnds], width=width)
-        else:
-            reads_ref_range0 = rpplist.get_ref_range0(self.vcfspec.chrom)
-            width = max(
-                self.vcfspec.pos0 - reads_ref_range0.start,
-                reads_ref_range0.stop - self.vcfspec.pos0,
-            )
-
-            igv.goto([self.vcfspec], width=width)
-
-        igv.cmd("group")
+            pass
 
         if viewaspairs:
             igv.viewaspairs()
         else:
             igv.viewaspairs_off()
 
-        igv.cmd(f"colorBy TAG {readplus.ALLELEINFO_TAG_RPP}")
-
+        igv.cmd(readheight)
+        igv.cmd("group TAG a2")
+        igv.cmd(f"colorBy TAG {readplus.ALLELECLASS_TAG_RPP}")
         shutil.rmtree(tmpbam_dir)
 
-    def show_readcounts(self, sampleids=None, **kwargs):
-        if sampleids is None:
-            sampleids = sorted(self.vr.samples.keys())
+    def show_readstats_data(self, bam, alt_index=0, varpos_key='left'):
+        readstats_data = self.make_readstats_data(bam)
+        fig = plot_filterinfo.show_readstats_data(readstats_data, alt_index=alt_index, title=repr(self.vcfspec), varpos_key=varpos_key)
+        fig.show()
 
-        variantviz.show_readcounts(
-            self, sampleid_order=sampleids, title=str(self.vcfspec), **kwargs
+    show_filterinfo = show_readstats_data  # alias
+
+    def show_readcounts(self, allele_index=1, samples=None, mask=None):
+        fig, ax_bar, ax_dot = plot_filterinfo.show_readcounts(
+            self.readstats_dict, 
+            allele_index=allele_index,
+            samples=samples,
+            mask=mask,
+            title=repr(self.vcfspec),
         )
+        fig.show()
+
+    #@common.get_deco_num_set_differently(('pon_samples', 'pon_cohorts'), 1)
+    def show_pon(self, query_sample, allele_index=1, exclude_query=True, pon_cohorts=None, pon_samples=None, **kwargs):
+        fig = plot_filterinfo.show_pon(
+            query_sample=query_sample, 
+            vp=self, 
+            allele_index=allele_index, 
+            exclude_query=exclude_query, 
+            pon_cohorts=pon_cohorts,
+            pon_samples=pon_samples, 
+            **kwargs,
+        )
+        fig.show()
+        
+
+#    #@common.get_deco_num_set(('bam', 'sampleid'), 1)
+#    def show_igv_old(
+#        self, igv, bam=None, sampleid=None, tmpbam_name=None,
+#        rpplist_kwargs={
+#            'view': True,
+#            'no_matesearch': True,
+#        },
+#        alleleclass_kwargs=dict(),
+#        viewaspairs=True,
+#    ):
+#        """Args:
+#            tmpbam_name: Basename of temporary bam. It will be shown as track name on IGV. If not set, when "sampleid" argument is set, it will be "<sampleid>_for_show.bam".
+#        """
+#        # sanity check
+#        if tmpbam_name is not None:
+#            if not tmpbam_name.endswith('.bam'):
+#                raise Exception(f'"tmpbam_name" must end with ".bam". Otherwise, IGV cannot appropriately load it.')
+#
+#        # get rpplist
+#        if sampleid is not None:
+#            if sampleid not in self.rpplist_dict.keys():
+#                raise Exception(
+#                    f"rpplist for the sampleid {sampleid} is not created. To bypass this problem, 1) run this method with 'bam' argument, or 2) run VariantPlus.set_rpplist method first."
+#                )
+#            rpplist = self.rpplist_dict[sampleid]
+#        elif bam is not None:
+#            rpplist = self.make_rpplist(
+#                bam, set_alleleclass=True,
+#                rpplist_kwargs=rpplist_kwargs,
+#                alleleclass_kwargs=alleleclass_kwargs,
+#            )
+#
+#        if len(rpplist) == 0:
+#            return
+#
+#        # add alleleclass tag to ReadPlus and ReadPlusPair objects
+#        if self.is_sv:
+#            rpplist.set_alleleinfo_tag_rp_sv(self.bnds)
+#            rpplist.set_alleleinfo_tag_rpp_sv(self.bnds)
+#        else:
+#            rpplist.set_alleleclass_tag_rp(self.vcfspec)
+#            rpplist.set_alleleclass_tag_rpp(self.vcfspec)
+#
+#        # set tmpbam_path
+#        tmpbam_dir = workflow.get_tmpfile_path(prefix='tmpdir_show_igv_', dir=os.getcwd(), delete=False, is_dir=True)
+#        if tmpbam_name is None:  # tmpbam_name is basename of temporary bam path
+#            if sampleid is None:
+#                tmpbam_path = workflow.get_tmpfile_path(suffix='.bam', dir=tmpbam_dir, delete=False)
+#            else:
+#                tmpbam_path = os.path.join(tmpbam_dir, f'{sampleid}_for_show.bam')
+#        else:
+#            tmpbam_path = os.path.join(tmpbam_dir, tmpbam_name)
+#
+#        # main
+#        rpplist.write_bam(outfile_path=tmpbam_path)
+#        igv.load([tmpbam_path])
+#
+#        if self.is_sv:
+#            (reads_range0_bnd1, reads_range0_bnd2) = rpplist.get_ref_range0_sv(
+#                self.bnds
+#            )
+#            pos_range0_bnd1 = self.bnds.get_pos_range0_bnd1()
+#            pos_range0_bnd2 = self.bnds.get_pos_range0_bnd2()
+#
+#            width_bnd1 = max(
+#                pos_range0_bnd1.start - reads_range0_bnd1.start,
+#                reads_range0_bnd1.stop - pos_range0_bnd1.stop,
+#            )
+#            width_bnd2 = max(
+#                pos_range0_bnd2.start - reads_range0_bnd2.start,
+#                reads_range0_bnd2.stop - pos_range0_bnd2.stop,
+#            )
+#            width = max(width_bnd1, width_bnd2)
+#
+#            igv.goto([self.bnds], width=width)
+#        else:
+#            reads_ref_range0 = rpplist.get_ref_range0(self.vcfspec.chrom)
+#            width = max(
+#                self.vcfspec.pos0 - reads_ref_range0.start,
+#                reads_ref_range0.stop - self.vcfspec.pos0,
+#            )
+#
+#            igv.goto([self.vcfspec], width=width)
+#
+#        igv.cmd("group")
+#
+#        if viewaspairs:
+#            igv.viewaspairs()
+#        else:
+#            igv.viewaspairs_off()
+#
+#        igv.cmd(f"colorBy TAG {readplus.ALLELEINFO_TAG_RPP}")
+#
+#        shutil.rmtree(tmpbam_dir)
+
+    #def show_readcounts(self, sampleids=None, **kwargs):
+    #    pass
+        #if sampleids is None:
+        #    sampleids = sorted(self.vr.samples.keys())
+
+        #variantviz.show_readcounts(
+        #    self, sampleid_order=sampleids, title=str(self.vcfspec), **kwargs
+        #)
 
     # miscellaneous
     def get_gr(self):
@@ -813,13 +966,38 @@ class VariantPlus:
             }
         )
 
-    def get_gene_names(self, canonical=True, overlap=True):
-        return set(
-            itertools.chain.from_iterable(
-                tr_set.get_gene_names(canonical=canonical, overlap=overlap)
-                for tr_set in self.transcript
-            )
-        )
+    def get_gene_names(self, canonical=True, overlap=True, coding=False):
+        result = set()
+        for tr_set in self.transcript:
+            for tr in tr_set.values():
+                if canonical:
+                    if not tr['is_canonical']:
+                        continue
+                if overlap:
+                    if tr['distance'] is not None:
+                        continue
+                if coding:
+                    if not tr['subtype_flags']['coding']:
+                        continue
+                result.add(tr['gene_name'])
+
+        return result
+#        return set(
+#            itertools.chain.from_iterable(
+#                tr_set.get_gene_names(canonical=canonical, overlap=overlap)
+#                for tr_set in self.transcript
+#            )
+#        )
+
+    def get_protein_changes(self, one_letter=True):
+        result = set()
+        for tr_set in self.transcript:
+            for tr in tr_set.canon_ovlp.values():
+                hgvsp = tr.get_hgvsp_genename(one_letter=one_letter)
+                if hgvsp is not None:
+                    result.add(hgvsp)
+                
+        return result
 
     #def check_intergenic(self):
     #    return len(self.annotdb.transcript) == 0
@@ -855,10 +1033,14 @@ class VariantPlus:
 
 
 class VariantPlusList(list):
+    ################
+    # initializers #
+    ################
+
     def __init__(
         self, vcf_path=None, vcf=None, refver=None,
         fasta=None, chromdict=None,
-        logging_lineno=10000, preview_lineno=10000, 
+        logging_lineno=1000, preview_lineno=30, 
         verbose=True, logger=None,
     ):
         # vcf_path, vcf
@@ -932,6 +1114,8 @@ class VariantPlusList(list):
         init_repeat=False,
         init_readstats=False,
         init_oncokb=False,
+        init_filterresult=False,
+        sampleid_list=None,
         **kwargs,
     ):
         # initialize results
@@ -947,6 +1131,7 @@ class VariantPlusList(list):
             init_repeat = True
             init_readstats = True
             init_oncokb = True
+            init_filterresult = True
 
         if init_popfreq:
             popfreq_metadata = libpopfreq.PopfreqMetadata.from_vcfheader(result.vcf.header)
@@ -965,7 +1150,7 @@ class VariantPlusList(list):
         def vr_iterator(vcf):
             for vr in vcf.fetch():
                 if varianthandler.check_SV(vr):
-                    vr_svinfo = libbreakends.get_vr_svinfo_standard_vr(vr, result.fasta, result.chromdict)
+                    vr_svinfo = libbnd.get_vr_svinfo_standard_vr(vr, result.fasta, result.chromdict)
                     if vr_svinfo["is_bnd1"]:
                         yield vr
                 else:
@@ -1006,7 +1191,7 @@ class VariantPlusList(list):
         # create vps
         for vr in common.iter_lineno_logging(result.vcf.fetch(), result.logger, result.logging_lineno):
             if varianthandler.check_SV(vr):
-                vr_svinfo = libbreakends.get_vr_svinfo_standard_vr(vr, result.fasta, result.chromdict)
+                vr_svinfo = libbnd.get_vr_svinfo_standard_vr(vr, result.fasta, result.chromdict)
                 if not vr_svinfo["is_bnd1"]:
                     continue
 
@@ -1027,10 +1212,17 @@ class VariantPlusList(list):
                 init_repeat=init_repeat,
                 init_readstats=init_readstats,
                 init_oncokb=init_oncokb,
+                init_filterresult=init_filterresult,
+
+                sampleid_list=sampleid_list,
             )
             result.append(vp)
 
         return result
+
+    ########
+    # repr #
+    ########
 
     def __repr__(self):
         return self.show(self.preview_lineno)
@@ -1060,17 +1252,71 @@ class VariantPlusList(list):
             formatter=formatter,
         )
 
+    ##########
+    # others #
+    ##########
+
+    @functools.cached_property
+    def vcfspec_list(self):
+        return [vp.vcfspec for vp in self]
+
+    @functools.cached_property
+    def index_gr(self):
+        gr = self.get_df(vaf_sampleid=None, as_gr=True, omit_vaf=True)
+        gr.Vcfspec = self.vcfspec_list
+        gr.Index = list(range(gr.df.shape[0]))  # In this form of assignment, left-side term must be a list.
+        return gr
+
+    def fetch_by_vcfspec(self, vcfspec):
+        selector = (self.index_gr.Vcfspec == vcfspec)
+        if not selector.any():
+            raise ValueError(f'Input vcfspec is not present in the VariantPlusList.')
+        #idx = self.index_gr.Vcfspec.loc[selector].index[0]
+        idx = self.index_gr.Index.loc[selector][0]
+        return self[idx]
+
+    def fetch_by_coord(self, chrom, start0=None, end0=None):
+        if (start0 is None) and (end0 is None):
+            gr_subset = self.index_gr[chrom]
+        else:
+            if start0 is None:
+                start0 = 0
+            if end0 is None:
+                end0 = self.chromdict[chrom]
+            gr_subset = self.index_gr[chrom, start0:end0]
+
+        if gr_subset.df.shape[0] == 0:
+            return list()
+        else:
+            sl = slice(gr_subset.Index.iloc[0], gr_subset.Index.iloc[-1] + 1)
+            return self[sl]
+
     def sample(self, n=1):
+        if len(self) == 0:
+            raise Exception(f'The VariantPlusList is empty.')
+
         if n == 1:
             return random.choice(self)
         else:
             return random.sample(self, k=n)
 
-    def get_df(self, vaf_sampleid=None, as_gr=False):
+    def get_df(
+        self, 
+        alt_index=0,
+        vaf_sampleid=None, 
+        as_gr=False, 
+        omit_vaf=False, 
+        get_vaf_kwargs={
+            'allele_index': 1, 
+            'exclude_other': False, 
+            'ndigits': None,
+        },
+    ):
         if vaf_sampleid is None:
             sample_ids = list(self[0].vr.header.samples)
             if len(sample_ids) == 0:
                 vaf_sampleid = None
+                omit_vaf = True
             else:
                 vaf_sampleid = sample_ids[0]
 
@@ -1088,36 +1334,36 @@ class VariantPlusList(list):
             starts.append(vp.vcfspec.pos0)
             ends.append(vp.vcfspec.end0)
             refs.append(vp.vcfspec.ref)
-            alts.append(vp.vcfspec.alts[0])
+            alts.append(vp.vcfspec.alts[alt_index])
 
-            if vaf_sampleid is None:
-                vafs.append(np.nan)
-            else:
-                vaf = vp.get_vaf(vaf_sampleid, allele_index=1, ndigits=None)
-                vafs.append(vaf)  # vaf can be np.nan
+            if not omit_vaf:
+                if vaf_sampleid is None:
+                    vafs.append(np.nan)
+                else:
+                    vaf = vp.get_vaf(vaf_sampleid, **get_vaf_kwargs)
+                    vafs.append(vaf)  # vaf can be np.nan
 
         if as_gr:
-            return pr.from_dict(
-                {
-                    'Chromosome': chroms,
-                    'Start': starts,
-                    'End': ends,
-                    'REF': refs,
-                    'ALT': alts,
-                    'VAF': vafs,
-                },
-                int64=False,
-            )
+            data = {
+                'Chromosome': chroms,
+                'Start': starts,
+                'End': ends,
+                'REF': refs,
+                'ALT': alts,
+            }
+            if not omit_vaf:
+                data.update({'VAF': vafs})
+            return pr.from_dict(data, int64=False)
         else:
-            return pd.DataFrame.from_dict(
-                {
-                    'CHROM': chroms,
-                    'POS': pos1s,
-                    'REF': refs,
-                    'ALT': alts,
-                    'VAF': vafs,
-                }
-            )
+            data = {
+                'CHROM': chroms,
+                'POS': pos1s,
+                'REF': refs,
+                'ALT': alts,
+            }
+            if not omit_vaf:
+                data.update({'VAF': vafs})
+            return pd.DataFrame.from_dict(data)
 
     def get_gr(self, vaf_sampleid=None):
         return self.get_df(vaf_sampleid=vaf_sampleid, as_gr=True)
@@ -1191,42 +1437,54 @@ class VariantPlusList(list):
     # writing related methods
     def get_output_header(self):
         if len(self) == 0:
-            return initvcf.create_header(self.chromdict)
+            merged_header = initvcf.create_header(self.chromdict)
+            conflicting_keys = None
+            return merged_header, conflicting_keys
         else:
             return headerhandler.merge_vcfheaders(vp.vr.header for vp in self)
+
+    @staticmethod
+    def write_each_vr(vr, out_vcf, conflicting_keys):
+        # reheader if sample ordering is different
+        if tuple(vr.header.samples) != tuple(out_vcf.header.samples):
+            out_vr = varianthandler.reheader(vr, out_vcf.header)
+        else:
+            out_vr = vr.copy()
+
+        # remove conflicting keys
+        for key in conflicting_keys['info']:
+            if key in out_vr.info:
+                del out_vr.info[key]
+        for key in conflicting_keys['format']:
+            for format_item in out_vr.samples.values():
+                if key in format_item:
+                    del format_item[key]
+
+        # write
+        out_vcf.write(out_vr)
 
     def write(self, outfile_path, mode_bcftools="z", mode_pysam=None, index=True):
         # write annotation items to vr
         for vp in self:
             vp.write_annots_to_vr(fill_missing_sample=True)
         # prepare header
-        header = self.get_output_header()
-        # decide if reheadering is needed
-        reheader_needed = any(
-            tuple(vp.vr.header.samples) != tuple(header.samples)
-            for vp in self
-        )
-        if reheader_needed:
-            def writer(vr, out_vcf, header):
-                out_vcf.write(varianthandler.reheader(vr, header))
-        else:
-            def writer(vr, out_vcf, header):
-                out_vcf.write(vr)
+        header, conflicting_keys = self.get_output_header()
         # main
         self.sort()
         mode_pysam = common.write_mode_arghandler(mode_bcftools, mode_pysam)
         with pysam.VariantFile(outfile_path, mode=mode_pysam, header=header) as out_vcf:
-            for vp in self:
+            #for vp in self:
+            for vp in common.iter_lineno_logging(self, self.logger, self.logging_lineno):
                 if vp.is_sv:
-                    writer(vp.vr, out_vcf, header)
-                    writer(vp.get_vr_bnd2(), out_vcf, header)
+                    self.write_each_vr(vp.vr, out_vcf, conflicting_keys)
+                    self.write_each_vr(vp.get_vr_bnd2(), out_vcf, conflicting_keys)
                 else:
-                    writer(vp.vr, out_vcf, header)
-
+                    self.write_each_vr(vp.vr, out_vcf, conflicting_keys)
         if index:
             indexing.index_vcf(outfile_path)
 
 
+# not used
 def _init_helper_make_vp(
     vr, refver, fasta, chromdict, 
 

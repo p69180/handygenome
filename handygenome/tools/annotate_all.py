@@ -8,47 +8,27 @@ import textwrap
 
 import pysam
 
-import importlib
+import handygenome.common as common
+import handygenome.workflow as workflow
+import handygenome.workflow.toolsetup as toolsetup
 
-top_package_name = __name__.split(".")[0]
-common = importlib.import_module(".".join([top_package_name, "common"]))
-workflow = importlib.import_module(".".join([top_package_name, "workflow"]))
-toolsetup = importlib.import_module(
-    ".".join([top_package_name, "workflow", "toolsetup"])
-)
-libsplit = importlib.import_module(".".join([top_package_name, "vcfeditor", "split"]))
-libconcat = importlib.import_module(".".join([top_package_name, "vcfeditor", "concat"]))
-indexing = importlib.import_module(
-    ".".join([top_package_name, "vcfeditor", "indexing"])
-)
+import handygenome.vcfeditor.split as libsplit
+import handygenome.vcfeditor.concat as libconcat
+import handygenome.vcfeditor.indexing as indexing
 
-varianthandler = importlib.import_module(
-    ".".join([top_package_name, "variant", "varianthandler"])
-)
-variantplus = importlib.import_module(
-    ".".join([top_package_name, "variant", "variantplus"])
-)
-breakends = importlib.import_module(
-    ".".join([top_package_name, "sv", "breakends"])
-)
-annotation_data = importlib.import_module(
-    ".".join([top_package_name, "annotation", "data"])
-)
+import handygenome.variant.varianthandler as varianthandler
+import handygenome.variant.variantplus as variantplus
+import handygenome.variant.vcfspec as libvcfspec
 
-veplib = importlib.import_module(".".join([top_package_name, "annotation", "veplib"]))
-ensembl_parser = importlib.import_module(
-    ".".join([top_package_name, "annotation", "ensembl_parser"])
-)
-ensembl_feature = importlib.import_module(
-    ".".join([top_package_name, "annotation", "ensembl_feature"])
-)
-libcosmic = importlib.import_module(
-    ".".join([top_package_name, "annotation", "cosmic"])
-)
-libpopfreq = importlib.import_module(
-    ".".join([top_package_name, "annotation", "popfreq"])
-)
-libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
+import handygenome.sv.breakends as breakends
+
+import handygenome.annotation.data as annotation_data
+import handygenome.annotation.cosmic as libcosmic
+import handygenome.annotation.popfreq as libpopfreq
+import handygenome.annotation.veplib as veplib
+import handygenome.annotation.ensembl_parser as ensembl_parser
+import handygenome.annotation.ensembl_feature as ensembl_feature
+import handygenome.annotation.oncokb as liboncokb
 
 
 def unit_job(
@@ -62,6 +42,8 @@ def unit_job(
     do_features,
     do_cosmic,
     do_popfreq,
+    do_oncokb,
+    oncokb_token,
 ):
     # basic setup
     fasta = pysam.FastaFile(fasta_path)
@@ -98,6 +80,8 @@ def unit_job(
         do_features,
         do_cosmic,
         do_popfreq,
+        do_oncokb,
+        oncokb_token,
     )
 
 
@@ -208,6 +192,8 @@ def add_annotations(
     do_features,
     do_cosmic,
     do_popfreq,
+    do_oncokb,
+    oncokb_token,
 ):
     def add_vep_sv(
         vep_vr_bnd1,
@@ -470,15 +456,27 @@ def add_annotations(
         ensembl_feature.RegulatorySet.add_meta(out_vcf_header)
         ensembl_feature.MotifSet.add_meta(out_vcf_header)
         ensembl_feature.RepeatSet.add_meta(out_vcf_header)
+        liboncokb.OncoKBInfoALTlist.add_meta(out_vcf_header)
 
         return out_vcf_header
+
+
 
     # main
     in_vcf = pysam.VariantFile(split_infile_path)
     out_vcf_header = make_new_header(in_vcf, dbsnp_vcf, cosmic_vcf)
     out_vcf = pysam.VariantFile(split_outfile_path, mode="wz", header=out_vcf_header)
 
-    for vr in in_vcf.fetch():
+    # query OncoKB web API
+    if do_oncokb:
+        oncokb_query_result = liboncokb.make_OncoKBInfoALTlist_list(
+            in_vcf.fetch(), oncokb_token,
+        )
+    else:
+        oncokb_query_result = None
+
+    #for vr, oncokb_ALTlist in zip(in_vcf.fetch(), oncokb_query_result):
+    for idx, vr in enumerate(in_vcf.fetch()):
         new_vr = varianthandler.reheader(vr, out_vcf_header)
         add_to_vr(
             new_vr,
@@ -495,27 +493,39 @@ def add_annotations(
             do_cosmic,
             do_popfreq,
         )
+
+        if do_oncokb:
+            oncokb_query_result[idx].write(new_vr)
+            #oncokb_ALTlist.write(new_vr)
+
         out_vcf.write(new_vr)
 
     out_vcf.close()
     in_vcf.close()
+
+    indexing.index_vcf(split_outfile_path)
 
 
 #############################################################
 
 
 def argument_parser(cmdargs):
-    def sanity_check(args):
+    def sanity_check_pre(args):
         pass
 
     def postprocess(args):
         args.species = veplib.REFVER_TO_VEPARGS[args.refver]["species"]
         args.assembly = veplib.REFVER_TO_VEPARGS[args.refver]["assembly"]
 
-        if not any([args.do_features, args.do_cosmic, args.do_popfreq]):
-            args.do_features = True
-            args.do_cosmic = True
-            args.do_popfreq = True
+        do_flag_keys = (
+            'do_features', 
+            'do_cosmic', 
+            'do_popfreq',
+            'do_oncokb',
+        )
+        if not any(getattr(args, key) for key in do_flag_keys):
+            for key in do_flag_keys:
+                setattr(args, key, True)
 
     parser_dict = workflow.init_parser(
         description=(
@@ -526,6 +536,10 @@ def argument_parser(cmdargs):
             f"if none of them is set, all is done."
         )
     )
+
+    def sanity_check_post(args):
+        if args.do_oncokb and (args.oncokb_token is None):
+            raise Exception(f'When doing OncoKB annotation, OncoKB token must be given.')
 
     # required
     workflow.add_infile_arg(parser_dict["required"], required=True)
@@ -546,6 +560,12 @@ def argument_parser(cmdargs):
             f"Distance (in bp) from the mutation location to fetch feature "
             f"information. Used for VEP and custom file annotation."
         ),
+    )
+    parser_dict["optional"].add_argument(
+        "--oncokb-token",
+        dest='oncokb_token',
+        required=False,
+        help='OncoKB token string, required when annotating OncoKB data',
     )
     workflow.add_logging_args(parser_dict)
     workflow.add_scheduler_args(parser_dict, default_parallel=1, default_sched="slurm")
@@ -573,14 +593,21 @@ def argument_parser(cmdargs):
         dest="do_popfreq",
         action="store_true",
         help=(
-            f"If set, annotates population frequency information from "
-            f"dbSNP database."
+            f"If set, annotates population frequency information from dbSNP database."
         ),
     )
+    parser_dict["flag"].add_argument(
+        "--do-oncokb",
+        dest="do_oncokb",
+        action="store_true",
+        help=f"If set, annotates OncoKB information.",
+    )
 
+    # main
     args = parser_dict["main"].parse_args(cmdargs)
-    sanity_check(args)
+    sanity_check_pre(args)
     postprocess(args)
+    sanity_check_post(args)
 
     return args
 
@@ -619,6 +646,8 @@ def write_jobscripts(
     do_features,
     do_cosmic,
     do_popfreq,
+    do_oncokb,
+    oncokb_token,
     jobname_prefix="annotate_all",
     ncore_perjob=2,
 ):
@@ -674,7 +703,9 @@ def write_jobscripts(
                         do_features={do_features},
                         do_cosmic={do_cosmic},
                         do_popfreq={do_popfreq},
-                        )
+                        do_oncokb={repr(do_oncokb)},
+                        oncokb_token={repr(oncokb_token)},
+                    )
                 except:
                     print(traceback.format_exc())
                     success = False
@@ -736,6 +767,8 @@ def main(cmdargs):
         args.do_features,
         args.do_cosmic,
         args.do_popfreq,
+        args.do_oncokb,
+        args.oncokb_token,
     )
     logger.info("Running annotation jobs for each split file")
     workflow.run_jobs(

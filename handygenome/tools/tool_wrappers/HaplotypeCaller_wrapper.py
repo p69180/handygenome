@@ -5,12 +5,10 @@ import tempfile
 
 import pysam
 
-import importlib
-
-top_package_name = __name__.split(".")[0]
-common = importlib.import_module(".".join([top_package_name, "common"]))
-workflow = importlib.import_module(".".join([top_package_name, "workflow"]))
-libgatk = importlib.import_module(".".join([top_package_name, "gatk"]))
+import handygenome.common as common
+import handygenome.workflow as workflow
+import handygenome.workflow.toolsetup as toolsetup
+import handygenome.gatk as libgatk
 
 
 PROGNAME = __name__.split(".")[-1]
@@ -60,6 +58,9 @@ def argument_parser(cmdargs):
     # flag
     workflow.add_rmtmp_arg(parser_dict)
     workflow.add_index_arg(parser_dict)
+    # main
+    args = parser_dict["main"].parse_args(cmdargs)
+    return args
 
 
 def make_tmpdir(infile_path):
@@ -70,42 +71,6 @@ def make_tmpdir(infile_path):
     )
 
     return tmpdir_paths
-
-
-def get_included_intvlist(fasta_path, incl_bed_path, excl_bed_path, chromdict):
-    if incl_bed_path is None:
-        incl_intvlist = common.IntervalList.from_chromdict(
-            common.ChromDict(fasta_path=fasta_path)
-        )
-    else:
-        incl_intvlist = common.IntervalList.from_bed(incl_bed_path)
-
-    if excl_bed_path is not None:
-        excl_intvlist = common.IntervalList.from_bed(excl_bed_path)
-        incl_intvlist = incl_intvlist.subtract(excl_intvlist)
-
-    incl_intvlist.sort_intervals(chromdict)
-
-    return incl_intvlist
-
-
-def split_intvlist(incl_intvlist, parallel):
-    incl_intvlist_split = incl_intvlist.split(num=parallel)
-    incl_intvlist_split_padded = incl_intvlist_split.slop(chromdict, b=5000)
-
-    return incl_intvlist_split, incl_intvlist_split_padded
-
-
-def write_region_files(
-    regionfiles_dir, incl_intvlist_split, incl_intvlist_split_padded
-):
-    for zidx, intvlist in common.zenumerate(incl_intvlist_split):
-        fname = os.path.join(regionfiles_dir, f"{zidx}.bed")
-        intvlist.write_bed(fname)
-
-    for zidx, intvlist in common.zenumerate(incl_intvlist_split_padded):
-        fname = os.path.join(regionfiles_dir, f"{zidx}.padded.bed")
-        intvlist.write_bed(fname)
 
 
 def main(cmdargs):
@@ -124,12 +89,11 @@ def main(cmdargs):
     chromdict = common.ChromDict(fasta_path=args.fasta_path)
 
     # make split intervals and write bed files
-    incl_intvlist = get_included_intvlist(
-        args.fasta_path, args.incl_bed_path, args.excl_bed_path, chromdict
+    toolsetup.handle_region_args(
+        chromdict, 
+        incl_bed_path=args.incl_bed_path,
+        excl_bed_path=args.excl_bed_path,
+        num_split=args.parallel,
+        regionfiles_dir=tmpdir_paths["regions"],
     )
-    incl_intvlist_split, incl_intvlist_split_padded = split_intvlist(
-        incl_intvlist, args.parallel
-    )
-    write_region_files(
-        tmpdir_paths["regions"], incl_intvlist_split, incl_intvlist_split_padded
-    )
+

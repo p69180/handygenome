@@ -11,6 +11,10 @@ common = importlib.import_module(".".join([top_package_name, "common"]))
 libvcfspec = importlib.import_module(".".join([top_package_name, "variant", "vcfspec"]))
 
 
+######################
+# CIGAR-RELATED ONES #
+######################
+
 CIGAROPDICT_ITEMS = [
     ("M", 0),
     ("I", 1),
@@ -87,17 +91,6 @@ class Cigar:
         )
 
 
-class Walk(collections.namedtuple('Walk', ('target', 'query'))):
-    pass
-
-
-#def get_cigartuples(cigarstring):
-#    return [
-#        (CIGAROPDICT[cigarop], int(count))
-#        for (count, cigarop) in CIGARPAT.findall(cigarstring)
-#    ]
-
-
 def cigarstring_to_cigartuples(cigarstring):
     result = list()
     for (count, opstring) in CIGARPAT.findall(cigarstring):
@@ -158,7 +151,212 @@ def get_target_length(cigartuples):
     return result
 
 
-def split_cigar(cigartuples, reference_start0, split_range0):
+# walk cigar #
+
+class Walk(collections.namedtuple('Walk', ('target', 'query'))):
+    pass
+
+
+class CigarWalk(collections.namedtuple('CigarWalk', ('cigartup', 'target', 'query'))):
+    pass
+
+
+def walk_cigar(cigartuples, target_start0, with_cigartup=False):
+    query_start0 = 0
+
+    target_end0 = target_start0
+    query_end0 = query_start0
+
+    for cigartup in cigartuples:
+        opcode, count = cigartup
+        consume_target, consume_query = CIGAR_WALK_DICT[opcode]
+        if consume_target:
+            target_end0 += count
+        if consume_query:
+            query_end0 += count
+
+        target_range0 = range(target_start0, target_end0)
+        query_range0 = range(query_start0, query_end0)
+
+        #yield Walk(target_range0, query_range0)
+        if with_cigartup:
+            yield CigarWalk(cigartup, target_range0, query_range0)
+        else:
+            yield Walk(target_range0, query_range0)
+
+        target_start0 = target_end0
+        query_start0 = query_end0
+
+
+def walk_cigar_targetonly(cigartuples, target_start0):
+    #query_start0 = 0
+
+    target_end0 = target_start0
+    #query_end0 = query_start0
+
+    for cigartup in cigartuples:
+        opcode, count = cigartup
+        consume_target, consume_query = CIGAR_WALK_DICT[opcode]
+        if consume_target:
+            target_end0 += count
+        #if consume_query:
+        #    query_end0 += count
+
+        target_range0 = range(target_start0, target_end0)
+        #query_range0 = range(query_start0, query_end0)
+
+        yield target_range0
+
+        target_start0 = target_end0
+        #query_start0 = query_end0
+
+
+# split cigar #
+
+def split_cigar(
+    cigartuples, reference_start0, split_range0,
+    trailing_queryonly_to_right=False,
+):
+    """Position of queryonly(I, S) cigarop is considered to be on the right,
+    except for those on the right end, which is controlled by 
+    "trailing_queryonly_to_right" argument.
+
+    Args:
+        - trailing_queryonly_to_right:
+            If True, softclips or insertions on the right end are regarded as 
+            residing in the position on the right. 
+    """
+    cigarwalks_grouped = itertools.groupby(
+        walk_cigar(cigartuples, reference_start0, with_cigartup=True),
+        key=(
+            lambda cigarwalk: (
+                (len(cigarwalk.target) == 0) and 
+                (len(cigarwalk.query) != 0)
+            )
+        )
+    )
+    cigarwalks_grouped = [(x[0], list(x[1])) for x in cigarwalks_grouped]
+
+    if cigarwalks_grouped[-1][0]:  # there exists trailing queryonly
+        cigarwalks_trailing_queryonly = cigarwalks_grouped[-1][1]  # list of CigarWalk
+        cigarwalks_others = cigarwalks_grouped[:-1]  # list of (key, [Cigarwalk, ...])
+    else:
+        cigarwalks_trailing_queryonly = None
+        cigarwalks_others = cigarwalks_grouped
+
+    # main
+    tuples_before = list()
+    tuples_within = list()
+    tuples_after = list()
+    # handle non-trailing-queryonly
+    for is_queryonly, cigarwalk_list in cigarwalks_others:
+        if is_queryonly:  # queryonly
+            for cigarwalk in cigarwalk_list:
+                before_portion, within_portion, after_portion = cigarsplit_helper_queryonly(
+                    cigarwalk, split_range0, is_trailing=False,
+                )
+                cigarsplit_helper_append(
+                    before_portion, within_portion, after_portion,
+                    tuples_before, tuples_within, tuples_after,
+                )
+        else:
+            for cigarwalk in cigarwalk_list:
+                before_portion, within_portion, after_portion = cigarsplit_helper_non_queryonly(
+                    cigarwalk, split_range0,
+                )
+                cigarsplit_helper_append(
+                    before_portion, within_portion, after_portion,
+                    tuples_before, tuples_within, tuples_after,
+                )
+
+    # handle trailing queryonly
+    if cigarwalks_trailing_queryonly is not None:
+        for cigarwalk in cigarwalks_trailing_queryonly:
+            before_portion, within_portion, after_portion = cigarsplit_helper_queryonly(
+                cigarwalk, split_range0, is_trailing=(not trailing_queryonly_to_right),
+            )
+            cigarsplit_helper_append(
+                before_portion, within_portion, after_portion,
+                tuples_before, tuples_within, tuples_after,
+            )
+
+    return tuples_before, tuples_within, tuples_after
+
+
+def cigarsplit_helper_non_queryonly(cigarwalk, split_range0):
+    offset_split_start = split_range0.start - cigarwalk.target.start
+    offset_split_end = cigarwalk.target.stop - split_range0.stop
+    # before
+    if offset_split_start > 0:
+        #before_portion_length = min(offset_split_start, len(cigarwalk.target))
+        before_portion = (
+            cigarwalk.cigartup[0], 
+            min(offset_split_start, len(cigarwalk.target)),
+        )
+    else:
+        before_portion = None
+    # after
+    if offset_split_end > 0:
+        after_portion = (
+            cigarwalk.cigartup[0], 
+            min(offset_split_end, len(cigarwalk.target)),
+        )
+    else:
+        after_portion = None
+    # within
+    if (
+        cigarwalk.target.start < split_range0.stop and
+        cigarwalk.target.stop > split_range0.start
+    ):
+        cigarop_idx_start0 = max(0, offset_split_start)
+        cigarop_idx_end0 = len(cigarwalk.target) - max(0, offset_split_end)
+        within_portion = (
+            cigarwalk.cigartup[0],
+            cigarop_idx_end0 - cigarop_idx_start0
+        )
+    else:
+        within_portion = None
+
+    return before_portion, within_portion, after_portion
+
+
+def cigarsplit_helper_queryonly(cigarwalk, split_range0, is_trailing):
+    if is_trailing:  # assign to the position on the left
+        pos0 = cigarwalk.target.start - 1
+    else:
+        pos0 = cigarwalk.target.start
+
+    if pos0 in split_range0:
+        before_portion = None
+        within_portion = cigarwalk.cigartup
+        after_portion = None
+    elif pos0 < split_range0.start:
+        before_portion = cigarwalk.cigartup
+        within_portion = None
+        after_portion = None
+    elif pos0 >= split_range0.stop:
+        before_portion = None
+        within_portion = None
+        after_portion = cigarwalk.cigartup
+
+    return before_portion, within_portion, after_portion
+
+
+def cigarsplit_helper_append(
+    before_portion, within_portion, after_portion,
+    tuples_before, tuples_within, tuples_after,
+):
+    if before_portion is not None:
+        tuples_before.append(before_portion)
+    if within_portion is not None:
+        tuples_within.append(within_portion)
+    if after_portion is not None:
+        tuples_after.append(after_portion)
+
+
+# old versions of cigar split functions #
+
+def split_cigar_old(cigartuples, reference_start0, split_range0):
     """This function also returns cigartuples within split_range0"""
     tuples_before = list()
     tuples_within = list()
@@ -217,10 +415,63 @@ def split_cigar(cigartuples, reference_start0, split_range0):
 
 
 def get_cigars_before_region(cigartuples, reference_start0, reference_end0, split_range0):
-    return _split_cigars_helper(cigartuples, reference_start0, reference_end0, split_range0, include_queryonly_at_border=False)
+    """Softclips or insertions are regarded as residing in the position on the right.
+    Therefore, insertion between split_range0.start - 1 and split_range0.start belongs to the split region.
+    """
+    tuples_before = list()
+    for cigartup, target_range0, query_range0 in walk_cigar(cigartuples, reference_start0, with_cigartup=True):
+        if len(target_range0) == 0:  # I, S
+            if target_range0.start >= split_range0.start:
+                break
+            else:
+                tuples_before.append(cigartup)
+        else:  # M, D, N
+            if target_range0.start < split_range0.start:
+                if target_range0.stop <= split_range0.start:
+                    tuples_before.append(cigartup)
+                else:
+                    truncated_cigarlen = split_range0.start - target_range0.start
+                    tuples_before.append((cigartup[0], truncated_cigarlen))
+
+            if target_range0.stop >= split_range0.start:
+                break
+
+    return tuples_before
 
 
 def get_cigars_after_region(cigartuples, reference_start0, reference_end0, split_range0):
+    tuples_after = list()
+    for cigartup, target_range0, query_range0 in walk_cigar(cigartuples, reference_start0, with_cigartup=True):
+        if len(target_range0) == 0:  # I, S
+            if target_range0.start < split_range0.stop:
+                continue
+            else:
+                tuples_after.append(cigartup)
+        else:  # M, D, N
+            if target_range0.stop <= split_range0.stop:
+                continue
+
+            if target_range0.start >= split_range0.stop:
+                tuples_after.append(cigartup)
+            else:
+                truncated_cigarlen = target_range0.stop - split_range0.stop
+                tuples_after.append((cigartup[0], truncated_cigarlen))
+
+    return tuples_after
+
+
+def split_read_cigartuples(read, split_range0):
+    before_tuples = get_cigars_before_region(read.cigartuples, read.reference_start, read.reference_end, split_range0)
+    after_tuples = get_cigars_after_region(read.cigartuples, read.reference_start, read.reference_end, split_range0)
+
+    return before_tuples, after_tuples
+
+
+def get_cigars_before_region_old(cigartuples, reference_start0, reference_end0, split_range0):
+    return _split_cigars_helper(cigartuples, reference_start0, reference_end0, split_range0, include_queryonly_at_border=False)
+
+
+def get_cigars_after_region_old(cigartuples, reference_start0, reference_end0, split_range0):
     new_cigartuples = cigartuples[::-1]
     new_reference_start0 = 0
     new_reference_end0 = new_reference_start0 + (reference_end0 - reference_start0)
@@ -232,25 +483,16 @@ def get_cigars_after_region(cigartuples, reference_start0, reference_end0, split
     return reversed_result[::-1]
 
 
-def split_read_cigartuples(read, split_range0):
-    before_tuples = get_cigars_before_region(read.cigartuples, read.reference_start, read.reference_end, split_range0)
-    after_tuples = get_cigars_after_region(read.cigartuples, read.reference_start, read.reference_end, split_range0)
-
-    return before_tuples, after_tuples
-
-
 def _split_cigars_helper(cigartuples, reference_start0, reference_end0, split_range0, include_queryonly_at_border):
     """This returns before-region cigartuples
 
-    How softclips or insertions are treated:
-        - Softclip: 
-            - On the left border: To the position on the right
-            - On the right border: To the position on the left
-        - Insertion: To the position on the right, except when on the right border (to the left in this case)
+    Insertions or softclips are:
+        assigned to the right position in most case
+        assigned to the left position when on the left border of the read
     """
     if reference_start0 >= split_range0.start:
         tuples_before = list()
-    elif reference_end0 <= split_range0.start:
+    elif reference_end0 < split_range0.start:
         tuples_before = cigartuples.copy()
     else:
         tuples_before = list()
@@ -288,55 +530,10 @@ def _split_cigars_helper(cigartuples, reference_start0, reference_end0, split_ra
     return tuples_before
 
 
-
 ############################################
-# Bio.Align.PairwiseAlignment-related ones #
+# Bio.Align.Alignment-related ones #
 ############################################
 
-def walk_cigar(cigartuples, target_start0):
-    query_start0 = 0
-
-    target_end0 = target_start0
-    query_end0 = query_start0
-
-    for cigartup in cigartuples:
-        opcode, count = cigartup
-        consume_target, consume_query = CIGAR_WALK_DICT[opcode]
-        if consume_target:
-            target_end0 += count
-        if consume_query:
-            query_end0 += count
-
-        target_range0 = range(target_start0, target_end0)
-        query_range0 = range(query_start0, query_end0)
-
-        yield Walk(target_range0, query_range0)
-
-        target_start0 = target_end0
-        query_start0 = query_end0
-
-
-def walk_cigar_targetonly(cigartuples, target_start0):
-    #query_start0 = 0
-
-    target_end0 = target_start0
-    #query_end0 = query_start0
-
-    for cigartup in cigartuples:
-        opcode, count = cigartup
-        consume_target, consume_query = CIGAR_WALK_DICT[opcode]
-        if consume_target:
-            target_end0 += count
-        #if consume_query:
-        #    query_end0 += count
-
-        target_range0 = range(target_start0, target_end0)
-        #query_range0 = range(query_start0, query_end0)
-
-        yield target_range0
-
-        target_start0 = target_end0
-        #query_start0 = query_end0
 
 
 def alignment_to_cigartuples(
@@ -346,7 +543,7 @@ def alignment_to_cigartuples(
     remove_left_del=True, remove_right_del=True,
 ):
     """Args:
-        alignment: Bio.Align.PairwiseAlignment object
+        alignment: Bio.Align.Alignment object
         assumes global alignment
     """
     # set params
@@ -422,6 +619,26 @@ def walks_to_path(cigarwalks):
     return tuple(result)
 
 
+def walks_to_coordinates(walks):
+    """Returns what can be used as 'coordinates' attribute of Bio.Align.Alignment object"""
+    sublist_target = list()
+    sublist_query = list()
+
+    iterator = iter(walks)
+
+    target_range0, query_range0 = next(iterator)
+    sublist_target.append(target_range0.start)
+    sublist_target.append(target_range0.stop)
+    sublist_query.append(query_range0.start)
+    sublist_query.append(query_range0.stop)
+
+    for target_range0, query_range0 in iterator:
+        sublist_target.append(target_range0.stop)
+        sublist_query.append(query_range0.stop)
+
+    return np.array([sublist_target, sublist_query])
+
+
 def path_to_walks(alignpath):
     """Args:
         alignpath: 'path' attribute of Bio.Align.PairwiseAlignment object
@@ -430,8 +647,25 @@ def path_to_walks(alignpath):
         yield range(x0[0], x1[0]), range(x0[1], x1[1])  # target_range, query_range
 
 
+def coordinates_to_walks(coordinates):
+    """Args:
+        coordinates: 'coordinates' attribute of Bio.Align.Alignment object
+    """
+    prev_target_idx = coordinates[0, 0]
+    prev_query_idx = coordinates[1, 0]
+    for idx in range(1, coordinates.shape[1]):
+        target_range0 = range(prev_target_idx, coordinates[0, idx])
+        query_range0 = range(prev_query_idx, coordinates[1, idx])
+
+        yield target_range0, query_range0
+
+        prev_target_idx = target_range0.stop
+        prev_query_idx = query_range0.stop
+
+
 def set_walks(alignment):
-    alignment.walks = list(path_to_walks(alignment.path))
+    #alignment.walks = list(path_to_walks(alignment.path))
+    alignment.walks = list(coordinates_to_walks(alignment.coordinates))
 
 
 def get_walks(alignment, copy=False):
@@ -457,12 +691,16 @@ def amend_outer_insdel_left(alignment):
         new_walks = walks.copy()
         new_walks[0] = (walks[1][0], range(0, 0))
         new_walks[1] = (range(walks[1][0].stop, walks[1][0].stop), walks[0][1])
-        return Bio.Align.PairwiseAlignment(
-            alignment.target, 
-            alignment.query, 
-            walks_to_path(new_walks),
-            0,
+        return Bio.Align.Alignment(
+            sequences=[alignment.target, alignment.query],
+            coordinates=walks_to_coordinates(new_walks),
         )
+#        return Bio.Align.PairwiseAlignment(
+#            alignment.target, 
+#            alignment.query, 
+#            walks_to_path(new_walks),
+#            0,
+#        )
     else:
         return alignment
 
@@ -480,12 +718,16 @@ def amend_outer_insdel_right(alignment):
         new_walks = walks.copy()
         new_walks[-1] = (walks[-2][0], range(0, 0))
         new_walks[-2] = (range(walks[-2][0].start, walks[-2][0].start), walks[-1][1])
-        return Bio.Align.PairwiseAlignment(
-            alignment.target, 
-            alignment.query, 
-            walks_to_path(new_walks),
-            0,
+        return Bio.Align.Alignment(
+            sequences=[alignment.target, alignment.query],
+            coordinates=walks_to_coordinates(new_walks),
         )
+        #return Bio.Align.PairwiseAlignment(
+        #    alignment.target, 
+        #    alignment.query, 
+        #    walks_to_path(new_walks),
+        #    0,
+        #)
     else:
         return alignment
 
@@ -517,17 +759,26 @@ def show_alignment_with_numbers(alignment):
 
 def reverse_alignment(alignment):
     """Args:
-        alignment: Bio.Align.PairwiseAlignment object
+        alignment: Bio.Align.Alignment object
     """
-    return Bio.Align.PairwiseAlignment(
-        alignment.target[::-1], 
-        alignment.query[::-1], 
-        [
-            (len(alignment.target) - x[0], len(alignment.query) - x[1]) 
-            for x in alignment.path[::-1]
-        ], 
-        0,
+    return Bio.Align.Alignment(
+        sequences=[alignment.target[::-1], alignment.query[::-1]],
+        coordinates=np.array(
+            [
+                len(alignment.target) - alignment.coordinates[0][::-1],
+                len(alignment.query) - alignment.coordinates[1][::-1],
+            ],
+        ),
     )
+    #return Bio.Align.PairwiseAlignment(
+    #    alignment.target[::-1], 
+    #    alignment.query[::-1], 
+    #    [
+    #        (len(alignment.target) - x[0], len(alignment.query) - x[1]) 
+    #        for x in alignment.path[::-1]
+    #    ], 
+    #    0,
+    #)
 
 
 #def remove_flanking_query_gaps(alignment):
@@ -578,7 +829,11 @@ def remove_leading_query_gaps_component_input(target, query, walks, as_alignment
         new_walks[idx] = (new_target_walk, old_query_walk)
     # return
     if as_alignment:
-        new_aln = Bio.Align.PairwiseAlignment(new_target, query, walks_to_path(new_walks), 0)
+        #new_aln = Bio.Align.PairwiseAlignment(new_target, query, walks_to_path(new_walks), 0)
+        new_aln = Bio.Align.Alignment(
+            sequences=[new_target, query],
+            coordinates=walks_to_coordinates(new_walks),
+        )
         return new_aln, offset
     else:
         return new_target, new_walks, offset
@@ -608,7 +863,11 @@ def remove_trailing_query_gaps_component_input(target, query, walks, as_alignmen
 
     # return
     if as_alignment:
-        new_aln = Bio.Align.PairwiseAlignment(new_target, query, walks_to_path(new_walks), 0)
+        #new_aln = Bio.Align.PairwiseAlignment(new_target, query, walks_to_path(new_walks), 0)
+        new_aln = Bio.Align.Alignment(
+            sequences=[new_target, query],
+            coordinates=walks_to_coordinates(new_walks),
+        )
         return new_aln, offset
     else:
         return new_target, new_walks, offset
@@ -623,18 +882,25 @@ def remove_flanking_query_gaps(alignment):
     target_lrstrip, walks_lrstrip, trailing_offset = remove_trailing_query_gaps_component_input(
         target_lstrip, alignment.query, walks_lstrip, as_alignment=False,
     )
-    new_aln = Bio.Align.PairwiseAlignment(
-        target_lrstrip, 
-        alignment.query, 
-        walks_to_path(walks_lrstrip),
-        0,
+    #new_aln = Bio.Align.PairwiseAlignment(
+    #    target_lrstrip, 
+    #    alignment.query, 
+    #    walks_to_path(walks_lrstrip),
+    #    0,
+    #)
+    new_aln = Bio.Align.Alignment(
+        sequences=[target_lrstrip, alignment.query],
+        coordinates=walks_to_coordinates(walks_lrstrip),
     )
         
     return new_aln, leading_offset
 
 
-def alignment_to_vcfspec(alignment, target_start0, chrom, fasta, lstrip_query_gaps=True, rstrip_query_gaps=True):
+def alignment_to_vcfspec(
+    alignment, target_start0, chrom, fasta, lstrip_query_gaps=True, rstrip_query_gaps=True,
+):
     """May return an empty tuple"""
+
     def groupkey_walks(x):
         if len(x[0]) == 0 or len(x[1]) == 0:
             return 'indel'
@@ -644,7 +910,7 @@ def alignment_to_vcfspec(alignment, target_start0, chrom, fasta, lstrip_query_ga
     def groupkey_matches(x):
         return x[0] != x[1]
 
-    def handle_single_ins(current_pos0, target_idx, query_idx, query_walk, fasta, chrom, new_aln, vcfspec_list):
+    def handle_single_ins(current_pos0, target_idx, query_idx, query_walk, fasta, chrom, new_aln, vcfspec_list, refver):
         pos = current_pos0
         if target_idx == 0:
             ref = fasta.fetch(chrom, current_pos0 - 1, current_pos0)
@@ -652,9 +918,9 @@ def alignment_to_vcfspec(alignment, target_start0, chrom, fasta, lstrip_query_ga
             ref = new_aln.target[target_idx - 1]
         inserted_seq = new_aln.query[query_idx:(query_idx + len(query_walk))]
         alt = ref + inserted_seq
-        vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,), fasta=fasta))
+        vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta))
 
-    def handle_single_del(current_pos0, target_idx, target_walk, fasta, chrom, new_aln, vcfspec_list):
+    def handle_single_del(current_pos0, target_idx, target_walk, fasta, chrom, new_aln, vcfspec_list, refver):
         pos = current_pos0
         if target_idx == 0:
             preceding_base = fasta.fetch(chrom, current_pos0 - 1, current_pos0)
@@ -662,19 +928,19 @@ def alignment_to_vcfspec(alignment, target_start0, chrom, fasta, lstrip_query_ga
             preceding_base = new_aln.target[target_idx - 1]
         ref = preceding_base + new_aln.target[target_idx:(target_idx + len(target_walk))]
         alt = ref[0]
-        vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,), fasta=fasta))
+        vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta))
 
-    def handle_consecutive_indels(new_aln, walks_subset, target_idx, query_idx, current_pos0, chrom, fasta, vcfspec_list):
+    def handle_consecutive_indels(new_aln, walks_subset, target_idx, query_idx, current_pos0, chrom, fasta, vcfspec_list, refver):
         target_walk_length = sum(len(target_walk) for target_walk, query_walk in walks_subset)
         query_walk_length = sum(len(query_walk) for target_walk, query_walk in walks_subset)
         ref = new_aln.target[target_idx:(target_idx + target_walk_length)]
         alt = new_aln.query[query_idx:(query_idx + query_walk_length)]
         pos = current_pos0 + 1
-        vcfspec = libvcfspec.Vcfspec(chrom, pos, ref, (alt,), fasta=fasta)
+        vcfspec = libvcfspec.Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta)
         #vcfspec = vcfspec.parsimonious()
         vcfspec_list.append(vcfspec)
 
-    def handle_match(new_aln, target_idx, query_idx, target_walk, current_pos0, chrom, fasta, vcfspec_list):
+    def handle_match(new_aln, target_idx, query_idx, target_walk, current_pos0, chrom, fasta, vcfspec_list, refver):
         target_seq = new_aln.target[target_idx:(target_idx + len(target_walk))]
         query_seq = new_aln.query[query_idx:(query_idx + len(target_walk))]
         idx_offset = 0
@@ -684,10 +950,12 @@ def alignment_to_vcfspec(alignment, target_start0, chrom, fasta, lstrip_query_ga
                 pos = current_pos0 + idx_offset + 1
                 ref = ''.join(x[0] for x in seq_pairs)
                 alt = ''.join(x[1] for x in seq_pairs)
-                vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,), fasta=fasta))
+                vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta))
             idx_offset += len(seq_pairs)
 
     # set paramters
+    refver = common.infer_refver_fasta(fasta)
+
     if lstrip_query_gaps:
         if rstrip_query_gaps:
             new_aln, leading_offset = remove_flanking_query_gaps(alignment)
@@ -700,7 +968,7 @@ def alignment_to_vcfspec(alignment, target_start0, chrom, fasta, lstrip_query_ga
         else:
             new_aln = alignment
             leading_offset = 0
-    
+
     target_start0 += leading_offset
     current_pos0 = target_start0
     target_idx = 0
@@ -719,14 +987,14 @@ def alignment_to_vcfspec(alignment, target_start0, chrom, fasta, lstrip_query_ga
                     f'{alignment}'
                 )
             target_walk, query_walk = walks_subset[0]
-            handle_match(new_aln, target_idx, query_idx, target_walk, current_pos0, chrom, fasta, vcfspec_list)
+            handle_match(new_aln, target_idx, query_idx, target_walk, current_pos0, chrom, fasta, vcfspec_list, refver)
         elif walktype == 'indel':
             if len(walks_subset) == 1:
                 target_walk, query_walk = walks_subset[0]
                 if len(target_walk) == 0:  # ins
-                    handle_single_ins(current_pos0, target_idx, query_idx, query_walk, fasta, chrom, new_aln, vcfspec_list)
+                    handle_single_ins(current_pos0, target_idx, query_idx, query_walk, fasta, chrom, new_aln, vcfspec_list, refver)
                 elif len(query_walk) == 0:  # del
-                    handle_single_del(current_pos0, target_idx, target_walk, fasta, chrom, new_aln, vcfspec_list)
+                    handle_single_del(current_pos0, target_idx, target_walk, fasta, chrom, new_aln, vcfspec_list, refver)
             else:
                 if not (
                     any(len(target_walk) > 0 for target_walk, query_walk in walks_subset) and 
@@ -737,7 +1005,7 @@ def alignment_to_vcfspec(alignment, target_start0, chrom, fasta, lstrip_query_ga
                         f'Input alignment:\n'
                         f'{alignment}'
                     )
-                handle_consecutive_indels(new_aln, walks_subset, target_idx, query_idx, current_pos0, chrom, fasta, vcfspec_list)
+                handle_consecutive_indels(new_aln, walks_subset, target_idx, query_idx, current_pos0, chrom, fasta, vcfspec_list, refver)
 
         for target_walk, query_walk in walks_subset:
             current_pos0 += len(target_walk)
@@ -748,7 +1016,10 @@ def alignment_to_vcfspec(alignment, target_start0, chrom, fasta, lstrip_query_ga
 
 
 def alignment_hasher(aln):
-    return (aln.target, aln.query, tuple(aln.path))
+    return (
+        tuple(aln.sequences), 
+        tuple(map(tuple, aln.coordinates)),
+    )
 
 
 def remove_identical_alignments(alignments):
@@ -818,12 +1089,18 @@ def tiebreakers_merged_main(alignments):
 def alignment_tiebreaker(alignments, raise_with_failure=True):
     selected_alns = tiebreakers_merged_main(alignments)
     if len(selected_alns) != 1 and raise_with_failure:
-        alignments_string = list()
-        for x in selected_alns:
-            alignments_string.append(
-                f'target: {x.target}\nquery: {x.query}\npath: {x.path}\n{str(x)}'
-            )
-        alignments_string = '\n'.join(alignments_string)
+        #alignments_string = list()
+        #for x in selected_alns:
+        #    alignments_string.append(
+        #        f'target: {x.target}\nquery: {x.query}\npath: {x.path}\n{str(x)}'
+        #    )
+        #alignments_string = '\n'.join(alignments_string)
+        alignments_string = '\n'.join(
+            [
+                f'target: {x.target}\nquery: {x.query}\ncoordinates: {x.coordinates}\n{str(x)}'
+                for x in selected_alns
+            ]
+        )
         raise AlignmentTieError(
             f'Failed to break alignment tie. Alignments are:\n{alignments_string}'
         )

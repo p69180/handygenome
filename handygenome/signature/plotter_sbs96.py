@@ -89,7 +89,7 @@ def write_texts(ax, cossim):
             size=20, transform=ax.transAxes, ha='center', va='center')
 
 
-def main(sigresult, sampleid):
+def main(sigresult, sampleid=None):
     # set ipython magic
     IPYTHON.magic('matplotlib inline')
 
@@ -116,7 +116,8 @@ def main(sigresult, sampleid):
     # plotting
     plt.rc('axes', edgecolor='lightgray', linewidth=2)
     fig = plt.figure(figsize=(40, 20), constrained_layout=True)
-    fig.suptitle(sampleid, size=40)
+    if sampleid is not None:
+        fig.suptitle(sampleid, size=40)
 
     subfigs = fig.subfigures(1, 2, width_ratios=[1, 3])
 

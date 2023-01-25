@@ -2,17 +2,14 @@ import textwrap
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-toolsetup = importlib.import_module('.'.join([top_package_name, 'workflow', 'toolsetup']))
-svcaller_parser = importlib.import_module('.'.join([top_package_name, 'variant', 'svcaller_parser']))
-#equivalents = importlib.import_module('.'.join([top_package_name, 'variant', 'equivalents']))
-varianthandler = importlib.import_module('.'.join([top_package_name, 'variant', 'varianthandler']))
-headerhandler = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'headerhandler']))
-indexing = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'indexing']))
-libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
+import handygenome.common as common
+import handygenome.workflow as workflow
+import handygenome.workflow.toolsetup as toolsetup
+import handygenome.variant.svcaller_parser as svcaller_parser
+import handygenome.variant.varianthandler as varianthandler
+import handygenome.vcfeditor.headerhandler as headerhandler
+import handygenome.vcfeditor.indexing as indexing
+import handygenome.variant.vcfspec as libvcfspec
 
 
 def argument_parser(cmdargs):
@@ -24,12 +21,14 @@ def argument_parser(cmdargs):
             - Split multiallelic lines.
             - Change SV caller records into breakends form.
             - Normalize non-SV records into the leftmost form.
-            - Normalize SV records into the bnd1-advanced form."""))
+            - Normalize SV records into the bnd1-advanced form."""
+        )
+    )
 
     workflow.add_infile_arg(parser_dict['required'], required=True)
-    workflow.add_outfile_arg(parser_dict['required'], required=True, 
-                             must_not_exist='ask')
-    workflow.add_fasta_arg(parser_dict['required'], required=True)
+    workflow.add_outfile_arg(parser_dict['required'], required=True, must_not_exist='ask')
+    #workflow.add_fasta_arg(parser_dict['required'], required=True)
+    workflow.add_refver_arg(parser_dict['required'], required=True, choices='all')
     workflow.add_outfmt_arg(parser_dict['optional'], required=False)
 
     workflow.add_logging_args(parser_dict)
@@ -42,22 +41,19 @@ def argument_parser(cmdargs):
     return args
 
 
-def process_nonsv(vr, out_vr_list, nonsv_set, logger):
+def process_nonsv(vr, out_vr_list, nonsv_set, logger, refver):
     """
     Normalize the input vr(the leftmost form).
     Check if the normalized vcfspec is duplicated, in which case the vr is
         discarded.
     """
 
-    vcfspec_original = libvcfspec.Vcfspec.from_vr(vr)
+    vcfspec_original = libvcfspec.Vcfspec.from_vr(vr, refver=refver)
     vcfspec_left = vcfspec_original.leftmost()
     ID = vcfspec_left.get_id()
 
     if ID in nonsv_set:
-        logger.info(f'Input variant record is discarded since vcfspec is '
-                    f'duplicated:\n{vr}')
-        return
-
+        logger.info(f'Input variant record is discarded since vcfspec is duplicated:\n{vr}')
     else:
         nonsv_set.add(ID)
         varianthandler.apply_vcfspec(vr, vcfspec_left)
@@ -104,8 +100,7 @@ def process_sv(vr, out_vr_list, bnds_set, fasta, chromdict, logger):
         out_vr_list.append(vr_pos2)
 
 
-def process_monoallelic_vr(vr, out_vr_list, nonsv_set, bnds_set, fasta, 
-                           chromdict, logger):
+def process_monoallelic_vr(vr, out_vr_list, nonsv_set, bnds_set, fasta, chromdict, logger, refver):
     # skip delly <INS> records
     if svcaller_parser.check_vr_format_delly(vr):
         if vr.alts[0] == '<INS>':
@@ -114,7 +109,7 @@ def process_monoallelic_vr(vr, out_vr_list, nonsv_set, bnds_set, fasta,
     if varianthandler.check_SV(vr):
         process_sv(vr, out_vr_list, bnds_set, fasta, chromdict, logger)
     else:
-        process_nonsv(vr, out_vr_list, nonsv_set, logger)
+        process_nonsv(vr, out_vr_list, nonsv_set, logger, refver)
 
 
 def main(cmdargs):
@@ -123,29 +118,31 @@ def main(cmdargs):
 
     logger.info('BEGINNING')
 
-    fasta = pysam.FastaFile(args.fasta_path)
-    chromdict = common.ChromDict(fasta=fasta)
+    fasta = common.DEFAULT_FASTAS[args.refver]
+    chromdict = common.DEFAULT_CHROMDICTS[args.refver]
+    refver = args.refver
+    #fasta = pysam.FastaFile(args.fasta_path)
+    #chromdict = common.ChromDict(fasta=fasta)
 
     nonsv_set = set()
     bnds_set = set()
     out_vr_list = list()
     
     with pysam.VariantFile(args.infile_path) as in_vcf:
-        headerhandler.addmeta_MATEID(in_vcf.header)
-        headerhandler.addmeta_END(in_vcf.header)
-        with pysam.VariantFile(args.outfile_path, mode=args.mode_pysam,
-                               header=in_vcf.header) as out_vcf:
+        #headerhandler.addmeta_MATEID(in_vcf.header)
+        #headerhandler.addmeta_END(in_vcf.header)
+        with pysam.VariantFile(args.outfile_path, mode=args.mode_pysam, header=in_vcf.header) as out_vcf:
+            if vr.contig not in chromdict.contigs:
+                continue
+
             for vr in in_vcf.fetch():
                 if len(vr.alts) == 1:
-                    process_monoallelic_vr(vr, out_vr_list, nonsv_set, 
-                                           bnds_set, fasta, chromdict, logger)
+                    process_monoallelic_vr(vr, out_vr_list, nonsv_set, bnds_set, fasta, chromdict, logger, refver)
                 else:
                     for alt in vr.alts:
                         new_vr = vr.copy()
                         new_vr.alts = [alt]
-                        process_monoallelic_vr(new_vr, out_vr_list, nonsv_set, 
-                                               bnds_set, fasta, chromdict, 
-                                               logger)
+                        process_monoallelic_vr(new_vr, out_vr_list, nonsv_set, bnds_set, fasta, chromdict, logger, refver)
 
             out_vr_list.sort(key=common.get_vr_sortkey(chromdict))
 

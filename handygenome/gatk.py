@@ -106,7 +106,7 @@ def run_haplotypecaller(fasta_path, infile_path, outfile_path, tmpdir=None,
     if incl_region_path is not None:
         args.extend(['--intervals', incl_region_path])
     if excl_region_path is not None:
-        args.extend(['----exclude-intervals', excl_region_path])
+        args.extend(['--exclude-intervals', excl_region_path])
 
     p = subprocess.run(args, capture_output=True, text=True, check=False, shell=False) 
     if rm_tmpdir:
@@ -152,7 +152,7 @@ def run_Mutect2(infile_path_list, outfile_path, fasta_path, tmpdir=None, realign
     if incl_region_path is not None:
         args.extend(['--intervals', incl_region_path])
     if excl_region_path is not None:
-        args.extend(['----exclude-intervals', excl_region_path])
+        args.extend(['--exclude-intervals', excl_region_path])
 
     p = subprocess.run(args, capture_output=True, text=True, check=False, shell=False) 
     if rm_tmpdir:
@@ -178,14 +178,6 @@ def realign_with_Mutect2(bam_path_list, chrom, start0, end0, fasta_path, realign
     shutil.rmtree(tmpdir)
 
     return result_vplist
-
-
-def get_readgroup(bam):
-    rg = bam.header['RG']
-    if len(rg) != 1:
-        raise Exception(f'The number of RG is not one.')
-    else:
-        return rg[0]['ID']
 
 
 def split_realigned_bam(realigned_bam_path):

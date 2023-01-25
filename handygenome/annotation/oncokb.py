@@ -2,12 +2,9 @@ import itertools
 
 import pandas as pd
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-annotitem = importlib.import_module(
-    ".".join([top_package_name, "annotation", "annotitem"])
-)
+import handygenome.common as common
+import handygenome.annotation.annotitem as annotitem
+import handygenome.variant.vcfspec as libvcfspec
 
 
 URL_allCuratedGenes = 'https://www.oncokb.org/api/v1/utils/allCuratedGenes'
@@ -129,9 +126,9 @@ def add_oncokb_info(vp_list, token, **kwargs):
             hgvsg_list.append(sub_vcfspec.to_hgvsg())
             vp_indexes.append(vp_idx)
 
-    annot_result = query_hgvsg_post(hgvsg_list=hgvsg_list, token=token, **kwargs)
+    query_result = query_hgvsg_post(hgvsg_list=hgvsg_list, token=token, **kwargs)
     for key, subiter in itertools.groupby(
-        zip(vp_indexes, annot_result),
+        zip(vp_indexes, query_result),
         key=(lambda x: x[0]),
     ):
         oncokb_ALTlist = OncoKBInfoALTlist()
@@ -140,3 +137,24 @@ def add_oncokb_info(vp_list, token, **kwargs):
         vp_list[vp_idx].oncokb = oncokb_ALTlist
 
 
+def make_OncoKBInfoALTlist_list(vr_iterator, token, **kwargs):
+    hgvsg_list = list()
+    vr_indexes = list()
+    for vr_idx, vr in enumerate(vr_iterator):
+        vcfspec = libvcfspec.Vcfspec.from_vr(vr)
+        for sub_vcfspec in vcfspec.iter_monoalts():
+            hgvsg_list.append(sub_vcfspec.to_hgvsg())
+            vr_indexes.append(vr_idx)
+
+    result = list()
+    query_result = query_hgvsg_post(hgvsg_list=hgvsg_list, token=token, **kwargs)
+    for key, subiter in itertools.groupby(
+        zip(vr_indexes, query_result),
+        key=(lambda x: x[0]),
+    ):
+        oncokb_ALTlist = OncoKBInfoALTlist()
+        for vr_idx, oncokb_item in subiter:
+            oncokb_ALTlist.append(oncokb_item)
+        result.append(oncokb_ALTlist)
+
+    return result

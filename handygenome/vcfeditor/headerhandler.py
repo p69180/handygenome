@@ -52,6 +52,48 @@ def addmeta_END(vcfheader):
 
 
 def merge_vcfheaders(vcfheader_list):
+    """Any conflicting INFO or FORMAT keys (with regard to any of Type, 
+    Number, or Description) are discarded.
+    """
+    
+    # make a unified VariantHeader object which contains all INFO/FORMAT keys and samples
+    vcfheader_list = list(vcfheader_list)
+    merged_header = vcfheader_list[0].copy()
+    for vcfheader in vcfheader_list[1:]:
+        merged_header.merge(vcfheader)
+        for sampleid in vcfheader.samples:
+            if sampleid not in merged_header.samples:
+                merged_header.add_sample(sampleid)
+
+    # find conflicting keys
+    info_metadatas = dict()
+    format_metadatas = dict()
+    for hdr in vcfheader_list:
+        for key, val in hdr.info.items():
+            info_metadatas.setdefault(key, set())
+            info_metadatas[key].add((val.type, val.number, val.description))
+        for key, val in hdr.formats.items():
+            format_metadatas.setdefault(key, set())
+            format_metadatas[key].add((val.type, val.number, val.description))
+
+    conflicting_keys = {'info': set(), 'format': set()}
+    for key, val in info_metadatas.items():
+        if len(val) > 1:
+            conflicting_keys['info'].add(key)
+    for key, val in format_metadatas.items():
+        if len(val) > 1:
+            conflicting_keys['format'].add(key)
+
+    # remove them
+    for key in conflicting_keys['info']:
+        merged_header.info.remove_header(key)
+    for key in conflicting_keys['format']:
+        merged_header.formats.remove_header(key)
+
+    return merged_header, conflicting_keys
+
+
+def merge_vcfheaders_heavy(vcfheader_list):
     """Any conflicting INFO or FORMAT keys 
     (with regard to any of Type, Number, or Description) are discarded."""
     

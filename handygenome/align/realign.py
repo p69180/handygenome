@@ -22,27 +22,24 @@ libpileup = importlib.import_module(".".join([top_package_name, "read", "pileup"
 alignhandler = importlib.import_module(".".join([top_package_name, "align", "alignhandler"]))
 bameditor = importlib.import_module(".".join([top_package_name, "bameditor"]))
 readhandler = importlib.import_module(".".join([top_package_name, "read", "readhandler"]))
-#fetchcache = importlib.import_module(".".join([top_package_name, "read", "fetchcache"]))
+readplus = importlib.import_module(".".join([top_package_name, "read", "readplus"]))
 
 
 #logging.basicConfig(level=logging.INFO)
 
-
-DEFAULT_ACTIVE_THRESHOLD = 0.05
-DEFAULT_INACTIVE_PADDING = 10
-DEFAULT_VCFSPEC_EXTRACTION_THRESHOLD = 0.05
-DEFAULT_VCFSPEC_CONCAT_DISTANCE = None
-DEFAULT_MAX_PILEUP_WIDTH = 100  # Must be equal to or less than this value
-DEFAULT_EXTEND_PILEUP_BY = 20
-DEFAULT_AUGMENT_FACTOR_VCFSPEC_RANGE = 1.5
-DEFAULT_MQ_LIMIT = 20
-DEFAULT_DEPTH_LIMIT = 1
+#DEFAULT_ACTIVE_THRESHOLD = 0.05
+#DEFAULT_INACTIVE_PADDING = 10
+#DEFAULT_VCFSPEC_EXTRACTION_THRESHOLD = 0.05
+#DEFAULT_VCFSPEC_CONCAT_DISTANCE = None
+#DEFAULT_MAX_PILEUP_WIDTH = 100  # Must be equal to or less than this value
+#DEFAULT_EXTEND_PILEUP_BY = 20
+#DEFAULT_AUGMENT_FACTOR_VCFSPEC_RANGE = 1.5
+#DEFAULT_MQ_LIMIT = 20
+#DEFAULT_DEPTH_LIMIT = 1
 
 DEFAULT_RPILEUPSERIES_MAX_WIDTH = 5000
 
-
 #DEFAULT_AUGMENT_FACTOR_REPEAT_AREA = 1
-
 
 #ALIGNER_FILLED = Bio.Align.PairwiseAligner(
 #    mode='local',
@@ -87,33 +84,20 @@ ALIGNER_EQUAL_MM_GAP = Bio.Align.PairwiseAligner(
 
 ALIGNER_MAIN = ALIGNER_EQUAL_MM_GAP
 
-
-def get_logger(verbose):
-    formatter = logging.Formatter(
-        fmt='[%(asctime)s.%(msecs)03d] RealignerPileup: %(message)s', 
-        datefmt='%Z %Y-%m-%d %H:%M:%S'
-    )
-    return workflow.get_logger(
-        name=str(uuid.uuid4()),
-        level=('debug' if verbose else 'info'),
-        formatter=formatter,
-    )
-
-
-def parse_rpileup_kwargs(**kwargs):
-    assert not any(x in kwargs for x in ('init_df',))
-
-    rpup_init_sig = inspect.signature(RealignerPileup.__init__)
-    ba = rpup_init_sig.bind_partial(**kwargs)
-    ba.apply_defaults()
-
-    rpileup_init_kwargs = dict()
-    for k, v in ba.arguments.items():  # these include default kwargs of RealignerPileup.__init__
-        if k in ('start0', 'end0', 'init_df', 'verbose', 'logger'):
-            continue
-        rpileup_init_kwargs[k] = v
-
-    return rpileup_init_kwargs
+DEFAULT_RPILEUP_PARAMS = {
+    'active_threshold': 0.05,
+    'aligner': ALIGNER_MAIN,
+    'inactive_padding': 15,
+    'allele_portion_threshold': 0.05, 
+    'concat_dist_le': None,  # Now unused
+    'max_pileup_width': 100,
+    'extend_pileup_by': 20,
+    'vcfspec_range_factor': 1.5,
+    'start0_limit': -np.inf,  # This value is allowed
+    'end0_limit': np.inf,  # This value is allowed
+    'MQ_limit': 20,  # This value is allowed
+    'depth_limit': 1,  # This value is allowed
+}
 
 
 class AlignmentFailureError(Exception):
@@ -124,6 +108,18 @@ class RealignerPileupBase(libpileup.PileupBase):
     row_spec_exluded_vals = (
         libpileup.PileupBase.DEL_VALUE, libpileup.PileupBase.EMPTY_VALUE
     )
+
+    @staticmethod
+    def get_logger(verbose):
+        formatter = logging.Formatter(
+            fmt='[%(asctime)s.%(msecs)03d RealignerPileup] line %(lineno)d: %(message)s', 
+            datefmt='%Z %Y-%m-%d %H:%M:%S'
+        )
+        return workflow.get_logger(
+            name=str(uuid.uuid4()),
+            level=('debug' if verbose else 'info'),
+            formatter=formatter,
+        )
 
     def _active_info_generator(self, start0, end0, reverse=False):
         self._coord_arg_sanitycheck(start0, end0)
@@ -145,10 +141,16 @@ class RealignerPileupBase(libpileup.PileupBase):
             yield is_active
 
     def _set_active_info(self):
-        self.active_info = pd.Series(
-            self._active_info_generator(self.start0, self.end0, reverse=False),
-            index=self.df.columns,
-        )
+        if self.df.shape[0] > 0:
+            self.active_info = pd.Series(
+                self._active_info_generator(self.start0, self.end0, reverse=False),
+                index=self.df.columns,
+            )
+        else:
+            self.active_info = pd.Series(
+                [False] * self.df.shape[1],
+                index=self.df.columns,
+            )
 
     # row specs related ones
     def _make_row_spec(self, row):
@@ -339,12 +341,16 @@ class RealignerPileupBase(libpileup.PileupBase):
             added_subseq_walk = range(0, 0)
             active_region_walks.insert(0, (added_ref_walk, added_subseq_walk))
         # make result alignment
-        return Bio.Align.PairwiseAlignment(
-            sup_to_ref_aln.target,
-            subseq_row_spec['seq'],
-            alignhandler.walks_to_path(active_region_walks),
-            0
+        return Bio.Align.Alignment(
+            sequences=[sup_to_ref_aln.target, subseq_row_spec['seq']],
+            coordinates=alignhandler.walks_to_coordinates(active_region_walks),
         )
+#        return Bio.Align.PairwiseAlignment(
+#            sup_to_ref_aln.target,
+#            subseq_row_spec['seq'],
+#            alignhandler.walks_to_path(active_region_walks),
+#            0
+#        )
 
     def superseq_to_vcfspecs(self, superseq_row_spec, superseq_alignment):
         lstrip_query_gaps = not superseq_row_spec["left_filled"]
@@ -389,10 +395,10 @@ class RealignerPileupBase(libpileup.PileupBase):
 #                if contig_vcfspec is None:
 #                    continue
 #
-#                if len(contig_vcfspec.concat_components[0]) == 0:
+#                if len(contig_vcfspec.components[0]) == 0:
 #                    result.append(contig_vcfspec)
 #                else:
-#                    result.extend(contig_vcfspec.concat_components[0])
+#                    result.extend(contig_vcfspec.components[0])
 #        else:
 #            result = list(
 #                x[1] for x in self.iter_contig_vcfspecs(subseq_portion_threshold, MQ_threshold)
@@ -421,7 +427,7 @@ class RealignerPileupBase(libpileup.PileupBase):
                 print(f'subseq_hits: {subseq_hits}; portion: {subseq_hits_portion}')
                 if contig_vcfspec is not None:
                     print('components:')
-                    for component in contig_vcfspec.concat_components[0]:
+                    for component in contig_vcfspec.components[1]:
                         print(f'\t{component}')
                 print('\n@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n')
 
@@ -447,9 +453,9 @@ class RealignerPileupBase(libpileup.PileupBase):
             print(f'alignment:\n{superseq_aln}')
             # show vcfspec
             print(f'contig vcfspec:\n\t{superseq_vcfspec}')
-            if superseq_vcfspec is not None and len(superseq_vcfspec.concat_components[0]) > 0:
+            if superseq_vcfspec is not None and len(superseq_vcfspec.components[1]) > 0:
                 print(f'concat components:')
-                for component in superseq_vcfspec.concat_components[0]:
+                for component in superseq_vcfspec.components[1]:
                     print('\t', component)
             # show other groupinfo attrs
             for key, val in sorted(
@@ -663,52 +669,94 @@ class RealignerPileup(RealignerPileupBase):
     # initializers
     def __init__(
         self, 
-        fasta, 
         bam, 
-        chrom, 
-        start0=None,
-        end0=None,
+        chrom, start0=None, end0=None, 
+        refver=None, fasta=None,
+
         init_df=True,
 
         verbose=False,
         logger=None,
 
-        active_threshold=DEFAULT_ACTIVE_THRESHOLD, 
-        aligner=ALIGNER_MAIN,
-        inactive_padding=DEFAULT_INACTIVE_PADDING,
-        allele_portion_threshold=DEFAULT_VCFSPEC_EXTRACTION_THRESHOLD, 
-        concat_dist_le=DEFAULT_VCFSPEC_CONCAT_DISTANCE,  # Now unused
-        max_pileup_width=DEFAULT_MAX_PILEUP_WIDTH,
-        extend_pileup_by=DEFAULT_EXTEND_PILEUP_BY,
-        vcfspec_range_factor=DEFAULT_AUGMENT_FACTOR_VCFSPEC_RANGE,
-        start0_limit=-np.inf,  # This value is allowed
-        end0_limit=np.inf,  # This value is allowed
-        MQ_limit=DEFAULT_MQ_LIMIT,  # This value is allowed
-        depth_limit=DEFAULT_DEPTH_LIMIT,  # This value is allowed
-    ):
+        **kwargs,
 
+#        active_threshold=DEFAULT_ACTIVE_THRESHOLD, 
+#        aligner=ALIGNER_MAIN,
+#        inactive_padding=DEFAULT_INACTIVE_PADDING,
+#        allele_portion_threshold=DEFAULT_VCFSPEC_EXTRACTION_THRESHOLD, 
+#        concat_dist_le=DEFAULT_VCFSPEC_CONCAT_DISTANCE,  # Now unused
+#        max_pileup_width=DEFAULT_MAX_PILEUP_WIDTH,
+#        extend_pileup_by=DEFAULT_EXTEND_PILEUP_BY,
+#        vcfspec_range_factor=DEFAULT_AUGMENT_FACTOR_VCFSPEC_RANGE,
+#        start0_limit=-np.inf,  # This value is allowed
+#        end0_limit=np.inf,  # This value is allowed
+#        MQ_limit=DEFAULT_MQ_LIMIT,  # This value is allowed
+#        depth_limit=DEFAULT_DEPTH_LIMIT,  # This value is allowed
+    ):
         # initiation
-        libpileup.PileupBase.__init__(self, fasta, bam, chrom, start0=start0, end0=end0, init_df=init_df, verbose=verbose, logger=logger)
-        # set active_threshold
-        self.active_threshold = active_threshold
+        libpileup.PileupBase.__init__(
+            self, 
+            bam=bam, 
+            chrom=chrom, start0=start0, end0=end0, 
+            refver=refver, fasta=fasta,
+            init_df=init_df, 
+            verbose=verbose, logger=logger,
+        )
+
+        # set other parameters
+        for k, v in parse_rpileup_kwargs(**kwargs).items():
+            setattr(self, k, v)
+
         if init_df:
             self._set_active_info()
 
-        # set other parameters
-        self.aligner = aligner
-        self.inactive_padding = inactive_padding
-        self.allele_portion_threshold = allele_portion_threshold
-        self.concat_dist_le = concat_dist_le
-        self.max_pileup_width = max_pileup_width
-        self.extend_pileup_by = extend_pileup_by
-        self.vcfspec_range_factor = vcfspec_range_factor
-        self.start0_limit = start0_limit
-        self.end0_limit = end0_limit
-        self.MQ_limit = MQ_limit
-        self.depth_limit = depth_limit
+#        self.aligner = aligner
+#        self.inactive_padding = inactive_padding
+#        self.allele_portion_threshold = allele_portion_threshold
+#        self.concat_dist_le = concat_dist_le
+#        self.max_pileup_width = max_pileup_width
+#        self.extend_pileup_by = extend_pileup_by
+#        self.vcfspec_range_factor = vcfspec_range_factor
+#        self.start0_limit = start0_limit
+#        self.end0_limit = end0_limit
+#        self.MQ_limit = MQ_limit
+#        self.depth_limit = depth_limit
 
         self.hit_left_margin = False
         self.hit_right_margin = False
+
+    @classmethod
+    def init_and_augment(
+        cls, 
+        bam, 
+        chrom, start0, end0, 
+        refver=None, fasta=None,
+        verbose=False, 
+        logger=None, 
+        **kwargs,
+    ):
+        result = cls(
+            bam=bam, 
+            chrom=chrom, start0=start0, end0=end0, 
+            refver=refver, fasta=fasta,
+
+            init_df=True,
+
+            verbose=verbose,
+            logger=logger,
+
+            **kwargs,
+        )
+        secresult_inactive, secresult_vcfspec = result.augment_margins()
+
+        return result, secresult_inactive, secresult_vcfspec
+
+    def spawn(self):
+        attrs_to_copy = (
+            ('bam', 'chrom', 'refver', 'fasta', 'verbose', 'logger')
+            + tuple(DEFAULT_RPILEUP_PARAMS.keys())
+        )
+        return self._spawn_base(attrs_to_copy)
     
     def subset(self, start0, end0, inplace=False):
         new_active_info = self.active_info.loc[start0:(end0 - 1)]
@@ -824,29 +872,34 @@ class RealignerPileup(RealignerPileupBase):
 
     # extension and reduction in search for realignment area
     def augment_margins(self):
-        #logging.debug(f'Beginning "augment_margins"')
+        self.logger.debug(f'Beginning "augment_margins"')
+
         # immediately after seeding
         if self.active_info.any():
-            pass
-            #logging.debug(f'\tskipping initial search')
+            self.logger.debug(f'\tskipping initial search')
         else:
-            #logging.debug(f'\tbeginning initial search')
+            self.logger.debug(f'\tbeginning initial search')
+
             self.search_for_active_position()
-            #logging.debug(f'\tfinished initial search')
+
+            self.logger.debug(f'\tfinished initial search')
+
             if not self.active_info.any():
+                self.logger.debug(f'Finished "augment_margins" without secure_margins')
+
                 result_inactive = None
                 result_vcfspec = None
-                #logging.debug(f'Finished "augment_margins" without secure_margins')
                 return result_inactive, result_vcfspec
 
         # trim excessive inactive padding
         self.reduce_left()
         self.reduce_right()
         # do after-discovery
-        #logging.debug(f'\tbeginning after-discovery')
+        self.logger.debug(f'\tbeginning after-discovery')
         result_inactive, result_vcfspec = self.secure_margins()
-        #logging.debug(f'\tfinished after-discovery')
-        #logging.debug(f'Finished "augment_margins"')
+        self.logger.debug(f'\tfinished after-discovery')
+
+        self.logger.debug(f'Finished "augment_margins"')
         return result_inactive, result_vcfspec
 
     def search_for_active_position(self):
@@ -1159,10 +1212,10 @@ class RealignerPileup(RealignerPileupBase):
             # make vcfspec iterator 
                 # when contig vcfspec is composed of only one component vcfspec, 
                 # iterator must be set differently
-            if len(contig_vcfspec.concat_components[0]) == 0:
+            if len(contig_vcfspec.components[1]) == 0:
                 iterator = [contig_vcfspec]
             else:
-                iterator = contig_vcfspec.concat_components[0]
+                iterator = contig_vcfspec.components[1]
 
             if split_contig_vcfspec:
                 for vcfspec in iterator:
@@ -1269,25 +1322,38 @@ class RealignerPileup(RealignerPileupBase):
     # alignment #
     def align_row_spec_to_ref(self, row_spec, ref_seq, ref_seq_reversed, raise_with_tie):
         if row_spec['seq'] == '':
-            return Bio.Align.PairwiseAlignment(
-                target=ref_seq,
-                query='',
-                path=[(0, 0), (len(ref_seq), 0)],
-                score=0,
+            return Bio.Align.Alignment(
+                sequences=[ref_seq, ''],
+                coordinates=np.array([(0, len(ref_seq)), (0, 0)]),
             )
+#            return Bio.Align.PairwiseAlignment(
+#                target=ref_seq,
+#                query='',
+#                path=[(0, 0), (len(ref_seq), 0)],
+#                score=0,
+#            )
 
         reverse_align = (not row_spec['left_filled']) and row_spec['right_filled']
-        if reverse_align:
-            target = ref_seq_reversed
-            query = row_spec['seq'][::-1]
-        else:
-            target = ref_seq
-            query = row_spec['seq']
+        target = ref_seq
+        query = row_spec['seq']
+        #if reverse_align:
+        #    target = ref_seq_reversed
+        #    query = row_spec['seq'][::-1]
+        #else:
+        #    target = ref_seq
+        #    query = row_spec['seq']
 
-        return self.main_aligner(target, query, aligner=self.aligner, reverse_align=reverse_align, raise_with_tie=raise_with_tie, logger=self.logger, row_spec=row_spec)
+        return self.main_aligner(target, query, aligner=self.aligner, reverse_align=reverse_align, raise_with_tie=raise_with_tie, logger=self.logger, row_spec=row_spec, target_reversed=ref_seq_reversed)
 
     @classmethod
-    def main_aligner(cls, target, query, aligner=ALIGNER_MAIN, reverse_align=False, raise_with_tie=False, logger=None, row_spec=None):
+    def main_aligner(cls, target, query, aligner=ALIGNER_MAIN, reverse_align=False, raise_with_tie=False, logger=None, row_spec=None, target_reversed=None):
+        if reverse_align:
+            if target_reversed is None:
+                target = target[::-1]
+            else:
+                target = target_reversed
+            query = query[::-1]
+
         try:
             alns = aligner.align(target, query)
         except Exception as exc:
@@ -1395,6 +1461,7 @@ class RealignerPileup(RealignerPileupBase):
             row_spec = self.row_specs[superseq_rowid]
             self._superseq_alignments[superseq_rowid] = self.align_row_spec_to_ref(row_spec, ref_seq, ref_seq_reversed, raise_with_tie)
 
+    # not used #
     def save_subseq_alignments(self):
         self._subseq_alignments = dict()
         for superseq_rowid, groupinfo in self.row_spec_groups.items():
@@ -1418,34 +1485,34 @@ class RealignerPileup(RealignerPileupBase):
             superseq_vcfspec = self.superseq_to_vcfspecs(superseq_row_spec, superseq_alignment)
             self.contig_vcfspecs[superseq_rowid] = superseq_vcfspec
 
-    def get_realigned_reads(self):
-        """Must be run after 'save_superseq_alignments' method
-        Returns:
-            dict (keys ReadUID, values pysam.AlignedSegment)
-        """
-        realigned_reads = dict()
-    #    for superseq_rowid, groupinfo in sorted(
-    #        active_region_pileup.row_spec_groups.items(),
-    #        key=(lambda x: x[1]['subseq_hits']), 
-    #        reverse=True,
-    #    ):
-        # sorting is not necessary
-
-        for superseq_rowid, groupinfo in self.row_spec_groups.items():
-            #realigned_read_superseq = realign_superseq(superseq_rowid, active_region_pileup, active_range)
-            #realigned_reads[superseq_rowid] = realigned_read_superseq
-                # (221019) This is commented out because superseq itself is
-                # included in subseq list.
-            superseq_aln = self._superseq_alignments[superseq_rowid]
-            for subseq_rowid in groupinfo['subseq_rowids']:
-                #if subseq_rowid in realigned_reads.keys():
-                #    continue
-                    # (221019) This is commented out because subseqs with multiple superseq hits are
-                    # incoporated into only one superseq group.
-                realigned_read_subseq = realign_subseq(subseq_rowid, self, self.range0, superseq_aln)
-                realigned_reads[subseq_rowid] = realigned_read_subseq
-                
-        return realigned_reads
+#    def get_realigned_reads(self):
+#        """Must be run after 'save_superseq_alignments' method
+#        Returns:
+#            dict (keys ReadUID, values pysam.AlignedSegment)
+#        """
+#        realigned_reads = dict()
+#    #    for superseq_rowid, groupinfo in sorted(
+#    #        active_region_pileup.row_spec_groups.items(),
+#    #        key=(lambda x: x[1]['subseq_hits']), 
+#    #        reverse=True,
+#    #    ):
+#        # sorting is not necessary
+#
+#        for superseq_rowid, groupinfo in self.row_spec_groups.items():
+#            #realigned_read_superseq = realign_superseq(superseq_rowid, active_region_pileup, active_range)
+#            #realigned_reads[superseq_rowid] = realigned_read_superseq
+#                # (221019) This is commented out because superseq itself is
+#                # included in subseq list.
+#            superseq_aln = self._superseq_alignments[superseq_rowid]
+#            for subseq_rowid in groupinfo['subseq_rowids']:
+#                #if subseq_rowid in realigned_reads.keys():
+#                #    continue
+#                    # (221019) This is commented out because subseqs with multiple superseq hits are
+#                    # incoporated into only one superseq group.
+#                realigned_read_subseq = realign_subseq(subseq_rowid, self, self.range0, superseq_aln)
+#                realigned_reads[subseq_rowid] = realigned_read_subseq
+#                
+#        return realigned_reads
 
     # split point generation
     def get_split_points(self):
@@ -1506,10 +1573,10 @@ class RealignerPileup(RealignerPileupBase):
                 if contig_vcfspec is None:
                     continue
 
-                if len(contig_vcfspec.concat_components[0]) == 0:
+                if len(contig_vcfspec.components[1]) == 0:
                     result.append(contig_vcfspec)
                 else:
-                    result.extend(contig_vcfspec.concat_components[0])
+                    result.extend(contig_vcfspec.components[1])
         else:
             result = list(
                 x[1] for x in self.iter_contig_vcfspecs(subseq_portion_threshold, MQ_threshold)
@@ -1534,22 +1601,23 @@ class RealignerPileup(RealignerPileupBase):
 
 
 class MultisampleRealignerPileup(RealignerPileupBase):
-    def __init__(self, chrom, fasta, pileup_dict, verbose=False, logger=None):
+    def __init__(
+        self, 
+        pileup_dict, 
+        refver=None,
+        fasta=None, 
+        verbose=False, logger=None,
+    ):
         """Args:
             pileup_dict: keys - sampleid; values - Pileup object
         """
-        # set logger
-        self.verbose = verbose
-        if logger is None:
-            self.logger = get_logger(self.verbose)
-        else:
-            self.logger = logger
-
         # set params
-        self.chrom = chrom
-        self.fasta = fasta
         self.pileup_dict = pileup_dict
+        self.refver, self.fasta = RealignerPileupBase.refver_fasta_arghandler(refver, fasta)
         self.allele_portion_threshold = self.first_pileup.allele_portion_threshold
+
+        # set logger
+        self.verbose, self.logger = RealignerPileupBase.logger_arghandler(verbose, logger)
 
         # setup data structure
         self.set_df()
@@ -1561,6 +1629,10 @@ class MultisampleRealignerPileup(RealignerPileupBase):
     @property
     def first_pileup(self):
         return next(iter(self.pileup_dict.values()))
+
+    @property
+    def chrom(self):
+        return self.first_pileup.chrom
 
     @property
     def start0(self):
@@ -1576,6 +1648,7 @@ class MultisampleRealignerPileup(RealignerPileupBase):
 
     def set_df(self):
         assert len(set(x.range0 for x in self.pileup_dict.values())) == 1, f'Genomic ranges of pileup objects are different.'
+
         self.df = pd.concat(
             {key: val.df for key, val in self.pileup_dict.items()},
             names=['SampleID', 'ReadUID'],
@@ -1673,7 +1746,7 @@ class MultisampleRealignerPileup(RealignerPileupBase):
         for sampleid, subgroups in self.row_spec_groups_bysample.items():
             self.decorate_groupinfo(subgroups, self.read_getter)
 
-    def iter_contig_vcfspecs(self, subseq_portion_threshold, MQ_threshold, threshold_bysample=True):
+    def iter_contig_vcfspecs(self, subseq_portion_threshold, MQ_threshold, threshold_bysample=True, verbose=False):
         if threshold_bysample:
             for superseq_key, groupinfo in sorted(
                 self.row_spec_groups.items(),
@@ -1685,6 +1758,13 @@ class MultisampleRealignerPileup(RealignerPileupBase):
                     (subgroups[superseq_key]['mean_MQ'] >= MQ_threshold)
                     for subgroups in self.row_spec_groups_bysample.values()
                 ):
+                    if verbose:
+                        print('vcfspec:', self.pileup_dict[superseq_key[0]].contig_vcfspecs[superseq_key[1]])
+                        print('vcfspec components:', self.pileup_dict[superseq_key[0]].contig_vcfspecs[superseq_key[1]].components)
+                        for sampleid, subgroups in self.row_spec_groups_bysample.items():
+                            print('sample ID:', sampleid, 'portion:', subgroups[superseq_key]['subseq_hits_portion'], 'meanMQ:', subgroups[superseq_key]['mean_MQ'])
+                        print()
+
                     yield superseq_key, self.pileup_dict[superseq_key[0]].contig_vcfspecs[superseq_key[1]]
         else:
             for superseq_key, groupinfo in sorted(
@@ -1696,34 +1776,205 @@ class MultisampleRealignerPileup(RealignerPileupBase):
                     (groupinfo['subseq_hits_portion'] >= subseq_portion_threshold) and
                     (groupinfo['mean_MQ'] >= MQ_threshold)
                 ):
+                    if verbose:
+                        print('vcfspec:', self.pileup_dict[superseq_key[0]].contig_vcfspecs[superseq_key[1]])
+                        print('vcfspec components:', self.pileup_dict[superseq_key[0]].contig_vcfspecs[superseq_key[1]].components)
+                        print('portion:', groupinfo['subseq_hits_portion'], 'meanMQ:', groupinfo['mean_MQ'])
+                        print()
+
                     yield superseq_key, self.pileup_dict[superseq_key[0]].contig_vcfspecs[superseq_key[1]]
 
-    def get_result_vcfspecs(self, as_components=False, merge=True, subseq_portion_threshold=None, MQ_threshold=40, threshold_bysample=True):
+    # get_result_vcfspec BEGIN #
+
+    def get_result_vcfspec_recalc_hits(self, vaf_cutoff=0.01, verbose=False):
+        candidate_monoalts = list()
+        for superseq_key in self.row_spec_groups.keys():
+            contig_vcfspec = self.pileup_dict[superseq_key[0]].contig_vcfspecs[superseq_key[1]]
+            if contig_vcfspec is not None:
+                candidate_monoalts.append(contig_vcfspec.normalize())
+        if len(candidate_monoalts) == 0:
+            return None
+
+        # create a range which covers all candidate mono-ALT vcfspecs
+        merged_ref_range0 = range(
+            min(x.start0 for x in candidate_monoalts),
+            max(x.end0 for x in candidate_monoalts),
+        )
+        # make rpplist using the range with each sample
+        rpplist_dict = dict()
+        for sampleid, pileup in self.pileup_dict.items():
+            rpplist_dict[sampleid] = readplus.get_rpplist_nonsv(
+                bam=pileup.bam, 
+                fasta=self.fasta, 
+                chromdict=common.DEFAULT_CHROMDICTS[self.refver],
+                chrom=self.chrom,
+                start0=merged_ref_range0.start,
+                end0=merged_ref_range0.stop,
+            )
+        # calculate vaf for each mono-ALT vcfspec from rpplists
+        # choose if vaf is greater than cutoff in any sample
+        selected_monoalt_vcfspecs = set()
+        for monoalt_vcfspec in candidate_monoalts:
+            if verbose:
+                print()
+                print(monoalt_vcfspec)
+
+            for sampleid, rpplist in rpplist_dict.items():
+                rpplist.update_alleleclass(monoalt_vcfspec)
+                alleleclass_counter = collections.Counter(
+                    rpp.alleleclass[monoalt_vcfspec] for rpp in rpplist
+                )
+                total_reads = sum(
+                    v for (k, v) in alleleclass_counter.items()
+                    if k is not None
+                )
+                var_reads = alleleclass_counter[1]
+                if total_reads == 0:
+                    vaf = None
+                else:
+                    vaf = var_reads / total_reads
+
+                if verbose:
+                    print(f'sampleid {sampleid}')
+                    print(f'vaf {vaf}')
+                    
+                if (vaf is not None) and (vaf >= vaf_cutoff):
+                    selected_monoalt_vcfspecs.add(monoalt_vcfspec)
+                    break
+
+        if len(selected_monoalt_vcfspecs) == 0:
+            return None
+
+        # sort selected vcfspecs
+        selected_monoalt_vcfspecs = sorted(
+            selected_monoalt_vcfspecs,
+            key=(lambda x: (x.pos, x.alts)),
+        )
+        # merge and return
+        return functools.reduce(libvcfspec.merge, selected_monoalt_vcfspecs)
+
+    def get_result_vcfspec_recalc_hits_dual_filtering(
+        self, vaf_cutoff=0.01, subseq_portion_threshold=None, 
+        MQ_threshold=40, threshold_bysample=True,
+        verbose=False,
+    ):
+        # set params
         if subseq_portion_threshold is None:
             subseq_portion_threshold = self.allele_portion_threshold
 
-        if as_components:
-            result = list()
-            for row_id, contig_vcfspec in self.iter_contig_vcfspecs(subseq_portion_threshold=subseq_portion_threshold, MQ_threshold=MQ_threshold, threshold_bysample=threshold_bysample):
-                if contig_vcfspec is None:
-                    continue
+        # 1st filtering
+        # make candidate mono-ALT vcfspecs
+        candidate_monoalts = list()
+        for x in self.iter_contig_vcfspecs(
+            subseq_portion_threshold=subseq_portion_threshold, 
+            MQ_threshold=MQ_threshold, 
+            threshold_bysample=threshold_bysample,
+        ):
+            if x[1] is not None:
+                candidate_monoalts.append(x[1].normalize())
 
-                if len(contig_vcfspec.concat_components[0]) == 0:
-                    result.append(contig_vcfspec)
-                else:
-                    result.extend(contig_vcfspec.concat_components[0])
-        else:
-            result = list(
-                x[1] for x in self.iter_contig_vcfspecs(subseq_portion_threshold=subseq_portion_threshold, MQ_threshold=MQ_threshold, threshold_bysample=threshold_bysample)
-                if x[1] is not None
+        if len(candidate_monoalts) == 0:
+            return None
+
+        # 2nd filtering
+        # create rpplists for each component sample
+        merged_ref_range0 = range(
+            min(x.start0 for x in candidate_monoalts),
+            max(x.end0 for x in candidate_monoalts),
+        )
+        rpplist_dict = dict()
+        for sampleid, pileup in self.pileup_dict.items():
+            rpplist_dict[sampleid] = readplus.get_rpplist_nonsv(
+                bam=pileup.bam, 
+                fasta=self.fasta, 
+                chromdict=common.DEFAULT_CHROMDICTS[self.refver],
+                chrom=self.chrom,
+                start0=merged_ref_range0.start,
+                end0=merged_ref_range0.stop,
             )
+        # calculate vaf for each mono-ALT vcfspec from rpplists
+        # choose if vaf is greater than cutoff in any sample
+        selected_monoalt_vcfspecs = set()
+        for monoalt_vcfspec in candidate_monoalts:
+            if verbose:
+                print()
+                print(monoalt_vcfspec)
 
-        if merge:
-            if len(result) > 0:
-                result = functools.reduce(lambda x, y: libvcfspec.merge(x, y), result)
+            for sampleid, rpplist in rpplist_dict.items():
+                rpplist.update_alleleclass(monoalt_vcfspec)
+                alleleclass_counter = collections.Counter(
+                    rpp.alleleclass[monoalt_vcfspec] for rpp in rpplist
+                )
+                total_reads = sum(
+                    v for (k, v) in alleleclass_counter.items()
+                    if k is not None
+                )
+                var_reads = alleleclass_counter[1]
+                if total_reads == 0:
+                    vaf = None
+                else:
+                    vaf = var_reads / total_reads
 
-        return result
+                if verbose:
+                    print(f'sampleid {sampleid}')
+                    print(f'vaf {vaf}')
+                    
+                if (vaf is not None) and (vaf >= vaf_cutoff):
+                    selected_monoalt_vcfspecs.add(monoalt_vcfspec)
+                    break
 
+        if len(selected_monoalt_vcfspecs) == 0:
+            return None
+
+        # sort selected vcfspecs
+        selected_monoalt_vcfspecs = sorted(
+            selected_monoalt_vcfspecs,
+            key=(lambda x: (x.pos, x.alts)),
+        )
+        # merge and return
+        return functools.reduce(libvcfspec.merge, selected_monoalt_vcfspecs)
+
+    def get_result_vcfspec_use_rowspecgroup_hits(
+        self, 
+        #as_components=False, 
+        #merge=True, 
+        subseq_portion_threshold=None, 
+        MQ_threshold=30, 
+        threshold_bysample=True,
+        verbose=False,
+    ):
+        if subseq_portion_threshold is None:
+            subseq_portion_threshold = self.allele_portion_threshold
+
+#        if as_components:
+#            result = list()
+#            for row_id, contig_vcfspec in self.iter_contig_vcfspecs(subseq_portion_threshold=subseq_portion_threshold, MQ_threshold=MQ_threshold, threshold_bysample=threshold_bysample):
+#                if contig_vcfspec is None:
+#                    continue
+#
+#                if len(contig_vcfspec.components[0]) == 0:
+#                    result.append(contig_vcfspec)
+#                else:
+#                    result.extend(contig_vcfspec.components[0])
+        result = list(
+            x[1] for x in self.iter_contig_vcfspecs(
+                subseq_portion_threshold=subseq_portion_threshold, 
+                MQ_threshold=MQ_threshold, 
+                threshold_bysample=threshold_bysample,
+                verbose=verbose,
+            )
+            if x[1] is not None
+        )
+
+        if len(result) == 0:
+            return None
+        else:
+            return functools.reduce(libvcfspec.merge, result)
+
+    # SELECT AN APPROPRIATE FUNCTION
+    get_result_vcfspec = get_result_vcfspec_use_rowspecgroup_hits
+
+    # get_result_vcfspec END #
 
     def show_row_spec_alignments(self, skip_zero_hits=True, show_subseqs=False):
         self._show_row_spec_alignments_helper(
@@ -1737,8 +1988,11 @@ class MultisampleRealignerPileup(RealignerPileupBase):
 
 class RealignerPileupSeries:
     def __init__(
-        self, fasta, bam, chrom, start0, end0, 
-        #rpileup_init_kwargs=dict(), 
+        self, 
+        bam, 
+        chrom, start0, end0, 
+        refver=None, 
+        fasta=None,
         max_series_width=DEFAULT_RPILEUPSERIES_MAX_WIDTH,
         verbose=False,
         logger=None,
@@ -1748,18 +2002,14 @@ class RealignerPileupSeries:
             **kwargs: keyword arguments of RealignerPileup.__init__
                 except start0, end0, init_df
         """
-        # set logger
-        self.verbose = verbose
-        if logger is None:
-            self.logger = get_logger(self.verbose)
-        else:
-            self.logger = logger
-
         # set params
-        self.fasta = fasta
-        self.bam = bam
         self.chrom = chrom
+        self.bam = bam
+        self.refver, self.fasta = RealignerPileupBase.refver_fasta_arghandler(refver, fasta)
         self.max_series_width = max_series_width
+
+        # set logger
+        self.verbose, self.logger = RealignerPileupBase.logger_arghandler(verbose, logger)
 
         # set RealignerPileup kwargs
         self.rpileup_init_kwargs = parse_rpileup_kwargs(**kwargs)
@@ -1776,18 +2026,21 @@ class RealignerPileupSeries:
     def _init_pileup_list(self, start0, end0):
         # initiate pileup_list
         self.logger.debug(f'Initial pileup generation')
-        initial_pileup, result_inactive, result_vcfspec = get_realigner_pileup(
-            self.fasta, self.bam, self.chrom, start0, end0, 
+
+        initial_pileup, result_inactive, result_vcfspec = RealignerPileup.init_and_augment(
+            bam=self.bam, 
+            chrom=self.chrom, start0=start0, end0=end0, 
+            refver=self.refver, fasta=self.fasta,
             verbose=self.verbose, 
-            logger=self.logger,
+            logger=self.logger, 
             **self.rpileup_init_kwargs,
         )
+        self.pileup_list = [initial_pileup]
+
         self.logger.debug(f'Initial pileup: {initial_pileup}')
         self.logger.debug(f'result_inactive: {result_inactive}')
         self.logger.debug(f'result_vcfspec: {result_vcfspec}')
         self.logger.debug(f'Initial pileup generation Finished\n')
-
-        self.pileup_list = [initial_pileup]
 
         if (result_inactive is None) and (result_vcfspec is None):
             # When there is no active region in the initial pileup
@@ -1862,7 +2115,13 @@ class RealignerPileupSeries:
         rpileup_init_kwargs['depth_limit'] = 0
 
         while True:
-            new_pileup = RealignerPileup(self.fasta, self.bam, self.chrom, (self.start0 - 1), self.start0, **rpileup_init_kwargs)
+            new_pileup = RealignerPileup(
+                bam=self.bam, 
+                chrom=self.chrom, start0=(self.start0 - 1), end0=self.start0, 
+                refver=self.refver, fasta=self.fasta, 
+                verbose=self.verbose, logger=self.logger,
+                **rpileup_init_kwargs,
+            )
             self.pileup_list.insert(0, new_pileup)
             result_inactive, result_vcfspec, touched_width_limit = self.secure_left()
             if self.start0 <= target_start0:
@@ -1887,7 +2146,13 @@ class RealignerPileupSeries:
         rpileup_init_kwargs['depth_limit'] = 0
 
         while True:
-            new_pileup = RealignerPileup(self.fasta, self.bam, self.chrom, self.end0, (self.end0 + 1), **rpileup_init_kwargs)
+            new_pileup = RealignerPileup(
+                bam=self.bam, 
+                chrom=self.chrom, start0=self.end0, end0=(self.end0 + 1), 
+                refver=self.refver, fasta=self.fasta, 
+                verbose=self.verbose, logger=self.logger,
+                **rpileup_init_kwargs,
+            )
             self.pileup_list.append(new_pileup)
             result_inactive, result_vcfspec, touched_width_limit = self.secure_right()
             if self.end0 >= target_end0:
@@ -1925,7 +2190,13 @@ class RealignerPileupSeries:
                 split_points = left_pileup.get_split_points()
                 if len(split_points) == 0:
                     rpileup_init_kwargs = self.rpileup_init_kwargs.copy()
-                    new_pileup = RealignerPileup(self.fasta, self.bam, self.chrom, (left_pileup.start0 - 1), left_pileup.start0, **rpileup_init_kwargs)
+                    new_pileup = RealignerPileup(
+                        bam=self.bam, 
+                        chrom=self.chrom, start0=(left_pileup.start0 - 1), end0=left_pileup.start0, 
+                        refver=self.refver, fasta=self.fasta, 
+                        verbose=self.verbose, logger=self.logger,
+                        **rpileup_init_kwargs,
+                    )
                     self.pileup_list.insert(0, new_pileup)
                 else:
                     split_pileups = left_pileup.split(split_points[:1])
@@ -1969,7 +2240,13 @@ class RealignerPileupSeries:
                 split_points = right_pileup.get_split_points()
                 if len(split_points) == 0:
                     rpileup_init_kwargs = self.rpileup_init_kwargs.copy()
-                    new_pileup = RealignerPileup(self.fasta, self.bam, self.chrom, right_pileup.end0, (right_pileup.end0 + 1), **rpileup_init_kwargs)
+                    new_pileup = RealignerPileup(
+                        bam=self.bam, 
+                        chrom=self.chrom, start0=right_pileup.end0, end0=(right_pileup.end0 + 1), 
+                        refver=self.refver, fasta=self.fasta, 
+                        verbose=self.verbose, logger=self.logger,
+                        **rpileup_init_kwargs,
+                    )
                     self.pileup_list.append(new_pileup)
                 else:
                     split_pileups = right_pileup.split(split_points[-1:])
@@ -2075,19 +2352,141 @@ class RealignerPileupSeries:
         )
         return active_region_cigartuples, active_region_offset
 
-    @staticmethod
-    def merge_two_cigartuples(cigartuples_left, cigartuples_right):
+    def reduce_cigartuples_list_decorated(self, cigartuples_list_decorated):
+        while True:
+            cigartuples_list_decorated, reduced = self.softclip_reduce_cigartuples_list_decorated(cigartuples_list_decorated)
+            if not reduced:
+                break
+
+        return functools.reduce(
+            self.merge_two_cigartuples_plain,
+            cigartuples_list_decorated,
+        )[1]
+
+    def softclip_reduce_cigartuples_list_decorated(self, cigartuples_list_decorated):
+        reduced = False
+        for idx, (left_item, right_item) in enumerate(common.pairwise(cigartuples_list_decorated)):
+            ref_range0_left, cigartuples_left, read_seq_left = left_item
+            ref_range0_right, cigartuples_right, read_seq_right = right_item
+
+            if (
+                (ref_range0_right is not None)
+                and (len(cigartuples_left) == 0)
+                and (cigartuples_right[0][0] == 4)
+                and (alignhandler.get_target_length(cigartuples_right) == len(ref_range0_right))
+            ):  # Exceptional case where softclip faces empty side (221221)
+                reduced = True
+                merged_items = self.merge_two_cigartuples_right_clip_left_empty(
+                    left_item, right_item
+                )
+                break
+            elif (
+                (ref_range0_left is not None)
+                and (len(cigartuples_right) == 0)
+                and (cigartuples_left[-1][0] == 4)
+                and (alignhandler.get_target_length(cigartuples_left) == len(ref_range0_left))
+            ):  # Exceptional case where softclip faces empty side (221221)
+                reduced = True
+                merged_items = self.merge_two_cigartuples_left_clip_right_empty(
+                    left_item, right_item
+                )
+                break
+
+        if reduced:
+            result_cigartuples_list_decorated = (
+                cigartuples_list_decorated[:idx]
+                + [merged_items]
+                + cigartuples_list_decorated[(idx + 2):]
+            )
+        else:
+            result_cigartuples_list_decorated = cigartuples_list_decorated
+
+        return result_cigartuples_list_decorated, reduced
+
+    def merge_two_cigartuples_helper(self, read_seq_left, read_seq_right, ref_range0_left, ref_range0_right):
+        new_read_seq = read_seq_left + read_seq_right
+        if (ref_range0_left is None) or (ref_range0_right is None):
+            new_ref_range0 = None
+        else:
+            new_ref_range0 = range(ref_range0_left.start, ref_range0_right.stop)
+
+        return new_read_seq, new_ref_range0
+
+    def merge_two_cigartuples_right_clip_left_empty(self, left_item, right_item):
+        ref_range0_left, cigartuples_left, read_seq_left = left_item
+        ref_range0_right, cigartuples_right, read_seq_right = right_item
+        
+        ref_seq = self.fasta.fetch(
+            self.chrom, 
+            ref_range0_right.start - int(cigartuples_right[0][1] + 20),
+            ref_range0_right.start,
+        )
+        alignment = RealignerPileup.main_aligner(
+            target=ref_seq,
+            query=read_seq_right[:cigartuples_right[0][1]],
+            reverse_align=True,
+        )
+        new_cigartuples, offset = self.subseq_aln_to_cigartuples(
+            alignment, left_is_empty=True, right_is_empty=False,
+        )
+
+        new_cigartuples = new_cigartuples + cigartuples_right[1:]
+
+        new_read_seq, new_ref_range0 = self.merge_two_cigartuples_helper(
+            read_seq_left, read_seq_right, ref_range0_left, ref_range0_right,
+        )
+
+        return new_ref_range0, new_cigartuples, new_read_seq
+
+    def merge_two_cigartuples_left_clip_right_empty(self, left_item, right_item):
+        ref_range0_left, cigartuples_left, read_seq_left = left_item
+        ref_range0_right, cigartuples_right, read_seq_right = right_item
+        
+        ref_seq = self.fasta.fetch(
+            self.chrom, 
+            ref_range0_left.stop,
+            ref_range0_left.stop + int(cigartuples_left[-1][1] + 20),
+        )
+        alignment = RealignerPileup.main_aligner(
+            target=ref_seq,
+            query=read_seq_left[-cigartuples_left[-1][1]:],
+            reverse_align=False,
+        )
+
+        new_cigartuples, offset = self.subseq_aln_to_cigartuples(
+            alignment, left_is_empty=False, right_is_empty=True,
+        )
+
+        new_cigartuples = cigartuples_left[:-1] + new_cigartuples
+
+        new_read_seq, new_ref_range0 = self.merge_two_cigartuples_helper(
+            read_seq_left, read_seq_right, ref_range0_left, ref_range0_right,
+        )
+
+        return new_ref_range0, new_cigartuples, new_read_seq
+
+    def merge_two_cigartuples_plain(self, left_item, right_item):
+        ref_range0_left, cigartuples_left, read_seq_left = left_item
+        ref_range0_right, cigartuples_right, read_seq_right = right_item
+        
         if len(cigartuples_left) == 0 or len(cigartuples_right) == 0:
-            return cigartuples_left + cigartuples_right
+            new_cigartuples = cigartuples_left + cigartuples_right
+            #return cigartuples_left + cigartuples_right
         else:
             if cigartuples_left[-1][0] == cigartuples_right[0][0]:
-                return (
+                new_cigartuples = (
                     cigartuples_left[:-1]
                     + [(cigartuples_left[-1][0], cigartuples_left[-1][1] + cigartuples_right[0][1])]
                     + cigartuples_right[1:]
                 )
             else:
-                return cigartuples_left + cigartuples_right
+                new_cigartuples = cigartuples_left + cigartuples_right
+
+        new_read_seq, new_ref_range0 = self.merge_two_cigartuples_helper(
+            read_seq_left, read_seq_right, ref_range0_left, ref_range0_right,
+        )
+
+        return new_ref_range0, new_cigartuples, new_read_seq
 
     def save_subseq_alignments(self):
         for pileup in self.pileup_list:
@@ -2096,8 +2495,6 @@ class RealignerPileupSeries:
     def set_realigned_reads(self):
         self.realigned_reads = dict()
         for read_uid, read in self.read_store.items():
-            before_cigartuples, after_cigartuples = alignhandler.split_read_cigartuples(read, range(self.start0, self.end0))
-
             # select relevant pileups 
             relevant_pileups = list()
             for pileup in self.pileup_list:
@@ -2107,58 +2504,77 @@ class RealignerPileupSeries:
                 # During 'subset' method of rpileup, out-of-range reads remain in 'read_store'
                 continue
 
-            # make cigartuples from alignment within each pileup
-            cigartuples_list = list()
-            if len(relevant_pileups) == 1:
-                cigartuples_list.append(
-                    self.subseq_aln_to_cigartuples(
-                        alignment=relevant_pileups[0]._subseq_alignments[read_uid], 
-                        left_is_empty=(not bool(before_cigartuples)),
-                        right_is_empty=(not bool(after_cigartuples)),
-                    )
-                )
-            else:
-                cigartuples_list.append(
-                    self.subseq_aln_to_cigartuples(
-                        alignment=relevant_pileups[0]._subseq_alignments[read_uid], 
-                        left_is_empty=(not bool(before_cigartuples)),
-                        right_is_empty=False,
-                    )
-                )
-                for pileup in relevant_pileups[1:-1]:
-                    cigartuples_list.append(
-                        self.subseq_aln_to_cigartuples(
-                            alignment=pileup._subseq_alignments[read_uid], 
-                            left_is_empty=False,
-                            right_is_empty=False,
-                        )
-                    )
-                cigartuples_list.append(
-                    self.subseq_aln_to_cigartuples(
-                        alignment=relevant_pileups[-1]._subseq_alignments[read_uid], 
-                        left_is_empty=False,
-                        right_is_empty=(not bool(after_cigartuples)),
-                    )
-                )
-
-            # merge cigartuples
-            realigned_cigartuples = functools.reduce(
-                self.merge_two_cigartuples, 
-                [before_cigartuples] + [x[0] for x in cigartuples_list] + [after_cigartuples],
+            # split cigartuples
+            before_cigartuples, within_cigartuples, after_cigartuples = alignhandler.split_cigar(
+                cigartuples=read.cigartuples, 
+                reference_start0=read.reference_start,
+                split_range0=range(self.start0, self.end0),
+                trailing_queryonly_to_right=False,
             )
+
+            before_empty = not bool(before_cigartuples)
+            after_empty = not bool(after_cigartuples)
+
+            # make cigartuples from alignment within each pileup
+            offset_list = list()
+            cigartuples_list = list()  # before, within1, within2, ..., after
+            ref_range0_list = list()  # before, within1, within2, ..., after
+
+            def helper(pileup, left_is_empty, right_is_empty):
+                cigartuples, offset = self.subseq_aln_to_cigartuples(
+                    alignment=pileup._subseq_alignments[read_uid], 
+                    left_is_empty=left_is_empty,
+                    right_is_empty=right_is_empty,
+                )
+                offset_list.append(offset)
+                cigartuples_list.append(cigartuples)
+                ref_range0_list.append(pileup.range0)
+
+            cigartuples_list.append(before_cigartuples)
+            ref_range0_list.append(None)  # ref_range0 is None for before_cigartuples
+
+            if len(relevant_pileups) == 1:
+                helper(relevant_pileups[0], before_empty, after_empty)
+            else:
+                helper(relevant_pileups[0], before_empty, False)
+                for pileup in relevant_pileups[1:-1]:
+                    helper(pileup, False, False)
+                helper(relevant_pileups[-1], False, after_empty)
+
+            cigartuples_list.append(after_cigartuples)
+            ref_range0_list.append(None)
+
+            # make partial read sequences
+            partial_read_seqs = list()
+            end_idx = 0
+            for cigartuples in cigartuples_list:
+                start_idx = end_idx
+                end_idx += alignhandler.get_query_length(cigartuples)
+                partial_read_seqs.append(read.query_sequence[start_idx:end_idx])
+
+            cigartuples_list_decorated = list(
+                zip(ref_range0_list, cigartuples_list, partial_read_seqs)
+            )
+
+            realigned_cigartuples = self.reduce_cigartuples_list_decorated(
+                cigartuples_list_decorated
+            )
+
             # get new read start position
-            if len(before_cigartuples) > 0:
+            if not before_empty:
                 new_reference_start = read.reference_start
             else:
-                new_reference_start = relevant_pileups[0].start0 + cigartuples_list[0][1]
+                new_reference_start = relevant_pileups[0].start0 + offset_list[0]
+
             # make new read object
             realigned_read = read.__copy__()
             realigned_read.reference_start = new_reference_start
             realigned_read.cigartuples = realigned_cigartuples
-            readhandler.set_NMMD(realigned_read, self.fasta)
 
+            #####################################################
+
+            readhandler.set_NMMD(realigned_read, fasta=self.fasta)
             self.realigned_cigar_sanity_check(read, realigned_read, realigned_cigartuples)
-
             self.realigned_reads[read_uid] = realigned_read
 
     def write_realigned_reads(self, bam_path, padding=0):
@@ -2203,56 +2619,157 @@ class RealignerPileupSeries:
 
 
 class MultisampleRealignerPileupSeries:
+    def __repr__(self):
+        return str(self.pileupseries_dict)
+
+    def iter_series(self):
+        return iter(self.pileupseries_dict.values())
+
+    def iter_mspileups(self):
+        return iter(self.mspileup_list)
+
+    @functools.cached_property
+    def df(self):
+        data = list()
+        index = list()
+        for idx, (sampleid, rpileup_series) in enumerate(self.pileupseries_dict.items()):
+            index.append(sampleid)
+            data.append(list(rpileup_series.pileup_list))
+            if idx == 0:
+                breaks = list()
+                breaks.append(rpileup_series.pileup_list[0].start0)
+                for rpileup in rpileup_series.pileup_list:
+                    breaks.append(rpileup.end0)
+                columns = pd.IntervalIndex.from_breaks(breaks, closed='left')
+        return pd.DataFrame.from_records(data, index=index, columns=columns)
+
+#    @property
+#    def rows(self):
+#        return pd.DataFrame.from_dict(self.pileupseries_dict, orient='index')
+#
+#    @property
+#    def cols(self):
+#        return pd.DataFrame.from_records(
+#            [
+#                {
+#                    (x.start0, x.end0): x 
+#                    for x in self.mspileup_list
+#                }
+#            ]
+#        )
+
+    #@property
+    #def series_length(self):
+        #return len(self.rows.iloc[0, :])
+    #    return len(next(iter(self.pileupseries_dict.values())))
+
+    @property
+    def ranges(self):
+        #return [range(*x) for x in self.cols.columns]
+        return [x.range0 for x in next(iter(self.pileupseries_dict.values())).pileup_list]
+
+    @property
+    def start0(self):
+        #return self.rows.iloc[0, :].start0
+        return next(self.pileupseries_dict.values()).start0
+
+    @property
+    def end0(self):
+        #return self.rows.iloc[0, :].end0
+        return next(self.pileupseries_dict.values()).end0
+
+    def write_realigned_reads(self, bam_path_dict, padding=0):
+        for sampleid, rpileup_ser in self.pileupseries_dict.items():
+            rpileup_ser.write_realigned_reads(bam_path_dict[sampleid], padding=padding)
+
+    def iter_contig_vcfspecs(self, subseq_portion_threshold=0, MQ_threshold=40):
+        return itertools.chain.from_iterable(
+            msrpileup.iter_contig_vcfspecs(subseq_portion_threshold=subseq_portion_threshold, MQ_threshold=MQ_threshold)
+            for msrpileup in self.mspileup_list
+        )
+
+    #def get_result_vcfspecs(self, vaf_cutoff=0.01, verbose=False):  # for MultisampleRealignerPileup.get_result_vcfspec_recalc_hits
+    def get_result_vcfspecs(self, portion_cutoff=0.1, MQ_cutoff=30, verbose=False):
+        return list(
+            msrpileup.get_result_vcfspec(
+                subseq_portion_threshold=portion_cutoff, 
+                MQ_threshold=MQ_cutoff, 
+                threshold_bysample=True,
+                verbose=verbose,
+            )
+            for msrpileup in self.mspileup_list
+        )
+
+    def get_result_vcfspecs_old(
+        self, vaf_cutoff=0.01, subseq_portion_threshold=None, 
+        MQ_threshold=40, threshold_bysample=True,
+        verbose=False,
+    ):
+        return list(
+            msrpileup.get_result_vcfspec_old(
+                vaf_cutoff=vaf_cutoff, 
+                subseq_portion_threshold=subseq_portion_threshold, 
+                MQ_threshold=MQ_threshold, 
+                threshold_bysample=threshold_bysample,
+                verbose=verbose,
+            )
+            for msrpileup in self.mspileup_list
+        )
+
+    def get_result_vcfspecs_old(
+        self, as_components=False, merge=True, subseq_portion_threshold=None, MQ_threshold=40, threshold_bysample=True,
+    ): 
+        return list(
+            msrpileup.get_result_vcfspecs(
+                as_components=as_components, 
+                merge=merge, 
+                subseq_portion_threshold=subseq_portion_threshold, 
+                MQ_threshold=MQ_threshold, 
+                threshold_bysample=threshold_bysample,
+            )
+            for msrpileup in self.mspileup_list
+        )
+
+    ###########################
+    # initializer and helpers #
+    ###########################
     def __init__(
-        self, fasta, bam_dict, chrom, start0, end0, 
+        self, 
+        bam_dict, 
+        chrom, start0, end0, 
+        refver=None,
+        fasta=None,
         max_series_width=DEFAULT_RPILEUPSERIES_MAX_WIDTH, 
         verbose=False, logger=None, 
         **kwargs,
     ):
-        # set logger
-        self.verbose = verbose
-        if logger is None:
-            self.logger = get_logger(self.verbose)
-        else:
-            self.logger = logger
-
         # set params
-        self.max_series_width = max_series_width
-        self.fasta = fasta
-        self.bam_dict = bam_dict
         self.chrom = chrom
+        self.bam_dict = bam_dict
+        self.refver, self.fasta = RealignerPileupBase.refver_fasta_arghandler(refver, fasta)
+        self.max_series_width = max_series_width
+
+        # set RealignerPileup kwargs
+        self.rpileup_init_kwargs = parse_rpileup_kwargs(**kwargs)
+        for k, v in self.rpileup_init_kwargs.items():
+            setattr(self, k, v)
+
+        # set logger
+        self.verbose, self.logger = RealignerPileupBase.logger_arghandler(verbose, logger)
 
         # setup data
-        self.set_series_dict(start0, end0, **kwargs)  # self.pileupseries_dict
+        self.set_series_dict(start0, end0)  # self.pileupseries_dict
         self.set_multisample_pileups()  # self.mspileup_list
+
+        #for sampleid, series in self.pileupseries_dict.items():
+        #    print(sampleid)
+        #    for rpup in series.pileup_list:
+        #        print(rpup)
+        #        print(rpup._subseq_alignments)
+
         self.set_realigned_reads()
 
-    def __repr__(self):
-        return str(self.pileupseries_dict)
-
-    @property
-    def series_length(self):
-        return len(next(iter(self.pileupseries_dict.values())))
-
-    @property
-    def ranges(self):
-        return [x.range0 for x in next(iter(self.pileupseries_dict.values())).pileup_list]
-
-    def set_multisample_pileups(self):
-        self.mspileup_list = list()
-        for idx in range(self.series_length):
-            pileup_dict = {
-                sampleid: self.pileupseries_dict[sampleid].pileup_list[idx]
-                for sampleid in self.pileupseries_dict.keys()
-            }
-            self.mspileup_list.append(
-                MultisampleRealignerPileup(
-                    self.chrom, self.fasta, pileup_dict, 
-                    verbose=self.verbose, logger=self.logger,
-                )
-            )
-
-    def set_series_dict(self, seed_start0, seed_end0, **kwargs):
+    def set_series_dict(self, seed_start0, seed_end0):
         self.pileupseries_dict = dict()
         self.no_variant = False
 
@@ -2260,11 +2777,14 @@ class MultisampleRealignerPileupSeries:
         for sampleid, bam in self.bam_dict.items():
             self.logger.debug(f'@@@ Initializing RealignerPileupSeries of sample {sampleid} @@@\n')
             self.pileupseries_dict[sampleid] = RealignerPileupSeries(
-                self.fasta, bam, self.chrom, seed_start0, seed_end0, 
+                bam=bam, 
+                chrom=self.chrom, start0=seed_start0, end0=seed_end0, 
+                refver=self.refver,
+                fasta=self.fasta, 
                 max_series_width=self.max_series_width,
                 verbose=self.verbose,
                 logger=self.logger,
-                **kwargs,
+                **self.rpileup_init_kwargs,
             )
             self.logger.debug(f'@@@ Finished initialization of RealignerPileupSeries of sample {sampleid} @@@\n\n')
 
@@ -2277,11 +2797,69 @@ class MultisampleRealignerPileupSeries:
         self.equalize_inner_margins()
         self.logger.debug(f'@@@ Finished inner margin equalization @@@\n')
 
+    def equalize_left(self):
+        self.logger.debug(f'@@@ Beginning equalize_left @@@\n')
+
+        # equalize left
+        while True:
+            if len(set(x.start0 for x in self.pileupseries_dict.values())) == 1:
+                break
+            # extend
+            target_start0 = min(x.start0 for x in self.pileupseries_dict.values())
+            self.logger.debug(f'target_start0: {target_start0}')
+            for sampleid, pileup_ser in self.pileupseries_dict.items():
+                width = pileup_ser.start0 - target_start0
+                if width > 0:
+                    self.logger.debug(f'Beginning EXTEND of {sampleid}')
+                    self.logger.debug(f'current start0 of {sampleid}: {pileup_ser.start0}')
+                    pileup_ser.extend_left(width)
+                    self.logger.debug(f'Finished EXTEND of {sampleid}\n')
+
+            # check if hit width limit
+            if any(pileup_ser.width >= self.max_series_width for pileup_ser in self.pileupseries_dict.values()):
+                break
+            # secure
+            for sampleid, pileup_ser in self.pileupseries_dict.items():
+                self.logger.debug(f'Beginning SECURE of {sampleid}')
+                pileup_ser.secure_left()
+                self.logger.debug(f'Finished SECURE of {sampleid}\n')
+
+        self.logger.debug(f'@@@ Finished equalize_left @@@\n')
+
+    def equalize_right(self):
+        self.logger.debug(f'@@@ Beginning equalize_right @@@\n')
+
+        while True:
+            if len(set(x.end0 for x in self.pileupseries_dict.values())) == 1:
+                break
+            # extend
+            target_end0 = max(x.end0 for x in self.pileupseries_dict.values())
+            self.logger.debug(f'target_end0: {target_end0}')
+            for sampleid, pileup_ser in self.pileupseries_dict.items():
+                width = target_end0 - pileup_ser.end0
+                if width > 0:
+                    self.logger.debug(f'Beginning EXTEND of {sampleid}')
+                    self.logger.debug(f'current end0 of {sampleid}: {pileup_ser.end0}')
+                    pileup_ser.extend_right(width)
+                    self.logger.debug(f'Finished EXTEND of {sampleid}\n')
+
+            # check if hit width limit
+            if any(pileup_ser.width >= self.max_series_width for pileup_ser in self.pileupseries_dict.values()):
+                break
+            # secure
+            for pileup_ser in self.pileupseries_dict.values():
+                self.logger.debug(f'Beginning SECURE of {sampleid}')
+                pileup_ser.secure_right()
+                self.logger.debug(f'Finished SECURE of {sampleid}\n')
+
+        self.logger.debug(f'@@@ Finished equalize_right @@@\n')
+
     def equalize_inner_margins(self):
         # set interim parameters
-        first_pileupseries = next(iter(self.pileupseries_dict.values()))
+        first_pileupseries = next(self.iter_series())
         series_start0 = first_pileupseries.start0
         series_end0 = first_pileupseries.end0
+        series_width = series_end0 - series_start0
         max_pileup_width = first_pileupseries.pileup_list[0].max_pileup_width
 
         # When there is no need to further split the series range
@@ -2289,7 +2867,7 @@ class MultisampleRealignerPileupSeries:
             start0_list = [series_start0, series_end0]
             for pileup_ser in self.pileupseries_dict.values():
                 if len(pileup_ser.pileup_list) > 1:
-                    pileup_ser.rearrange(start0_list)
+                    pileup_ser.rearrange(start0_list, prepare_vcfspecs=True)
             self.rearrange_mode = 'not_done'
             return
 
@@ -2307,12 +2885,21 @@ class MultisampleRealignerPileupSeries:
 
         if start0_list is not None:
             for pileup_ser in self.pileupseries_dict.values():
-                pileup_ser.rearrange(start0_list)
+                pileup_ser.rearrange(start0_list, prepare_vcfspecs=True)
             self.rearrange_mode = 'preserve_contig'
             return
         else:
-            if all_splittable:
-                # no variant case
+            if all_splittable:  # no variant case
+                # split series range into evenly-spaced subsets
+                start0_list = np.linspace(
+                    series_start0,
+                    series_end0,
+                    np.ceil(series_width / max_pileup_width).astype('int') + 1,
+                    endpoint=True,
+                ).astype('int')
+                for pileup_ser in self.pileupseries_dict.values():
+                    pileup_ser.rearrange(start0_list, prepare_vcfspecs=True)
+
                 self.no_variant = True
                 self.rearrange_mode = None
                 return
@@ -2331,7 +2918,7 @@ class MultisampleRealignerPileupSeries:
 
         if start0_list is not None:
             for pileup_ser in self.pileupseries_dict.values():
-                pileup_ser.rearrange(start0_list)
+                pileup_ser.rearrange(start0_list, prepare_vcfspecs=True)
             self.rearrange_mode = 'split_contig'
             return
         else:
@@ -2352,7 +2939,7 @@ class MultisampleRealignerPileupSeries:
 
         if start0_list is not None:
             for pileup_ser in self.pileupseries_dict.values():
-                pileup_ser.rearrange(start0_list)
+                pileup_ser.rearrange(start0_list, prepare_vcfspecs=True)
             self.rearrange_mode = 'inactive_runs'
             return
         else:
@@ -2364,6 +2951,11 @@ class MultisampleRealignerPileupSeries:
 
     @staticmethod
     def get_rearrangement_points(split_region_gr, trim_margins, max_pileup_width, series_start0, series_end0):
+        """Returns:
+            start0_list: list of 0-based positions. 
+                With pairwise iteration, for each iteratation result (x, y),
+                x is used as start0 and y as end0 for a RealignerPileup object.
+        """
         if split_region_gr.empty:
             # abort this split strategy
             start0_list = None
@@ -2449,70 +3041,22 @@ class MultisampleRealignerPileupSeries:
         all_splittable = False
         return start0_list, all_splittable
 
-    def equalize_left(self):
-        self.logger.debug(f'@@@ Beginning equalize_left @@@\n')
-
-        # equalize left
-        while True:
-            if len(set(x.start0 for x in self.pileupseries_dict.values())) == 1:
-                break
-            # extend
-            target_start0 = min(x.start0 for x in self.pileupseries_dict.values())
-            self.logger.debug(f'target_start0: {target_start0}')
-            for sampleid, pileup_ser in self.pileupseries_dict.items():
-                width = pileup_ser.start0 - target_start0
-                if width > 0:
-                    self.logger.debug(f'Beginning EXTEND of {sampleid}')
-                    self.logger.debug(f'current start0 of {sampleid}: {pileup_ser.start0}')
-                    pileup_ser.extend_left(width)
-                    self.logger.debug(f'Finished EXTEND of {sampleid}\n')
-
-            # check if hit width limit
-            if any(pileup_ser.width >= self.max_series_width for pileup_ser in self.pileupseries_dict.values()):
-                break
-            # secure
-            for sampleid, pileup_ser in self.pileupseries_dict.items():
-                self.logger.debug(f'Beginning SECURE of {sampleid}')
-                pileup_ser.secure_left()
-                self.logger.debug(f'Finished SECURE of {sampleid}\n')
-
-        self.logger.debug(f'@@@ Finished equalize_left @@@\n')
-
-    def equalize_right(self):
-        self.logger.debug(f'@@@ Beginning equalize_right @@@\n')
-
-        while True:
-            if len(set(x.end0 for x in self.pileupseries_dict.values())) == 1:
-                break
-            # extend
-            target_end0 = max(x.end0 for x in self.pileupseries_dict.values())
-            self.logger.debug(f'target_end0: {target_end0}')
-            for sampleid, pileup_ser in self.pileupseries_dict.items():
-                width = target_end0 - pileup_ser.end0
-                if width > 0:
-                    self.logger.debug(f'Beginning EXTEND of {sampleid}')
-                    self.logger.debug(f'current end0 of {sampleid}: {pileup_ser.end0}')
-                    pileup_ser.extend_right(width)
-                    self.logger.debug(f'Finished EXTEND of {sampleid}\n')
-
-            # check if hit width limit
-            if any(pileup_ser.width >= self.max_series_width for pileup_ser in self.pileupseries_dict.values()):
-                break
-            # secure
-            for pileup_ser in self.pileupseries_dict.values():
-                self.logger.debug(f'Beginning SECURE of {sampleid}')
-                pileup_ser.secure_right()
-                self.logger.debug(f'Finished SECURE of {sampleid}\n')
-
-        self.logger.debug(f'@@@ Finished equalize_right @@@\n')
-
-    @property
-    def start0(self):
-        next(self.pileupseries_dict.values()).start0
-
-    @property
-    def end0(self):
-        next(self.pileupseries_dict.values()).end0
+    def set_multisample_pileups(self):
+        self.mspileup_list = list()
+        num_col = len(next(self.iter_series()).pileup_list)
+        for idx in range(num_col):
+            pileup_dict = {
+                sampleid: self.pileupseries_dict[sampleid].pileup_list[idx]
+                for sampleid in self.pileupseries_dict.keys()
+            }
+            self.mspileup_list.append(
+                MultisampleRealignerPileup(
+                    pileup_dict=pileup_dict, 
+                    refver=self.refver,
+                    fasta=self.fasta, 
+                    verbose=self.verbose, logger=self.logger,
+                )
+            )
 
     def set_realigned_reads(self):
         """Assumes all mspileups have executed 'save_subseq_alignments' and 'allocate_subseq_alignments'"""
@@ -2524,21 +3068,8 @@ class MultisampleRealignerPileupSeries:
             rpileup_ser.set_realigned_reads()
             self.realigned_reads[sampleid] = rpileup_ser.realigned_reads
 
-    def write_realigned_reads(self, bam_path_dict, padding=0):
-        for sampleid, rpileup_ser in self.pileupseries_dict.items():
-            rpileup_ser.write_realigned_reads(bam_path_dict[sampleid], padding=padding)
-
-    def iter_contig_vcfspecs(self, subseq_portion_threshold=0, MQ_threshold=40):
-        return itertools.chain.from_iterable(
-            msrpileup.iter_contig_vcfspecs(subseq_portion_threshold=subseq_portion_threshold, MQ_threshold=MQ_threshold)
-            for msrpileup in self.mspileup_list
-        )
-
-    def get_result_vcfspecs(self, as_components=False, merge=True, subseq_portion_threshold=None, MQ_threshold=40, threshold_bysample=True): 
-        return list(
-            msrpileup.get_result_vcfspecs(as_components=as_components, merge=merge, subseq_portion_threshold=subseq_portion_threshold, MQ_threshold=MQ_threshold, threshold_bysample=threshold_bysample)
-            for msrpileup in self.mspileup_list
-        )
+    ###########################
+    ###########################
 
 
 class SparseInactiveRegionError(Exception):
@@ -2549,19 +3080,47 @@ class RealignmentCigarError(Exception):
     pass
 
 
-def get_realigner_pileup(fasta, bam, chrom, start0, end0, verbose=False, logger=None, **kwargs):
-    rpileup = RealignerPileup(
-        fasta, bam, chrom, start0, end0, 
-        verbose=verbose, 
-        logger=logger, 
-        **kwargs,
-    )
-    result_inactive, result_vcfspec = rpileup.augment_margins()
-    #if (result_inactive is None) and (result_vcfspec is None):
-        # No active region found
-    #    rpileup = None
+def parse_rpileup_kwargs(**kwargs):
+    if any(x not in DEFAULT_RPILEUP_PARAMS.keys() for x in kwargs.keys()):
+        raise Exception(f'Allowed kwargs keys are: {list(DEFAULT_RPILEUP_PARAMS.keys())}')
 
-    return rpileup, result_inactive, result_vcfspec
+    rpileup_params = kwargs
+    for k, v in DEFAULT_RPILEUP_PARAMS.items():
+        if k not in rpileup_params:
+            rpileup_params[k] = v
+
+    return rpileup_params
+
+
+#def parse_rpileup_kwargs_old(**kwargs):
+#    assert not any(x in kwargs for x in ('init_df',))
+#
+#    ba = inspect.signature(RealignerPileup.__init__).bind_partial(**kwargs)
+#    ba.apply_defaults()
+#
+#    rpileup_init_kwargs = dict()
+#    for k, v in ba.arguments.items():  # these include default kwargs of RealignerPileup.__init__
+#        if k in ('start0', 'end0', 'init_df', 'verbose', 'logger'):
+#            continue
+#        rpileup_init_kwargs[k] = v
+#
+#    return rpileup_init_kwargs
+
+
+
+#def get_realigner_pileup(fasta, bam, chrom, start0, end0, verbose=False, logger=None, **kwargs):
+#    rpileup = RealignerPileup(
+#        fasta, bam, chrom, start0, end0, 
+#        verbose=verbose, 
+#        logger=logger, 
+#        **kwargs,
+#    )
+#    result_inactive, result_vcfspec = rpileup.augment_margins()
+#    #if (result_inactive is None) and (result_vcfspec is None):
+#        # No active region found
+#    #    rpileup = None
+#
+#    return rpileup, result_inactive, result_vcfspec
 
 
 

@@ -10,19 +10,20 @@ import matplotlib.pyplot as plt
 import scipy
 import pyranges as pr
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-read_cnvfile = importlib.import_module('.'.join([top_package_name, 'cnv', 'read_cnvfile']))
+import handygenome.common as common
+import handygenome.cnv.read_cnvfile as read_cnvfile
+import handygenome.pyranges_helper as pyranges_helper
 
 
 SCRIPTS_DIR = os.path.join(common.PROJECT_PATH, 'misc')
+R_DIR = os.path.join(common.PROJECT_PATH, 'R')
+
 CONDA_WRAPPER = os.path.join(SCRIPTS_DIR, 'conda_wrapper.sh')
-RUN_EXTRACT = os.path.join(SCRIPTS_DIR, 'sequenza_extract.R')
-RUN_FIT = os.path.join(SCRIPTS_DIR, 'sequenza_fit.R')
-WRITE_EXTRACT_TSV = os.path.join(SCRIPTS_DIR, 'sequenza_extract_to_tsv.R')
-WRITE_FIT_TSV = os.path.join(SCRIPTS_DIR, 'sequenza_fit_to_tsv.R')
-MAKE_SEGMENTS = os.path.join(SCRIPTS_DIR, 'sequenza_results_segment.R')
+RUN_EXTRACT = os.path.join(R_DIR, 'sequenza_extract.R')
+RUN_FIT = os.path.join(R_DIR, 'sequenza_fit.R')
+WRITE_EXTRACT_TSV = os.path.join(R_DIR, 'sequenza_extract_to_tsv.R')
+WRITE_FIT_TSV = os.path.join(R_DIR, 'sequenza_fit_to_tsv.R')
+MAKE_SEGMENTS = os.path.join(R_DIR, 'sequenza_results_segment.R')
 
 CONDA_WRAPPER_ARGS = [
     CONDA_WRAPPER,  
@@ -30,6 +31,8 @@ CONDA_WRAPPER_ARGS = [
     '--envname', 'sequenza',
     'Rscript',
 ]
+
+RSCRIPT_PATH = '/home/users/pjh/tools/miniconda/220718_for_sequenza/miniconda3/envs/sequenza/bin/Rscript'
 
 
 def make_segments_as_df(extractfile_path, cellularity, ploidy, is_female):
@@ -45,7 +48,8 @@ def make_segments_as_df(extractfile_path, cellularity, ploidy, is_female):
 
 def make_segments(extractfile_path, cellularity, ploidy, is_female, outfile_path):
     args = list()
-    args.extend(CONDA_WRAPPER_ARGS)
+    #args.extend(CONDA_WRAPPER_ARGS)
+    args.append(RSCRIPT_PATH)
     args.extend(
         [
             MAKE_SEGMENTS,
@@ -59,6 +63,26 @@ def make_segments(extractfile_path, cellularity, ploidy, is_female, outfile_path
     p = subprocess.run(args, capture_output=True, text=True, check=True)
 
 
+def read_sequenza_segment(segment_path, as_gr=False):
+    df = pd.read_table(
+        segment_path, 
+        names=(
+            'Chromosome', 'Start', 'End',
+            'Bf', 'N.BAF', 'sd.BAF',
+            'depth.ratio', 'N.ratio', 'sd.ratio',
+            'CNt', 'A', 'B', 'LPP',
+        ),
+        skiprows=1,
+    )
+    df.loc[df['CNt'] == 0, 'A'] = 0
+    df.loc[df['CNt'] == 0, 'B'] = 0
+
+    if as_gr:
+        return pr.PyRanges(df=df)
+    else:
+        return df
+
+
 def load_fit(fitfile_path):
     fd, tsv_path = tempfile.mkstemp(
         prefix='tmpfile_sequenza_fit_result_', suffix='.tsv', dir=os.getcwd(),
@@ -66,7 +90,8 @@ def load_fit(fitfile_path):
     os.close(fd)
 
     args = list()
-    args.extend(CONDA_WRAPPER_ARGS)
+    #args.extend(CONDA_WRAPPER_ARGS)
+    args.append(RSCRIPT_PATH)
     args.extend(
         [
             WRITE_FIT_TSV,
@@ -86,7 +111,7 @@ def load_fit(fitfile_path):
     return df
 
 
-def load_extract(extractfile_path):
+def load_extract(extractfile_path, chromdict, as_gr=True):
     # make temp file
     fd, tsv_path = tempfile.mkstemp(
         prefix='tmpfile_sequenza_extract_result_', suffix='.tsv', dir=os.getcwd(),
@@ -95,7 +120,8 @@ def load_extract(extractfile_path):
 
     # run R script
     args = list()
-    args.extend(CONDA_WRAPPER_ARGS)
+    #args.extend(CONDA_WRAPPER_ARGS)
+    args.append(RSCRIPT_PATH)
     args.extend(
         [
             WRITE_EXTRACT_TSV,
@@ -103,15 +129,25 @@ def load_extract(extractfile_path):
             '--outfile', tsv_path,
         ]
     )
-    p = subprocess.run(args, capture_output=True, text=True, check=True)
+    p = subprocess.run(args, capture_output=True, text=True, check=False)
+    if p.returncode != 0:
+        print(f'stdout: {p.stdout}')
+        print(f'stderr: {p.stderr}')
+        p.check_returncode()
 
     # load dataframe
     df = pd.read_table(tsv_path, sep='\t', header=0, dtype={'chrom': 'string'})
     df.rename(columns={'start': 'Start', 'end': 'End', 'chrom': 'Chromosome'}, inplace=True)
+    new_columns = ['Chromosome', 'Start', 'End'] + df.columns.drop(['Chromosome', 'Start', 'End']).to_list()
+    df = df.loc[:, new_columns]
+    df = pyranges_helper.sort_df_by_coord(df, chromdict)
 
     os.remove(tsv_path)
 
-    return df
+    if as_gr:
+        return pr.PyRanges(df, int64=True)
+    else:
+        return df
 
 
 def get_1d_peaks(row_iterator):

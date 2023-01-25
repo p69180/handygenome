@@ -16,7 +16,7 @@ COSMIC_VCFS = annotation_data.VCFS_COSMIC
 class CosmicInfo(annotitem.AnnotItemVariantInfoSingle):
     @classmethod
     def init_blank(cls, metadata=None):
-        result = cls()
+        result = cls.init_nonmissing()
         result['id'] = None
         result['occurrence'] = None
         result['occurrence_somatic'] = None
@@ -143,8 +143,8 @@ class CosmicInfoALTlist(annotitem.AnnotItemVariantInfoALTlist):
         result = cls()
         for vr in cosmic_vr_list:
             if vr is None:
-                #result.append(cls.unit_class.init_blank(metadata=metadata))
-                result.append(cls.unit_class.init_missing())
+                result.append(cls.unit_class.init_blank(metadata=metadata))
+                #result.append(cls.unit_class.init_missing())
             else:
                 result.extend(cls.from_vr(vr, metadata=metadata))
 

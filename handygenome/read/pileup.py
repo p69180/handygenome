@@ -19,7 +19,7 @@ readhandler = importlib.import_module(
     ".".join([top_package_name, "read", "readhandler"])
 )
 alignhandler = importlib.import_module(".".join([top_package_name, "align", "alignhandler"]))
-librealign = importlib.import_module(".".join([top_package_name, "align", "realign"]))
+#librealign = importlib.import_module(".".join([top_package_name, "align", "realign"]))
 readplus = importlib.import_module(".".join([top_package_name, "read", "readplus"]))
 #fetchcache = importlib.import_module(".".join([top_package_name, "read", "fetchcache"]))
 
@@ -30,16 +30,16 @@ readplus = importlib.import_module(".".join([top_package_name, "read", "readplus
 #DEFAULT_EXTEND_PILEUP_BY = 20
 
 
-def get_logger(verbose):
-    formatter = logging.Formatter(
-        fmt='[%(asctime)s.%(msecs)03d] Pileup: %(message)s', 
-        datefmt='%Z %Y-%m-%d %H:%M:%S'
-    )
-    return workflow.get_logger(
-        name=str(uuid.uuid4()),
-        level=('debug' if verbose else 'info'),
-        formatter=formatter,
-    )
+#def get_logger(verbose):
+#    formatter = logging.Formatter(
+#        fmt='[%(asctime)s.%(msecs)03d] Pileup: %(message)s', 
+#        datefmt='%Z %Y-%m-%d %H:%M:%S'
+#    )
+#    return workflow.get_logger(
+#        name=str(uuid.uuid4()),
+#        level=('debug' if verbose else 'info'),
+#        formatter=formatter,
+#    )
 
 
 class PileupBase:
@@ -47,18 +47,73 @@ class PileupBase:
     pat_parenthesis = re.compile("[()]")
     DEL_VALUE = "*"
     EMPTY_VALUE = ""
+        
+    ##########################
+    # methods for direct use #
+    ##########################
+    @property
+    def start0(self):
+        return self.df.columns[0]
 
-    def __init__(self, fasta, bam, chrom, start0=None, end0=None, init_df=True, verbose=False, logger=None):
-        # set logger
-        self.verbose = verbose
-        if logger is None:
-            self.logger = get_logger(self.verbose)
-        else:
-            self.logger = logger
+    @property
+    def end0(self):
+        return self.df.columns[-1] + 1
 
-        self.fasta = fasta
+    @property
+    def range0(self):
+        return range(self.start0, self.end0)
+
+    @property
+    def width(self):
+        return self.df.shape[1]
+
+    def get_ref_seq(self):
+        return self.fasta.fetch(self.chrom, self.start0, self.end0)
+
+    def get_depth(self, pos0):
+        col = self.df.loc[:, pos0]
+        return (col != self.__class__.EMPTY_VALUE).sum()
+        #return sum(x != self.__class__.EMPTY_VALUE for x in col)
+
+    def get_allele_counter(self, pos0):
+        col = self.df.loc[:, pos0]
+        return collections.Counter(col[col != self.__class__.EMPTY_VALUE])
+        #return collections.Counter(x for x in col if x != self.__class__.EMPTY_VALUE)
+
+    def get_allele_portions(self, pos0):
+        counter = self.get_allele_counter(pos0)
+        counter_sum = sum(counter.values())
+        portions = dict()
+        for key, val in counter.items():
+            portions[key] = val / counter_sum
+        return portions
+
+    def get_read(self, read_uid):
+        return self.read_store[read_uid]
+
+    ############
+    # backends #
+    ############
+    def __init__(
+        self, 
+        bam, chrom, 
+        start0=None, end0=None, 
+        refver=None, fasta=None,
+
+        init_df=True, 
+
+        verbose=False, 
+        logger=None,
+    ):
+        # set params
         self.bam = bam
         self.chrom = chrom
+        self.refver, self.fasta = self.refver_fasta_arghandler(refver, fasta)
+
+        # set logger
+        self.verbose, self.logger = self.logger_arghandler(verbose, logger)
+
+        # init df and subsequent ones
         if init_df:
             df, read_store = make_pileup_components(
                 chrom,
@@ -99,24 +154,33 @@ class PileupBase:
             raise Exception('Input "pos0" argument is out of pileup range.')
 
     def _set_MQ(self):
-        MQ_data = {pos0: list() for pos0 in self.df.columns}
-        for read_uid, row in self.df.iterrows():
-            read = self.read_store[read_uid]
-            start0 = max(self.start0, read.reference_start)
-            end0 = min(self.end0, read.reference_end)
-            for pos0 in range(start0, end0):
-                MQ_data[pos0].append(read.mapping_quality)
-        self.MQ = pd.Series(
-            [np.mean(MQ_data[pos0]) for pos0 in self.df.columns],
-            index=self.df.columns,
-        )
+        if self.df.shape[0] > 0:
+            MQ_data = {pos0: list() for pos0 in self.df.columns}
+            for read_uid, row in self.df.iterrows():
+                read = self.read_store[read_uid]
+                start0 = max(self.start0, read.reference_start)
+                end0 = min(self.end0, read.reference_end)
+                for pos0 in range(start0, end0):
+                    MQ_data[pos0].append(read.mapping_quality)
+            self.MQ = pd.Series(
+                [np.mean(MQ_data[pos0]) for pos0 in self.df.columns],
+                index=self.df.columns,
+            )
+        else:
+            self.MQ = pd.Series(
+                [np.inf] * self.df.shape[1],
+                index=self.df.columns,
+            )
 
-    def spawn(self):
+    def _spawn_base(self, attrs_to_copy):
         """Make a partial copy of self with essential attributes"""
+        #for key in inspect.signature(self.__init__).parameters.keys():
+        #    if key not in ('init_df', 'start0', 'end0'):
+        #        kwargs[key] = getattr(self, key)
+
         kwargs = dict()
-        for key in inspect.signature(self.__init__).parameters.keys():
-            if key not in ('init_df', 'start0', 'end0'):
-                kwargs[key] = getattr(self, key)
+        for key in attrs_to_copy: 
+            kwargs[key] = getattr(self, key)
         kwargs['init_df'] = False
 
         result = self.__class__(**kwargs)
@@ -195,111 +259,68 @@ class PileupBase:
                     row_idx, border_col_idx_right
                 ] = self.__class__.pat_insclip.sub("\\2\\3", val_right)
 
-    @property
-    def start0(self):
-        return self.df.columns[0]
-
-    @property
-    def end0(self):
-        return self.df.columns[-1] + 1
-
-    @property
-    def range0(self):
-        return range(self.start0, self.end0)
-
-    @property
-    def width(self):
-        return self.df.shape[1]
-
-    def get_ref_seq(self):
-        return self.fasta.fetch(self.chrom, self.start0, self.end0)
-
-    def get_depth(self, pos0):
-        col = self.df.loc[:, pos0]
-        return (col != self.__class__.EMPTY_VALUE).sum()
-        #return sum(x != self.__class__.EMPTY_VALUE for x in col)
-
-    def get_allele_counter(self, pos0):
-        col = self.df.loc[:, pos0]
-        return collections.Counter(col[col != self.__class__.EMPTY_VALUE])
-        #return collections.Counter(x for x in col if x != self.__class__.EMPTY_VALUE)
-
-    def get_allele_portions(self, pos0):
-        counter = self.get_allele_counter(pos0)
-        counter_sum = sum(counter.values())
-        portions = dict()
-        for key, val in counter.items():
-            portions[key] = val / counter_sum
-        return portions
-
-    def get_read(self, read_uid):
-        return self.read_store[read_uid]
-
-    ### extend ###  
     def _extend_base(self, width, left):
         new_pileup = self._make_extend_pileup(width, left)
         self.merge(new_pileup, other_on_left=left)
 
-#    def _extend_rightward_base(self, width):
-#        border_col_idx_left = self.df.shape[1] - 1
-#        new_pileup = self._extend_helper_make_new_pileup(start0=self.end0, end0=(self.end0 + width))
-#        # join
-#        self.df = self.df.join(new_pileup.df, how="outer")
-#        self.df[self.df.isnull()] = EMPTY_VALUE  # turn NaN into EMPTY_VALUE
-#        self.read_store.update(new_pileup.read_store)
-#        # handle insclips facing each other
-#        self._extend_helper_handle_facing_insclip(border_col_idx_left)
-#
-#        #self.active_info = pd.concat([self.active_info, new_pileup.active_info])
-#        return new_pileup
-#
-#    def extend_leftward(self, width):
-#        border_col_idx_left = width - 1
-#        new_pileup = self._extend_helper_make_new_pileup(start0=(self.start0 - width), end0=self.start0)
-#        # join
-#        self.df = new_pileup.df.join(self.df, how="outer")
-#        self.df[self.df.isnull()] = EMPTY_VALUE  # turn NaN into EMPTY_VALUE
-#        self.read_store.update(new_pileup.read_store)
-#        # handle insclips facing each other
-#        self._extend_helper_handle_facing_insclip(border_col_idx_left)
-#        #self.active_info = pd.concat([new_pileup.active_info, self.active_info])
+    @staticmethod
+    def refver_fasta_arghandler(refver, fasta):
+        if (refver is None) and (fasta is None):
+            raise Exception(f'At least one of "refver" or "fasta" must be set.')
 
-#    def _extend_helper_handle_facing_insclip(self, border_col_idx_left):
-#        border_col_idx_right = border_col_idx_left + 1
-#        border_col_left = self.df.iloc[:, border_col_idx_left]
-#        border_col_right = self.df.iloc[:, border_col_idx_right]
-#        for row_idx, (val_left, val_right) in enumerate(
-#            zip(border_col_left, border_col_right)
-#        ):
-#            if val_right.startswith("(") and val_left.endswith(")"):
-#                mat_left = self.__class__.pat_insclip.fullmatch(val_left)
-#                mat_right = self.__class__.pat_insclip.fullmatch(val_right)
-#                if mat_left.group(3) != mat_right.group(1):
-#                    raise Exception(
-#                        f"Insclip seqs of adjacent entries are different.\n{self.df}"
-#                    )
-#                self.df.iloc[
-#                    row_idx, border_col_idx_right
-#                ] = self.__class__.pat_insclip.sub("\\2\\3", "", val_right)
+        if refver is None:
+            refver_result = common.infer_refver_fasta(fasta)
+        else:
+            refver_result = refver
+
+        if fasta is None:
+            fasta_result = common.DEFAULT_FASTAS[refver_result]
+        else:
+            fasta_result = fasta
+
+        return refver_result, fasta_result
+
+    @classmethod
+    def logger_arghandler(cls, verbose, logger):
+        verbose_result = verbose
+        if logger is None:
+            logger_result = cls.get_logger(verbose_result)
+        else:
+            logger_result = logger
+
+        return verbose_result, logger_result
+
+    @staticmethod
+    def get_logger(verbose):
+        formatter = logging.Formatter(
+            fmt='[%(asctime)s.%(msecs)03d] Pileup: %(message)s', 
+            datefmt='%Z %Y-%m-%d %H:%M:%S'
+        )
+        return workflow.get_logger(
+            name=str(uuid.uuid4()),
+            level=('debug' if verbose else 'info'),
+            formatter=formatter,
+        )
 
 
 class Pileup(PileupBase):
     # initializers
-    def __init__(self, fasta, bam, chrom, start0=None, end0=None, init_df=True):
-        PileupBase.__init__(self, fasta, bam, chrom, start0=start0, end0=end0, init_df=init_df)
-
-#    def subset(self, start0, end0, inplace=False):
-#        subset_df = self._get_subset_df(start0, end0)
-#        new_MQ = self.MQ.loc[start0:(end0 - 1)]
-#        if inplace:
-#            self.df = subset_df
-#            self.MQ = new_MQ
-#            return None
-#        else:
-#            result = self.spawn()
-#            result.df = subset_df
-#            result.MQ = new_MQ
-#            return result
+    def __init__(
+        self, 
+        bam, chrom, 
+        start0=None, end0=None, 
+        refver=None, fasta=None,
+        init_df=True, 
+        verbose=False, logger=None,
+    ):
+        PileupBase.__init__(
+            self, 
+            bam=bam, chrom=chrom, 
+            start0=start0, end0=end0, 
+            refver=refver, fasta=fasta,
+            init_df=init_df, 
+            verbose=verbose, logger=logger,
+        )
 
     def subset(self, start0, end0, inplace=False):
         return self._subset_base(self, start0, end0, inplace=inplace)
@@ -309,6 +330,11 @@ class Pileup(PileupBase):
 
     def split(self, start0_list):
         return self._split_base(start0_list)
+
+    def spawn(self):
+        return self._spawn_base(
+            ('bam', 'chrom', 'refver', 'fasta', 'verbose', 'logger')
+        )
 
     # extend
     def extend_left(self, width):
@@ -479,19 +505,33 @@ def make_pileup_components(
     start0,
     end0,
     bam,
-    #fasta=None,
-    #active_threshold=None,
     truncate=True,
     as_array=False,
-    #return_range=False,
     del_value=PileupBase.DEL_VALUE,
     empty_value=PileupBase.EMPTY_VALUE,
     verbose=False,
     logger=None,
+    trailing_queryonly_to_right=False,
+    preserve_trailing_queryonly=True,
 ):
+    """Args:
+        trailing_queryonly_to_right: 
+            - If True, insertions or softclips on the right border of the read
+                are assigned to "read.reference_end"
+            - If False, assigned to "read.reference_end - 1"
+        preserve_trailing_queryonly:
+            - Relevant only when "truncate" is True and "trailing_queryonly_to_right" is True.
+            - If True, if trailing queryonly is placed on "end0" position,
+                returned array or dataframe gets to include the position "end0"
+                to accommodate the trailing queryonly sequence. In this case,
+                returned "ref_span_range" becomes range(start0, end0 + 1).
+            - If False, if trailing queryonly is placed on "end0" position,
+                they are not included in the returned array or dataframe,
+                and "ref_span_range" becomes range(start0, end0).
+    """
     # set logger
     if logger is None:
-        logger = get_logger(verbose)
+        logger = PileupBase.get_logger(verbose)
     else:
         logger = logger
 
@@ -502,24 +542,30 @@ def make_pileup_components(
         start_list = list()
         end_list = list()
         for read in readhandler.get_fetch(bam, chrom, start0, end0, readfilter=readhandler.readfilter_pileup):
-            logger.debug(f'Read query name: {read.query_name}')
-            target_seq = readplus.ReadPlus(read, minimal=True).get_seq_from_range0(
-                target_range0,
-                flanking_queryonly_default_mode=True,
-            )
-            logger.debug(f'Got target seq of {read.query_name}')
-            if target_seq == '':
+            if readhandler.check_cigarN_includes_range(read, start0, end0):
                 continue
+
+#            target_seq = readplus.ReadPlus(read, minimal=True).get_seq_from_range0(
+#                target_range0,
+#                flanking_queryonly_default_mode=True,
+#            )
+#            if target_seq == '':
+#                print(read)
+#                continue
 
             readlist.append(read)
             uid_list.append(readhandler.get_uid(read))
             start_list.append(read.reference_start)
             end_list.append(read.reference_end)
 
-        tmp_pileup_range = range(
-            min(min(start_list), start0), 
-            max(max(end_list), end0),
-        )
+        if len(start_list) == 0:
+            tmp_pileup_range = None
+        else:
+            tmp_pileup_range = range(
+                min(min(start_list), start0), 
+                max(max(end_list), end0) + 1,
+            )
+
         read_store = collections.OrderedDict(zip(uid_list, readlist))
 
         return read_store, tmp_pileup_range
@@ -540,40 +586,64 @@ def make_pileup_components(
         if error:
             raise_cigarpattern_error(read)
 
-    def truncate_array(arr, tmp_pileup_range, pileup_range):
-        sl_start = tmp_pileup_range.index(pileup_range.start)
-        if pileup_range.stop == tmp_pileup_range.stop:
+    def truncate_array(arr, tmp_pileup_range, ref_span_range):
+        sl_start = tmp_pileup_range.index(ref_span_range.start)
+        if ref_span_range.stop == tmp_pileup_range.stop:
             sl_end = None
         else:
-            sl_end = tmp_pileup_range.index(pileup_range.stop)
+            sl_end = tmp_pileup_range.index(ref_span_range.stop)
         return arr[:, slice(sl_start, sl_end)]
 
-    # main
-    pileup_range = range(start0, end0)
-    read_store, tmp_pileup_range = make_read_store(bam, chrom, start0, end0)
-    # create array
-    arr = np.full(
-        shape=(len(read_store), len(tmp_pileup_range)),
-        fill_value=empty_value,
-        dtype=object,
-    )
-    for arr_row_idx, read in enumerate(read_store.values()):
-        arr_col_idx = read.reference_start - tmp_pileup_range.start
-        try:
-            _write_read_to_array_row(read, arr, arr_row_idx, arr_col_idx, del_value)
-        except Exception as exc:
-            try:
-                cigar_sanitycheck(read)
-            except Exception as exc_cigarpattern:
-                raise exc_cigarpattern from exc
+    def make_array(
+        start0, end0, tmp_pileup_range, read_store, empty_value, del_value, trailing_queryonly_to_right,
+    ):
+        if tmp_pileup_range is None:  # zero depth
+            ref_span_range = range(start0, end0)
+            arr = np.empty((0, len(ref_span_range)))
+        else:
+            # create array
+            arr = np.full(
+                shape=(len(read_store), len(tmp_pileup_range)),
+                fill_value=empty_value,
+                dtype=object,
+            )
+            for arr_row_idx, read in enumerate(read_store.values()):
+                arr_col_idx = read.reference_start - tmp_pileup_range.start
+                try:
+                    _write_read_to_array_row(
+                        read, arr, arr_row_idx, arr_col_idx, del_value, 
+                        trailing_queryonly_to_right,
+                    )
+                except Exception as exc:
+                    try:
+                        cigar_sanitycheck(read)
+                    except Exception as exc_cigarpattern:
+                        raise exc_cigarpattern from exc
+                    else:
+                        raise exc
+
+            last_col_is_empty = (set(arr[:, -1]) == {empty_value})
+            if last_col_is_empty:
+                arr = arr[:, :-1]
+                tmp_pileup_range = range(tmp_pileup_range.start, tmp_pileup_range.stop - 1)
+
+            # truncate array
+            if truncate:
+                ref_span_range = range(start0, end0)
+                arr = truncate_array(arr, tmp_pileup_range, ref_span_range)
             else:
-                raise exc
-    # truncate array
-    if truncate:
-        ref_span_range = pileup_range
-        arr = truncate_array(arr, tmp_pileup_range, pileup_range)
-    else:
-        ref_span_range = tmp_pileup_range
+                ref_span_range = tmp_pileup_range
+
+        return arr, ref_span_range
+
+    # main
+    read_store, tmp_pileup_range = make_read_store(bam, chrom, start0, end0)
+        # tmp_pileup_range contains end0 of the leftmost fetched read
+
+    arr, ref_span_range = make_array(
+        start0, end0, tmp_pileup_range, read_store, empty_value, del_value, trailing_queryonly_to_right,
+    )
+
     # final result
     if as_array:
         return arr, ref_span_range, read_store
@@ -586,7 +656,10 @@ def make_pileup_components(
         return df, read_store
 
 
-def _write_read_to_array_row(read, arr, arr_row_idx, arr_col_idx, del_value):
+def _write_read_to_array_row(
+    read, arr, arr_row_idx, arr_col_idx, del_value,
+    trailing_queryonly_to_right=True,
+):
     """Helper function for 'make_pileup_components'"""
     query_idx = 0
     queryonly_seq = None
@@ -628,12 +701,15 @@ def _write_read_to_array_row(read, arr, arr_row_idx, arr_col_idx, del_value):
 
             arr_col_idx += cigarlen_sum
 
-    # Last cigar operation is query-only
+    # When the last cigar operation is query-only
     if queryonly_seq is not None:
         if idx == 0:  # query-only-only case
             arr[arr_row_idx, arr_col_idx] = f'({queryonly_seq})'
         else:  # queryonly_seq is appended to the base on the left
-            arr[arr_row_idx, arr_col_idx - 1] = arr[arr_row_idx, arr_col_idx - 1] + f'({queryonly_seq})'
+            if trailing_queryonly_to_right:
+                arr[arr_row_idx, arr_col_idx] = f'({queryonly_seq})'
+            else:
+                arr[arr_row_idx, arr_col_idx - 1] = arr[arr_row_idx, arr_col_idx - 1] + f'({queryonly_seq})'
 
 
 def _write_read_to_array_row_deprecated(read, arr, arr_row_idx, initial_arr_col_idx, del_value):
@@ -857,40 +933,40 @@ def _write_read_to_array_row_deprecated(read, arr, arr_row_idx, initial_arr_col_
 
 
 
-def get_pileup_multisample(
-    chrom,
-    start0,
-    end0,
-    bam_dict,
-    fasta,
-    active_threshold_onesample=None,
-    del_value=PileupBase.DEL_VALUE,
-    empty_value=PileupBase.EMPTY_VALUE,
-):
-    # parameter handling
-    if active_threshold_onesample is None:
-        active_threshold_onesample = librealign.DEFAULT_ACTIVE_THRESHOLD
-    # initialize pileup_dict
-    pileup_dict = dict()
-    for sampleid, bam in bam_dict.items():
-        pileup_dict[sampleid] = get_pileup(
-            chrom,
-            start0,
-            end0,
-            bam=bam,
-            fasta=fasta,
-            active_threshold=active_threshold_onesample,
-            truncate=True,
-            as_array=False,
-            return_range=False,
-            del_value=del_value,
-            empty_value=empty_value,
-        )
-    # create MultisamplePileup object and postprocess
-    mspileup = MultisamplePileup(pileup_dict)
-    mspileup.set_df()
-
-    return mspileup
+#def get_pileup_multisample(
+#    chrom,
+#    start0,
+#    end0,
+#    bam_dict,
+#    fasta,
+#    active_threshold_onesample=None,
+#    del_value=PileupBase.DEL_VALUE,
+#    empty_value=PileupBase.EMPTY_VALUE,
+#):
+#    # parameter handling
+#    if active_threshold_onesample is None:
+#        active_threshold_onesample = librealign.DEFAULT_ACTIVE_THRESHOLD
+#    # initialize pileup_dict
+#    pileup_dict = dict()
+#    for sampleid, bam in bam_dict.items():
+#        pileup_dict[sampleid] = get_pileup(
+#            chrom,
+#            start0,
+#            end0,
+#            bam=bam,
+#            fasta=fasta,
+#            active_threshold=active_threshold_onesample,
+#            truncate=True,
+#            as_array=False,
+#            return_range=False,
+#            del_value=del_value,
+#            empty_value=empty_value,
+#        )
+#    # create MultisamplePileup object and postprocess
+#    mspileup = MultisamplePileup(pileup_dict)
+#    mspileup.set_df()
+#
+#    return mspileup
 
 
 

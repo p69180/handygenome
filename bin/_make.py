@@ -1,11 +1,11 @@
-#!/home/users/pjh/tools/miniconda/210821/miniconda3/envs/genome_v5/bin/python
+#!/home/users/pjh/tools/miniconda/221104/miniconda3/envs/genome_v7/bin/python
 import sys
 import os
 import stat
 import re
 import textwrap
 
-PYTHON = '/home/users/pjh/tools/miniconda/210821/miniconda3/envs/genome_v5/bin/python'
+PYTHON = '/home/users/pjh/tools/miniconda/221104/miniconda3/envs/genome_v7/bin/python'
 PROJECT_PATH = os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[0])))
 PACKAGE_PATH = os.path.join(PROJECT_PATH, 'handygenome')
 TARGETDIR = '.'

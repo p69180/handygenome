@@ -1,3 +1,4 @@
+import os
 import socket
 
 import importlib
@@ -80,4 +81,17 @@ class IGVHandle:
 
     def viewaspairs_off(self):
         self.cmd('viewaspairs false')
+
+    def snapshot(self, path, maxPanelHeight=1000):
+        basename = os.path.basename(path)
+        dirname = os.path.dirname(path)
+
+        if not os.path.exists(dirname):
+            os.makedirs(dirname)
+        self.cmd(f'snapshotDirectory {dirname}')
+
+        self.cmd(f'maxPanelHeight {maxPanelHeight}')
+        self.cmd(f'snapshot {basename}')
+
+
         

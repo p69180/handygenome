@@ -38,8 +38,14 @@ PREFIX_OVERLAP = common.RefverDict({
 })
 
 PREFIX_MAP = common.RefverDict({
-    'GRCh37': 'https://grch37.rest.ensembl.org/map',
-    'GRCh38': 'https://rest.ensembl.org/map',
+    'GRCh37': 'http://grch37.rest.ensembl.org/map',
+    'GRCh38': 'http://rest.ensembl.org/map',
+})
+
+PREFIX_SEQUENCE = common.RefverDict({
+    'GRCh37': 'http://grch37.rest.ensembl.org/sequence/id',
+    'GRCh38': 'http://rest.ensembl.org/sequence/id',
+    'GRCm39': 'http://rest.ensembl.org/sequence/id',
 })
 
 HTTP_HEADERS_POST = {
@@ -56,19 +62,20 @@ MAX_POST_SIZE = {
     'lookup_id': 1000,
     'lookup_symbol': 1000,
     'vep': 200,
+    'sequence': 50,
 }
 
 
-def lookup_id(ID, refver, expand=True):
+def lookup_id(ID, refver, expand=False):
     """start, end are 1-based inclusive coordinates"""
     prefix = PREFIX_LOOKUP_ID[refver]
     url = '/'.join([prefix, ID])
     params = {'expand': int(expand)}
 
-    return common.http_get(url, params, HTTP_HEADERS_GET)
+    return common.http_get(url, params=params, headers=HTTP_HEADERS_GET)
 
 
-def lookup_id_post(ID_list, refver, expand=True):
+def lookup_id_post(ID_list, refver, expand=False):
     """start, end are 1-based inclusive coordinates"""
     result = list()
 
@@ -76,7 +83,8 @@ def lookup_id_post(ID_list, refver, expand=True):
     params = {'expand' : int(expand)}
     for sublist in common.grouper(ID_list, MAX_POST_SIZE['lookup_id']):
         data = {'ids' : sublist}
-        result.extend(common.http_post(url, data, params, HTTP_HEADERS_POST))
+        subresult = common.http_post(url, data, params=params, headers=HTTP_HEADERS_POST)
+        result.extend(subresult.values())
 
     return result
 
@@ -87,20 +95,20 @@ def lookup_symbol(symbol, refver, expand=False):
     url = '/'.join([prefix, species, symbol])
     params = {'expand' : int(expand)}
 
-    return common.http_get(url, params, HTTP_HEADERS_GET)
+    return common.http_get(url, params=params, headers=HTTP_HEADERS_GET)
 
 
 def lookup_symbol_post(symbols, refver, expand=False):
-    result = list()
-
     prefix = PREFIX_LOOKUP_SYMBOL[refver]
     species = SPECIES[refver]
     url = '/'.join([prefix, species])
     params = {'expand' : int(expand)}
 
+    result = list()
     for sublist in common.grouper(symbols, MAX_POST_SIZE['lookup_symbol']):
         data = {'symbols' : sublist}
-        result.extend(common.http_post(url, data, params, HTTP_HEADERS_POST))
+        subresult = common.http_post(url, data, params=params, headers=HTTP_HEADERS_POST)
+        result.extend(subresult.values())
 
     return result
 
@@ -110,7 +118,7 @@ def regulatory(ID, refver, activity=True):
     url = '/'.join([prefix, ID])
     params = {'activity' : int(activity)}
 
-    result = common.http_get(url, params, HTTP_HEADERS_GET)
+    result = common.http_get(url, params=params, headers=HTTP_HEADERS_GET)
     if isinstance(result, list) and len(result) == 1:
         result = result[0]
     else:
@@ -150,7 +158,7 @@ def vep(
             # even when it is set to False
         params.update({'Phenotypes' : int(with_Phenotypes)})
 
-    return common.http_get(url, params, HTTP_HEADERS_GET)
+    return common.http_get(url, params=params, headers=HTTP_HEADERS_GET)
 
 
 def vep_post(
@@ -159,8 +167,6 @@ def vep_post(
     with_mane=True, with_miRNA=False, with_numbers=True, 
     with_protein=True, with_ccds=True, with_hgvs=True,
 ):
-    result = list()
-
     url = PREFIX_VEP[refver]
     if hgvsg_list is None:
         if vcfspec_list is None: 
@@ -188,9 +194,10 @@ def vep_post(
     if with_Phenotypes:
         params.update({'Phenotypes': int(with_Phenotypes)})
 
+    result = list()
     for sublist in common.grouper(hgvsg_list, MAX_POST_SIZE['vep']):
         data = {'hgvs_notations': sublist}
-        result.extend(common.http_post(url, data, params, HTTP_HEADERS_POST))
+        result.extend(common.http_post(url, data, params=params, headers=HTTP_HEADERS_POST))
 
     return result
 
@@ -227,3 +234,41 @@ def map(ID, start1, end1, mode, refver):
     url = '/'.join([prefix, mode, ID, f'{start1}..{end1}'])
     return common.http_get(url, headers=HTTP_HEADERS_GET)
     
+
+def sequence_get(ID, refver, type='genomic'):
+    prefix = PREFIX_SEQUENCE[refver]
+    url = '/'.join([prefix, ID])
+    params = {
+        'type': type,
+    }
+
+    return common.http_get(
+        url, 
+        params=params, 
+        headers={'Content-Type': 'text/plain'},
+        text=True,
+    )
+
+
+def sequence_post(ID_list, refver, type='genomic'):
+    url = PREFIX_SEQUENCE[refver]
+    params = {
+        'type': type,
+    }
+
+    result = list()
+    for sublist in common.grouper(ID_list, MAX_POST_SIZE['sequence']):
+        data = {'ids': sublist}
+        result.extend(
+            common.http_post(
+                url, 
+                data, 
+                params=params, 
+                headers=HTTP_HEADERS_POST,
+            )
+        )
+
+    return result
+
+
+

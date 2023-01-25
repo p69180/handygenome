@@ -1,0 +1,5 @@
+#!/home/users/pjh/tools/miniconda/221104/miniconda3/envs/genome_v7/bin/python
+import sys
+sys.path.append('/home/users/pjh/scripts/python_genome_package_dev')
+from handygenome.tools.strelka_postprocessor import main
+main(sys.argv[1:])

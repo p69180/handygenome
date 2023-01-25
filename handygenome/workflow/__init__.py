@@ -45,11 +45,13 @@ DEFAULT_DATEFMT = '%Z %Y-%m-%d %H:%M:%S' # KST 2022-03-23 22:12:34
 DEFAULT_LOG_FORMATTERS = {
     'without_name': logging.Formatter(
         fmt='[%(asctime)s %(levelname)s] %(message)s', 
-        datefmt=DEFAULT_DATEFMT),
+        datefmt=DEFAULT_DATEFMT,
+    ),
     'with_name': logging.Formatter(
         fmt='[%(asctime)s %(levelname)s] %(name)s: %(message)s', 
-        datefmt=DEFAULT_DATEFMT),
-    }
+        datefmt=DEFAULT_DATEFMT,
+    ),
+}
 
 
 def get_logger(name=None, formatter=None, level='info', stderr=True, 
@@ -82,6 +84,17 @@ def get_logger(name=None, formatter=None, level='info', stderr=True,
             logger.addHandler(fh)
 
     return logger
+
+
+def get_debugging_logger(title, verbose):
+    return get_logger(
+        name=str(uuid.uuid4()),
+        level=('debug' if verbose else 'info'),
+        formatter=logging.Formatter(
+            fmt=f'[%(asctime)s.%(msecs)03d {title}] line %(lineno)d: %(message)s', 
+            datefmt='%Z %Y-%m-%d %H:%M:%S'
+        ),
+    )
 
 
 # filesystem-related functions
@@ -342,13 +355,15 @@ def add_indir_arg(parser, required=True, help=f'Input directory path.'):
 
 
 def add_outfile_arg(
-        parser, required=True, must_not_exist='ask',
-        help='Output vcf file path. Must not exist in advance.'):
+    parser, required=True, must_not_exist='ask',
+    help='Output vcf file path. Must not exist in advance.',
+):
     handler = get_arghandler_outfile(must_not_exist)
     parser.add_argument(
         '-o', '--outfile', dest='outfile_path', required=required, 
         type=handler, metavar='<output file path>',
-        help=textwrap.fill(help, width=HELP_WIDTH))
+        help=textwrap.fill(help, width=HELP_WIDTH),
+    )
 
 
 def add_outdir_arg(
@@ -629,8 +644,9 @@ def arghandler_outfile_mustbeabsent(arg):
 
 
 def get_arghandler_outfile(must_not_exist):
-    e_msg = '"must_not_exist" argument must be on of "yes", "no", or "ask".'
-    assert must_not_exist in ('yes', 'no', 'ask'), e_msg
+    assert must_not_exist in ('yes', 'no', 'ask'), (
+        '"must_not_exist" argument must be on of "yes", "no", or "ask".'
+    )
     if must_not_exist == 'yes':
         return arghandler_outfile_mustbeabsent
     elif must_not_exist == 'no':
@@ -653,7 +669,7 @@ def arghandler_outdir(arg):
 
 
 def arghandler_fasta(arg):
-    if arg in common.DEFAULT_FASTA_PATHS:
+    if arg in common.DEFAULT_FASTA_PATHS.get_valid_keys():
         return common.DEFAULT_FASTA_PATHS[arg]
     else:
         return arghandler_infile(arg)
@@ -1097,8 +1113,7 @@ def run_jobs(jobscript_paths, sched, intv_check, intv_submit, logger,
 def run_jobs_local(jobscript_path_list):
     plist = list()
     for jobscript_path in jobscript_path_list:
-        p = subprocess.Popen([jobscript_path], stdout=subprocess.PIPE, 
-                             stderr=subprocess.PIPE, text=True)
+        p = subprocess.Popen([jobscript_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         plist.append(p)
 
     for p in plist:

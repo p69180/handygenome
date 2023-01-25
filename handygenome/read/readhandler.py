@@ -7,10 +7,8 @@ import pysam
 import numpy as np
 import pandas as pd
 
-import importlib
-
-top_package_name = __name__.split(".")[0]
-common = importlib.import_module(".".join([top_package_name, "common"]))
+import handygenome.common as common
+import handygenome.align.alignhandler as alignhandler
 
 
 CIGAROPDICT = {
@@ -201,103 +199,164 @@ class Cigar:
 #    ]
 
 
-CigarWalk = collections.namedtuple(
-    'CigarWalk', 
-    ('cigartuple', 'target_range0', 'query_range0'),
-)
-def walk_cigar(cigartuples, target_start0):
-    query_start0 = 0
+#CigarWalk = collections.namedtuple(
+#    'CigarWalk', 
+#    ('cigartuple', 'target_range0', 'query_range0'),
+#)
+#def walk_cigar(cigartuples, target_start0):
+#    query_start0 = 0
+#
+#    target_end0 = target_start0
+#    query_end0 = query_start0
+#
+#    for cigartup in cigartuples:
+#        opcode, count = cigartup
+#        walk_target, walk_query = CIGAR_WALK_DICT[opcode]
+#        if walk_target:
+#            target_end0 += count
+#        if walk_query:
+#            query_end0 += count
+#
+#        target_range0 = range(target_start0, target_end0)
+#        query_range0 = range(query_start0, query_end0)
+#
+#        target_start0 = target_end0
+#        query_start0 = query_end0
+#
+#        yield CigarWalk(cigartup, target_range0, query_range0)
+#
+#
+#def split_cigar(cigartuples, reference_start0, split_range0):
+#    def add_buffer(tuple_list, queryonly_buffer):
+#        while queryonly_buffer:
+#            tuple_list.append(queryonly_buffer.pop(0).cigartuple)
+#
+#    def add_current(tuple_list, cigarwalk):
+#        tuple_list.append(cigarwalk.cigartuple)
+#
+#    tuples_before = list()
+#    tuples_within = list()
+#    tuples_after = list()
+#    reference_pointer = reference_start0
+#    queryonly_buffer = list()
+#
+#    for cigarwalk in walk_cigar(cigartuples, reference_start0):
+#        reference_pointer += len(cigarwalk.target_range0)
+#
+#        if len(cigarwalk.target_range0) == 0:
+#            queryonly_buffer.append(cigarwalk)
+#        else:
+#            # current cigarwalk entirely before split_range0
+#            if cigarwalk.target_range0.stop <= split_range0.start:
+#                add_buffer(tuples_before, queryonly_buffer)
+#                add_current(tuples_before, cigarwalk)
+#            # current cigarwalk entirely after split_range0
+#            elif cigarwalk.target_range0.start >= split_range0.stop:
+#                add_buffer(tuples_after, queryonly_buffer)
+#                add_current(tuples_after, cigarwalk)
+#            # current cigarwalk overlaps split_range0
+#            else:
+#                # handle buffer
+#                if cigarwalk.target_range0.start < split_range0.start:
+#                    add_buffer(tuples_before, queryonly_buffer)
+#                else:
+#                    add_buffer(tuples_within, queryonly_buffer)
+#                # add to tuples_before
+#                if cigarwalk.target_range0.start < split_range0.start:
+#                    tuple_to_add = (
+#                        cigarwalk.cigartuple[0], 
+#                        split_range0.start - cigarwalk.target_range0.start,
+#                    )
+#                    tuples_before.append(tuple_to_add)
+#                # add to tuples_after
+#                if cigarwalk.target_range0.stop > split_range0.stop:
+#                    tuple_to_add = (
+#                        cigarwalk.cigartuple[0], 
+#                        cigarwalk.target_range0.stop - split_range0.stop,
+#                    )
+#                    tuples_after.append(tuple_to_add)
+#                # add to tuples_within
+#                tuple_to_add = (
+#                    cigarwalk.cigartuple[0], 
+#                    (
+#                        min(cigarwalk.target_range0.stop, split_range0.stop)
+#                        - max(cigarwalk.target_range0.start, split_range0.start)
+#                    )
+#                )
+#                tuples_within.append(tuple_to_add)
+#                    
+#    # now reference_pointer is equal to read.reference_end
+#    if queryonly_buffer:
+#        if reference_pointer < split_range0.start:
+#            add_buffer(tuples_before, queryonly_buffer)
+#        else:
+#            if reference_pointer < split_range0.stop:
+#                add_buffer(tuples_within, queryonly_buffer)
+#            else:
+#                add_buffer(tuples_after, queryonly_buffer)
+#
+#    return tuples_before, tuples_within, tuples_after
 
-    target_end0 = target_start0
-    query_end0 = query_start0
 
-    for cigartup in cigartuples:
-        opcode, count = cigartup
-        walk_target, walk_query = CIGAR_WALK_DICT[opcode]
-        if walk_target:
-            target_end0 += count
-        if walk_query:
-            query_end0 += count
-
-        target_range0 = range(target_start0, target_end0)
-        query_range0 = range(query_start0, query_end0)
-
-        target_start0 = target_end0
-        query_start0 = query_end0
-
-        yield CigarWalk(cigartup, target_range0, query_range0)
+def reverse_range(rng):
+    if rng.step == 1:
+        start = rng.stop - 1
+        stop = rng.start - 1
+        return range(start, stop, -1)
+    elif rng.step == -1:
+        start = rng.stop + 1
+        stop = rng.start + 1
+        return range(start, stop, 1)
 
 
-def split_cigar(cigartuples, reference_start0, split_range0):
-    def add_buffer(tuple_list, queryonly_buffer):
-        while queryonly_buffer:
-            tuple_list.append(queryonly_buffer.pop(0).cigartuple)
+def check_overlaps(rng1, rng2):
+    """
+    Meaning of range
+        - Assumes range.step is either 1 or -1
+        - "current position" travels, beginning from "range.start" toward "range.stop".
+        - "cursor" position
+            - When range.step == 1: immediately left to "current position"
+            - When range.step == -1: immediately right to "current position"
+        - Area swept by "cursor" is the area represented by range object.
+        - When len(range) == 0:
+            - When range.step == 1: 0-length interval between (range.start - 1) and (range.start)
+            - When range.step == -1: 0-length interval between (range.start) and (range.start + 1)
 
-    def add_current(tuple_list, cigarwalk):
-        tuple_list.append(cigarwalk.cigartuple)
+    Meaning of overlap with 0-length range
+        - consider as overlap when the interspace is contained between ALIGNED read bases (not insertion)
 
-    tuples_before = list()
-    tuples_within = list()
-    tuples_after = list()
-    reference_pointer = reference_start0
-    queryonly_buffer = list()
+    Args:
+        rng1, rng2: python range object.
+    """
+    # convert into positive-step range
+    if rng1.step == -1:
+        rng1 = reverse_range(rng1)
+    if rng2.step == -1:
+        rng2 = reverse_range(rng2)
 
-    for cigarwalk in walk_cigar(cigartuples, reference_start0):
-        reference_pointer += len(cigarwalk.target_range0)
+    # main
+    if len(rng1) == 0 and len(rng2) == 0:
+        return rng1.start == rng2.start
+    else:
+        return (
+            rng1.start < rng2.stop and
+            rng1.stop > rng2.start
+        )
 
-        if len(cigarwalk.target_range0) == 0:
-            queryonly_buffer.append(cigarwalk)
+
+def check_spans(query_range0, target_range0):
+    """Checks if query spans target"""
+
+    if len(query_range0) == 0:
+        return False
+    else:
+        if len(target_range0) == 0:
+            return check_overlaps(query_range0, target_range0)
         else:
-            # current cigarwalk entirely before split_range0
-            if cigarwalk.target_range0.stop <= split_range0.start:
-                add_buffer(tuples_before, queryonly_buffer)
-                add_current(tuples_before, cigarwalk)
-            # current cigarwalk entirely after split_range0
-            elif cigarwalk.target_range0.start >= split_range0.stop:
-                add_buffer(tuples_after, queryonly_buffer)
-                add_current(tuples_after, cigarwalk)
-            # current cigarwalk overlaps split_range0
-            else:
-                # handle buffer
-                if cigarwalk.target_range0.start < split_range0.start:
-                    add_buffer(tuples_before, queryonly_buffer)
-                else:
-                    add_buffer(tuples_within, queryonly_buffer)
-                # add to tuples_before
-                if cigarwalk.target_range0.start < split_range0.start:
-                    tuple_to_add = (
-                        cigarwalk.cigartuple[0], 
-                        split_range0.start - cigarwalk.target_range0.start,
-                    )
-                    tuples_before.append(tuple_to_add)
-                # add to tuples_after
-                if cigarwalk.target_range0.stop > split_range0.stop:
-                    tuple_to_add = (
-                        cigarwalk.cigartuple[0], 
-                        cigarwalk.target_range0.stop - split_range0.stop,
-                    )
-                    tuples_after.append(tuple_to_add)
-                # add to tuples_within
-                tuple_to_add = (
-                    cigarwalk.cigartuple[0], 
-                    (
-                        min(cigarwalk.target_range0.stop, split_range0.stop)
-                        - max(cigarwalk.target_range0.start, split_range0.start)
-                    )
-                )
-                tuples_within.append(tuple_to_add)
-                    
-    # now reference_pointer is equal to read.reference_end
-    if queryonly_buffer:
-        if reference_pointer < split_range0.start:
-            add_buffer(tuples_before, queryonly_buffer)
-        else:
-            if reference_pointer < split_range0.stop:
-                add_buffer(tuples_within, queryonly_buffer)
-            else:
-                add_buffer(tuples_after, queryonly_buffer)
-
-    return tuples_before, tuples_within, tuples_after
+            return (
+                min(query_range0) <= min(target_range0) and
+                max(query_range0) >= max(target_range0)
+            )
 
 
 def get_aligned_pairs(pos, cigartuples):
@@ -323,25 +382,24 @@ def get_aligned_pairs(pos, cigartuples):
     return aligned_pairs
 
 
-def get_pairs_dict(read, fasta=None, skip_refseq=False):
-    """Returns:
-    Dict {
-        'querypos0': A tuple of query positions
-        'refpos0': A tuple of reference genome positions
-        'refseq': A tuple of reference sequences (lowercase with mismatch)
-        'cigarop': A tuple of cigar operations, as integers
+def get_pairs_dict(read, fasta=None, skip_refseq=False, set_cigarop=False, donot_use_existing_MD=False):
+    """Value of read.get_aligned_pairs method:
+        cigar N: represented as (None, None)
+        cigar H: not represented (len(read.get_aligned_pairs()) == 37 for 114H37M)
+
+    Returns:
+        Dict {
+            'querypos0': A tuple of query positions
+            'refpos0': A tuple of reference genome positions
+            'refseq': A tuple of reference sequences (lowercase with mismatch)
+            'cigarop': A tuple of cigar operations, as integers
         }
     """
 
-    if read.has_tag("MD"):
-        raw = read.get_aligned_pairs(with_seq=True)
-        zipped = zip(*raw)
-        pairs_dict = dict()
-        pairs_dict["querypos0"] = next(zipped)
-        pairs_dict["refpos0"] = next(zipped)
-        if not skip_refseq:
-            pairs_dict["refseq"] = next(zipped)
-    else:
+    if (
+        donot_use_existing_MD or
+        (not read.has_tag("MD"))
+    ):
         raw = read.get_aligned_pairs(with_seq=False)
         zipped = zip(*raw)
         pairs_dict = dict()
@@ -349,22 +407,31 @@ def get_pairs_dict(read, fasta=None, skip_refseq=False):
         pairs_dict["refpos0"] = next(zipped)
         if not skip_refseq:
             pairs_dict["refseq"] = get_pairs_dict_refseq(read, fasta, raw)
+    else:
+        raw = read.get_aligned_pairs(with_seq=(not skip_refseq))
+        zipped = zip(*raw)
+        pairs_dict = dict()
+        pairs_dict["querypos0"] = next(zipped)
+        pairs_dict["refpos0"] = next(zipped)
+        if not skip_refseq:
+            pairs_dict["refseq"] = next(zipped)
 
     # cigarop
-    pairs_dict["cigarop"] = tuple(
-        itertools.chain.from_iterable(
-            itertools.repeat(cigarop, count)
-            for (cigarop, count) in read.cigartuples
-            if cigarop != 5
+    if set_cigarop:
+        pairs_dict["cigarop"] = tuple(
+            itertools.chain.from_iterable(
+                itertools.repeat(cigarop, count)
+                for (cigarop, count) in read.cigartuples
+                if cigarop != 5
+            )
         )
-    )
 
-    if len(pairs_dict["cigarop"]) != len(pairs_dict["refpos0"]):
-        raise Exception(
-            f"The length of cigar operations differ from that of "
-            f"aligned pairs:\n"
-            f"{read.to_string()}"
-        )
+        if len(pairs_dict["cigarop"]) != len(pairs_dict["refpos0"]):
+            raise Exception(
+                f"The length of cigar operations differ from that of "
+                f"aligned pairs:\n"
+                f"{read.to_string()}"
+            )
 
     return pairs_dict
 
@@ -390,12 +457,15 @@ def get_pairs_dict_refseq(read, fasta, raw_aligned_pairs):
                 read_base = None
             else:
                 read_base = read.query_sequence[querypos0].upper()
-
             ref_base = next(it).upper()
-            if read_base == ref_base:
+
+            if read_base is None:
                 refseq.append(ref_base)
             else:
-                refseq.append(ref_base.lower())
+                if read_base == ref_base:
+                    refseq.append(ref_base)
+                else:
+                    refseq.append(ref_base.lower())
 
     return refseq
 
@@ -543,7 +613,109 @@ def get_NM(read, fasta=None, ref_seq_padded=None, read_seq_padded=None):
     return NM
 
 
-def set_NMMD(read, fasta):
+def get_cigarN_pairs_indexes(read):
+    non_cigarN_pairs_indexes = list()
+    cigarN_pairs_indexes = list()
+    end0 = 0
+    for key, subiter in itertools.groupby(read.cigartuples, key=(lambda x: x[0] == 3)):
+        if key:  # cigar N
+            start0 = end0
+            for cigarop, cigarlen in subiter:
+                end0 += cigarlen
+            cigarN_pairs_indexes.append(slice(start0, end0))
+        else:
+            start0 = end0
+            for cigarop, cigarlen in subiter:
+                if cigarop not in (5, 6):  # cigar H, P
+                    end0 += cigarlen
+            non_cigarN_pairs_indexes.append(slice(start0, end0))
+
+    return non_cigarN_pairs_indexes, cigarN_pairs_indexes
+
+
+def get_MD_from_pairs_dict(read, pairs_dict, non_cigarN_pairs_indexes=None):
+    # remove cigar N from pairs_dict
+    if 'N' in read.cigarstring:
+        if non_cigarN_pairs_indexes is None:
+            non_cigarN_pairs_indexes = get_cigarN_pairs_indexes(read)[0]
+
+        pairs_dict = {
+            key: list(
+                itertools.chain.from_iterable(
+                    val[sl] for sl in non_cigarN_pairs_indexes
+                )
+            )
+            for key, val in pairs_dict.items()
+        }
+
+    # main
+    MD_list = list()
+    identical = 0
+
+    for key, subiter in itertools.groupby(
+        zip(
+            pairs_dict['refpos0'],
+            pairs_dict['querypos0'],
+            pairs_dict['refseq'],
+        ),
+        key=(lambda x: ((x[0] is None), (x[1] is None))),
+    ):
+        if (not key[0]) and key[1]:  # D
+            MD_list.append(str(identical))
+            identical = 0
+            MD_list.append('^' + ''.join(x[2] for x in subiter))
+        elif (not key[0]) and (not key[1]):  # match
+            for refpos0, querypos0, refseq in subiter:
+                if refseq.islower():
+                    MD_list.append(str(identical))
+                    identical = 0
+                    MD_list.append(refseq.upper())
+                else:
+                    identical += 1
+        elif key[0] and (not key[1]):  # I, S
+            continue
+    
+    MD_list.append(str(identical))
+
+    return "".join(MD_list)
+
+
+def get_NM_from_pairs_dict(read, pairs_dict):
+    NM = 0
+    for refpos0, querypos0, refseq in zip(
+        pairs_dict['refpos0'], 
+        pairs_dict['querypos0'], 
+        pairs_dict['refseq'],
+    ):
+        ref_missing = (refpos0 is None)
+        query_missing = (querypos0 is None)
+        if ref_missing != query_missing:
+            NM += 1
+        else:
+            if refseq.islower():
+                NM += 1
+                  
+    cigar_stats = read.get_cigar_stats()
+    NM -= cigar_stats[0][3]  # N
+    NM -= cigar_stats[0][4]  # S
+
+    return NM
+
+
+def set_NMMD(read, fasta=None, pairs_dict=None, non_cigarN_pairs_indexes=None):
+    if pairs_dict is None:
+        pairs_dict = get_pairs_dict(
+            read, fasta=fasta, skip_refseq=False, set_cigarop=False, donot_use_existing_MD=True,
+        )
+
+    NM = get_NM_from_pairs_dict(read, pairs_dict)
+    MD = get_MD_from_pairs_dict(read, pairs_dict, non_cigarN_pairs_indexes=non_cigarN_pairs_indexes)
+
+    read.set_tag(tag='NM', value_type='i', value=NM)
+    read.set_tag(tag='MD', value_type='Z', value=MD)
+
+
+def set_NMMD_old(read, fasta):
     ref_seq_padded, read_seq_padded = get_padded_seqs(read, fasta)
     NM = get_NM(read, ref_seq_padded=ref_seq_padded, read_seq_padded=read_seq_padded)
     MD = get_MD(read, ref_seq_padded=ref_seq_padded, read_seq_padded=read_seq_padded)
@@ -665,14 +837,16 @@ def get_softclip_ends_range0(read):
 
 
 Clipspec = collections.namedtuple(
-    "Clipspec", ["start1", "is_forward", "seq", "qual", "qname"]
+    "Clipspec", 
+    #("pos0", "is_forward", "seq", "qual", "qname"),
+    ("pos0", "is_forward", "seq", "qual"),
 )
 
 
 def get_softclip_specs(read):
     clipspec_list = list()
     if read.cigartuples[0][0] == 4:
-        start1 = read.reference_start
+        pos0 = read.reference_start
         cliplen = read.cigartuples[0][1]
         seq = read.query_sequence[:cliplen][::-1]
         qual = list(read.query_qualities)[:cliplen][::-1]
@@ -753,6 +927,20 @@ def get_primary_mate(read, bam):
             )
 
     return mate
+
+
+def check_cigarN_includes_range(read, start0, end0):
+    cigarN_target_ranges = list()
+    for cigarwalk in alignhandler.walk_cigar(
+        read.cigartuples, read.reference_start, with_cigartup=True,
+    ):
+        if cigarwalk.cigartup[0] == 3:
+            cigarN_target_ranges.append(cigarwalk.target)
+                    
+    return any(
+        start0 >= rng.start and end0 <= rng.stop
+        for rng in cigarN_target_ranges
+    )
 
 
 

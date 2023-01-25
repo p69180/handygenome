@@ -22,6 +22,17 @@ def sort_and_index(bam_path):
     _ = pysam.index(bam_path)
 
 
+def samtools_view(in_bam_path, out_bam_path, region_bed_path=None, index=True):
+    args = ['-h', '-b']
+    if region_bed_path is not None:
+        args.extend(['-M', '-L', region_bed_path])
+    args.append(in_bam_path)
+    with open(out_bam_path, mode='wb') as out_bam:
+        out_bam.write(pysam.view(*args))
+    if index:
+        pysam.index(out_bam_path)
+
+
 def write_readlist(bam_path, readlist, chromdict, sort=True, index=True):
     bam_path = workflow.arghandler_outfile_mustbeabsent(bam_path)
     hdr = create_header(chromdict)
@@ -40,5 +51,25 @@ def write_readlist(bam_path, readlist, chromdict, sort=True, index=True):
         os.rename(tmp_bam_path, bam_path)
 
 
-def get_bam_sampleID(bam):
-    pass
+def get_readgroup(bam):
+    rg = bam.header['RG']
+    if len(rg) != 1:
+        raise Exception(f'The number of RG is not one.')
+    else:
+        return rg[0]['ID']
+
+
+def check_header_compatibility(bamheader_list):
+    """Only checks contig order and lengths"""
+    contigs = set()
+    lengths = set()
+    for bamheader in bamheader_list:
+        contigs.add(tuple(bamheader.references))
+        lengths.add(tuple(bamheader.lengths))
+
+    return (
+        len(contigs) == 1 and
+        len(lengths) == 1
+    )
+        
+    

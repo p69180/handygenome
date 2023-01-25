@@ -11,7 +11,6 @@ headerhandler = importlib.import_module('.'.join([top_package_name, 'vcfeditor',
 initvcf = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'initvcf']))
 libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
 
-
 #def get_vcfspec(vr):
 #    return common.Vcfspec(vr.contig, vr.pos, vr.ref, tuple(vr.alts))
 
@@ -43,11 +42,13 @@ def vr_sortkey(vr, chromdict):
 
 # applying vcfspec to vr
 
-def apply_vcfspec(vr, vcfspec):
-    vr.contig = vcfspec.chrom
-    vr.pos = vcfspec.pos
-    vr.ref = vcfspec.ref
-    vr.alts = vcfspec.alts
+#def apply_vcfspec(vr, vcfspec):
+#    vr.contig = vcfspec.chrom
+#    vr.pos = vcfspec.pos
+#    vr.ref = vcfspec.ref
+#    vr.alts = vcfspec.alts
+#    if not vcfspec.components.is_missing:
+#        vcfspec.components.write(vr)
 
 
 # vr reformatting
@@ -70,6 +71,14 @@ def merge(vr_list, vcfheader=None):
         _copy_filter(vr, new_vr, skip_pass=True)
         _copy_info(vr, new_vr, dont_copy_if_exist=True)
         _copy_format(vr, new_vr, dont_copy_if_exist=True)
+
+    # handle CallerInfo
+    from handygenome.annotation.callerinfo import CallerInfo
+    import handygenome.annotation.callerinfo as libcallerinfo
+
+    if any(CallerInfo.get_annotkey() in vr.header.info.keys() for vr in vr_list):
+        merged_callerinfo = libcallerinfo.get_merged_callerinfo(vr_list)
+        merged_callerinfo.write(new_vr)
 
     return new_vr
 
@@ -94,6 +103,8 @@ def reheader(vr, vcfheader):
     new_vr_samples = tuple(new_vr.samples.keys())
     for sampleid in new_vr_samples:
         for key in new_vr_format_keys:
+            if new_vr.header.formats[key].number == 'G':
+                continue
             if infoformat.check_NA_format(vr, sampleid, key):
                 infoformat.set_NA_format(new_vr, sampleid, key)
 
@@ -156,6 +167,9 @@ def _copy_info(old_vr, new_vr, dont_copy_if_exist=True):
     for info_key in old_vr.info:
         # check if new vr header defines the key
         if info_key in new_vr.header.info:  
+            # skip if Number == 'G'
+            if new_vr.header.info[info_key].number == 'G':
+                continue
             if dont_copy_if_exist:
                 # copy the value only if the value is not already set
                 if info_key not in new_vr.info:
@@ -181,12 +195,29 @@ def _copy_format(old_vr, new_vr, dont_copy_if_exist=True):
             for key in old_vr.samples[sampleid]:
                 # check if new vr header defines the key
                 if key in new_vr.header.formats:
+                    # skip if Number == 'G'
+                    if new_vr.header.formats[key].number == 'G':
+                        continue
+
                     if dont_copy_if_exist:
                         # copy the value only if the value is not already set
                         if key not in new_vr.samples[sampleid]:
                             assign_val(old_vr, new_vr, key, sampleid)
                     else:
                         assign_val(old_vr, new_vr, key, sampleid)
+
+
+# raw VCF string parsers
+def parse_raw_info(vr):
+    result = dict()
+    infosp = str(vr).split('\t')[7].split(';')
+    for x in infosp:
+        xsp = x.split('=')
+        if len(xsp) == 1:
+            result[xsp[0]] = vr.info[xsp[0]]
+        else:
+            result[xsp[0]] = xsp[1]
+    return result
 
 
 # functions dealing with list of vr

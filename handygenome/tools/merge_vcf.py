@@ -5,13 +5,11 @@ import textwrap
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-toolsetup = importlib.import_module('.'.join([top_package_name, 'workflow', 'toolsetup']))
-merge_module = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'merge']))
-indexing = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'indexing']))
+import handygenome.common as common
+import handygenome.workflow as workflow
+import handygenome.workflow.toolsetup as toolsetup
+import handygenome.vcfeditor.merge as libmerge
+import handygenome.vcfeditor.indexing as indexing
 
 
 def argument_parser(cmdargs):
@@ -69,7 +67,7 @@ def main(cmdargs):
     args = argument_parser(cmdargs)
     logger = toolsetup.setup_logger(args)
 
-    merge_module.main_file(
+    libmerge.main_file(
         infile_path_list=args.infile_path_list,
         outfile_path=args.outfile_path, fasta_path=args.fasta_path,
         remove_infoformat=args.remove_infoformat,

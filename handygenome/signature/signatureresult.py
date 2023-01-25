@@ -46,9 +46,9 @@ class SignatureResult:
         self.nonzero_sigs = tuple(
             self.exposure.index[self.exposure > 0])
 
-    def plot(self, sampleid):
+    def plot(self, sampleid=None):
         if self.catalogue_type == 'sbs96':
-            plotter_sbs96.main(self, sampleid)
+            plotter_sbs96.main(self, sampleid=sampleid)
         else:
             raise Exception(f'Unavailable catalogue type')
 

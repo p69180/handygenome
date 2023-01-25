@@ -1,5 +1,6 @@
 import textwrap
 import math
+import warnings
 
 import pysam
 
@@ -75,6 +76,7 @@ def get_format(vr, sampleid, key, collapse_tuple=True):
         If the original value is a tuple longer than 1 composed of only NA-equivalents, returns a tuple with the same length composed of None.
     """
 
+    # sanity checks
     if key == 'GT':
         raise Exception(f'"GT" is not treated with this function.')
 
@@ -151,6 +153,11 @@ def check_InfoFormatValue_isNA(val):
 
 
 def set_info(vr, key, val, typeconv=True):
+    # exceptions
+    #if vr.header.info[key].number == 'G':
+        #warnings.warn(f'Metadata number for input key {key} is "G"; nothing is done')
+    #    return
+
     if key not in vr.header.info:
         raise Exception(f'Key {key} is absent from INFO metadata header.')
     else:
@@ -180,9 +187,14 @@ def set_NA_info(vr, key):
 
 
 def set_format(vr, sampleid, key, val, typeconv=True):
+    # exceptions
+    #if vr.header.formats[key].number == 'G':
+        #warnings.warn(f'Metadata number for input key {key} is "G"; nothing is done')
+    #    return
     if key == 'GT':
         raise Exception(f'"GT" is not treated with this function.')
 
+    # main
     if key not in vr.header.formats:
         raise Exception(f'Key {key} is absent from FORMAT metadata header.')
     else:
@@ -204,7 +216,8 @@ def set_format(vr, sampleid, key, val, typeconv=True):
             )
         vr.samples[sampleid][key] = modified_val
 
-set_value_format = set_format
+
+set_value_format = set_format  # alias
 
 
 def set_genotype(vr, sampleid, gt, phased):
@@ -219,7 +232,20 @@ def set_genotype(vr, sampleid, gt, phased):
 
 
 def set_NA_format(vr, sampleid, key):
-    set_value_format(vr, sampleid, key, None)
+    if key == 'GT':
+        set_GT_NA(vr, sampleid)
+    else:
+        set_value_format(vr, sampleid, key, None)
+
+
+def set_GT_NA(vr, sampleid):
+    vr.samples[sampleid].allele_indices = None
+    vr.samples[sampleid].phased = None
+
+
+def set_GT(vr, sampleid, allele_indices, phased):
+    vr.samples[sampleid].allele_indices = allele_indices
+    vr.samples[sampleid].phased = phased
 
 
 #############################################

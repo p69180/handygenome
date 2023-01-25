@@ -7,13 +7,13 @@ import functools
 import numpy as np
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-readhandler = importlib.import_module('.'.join([top_package_name, 'read', 'readhandler']))
-liballeleinfo = importlib.import_module('.'.join([top_package_name, 'read', 'alleleinfo']))
-liballeleinfo_sv = importlib.import_module('.'.join([top_package_name, 'read', 'alleleinfo_sv']))
+import handygenome.common as common
+import handygenome.workflow as workflow
+import handygenome.read.readhandler as readhandler
+import handygenome.read.alleleinfo as liballeleinfo
+import handygenome.read.alleleinfo_sv as liballeleinfo_sv
+import handygenome.align.alignhandler as alignhandler
+import handygenome.bameditor as bameditor
 
 
 RPPLIST_MAX_SHOW_LEN = 30
@@ -25,20 +25,36 @@ FETCH_PADDING_VIEW = 1000
 NEW_FETCH_PADDING = 0
 LONG_INSERT_THRESHOLD = 1000
 
-LOGGER_RPPLIST = workflow.get_logger(name='ReadPlusPairList', 
-                                     level='warning')
+LOGGER_RPPLIST = workflow.get_logger(name='ReadPlusPairList', level='warning')
 
-ALLELEINFO_TAG_RPP = 'a2'
-ALLELEINFO_TAG_RP = 'a1'
+ALLELECLASS_TAG_RPP = 'a2'
+ALLELECLASS_TAG_RP = 'a1'
+
+
+'''
+Meaning of range
+    - Assumes range.step is either 1 or -1
+    - "current position" travels, beginning from "range.start" toward "range.stop".
+    - "cursor" position
+        - When range.step == 1: immediately left to "current position"
+        - When range.step == -1: immediately right to "current position"
+    - Area swept by "cursor" is the area represented by range object.
+    - When len(range) == 0:
+        - When range.step == 1: 0-length interval between (range.start - 1) and (range.start)
+        - When range.step == -1: 0-length interval between (range.start) and (range.start + 1)
+'''
+
+
+Clipspec = collections.namedtuple(
+    "Clipspec", 
+    #("pos0", "is_forward", "seq", "qual", "qname"),
+    ("pos0", "is_5prime", "seq", "qual"),
+)
 
 
 class ReadPlus:
-
     def __init__(self, read, fasta=None, minimal=False, skip_attrs_setting=False, recalc_NMMD=False):
         self.read = read
-        #if not skip_attrs_setting:
-        #    self._init_attrs(fasta, recalc_NMMD)
-
         # fasta
         if minimal:
             self.fasta = fasta
@@ -49,16 +65,25 @@ class ReadPlus:
                 ]
             else:
                 self.fasta = fasta
-        # NMMD
-        if recalc_NMMD:
-            self._set_NMMD()
-        else:
-            if (not self.read.has_tag('NM')) or (not self.read.has_tag('MD')):
-                self._set_NMMD()
         # pairs_dict
-        self.set_pairs_dict(skip_refseq=minimal)
+        self.pairs_dict = readhandler.get_pairs_dict(
+            self.read, fasta=self.fasta, skip_refseq=minimal, set_cigarop=False,
+        )
+        # NMMD
+        if (
+            recalc_NMMD or 
+            (
+                (not minimal) and 
+                (
+                    (not self.read.has_tag('NM')) or 
+                    (not self.read.has_tag('MD'))
+                )
+            )
+        ):
+            self._set_NMMD()
         # others
-        self.alleleinfo = dict()
+        self.alleleclass = dict()
+        self.monoalt_support = dict()
 
     def __repr__(self):
         qname = self.read.query_name
@@ -66,12 +91,21 @@ class ReadPlus:
         start1 = self.read.reference_start + 1
         end1 = self.read.reference_end
         region = f'{chrom}:{start1:,}-{end1:,}'
-        infostring = f'{qname}; {region}; alleleinfo: {self.alleleinfo}'
+        infostring = f'{qname}; {region}; alleleclass: {self.alleleclass}'
         return (f'<ReadPlus object ({infostring})>')
 
-    def set_pairs_dict(self, skip_refseq=False):
-        self.pairs_dict = readhandler.get_pairs_dict(self.read, fasta=self.fasta, skip_refseq=skip_refseq)
+    def _set_NMMD(self):
+        readhandler.set_NMMD(self.read, pairs_dict=self.pairs_dict)
+
+    def _set_pairs_dict(self, skip_refseq=False, set_cigarop=False):
+        self.pairs_dict = readhandler.get_pairs_dict(
+            self.read, fasta=self.fasta, skip_refseq=skip_refseq, set_cigarop=set_cigarop,
+        )
             # keys: 'querypos0', 'refpos0','refseq'
+
+    ##############
+    # properties #
+    ##############
 
     @property
     def fiveprime_end(self):
@@ -85,9 +119,16 @@ class ReadPlus:
     def cigarstats(self):
         return self.read.get_cigar_stats()[0]
 
+    def get_range0(self):
+        return range(self.read.reference_start, self.read.reference_end)
+
+    @property
+    def query_name(self):
+        return self.read.query_name
+
     @property
     def range0(self):
-        return range(self.read.reference_start, self.read.reference_end)
+        return self.get_range0()
 
     @property
     def ref_range0(self):  # alias
@@ -97,16 +138,9 @@ class ReadPlus:
     def softclip_range0(self):
         return readhandler.get_softclip_ends_range0(self.read)
 
-    # publics
-    @functools.cache
-    def get_softclip_range0(self):
-        return readhandler.get_softclip_ends_range0(self.read)
-#        if self.softclip_range0 is None:
-#            self.set_softclip_range0()
-#        return self.softclip_range0
-
-#    def set_softclip_range0(self):
-#        self.softclip_range0 = readhandler.get_softclip_ends_range0(self.read)
+    #############################################
+    # ReadStats non-rppcount attributes-related #
+    #############################################
 
     def get_BQlist(self, vcfspec):
         """For insertion: BQ of the base right before the insertion site
@@ -128,48 +162,93 @@ class ReadPlus:
 
         return BQlist
 
-    def check_overlaps(self, range0):
-        return (self.read.reference_start <= max(range0) and
-                self.read.reference_end > min(range0))
+    def get_mNM_clipspec_data(self, vcfspec):
+        """mNM
+            - Softclip is not included
+            - Insertion on the right or left border is not included
+            - Consecutive mismatches/deletions are split into single-base positions
+            - Multi-base insertion is treated as one
+        clipspec
+            - Leading/trailing insertions are included
+            - Those on the right border are assigned to the position on the RIGHT
 
-    def check_overlaps_vcfspec(self, vcfspec):
-        return (self.read.reference_name == vcfspec.chrom and
-                self.check_overlaps(vcfspec.REF_range0))
-        
-    def check_softclip_overlaps(self, range0):
-        softclip_range0 = self.get_softclip_range0()
-        return (softclip_range0.start <= max(range0) and
-                softclip_range0.stop > min(range0))
+        Result:
+            mNM_data, clipspec_data
+            mNM_data:
+                list of tuples
+                tuple format:
+                    - Mismatch: (reference pos0, 0, read base)
+                    - Insertion: (reference pos0, 1, inserted bases)
+                    - Deletion: (reference pos0, 2)
+            clipspec_data:
+                list of Clipspec instances
+        """
+        # set parameters
+        mNM_data = list()
+        clipspec_data = list()
+        vcfspec_ref_range0 = vcfspec.get_range0()
+        current_refpos0 = self.read.reference_start
 
-    def check_softclip_overlaps_vcfspec(self, vcfspec):
-        return (self.read.reference_name == vcfspec.chrom and
-                self.check_softclip_overlaps(vcfspec.REF_range0))
+        # main
+        for key, subiter in itertools.groupby(
+            zip(
+                self.pairs_dict['refpos0'],
+                self.pairs_dict['querypos0'],
+                self.pairs_dict['refseq'],
+            ),
+            key=(lambda x: ((x[0] is None), (x[1] is None))),
+        ):
+            if (not key[0]) and key[1]:  # D
+                for refpos0, querypos0, refseq in subiter:
+                    current_refpos0 += 1
+                    if refpos0 in vcfspec_ref_range0:
+                        continue
 
-    def get_num_cigarM(self):
-        return self.read.get_cigar_stats()[0][0]
-        
-    def check_spans(self, range0):
-        num_cigarM = self.get_num_cigarM()
-        if num_cigarM == 0:
-            return False
-        else:
-            if len(range0) == 0:
-                return (range0.stop >= self.read.reference_start and
-                        range0.stop < self.read.reference_end)
-            else:
-                return (self.read.reference_start <= min(range0) and
-                        self.read.reference_end > max(range0))
+                    mNM_data.append((refpos0, 2))
 
-    def get_distance(self, range0):
-        if self.check_overlaps(range0):
-            distance = 0
-        else:
-            if self.read.reference_end <= min(range0):
-                distance = min(range0) - self.read.reference_end + 1
-            elif self.read.reference_start > max(range0):
-                distance = self.read.reference_start - max(range0)
+            elif (not key[0]) and (not key[1]):  # match
+                for refpos0, querypos0, refseq in subiter:
+                    current_refpos0 += 1
+                    if refpos0 in vcfspec_ref_range0:
+                        continue
 
-        return distance
+                    if refseq.islower():
+                        current_read_base = self.read.query_sequence[querypos0]
+                        mNM_data.append((refpos0, 0, current_read_base))
+
+            elif key[0] and (not key[1]):  # I, S
+                if current_refpos0 in vcfspec_ref_range0:
+                    continue
+                else:
+                    subiter_list = list(subiter)
+                    read_slice = slice(subiter_list[0][1], subiter_list[-1][1] + 1)
+                    inserted_seq = self.read.query_sequence[read_slice]
+
+                    if current_refpos0 == self.read.reference_start:
+                        clipspec = Clipspec(
+                            pos0=current_refpos0, 
+                            is_5prime=True,
+                            seq=inserted_seq,
+                            qual=tuple(self.read.query_qualities)[read_slice],
+                        )
+                        clipspec_data.append(clipspec)
+                    elif current_refpos0 == self.read.reference_end:
+                        clipspec = Clipspec(
+                            pos0=current_refpos0, 
+                            is_5prime=False,
+                            seq=inserted_seq,
+                            qual=tuple(self.read.query_qualities)[read_slice],
+                        )
+                        clipspec_data.append(clipspec)
+                    else:
+                        mNM_data.append((current_refpos0, 1, inserted_seq))
+
+        return mNM_data, clipspec_data
+
+
+    ######################################################
+    # index within pairs (result of get_aligned_pairs()) #
+    ######################################################
 
     def get_pairs_indexes_old(self, range0):
         """Args:
@@ -258,19 +337,21 @@ class ReadPlus:
 
         return range(first, last + 1)
 
-    def check_matches_with_pairs_indexes(self, pairs_indexes):
-        if pairs_indexes is None:
-            return False
+    ########################
+    # span, match, overlap #
+    ########################
 
-        for pairs_idx in pairs_indexes:
-            querypos0 = self.pairs_dict['querypos0'][pairs_idx]
-            refseq = self.pairs_dict['refseq'][pairs_idx]
-            matches = ((querypos0 is not None) and 
-                       (refseq is not None) and
-                       refseq.isupper())
-            if not matches:
-                return False
-        return True
+    def check_cigarN_includes_range(self, range0):
+        return readhandler.check_cigarN_includes_range(
+            self.read, range0.start, range0.stop,
+        )
+
+    def check_spans(self, range0):
+        num_cigarM = self.get_num_cigarM()
+        if num_cigarM == 0:
+            return False
+        else:
+            return readhandler.check_spans(self.range0, range0)
 
     def check_matches(
         self, range0, 
@@ -285,6 +366,20 @@ class ReadPlus:
             include_trailing_queryonly=include_trailing_queryonly,
         )
         return self.check_matches_with_pairs_indexes(pairs_indexes)
+
+    def check_matches_with_pairs_indexes(self, pairs_indexes):
+        if pairs_indexes is None:
+            return False
+
+        for pairs_idx in pairs_indexes:
+            querypos0 = self.pairs_dict['querypos0'][pairs_idx]
+            refseq = self.pairs_dict['refseq'][pairs_idx]
+            matches = ((querypos0 is not None) and 
+                       (refseq is not None) and
+                       refseq.isupper())
+            if not matches:
+                return False
+        return True
 
     def check_spans_and_matches(
         self, range0,
@@ -302,6 +397,64 @@ class ReadPlus:
             return self.check_matches_with_pairs_indexes(pairs_indexes)
         else:
             return False
+
+    def check_spans_and_matches_vcfspec_flanks(self, vcfspec, flanklen=liballeleinfo.DEFAULT_FLANKLEN):
+        preflank_range0, postflank_range0 = vcfspec.get_flank_range0s_equivalents(flanklen=flanklen)
+        spans = (self.check_spans(preflank_range0) and self.check_spans(postflank_range0))
+        if spans:
+            matches = (
+                self.check_matches(
+                    preflank_range0,
+                    flanking_queryonly_default_mode=False,
+                    include_leading_queryonly=True, 
+                    include_trailing_queryonly=False,
+                ) and 
+                self.check_matches(
+                    postflank_range0,
+                    flanking_queryonly_default_mode=False,
+                    include_leading_queryonly=False, 
+                    include_trailing_queryonly=True,
+                )
+            )
+        else:
+            matches = False
+
+        return spans, matches
+
+    def check_overlaps(self, range0):
+        return readhandler.check_overlaps(self.range0, range0)
+
+    def check_overlaps_vcfspec(self, vcfspec):
+        return (
+            self.read.reference_name == vcfspec.chrom and
+            self.check_overlaps(vcfspec.REF_range0)
+        )
+
+    @functools.cache
+    def get_softclip_range0(self):
+        return readhandler.get_softclip_ends_range0(self.read)
+        
+    def check_softclip_overlaps(self, range0):
+        softclip_range0 = self.get_softclip_range0()
+        return readhandler.check_overlaps(softclip_range0, range0)
+
+    def check_softclip_overlaps_vcfspec(self, vcfspec):
+        return (
+            self.read.reference_name == vcfspec.chrom and
+            self.check_softclip_overlaps(vcfspec.REF_range0)
+        )
+
+    def check_softclip_spans_vcfspec_flanks(self, vcfspec, flanklen=liballeleinfo.DEFAULT_FLANKLEN):
+        preflank_range0, postflank_range0 = vcfspec.get_flank_range0s_equivalents(flanklen=flanklen)
+        softclip_range0 = self.get_softclip_range0()
+        return (
+            readhandler.check_spans(softclip_range0, preflank_range0)
+            and readhandler.check_spans(softclip_range0, postflank_range0)
+        )
+
+    #################################
+    # get sequence from coordinates #
+    #################################
 
     def get_seq_from_coord(self, start0, length, forward):
         """If there is not enough query bases compared to "length" argument,
@@ -342,10 +495,6 @@ class ReadPlus:
         return self.get_seq_from_pairs_indexes(pairs_indexes)
 
     def get_seq_from_pairs_indexes(self, pairs_indexes):
-        #pairs_slice = slice(pairs_indexes.start, pairs_indexes.stop, 
-        #                    pairs_indexes.step)
-        #querypos0_list = [x for x in self.pairs_dict['querypos0'][pairs_slice]
-        #                  if x is not None]
         if pairs_indexes is None:
             return None
 
@@ -367,6 +516,10 @@ class ReadPlus:
             start = min(querypos0_list)
             stop = max(querypos0_list) + 1
             return self.read.query_sequence[slice(start, stop, 1)]
+
+    #########################################################################
+    # get read-oriented coordinate(querypos0) of a certain genomic location #
+    #########################################################################
 
     def get_querypos0_of_range0(self, range0, mode='left', fraction=False):
         querypos0_fromleft = self._get_querypos0_of_range0_fromleft(range0)
@@ -395,14 +548,16 @@ class ReadPlus:
                 querypos0_from3 = querypos0_fromleft
 
             readlen = len(self.read.query_sequence)
-            result = {'left': querypos0_fromleft, 
-                      'right': querypos0_fromright, 
-                      '5prime': querypos0_from5,
-                      '3prime': querypos0_from3,
-                      'left_fraction': querypos0_fromleft / readlen,
-                      'right_fraction': querypos0_fromright / readlen,
-                      '5prime_fraction': querypos0_from5 / readlen,
-                      '3prime_fraction': querypos0_from3 / readlen}
+            result = {
+                'left': querypos0_fromleft, 
+                'right': querypos0_fromright, 
+                '5prime': querypos0_from5,
+                '3prime': querypos0_from3,
+                'left_fraction': querypos0_fromleft / readlen,
+                'right_fraction': querypos0_fromright / readlen,
+                '5prime_fraction': querypos0_from5 / readlen,
+                '3prime_fraction': querypos0_from3 / readlen,
+            }
 
         return result
 
@@ -448,27 +603,46 @@ class ReadPlus:
 
         return result
 
-    # cigar
+    #########
+    # cigar #
+    #########
+
     def walk_cigar(self):
-        return readhandler.walk_cigar(self.read.cigartuples, self.read.reference_start)
+        return alignhandler.walk_cigar(self.read.cigartuples, self.read.reference_start)
 
     def split_cigar(self, split_range0):
         return readhandler.split_cigar(self.read.cigartuples, self.read.reference_start, split_range0)
 
-    # alleleinfo
-    def update_alleleinfo(self, vcfspec, flanklen=liballeleinfo.DEFAULT_FLANKLEN):
-        # aiitem: AlleleInfoItem
-        aiitem = liballeleinfo.make_alleleinfoitem_readplus(
-            vcfspec=vcfspec, rp=self, flanklen=flanklen,
+    def get_num_cigarM(self):
+        return self.read.get_cigar_stats()[0][0]
+
+    ###############
+    # alleleclass #
+    ###############
+
+    def update_alleleclass(self, vcfspec, **kwargs):
+        #self.alleleclass[vcfspec] = liballeleinfo.get_alleleclass_asis_readplus(
+        #    vcfspec=vcfspec, rp=self, flanklen=flanklen,
+        #)
+        self.alleleclass[vcfspec] = liballeleinfo.get_alleleclass_asis_readplus_new(
+            vcfspec=vcfspec, rp=self, **kwargs, 
         )
-        self.alleleinfo[vcfspec] = aiitem
+#        self.alleleclass[vcfspec] = liballeleinfo.get_alleleclass_asis_readplus_new(
+#            vcfspec=vcfspec, rp=self, 
+#            coverage_cutoff=0.5, 
+#            partial_coverage_del_len_cutoff=5,
+#            compare_mode='similarity', 
+#            similarity_params={'factor': 0.1},
+#        )
 
-    def set_alleleinfo_tag(self, vcfspec):
-        alleleclass = self.alleleinfo[vcfspec]['alleleclass']
-        #value = f'{vcfspec.get_id()}_{alleleclass}'
-        value = str(alleleclass)
+    def set_alleleclass_tag(self, vcfspec):
+        value = str(self.alleleclass[vcfspec])
+        self.read.set_tag(ALLELECLASS_TAG_RP, value, 'Z', replace=True)
 
-        self.read.set_tag(ALLELEINFO_TAG_RP, value, 'Z', replace=True)
+    def update_monoalt_support(self, vcfspec, flanklen=liballeleinfo.DEFAULT_FLANKLEN):
+        self.monoalt_support[vcfspec] = liballeleinfo.get_normalized_monoalt_supports_readplus(
+            vcfspec, self, flanklen=flanklen,
+        )
 
     def update_alleleinfo_sv(
             self, bnds, 
@@ -496,31 +670,43 @@ class ReadPlus:
 
     def set_alleleinfo_tag_sv(self, bnds):
         alleleclass_list_bnd1 = [
-            k for (k, v) in self.alleleinfo[bnds]['bnd1'].items()
-            if v]
+            k 
+            for (k, v) in self.alleleinfo[bnds]['bnd1'].items()
+            if v
+        ]
         alleleclass_list_bnd2 = [
-            k for (k, v) in self.alleleinfo[bnds]['bnd2'].items()
-            if v]
+            k 
+            for (k, v) in self.alleleinfo[bnds]['bnd2'].items()
+            if v
+        ]
 
         if len(alleleclass_list_bnd1) == 0 or len(alleleclass_list_bnd2) == 0:
             raise Exception(
                 f'Invalid alleleinfoitem.\n'
-                f'ReadPlusPair: {self}')
+                f'ReadPlusPair: {self}'
+            )
         else:
             alleleclass_bnd1 = '&'.join(alleleclass_list_bnd1)
             alleleclass_bnd2 = '&'.join(alleleclass_list_bnd2)
 
-        #value = '_'.join([bnds.get_id(),
-        #                  f'bnd1={alleleclass_bnd1}',
-        #                  f'bnd2={alleleclass_bnd2}'])
-        value = '_'.join([f'bnd1={alleleclass_bnd1}',
-                          f'bnd2={alleleclass_bnd2}'])
+        value = '_'.join([f'bnd1={alleleclass_bnd1}', f'bnd2={alleleclass_bnd2}'])
 
-        self.read.set_tag(ALLELEINFO_TAG_RP, value, 'Z', replace=True)
+        self.read.set_tag(ALLELECLASS_TAG_RP, value, 'Z', replace=True)
 
-    # others
-    def _set_NMMD(self):
-        readhandler.set_NMMD(self.read, self.fasta)
+    #################
+    # miscellaneous #
+    #################
+
+    def get_distance(self, range0):
+        if self.check_overlaps(range0):
+            distance = 0
+        else:
+            if self.read.reference_end <= min(range0):
+                distance = min(range0) - self.read.reference_end + 1
+            elif self.read.reference_start > max(range0):
+                distance = self.read.reference_start - max(range0)
+
+        return distance
 
     def _set_SAlist(self):
         """cigartuples pattern check is done:
@@ -584,15 +770,64 @@ class ReadPlusPair:
         'rplist_nonprimary' attribute.
     """
 
-    def __init__(self, rplist_primary, rplist_nonprimary, chromdict,
-                 threshold_tlen=THRESHOLD_TEMPLATE_LENGTH):
+    def __init__(
+        self, 
+        rplist_primary, 
+        rplist_nonprimary, 
+        chromdict,
+        threshold_tlen=THRESHOLD_TEMPLATE_LENGTH,
+    ):
         self._set_rp1_rp2(rplist_primary, chromdict)
         self.rplist_nonprimary = rplist_nonprimary
-        self.alleleinfo = dict()
+        self.alleleclass = dict()
+        self.monoalt_support = dict()
 
         #self._set_is_proper_pair()
         #self._set_sv_supporting()
         #self.irrelevant = (self.rp1.irrelevant or self.rp2.irrelevant)
+
+    def __repr__(self):
+        qname = self.query_name
+
+        rp1_chrom = self.rp1.read.reference_name
+        rp1_start1 = self.rp1.read.reference_start + 1
+        rp1_end1 = self.rp1.read.reference_end
+        rp1_region = f'{rp1_chrom}:{rp1_start1:,}-{rp1_end1:,}'
+
+        if self.rp2 is None:
+            rp2_region = 'None'
+        else:
+            rp2_chrom = self.rp2.read.reference_name
+            rp2_start1 = self.rp2.read.reference_start + 1
+            rp2_end1 = self.rp2.read.reference_end
+            rp2_region = f'{rp2_chrom}:{rp2_start1:,}-{rp2_end1:,}'
+
+        infostring = (f'{qname}; rp1: {rp1_region}; rp2: {rp2_region}; '
+                      f'alleleclass: {self.alleleclass}')
+
+        return (f'<ReadPlusPair object ({infostring})>')
+
+    def _set_rp1_rp2(self, rplist_primary, chromdict):
+        if len(rplist_primary) == 1:
+            self.rp1 = rplist_primary[0]
+            self.rp2 = None
+        elif len(rplist_primary) == 2:
+            order = common.compare_coords(
+                rplist_primary[0].read.reference_name, 
+                rplist_primary[0].fiveprime_end,
+                rplist_primary[1].read.reference_name, 
+                rplist_primary[1].fiveprime_end,
+                chromdict)
+            if order <= 0:
+                self.rp1 = rplist_primary[0]
+                self.rp2 = rplist_primary[1]
+            else:
+                self.rp1 = rplist_primary[1]
+                self.rp2 = rplist_primary[0]
+
+    ##############
+    # properties #
+    ##############
 
     @property
     def query_name(self):
@@ -624,7 +859,26 @@ class ReadPlusPair:
         return readhandler.get_pairorient(self.rp1.read)
             # may be None when: mate unmapped, TLEN == 0
 
-    # non-alleleinfo methods
+    ##########################
+    # non-alleleinfo methods #
+    ##########################
+
+    def get_range0(self, chrom):
+        relevant_rps = list()
+        if self.rp1.read.reference_name == chrom:
+            relevant_rps.append(self.rp1)
+        if self.rp2 is not None:
+            if self.rp2.read.reference_name == chrom:
+                relevant_rps.append(self.rp2)
+
+        if len(relevant_rps) == 0:
+            return None
+        else:
+            return range(
+                min(x.read.reference_start for x in relevant_rps),
+                max(x.read.reference_end for x in relevant_rps),
+            )
+
     def check_softclip_overlaps_vcfspec(self, vcfspec):
         if self.rp2 is None:
             return self.rp1.check_softclip_overlaps_vcfspec(vcfspec)
@@ -637,31 +891,39 @@ class ReadPlusPair:
                 return (self.rp1.check_softclip_overlaps_vcfspec(vcfspec) or
                         self.rp2.check_softclip_overlaps_vcfspec(vcfspec))
 
-    # alleleinfo-related methods
-    def update_alleleinfo(self, vcfspec, flanklen=liballeleinfo.DEFAULT_FLANKLEN):
+    ##############
+    # alleleinfo #
+    ##############
+
+    def update_alleleclass(self, vcfspec, **kwargs):
         # rp1
-        #if vcfspec not in self.rp1.alleleinfo:
-        self.rp1.update_alleleinfo(vcfspec, flanklen=flanklen)
-        aiitem_rp1 = self.rp1.alleleinfo[vcfspec]
+        self.rp1.update_alleleclass(vcfspec, **kwargs)
         # rp2
-        #if vcfspec not in self.rp2.alleleinfo:
         if self.rp2 is None:
-            self.alleleinfo[vcfspec] = aiitem_rp1
+            self.alleleclass[vcfspec] = self.rp1.alleleclass[vcfspec]
         else:
-            self.rp2.update_alleleinfo(vcfspec, flanklen=flanklen)
-            aiitem_rp2 = self.rp2.alleleinfo[vcfspec]
-            aiitem = liballeleinfo.make_alleleinfoitem_readpluspair(
-                vcfspec, aiitem_rp1, aiitem_rp2)
-            self.alleleinfo[vcfspec] = aiitem
+            self.rp2.update_alleleclass(vcfspec, **kwargs)
+            self.alleleclass[vcfspec] = liballeleinfo.merge_alleleclasses(
+                self.rp1.alleleclass[vcfspec],
+                self.rp2.alleleclass[vcfspec],
+            )
 
-    def set_alleleinfo_tag(self, vcfspec):
-        alleleclass = self.alleleinfo[vcfspec]['alleleclass']
-        #value = f'{vcfspec.get_id()}_{alleleclass}'
-        value = str(alleleclass)
-
-        self.rp1.read.set_tag(ALLELEINFO_TAG_RPP, value, 'Z', replace=True)
+    def set_alleleclass_tag(self, vcfspec):
+        value = str(self.alleleclass[vcfspec])
+        self.rp1.read.set_tag(ALLELECLASS_TAG_RPP, value, 'Z', replace=True)
         if self.rp2 is not None:
-            self.rp2.read.set_tag(ALLELEINFO_TAG_RPP, value, 'Z', replace=True)
+            self.rp2.read.set_tag(ALLELECLASS_TAG_RPP, value, 'Z', replace=True)
+
+    def update_monoalt_support(self, vcfspec, flanklen=liballeleinfo.DEFAULT_FLANKLEN):
+        self.rp1.update_monoalt_support(vcfspec, flanklen=flanklen)
+        if self.rp2 is None:
+            self.monoalt_support[vcfspec] = self.rp1.monoalt_support[vcfspec]
+        else:
+            self.rp2.update_monoalt_support(vcfspec, flanklen=flanklen)
+            self.monoalt_support[vcfspec] = liballeleinfo.merge_monoalt_supports(
+                self.rp1.monoalt_support[vcfspec], 
+                self.rp2.monoalt_support[vcfspec],
+            )
 
     def update_alleleinfo_sv(
             self, bnds, 
@@ -696,47 +958,13 @@ class ReadPlusPair:
         #value = f'{bnds.get_id()}_{alleleclass}'
         value = str(alleleclass)
 
-        self.rp1.read.set_tag(ALLELEINFO_TAG_RPP, value, 'Z', replace=True)
-        self.rp2.read.set_tag(ALLELEINFO_TAG_RPP, value, 'Z', replace=True)
+        self.rp1.read.set_tag(ALLELECLASS_TAG_RPP, value, 'Z', replace=True)
+        self.rp2.read.set_tag(ALLELECLASS_TAG_RPP, value, 'Z', replace=True)
 
-    def __repr__(self):
-        qname = self.query_name
 
-        rp1_chrom = self.rp1.read.reference_name
-        rp1_start1 = self.rp1.read.reference_start + 1
-        rp1_end1 = self.rp1.read.reference_end
-        rp1_region = f'{rp1_chrom}:{rp1_start1:,}-{rp1_end1:,}'
-
-        if self.rp2 is None:
-            rp2_region = 'None'
-        else:
-            rp2_chrom = self.rp2.read.reference_name
-            rp2_start1 = self.rp2.read.reference_start + 1
-            rp2_end1 = self.rp2.read.reference_end
-            rp2_region = f'{rp2_chrom}:{rp2_start1:,}-{rp2_end1:,}'
-
-        infostring = (f'{qname}; rp1: {rp1_region}; rp2: {rp2_region}; '
-                      f'alleleinfo: {self.alleleinfo}')
-
-        return (f'<ReadPlusPair object ({infostring})>')
-
-    def _set_rp1_rp2(self, rplist_primary, chromdict):
-        if len(rplist_primary) == 1:
-            self.rp1 = rplist_primary[0]
-            self.rp2 = None
-        elif len(rplist_primary) == 2:
-            order = common.compare_coords(
-                rplist_primary[0].read.reference_name, 
-                rplist_primary[0].fiveprime_end,
-                rplist_primary[1].read.reference_name, 
-                rplist_primary[1].fiveprime_end,
-                chromdict)
-            if order <= 0:
-                self.rp1 = rplist_primary[0]
-                self.rp2 = rplist_primary[1]
-            else:
-                self.rp1 = rplist_primary[1]
-                self.rp2 = rplist_primary[0]
+    #############################################
+    # ReadStats non-rppcount attributes-related #
+    #############################################
 
     def get_MQ(self):
         if self.rp2 is None:
@@ -749,6 +977,24 @@ class ReadPlusPair:
             return self.rp1.cigarstats[4]
         else:
             return self.rp1.cigarstats[4] + self.rp2.cigarstats[4]
+
+    def get_mNM_clipspec_data(self, vcfspec):
+        if self.rp2 is None:
+            return self.rp1.get_mNM_clipspec_data(vcfspec)
+        else:
+            mNM_data_rp1, clipspec_data_rp1 = self.rp1.get_mNM_clipspec_data(vcfspec)
+            mNM_data_rp2, clipspec_data_rp2 = self.rp2.get_mNM_clipspec_data(vcfspec)
+
+            mNM_data = sorted(
+                set(itertools.chain(mNM_data_rp1, mNM_data_rp2)),
+                key=(lambda x: x[0])
+            )
+            clipspec_data = sorted(
+                set(itertools.chain(clipspec_data_rp1, clipspec_data_rp2)),
+                key=(lambda x: x[0])
+            )
+            return mNM_data, clipspec_data
+
 
 
 #    def _set_is_proper_pair(self):
@@ -772,13 +1018,21 @@ class ReadPlusPair:
 #                        self.tlen > THRESHOLD_TEMPLATE_LENGTH)
 
 
-# rpplist classes and functions
+
+##################################################
+# ReadPlusPairList-related classes and functions #
+##################################################
 
 class ReadPlusPairList(list):
 
     def __init__(self, chromdict):
         self.chromdict = chromdict
-        self.bam_path = None
+
+    def select_by_qname(self, qname):
+        for rpp in self:
+            if rpp.query_name == qname:
+                return rpp
+        raise Exception(f'QNAME {qname} is not present')
 
     def sortby_rp1(self):
         read_sortkey = common.get_read_sortkey(self.chromdict)
@@ -830,10 +1084,25 @@ class ReadPlusPairList(list):
 
         return ref_range0_bnd1, ref_range0_bnd2
 
-    def update_alleleinfo(self, vcfspec, 
-                          flanklen=liballeleinfo.DEFAULT_FLANKLEN):
+    def update_alleleclass(self, vcfspec, **kwargs):
         for rpp in self:
-            rpp.update_alleleinfo(vcfspec, flanklen=flanklen)
+            rpp.update_alleleclass(vcfspec, **kwargs)
+
+    def update_monoalt_support(self, vcfspec, flanklen=liballeleinfo.DEFAULT_FLANKLEN):
+        for rpp in self:
+            rpp.update_monoalt_support(vcfspec, flanklen=flanklen)
+
+    def summarize_monoalt_support(self):
+        result = dict()
+        for rpp in self:
+            for vcfspec, monoalt_support in rpp.monoalt_support.items():
+                result.setdefault(vcfspec, dict())
+                for alt_index, support_val in monoalt_support.items():
+                    result[vcfspec].setdefault(alt_index, 0)
+                    if support_val:
+                        result[vcfspec][alt_index] += 1
+
+        return result
 
     def update_alleleinfo_sv(
             self, bnds, 
@@ -843,82 +1112,78 @@ class ReadPlusPairList(list):
             rpp.update_alleleinfo_sv(bnds, flanklen_parside=flanklen_parside,
                                      flanklen_bndside=flanklen_bndside)
 
-    def set_alleleinfo_tag_rpp(self, vcfspec):
+    def set_alleleclass_tag_rpp(self, vcfspec):
         for rpp in self:
-            rpp.set_alleleinfo_tag(vcfspec)
+            rpp.set_alleleclass_tag(vcfspec)
 
     def set_alleleinfo_tag_rpp_sv(self, bnds):
         for rpp in self:
             rpp.set_alleleinfo_tag_sv(bnds)
 
-    def set_alleleinfo_tag_rp(self, vcfspec):
+    def set_alleleclass_tag_rp(self, vcfspec):
         for rpp in self:
-            rpp.rp1.set_alleleinfo_tag(vcfspec)
+            rpp.rp1.set_alleleclass_tag(vcfspec)
             if rpp.rp2 is not None:
-                rpp.rp2.set_alleleinfo_tag(vcfspec)
+                rpp.rp2.set_alleleclass_tag(vcfspec)
 
     def set_alleleinfo_tag_rp_sv(self, bnds):
         for rpp in self:
             rpp.rp1.set_alleleinfo_tag_sv(bnds)
             rpp.rp2.set_alleleinfo_tag_sv(bnds)
 
-    def get_readcounts(self, vcfspec):
-        """Designed only for non-sv"""
-
-        counter = collections.Counter(rpp.alleleinfo[vcfspec]['alleleclass']
-                                      for rpp in self)
-        readcounts = {key: counter[key]
-                      for key in (None, -1, 0, 1)}
-
-        return readcounts
-
     def write_bam(self, outfile_path=None, outfile_dir=None):
-        # sanity check
-        if len(self) == 0:
-            raise Exception(f'The ReadPlusPairList is empty.')
         # set outfile_path 
         if outfile_path is None:
             if outfile_dir is None:
                 outfile_path=workflow.get_tmpfile_path(suffix='.bam')
             else:
-                outfile_path=workflow.get_tmpfile_path(suffix='.bam',
-                                                       where=outfile_dir)
+                outfile_path=workflow.get_tmpfile_path(suffix='.bam', where=outfile_dir)
+
         # get a list of reads
         readlist = list()
         for rpp in self:
             readlist.append(rpp.rp1.read)
             if rpp.rp2 is not None:
                 readlist.append(rpp.rp2.read)
-        # sort
-        sortkey = common.get_read_sortkey(self.chromdict)
+
+        # sort & write
+        if not bameditor.check_header_compatibility(
+            [rpp.rp1.read.header for rpp in self]
+        ):
+            raise Exception(f'Contig specs are different between read headers.')
+
+        bamheader = self[0].rp1.read.header.copy()
+        sortkey = common.get_read_sortkey(common.ChromDict(bamheader=bamheader))
         readlist.sort(key=sortkey)
-        # write bam
-        bamheader = self[0].rp1.read.header
-        with pysam.AlignmentFile(outfile_path, mode='wb', 
-                                 header=bamheader) as out_bam:
+
+        with pysam.AlignmentFile(outfile_path, mode='wb', header=bamheader) as out_bam:
             for read in readlist:
                 out_bam.write(read)
         # index
         pysam.index(outfile_path)
 
-        self.bam_path = outfile_path
-
-    def rm_bam(self):
-        if self.bam_path is not None:
-            os.remove(self.bam_path)
-            bai_path = self.bam_path + '.bai'
-            if os.path.exists(bai_path):
-                os.remove(bai_path)
-            self.bam_path = None
+        #self.bam_path = outfile_path
 
 
-def get_rpplist_nonsv(bam, fasta, chromdict, chrom, start0, end0, 
-                      view=False, no_matesearch=True,
-                      fetch_padding_common=FETCH_PADDING_COMMON,
-                      fetch_padding_view=FETCH_PADDING_VIEW,
-                      new_fetch_padding=NEW_FETCH_PADDING,
-                      long_insert_threshold=LONG_INSERT_THRESHOLD,
-                      recalc_NMMD=False):
+def get_rpplist_nonsv(
+    bam, chrom, start0, end0, 
+    fasta=None, 
+    chromdict=None, 
+    view=False, 
+    no_matesearch=True,
+    fetch_padding_common=FETCH_PADDING_COMMON,
+    fetch_padding_view=FETCH_PADDING_VIEW,
+    new_fetch_padding=NEW_FETCH_PADDING,
+    long_insert_threshold=LONG_INSERT_THRESHOLD,
+    recalc_NMMD=False,
+):
+    if fasta is None or chromdict is None:
+        refver = common.infer_refver_bamheader(bam.header)
+    if fasta is None:
+        fasta = common.DEFAULT_FASTAS[refver]
+    if chromdict is None:
+        chromdict = common.ChromDict(refver=refver)
+
     LOGGER_RPPLIST.info('Beginning initial fetch')
     (relevant_qname_set, new_fetch_range) = initial_fetch_nonsv(
         bam=bam, 
@@ -1286,6 +1551,9 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch, re
     readlist_primary = list()
     readlist_nonprimary = list()
     for read in readlist:
+        if read.reference_name not in chromdict.contigs:
+            continue
+
         if readhandler.check_primary_alignment(read):
             readlist_primary.append(read)
         else:
@@ -1302,8 +1570,10 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch, re
         # supplementary reads overlapping pos0 can be missed
         rpp = None
     else:
-        rplist_nonprimary = [ReadPlus(x, fasta, recalc_NMMD=recalc_NMMD)
-                             for x in readlist_nonprimary]
+        rplist_nonprimary = [
+            ReadPlus(x, fasta, recalc_NMMD=recalc_NMMD)
+            for x in readlist_nonprimary
+        ]
         if len(readlist_primary) == 1: # mate read is somewhere far away
             if no_matesearch:
                 rplist_primary = [ReadPlus(readlist_primary[0], fasta, recalc_NMMD=recalc_NMMD)]
@@ -1313,13 +1583,20 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch, re
                     raise Exception(
                         f'Mate not found for this read:\n'
                         f'{readlist_primary[0].to_string()}')
-                rplist_primary = [
-                    ReadPlus(readlist_primary[0], fasta, recalc_NMMD=recalc_NMMD), 
-                    ReadPlus(mate, fasta, recalc_NMMD=recalc_NMMD)]
+
+                if mate.reference_name in chromdict.contigs:
+                    rplist_primary = [
+                        ReadPlus(readlist_primary[0], fasta, recalc_NMMD=recalc_NMMD), 
+                        ReadPlus(mate, fasta, recalc_NMMD=recalc_NMMD)
+                    ]
+                else:
+                    rplist_primary = [ReadPlus(readlist_primary[0], fasta, recalc_NMMD=recalc_NMMD)]
 
         else: # len(readlist_primary) == 2
-            rplist_primary = [ReadPlus(x, fasta, recalc_NMMD=recalc_NMMD) 
-                              for x in readlist_primary]
+            rplist_primary = [
+                ReadPlus(x, fasta, recalc_NMMD=recalc_NMMD) 
+                for x in readlist_primary
+            ]
 
         rpp = ReadPlusPair(rplist_primary, rplist_nonprimary, chromdict)
 
