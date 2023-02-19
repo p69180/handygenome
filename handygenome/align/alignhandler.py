@@ -41,9 +41,21 @@ CIGAR_WALK_DICT = { # (target, query)
     7: (True, True),
     8: (True, True),
 }
-CIGAROPS_BOTH = {0, 7, 8}
-CIGAROPS_TARGETONLY = {2, 3}
-CIGAROPS_QUERYONLY = {1, 4}
+CIGAROPS_BOTH = set(
+    key for key, (target, query) in CIGAR_WALK_DICT.items()
+    if target and query
+)
+CIGAROPS_TARGETONLY = set(
+    key for key, (target, query) in CIGAR_WALK_DICT.items()
+    if target and (not query)
+)
+CIGAROPS_QUERYONLY = set(
+    key for key, (target, query) in CIGAR_WALK_DICT.items()
+    if (not target) and query
+)
+#CIGAROPS_BOTH = {0, 7, 8}
+#CIGAROPS_TARGETONLY = {2, 3}
+#CIGAROPS_QUERYONLY = {1, 4}
 
 
 class Cigar:

@@ -80,7 +80,7 @@ def write_jobscripts(
     kwargs_single,
     kwargs_multi,
     jobname_prefix,
-    ncore_per_job,
+    nproc,
 ):
     # sanity check
     arglens = list()
@@ -94,10 +94,18 @@ def write_jobscripts(
         )
 
     # main
+    tab = ' ' * 4
     for zidx, (script_path, log_path) in common.zenumerate(zip(script_path_list, log_path_list)):
         idx = common.zidx_to_idx(zidx)
         success_log_path = re.sub("\.log$", ".success", log_path)
         failure_log_path = re.sub("\.log$", ".failure", log_path)
+
+        unit_job_func_args = list()
+        for key, val in kwargs_single.items():
+            unit_job_func_args.append(f"{key}={repr(val)},")
+        for key, val in kwargs_multi.items():
+            unit_job_func_args.append(f"{key}={repr(val[idx])},")
+        unit_job_func_args = ('\n' + (7 * tab)).join(unit_job_func_args)
 
         script_contents = list()
         script_contents.append(
@@ -107,7 +115,7 @@ def write_jobscripts(
                 #SBATCH -N 1
                 #SBATCH -n 1
 
-                #SBATCH -c {ncore_per_job}
+                #SBATCH -c {nproc}
                 #SBATCH -o {os.devnull}
                 #SBATCH -e {os.devnull}
                 #SBATCH -J {jobname_prefix}_{zidx}
@@ -122,17 +130,8 @@ def write_jobscripts(
                 log = open({repr(log_path)}, 'w')
                 with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
                     try:
-                        {unit_job_func_name}("""
-            )
-        )
-
-        for key, val in kwargs_single.items():
-            script_contents.append((" " * 12) + f"{key}={repr(val)},")
-        for key, val in kwargs_multi.items():
-            script_contents.append((" " * 12) + f"{key}={repr(val[idx])},")
-
-        script_contents.append(
-            textwrap.dedent(f"""\
+                        {unit_job_func_name}(
+                            {unit_job_func_args}
                         )
                     except:
                         print(traceback.format_exc())

@@ -55,10 +55,12 @@ import gzip
 import subprocess
 import signal
 
+import psutil
 import pysam
 import pyranges as pr
 import numpy as np
 import Bio.Seq
+import scipy.stats
 
 import importlib
 TOP_PACKAGE_NAME = __name__.split('.')[0]
@@ -67,6 +69,7 @@ PROJECT_PATH = os.path.dirname(os.path.dirname(TOP_PACKAGE.__file__))
 PACKAGE_LOCATION = PROJECT_PATH
 DATA_DIR = os.path.join(PROJECT_PATH, 'data')
 UTILS_DIR = os.path.join(PROJECT_PATH, 'externals')
+R_DIR = os.path.join(PROJECT_PATH, 'R')
 
 DEFAULT_VCFVER = '4.3'
 
@@ -94,7 +97,7 @@ BEDTOOLS = os.path.join(UTILS_DIR, 'bedtools')
 GATK = os.path.join(UTILS_DIR, 'gatk_wrapper.sh')
 
 PERL = '/home/users/pjh/scripts/conda_wrapper/perl'
-PYTHON = '/home/users/pjh/tools/miniconda/210821/miniconda3/envs/genome_v5/bin/python'
+PYTHON = '/home/users/pjh/tools/miniconda/221104/miniconda3/envs/genome_v7/bin/python'
 
 VEP_V102 = '/home/users/pjh/scripts/conda_wrapper/vep_v102' # for mm10
 #VEP_V104 = '/home/users/pjh/scripts/conda_wrapper/vep_v104'
@@ -328,25 +331,6 @@ def get_deco_arg_choices(mapping):
     return decorator
 
 # other decorators
-
-#def get_deco_noti(title):
-#    def decorator(func):
-#        def wrapper(*args, **kwargs):
-#            ts = get_timestamp()
-#            print_timestamp(f'[{ts}] BEGINNING {title}')
-#
-#            result = func(*args, **kwargs)
-#
-#            ts = get_timestamp()
-#            print_timestamp(f'[{ts}] FINISHED')
-#
-#            return result
-#
-#        return wrapper
-#
-#    return decorator
-
-
 def get_deco_timestamp(msg, logger):
     def decorator(func):
         @functools.wraps(func)
@@ -783,10 +767,15 @@ class Interval:
         return (f'<Interval> {self.chrom}:{self.start1:,}-{self.end1:,} '
                 f'(1-based)')
 
-    def to_gr(self):
-        return pr.from_dict({'Chromosome': [self.chrom],
-                             'Start': [self.start0],
-                             'End': [self.end0]})
+    def to_gr(self, **kwargs):
+        data = {
+            'Chromosome': [self.chrom],
+            'Start': [self.start0],
+            'End': [self.end0],
+        }
+        for key, val in kwargs.items():
+            data[key] = [val]
+        return pr.from_dict(data)
 
     @classmethod
     def from_gr(cls, gr):
@@ -1185,8 +1174,7 @@ def printerrdate(*args, **kwargs):
 
 
 def print_timestamp(*args, **kwargs):
-    timestamp = get_timestamp()
-    print_err(f'[{timestamp}]', *args, **kwargs)
+    print_err(f'[{get_timestamp()}]', *args, **kwargs)
 
 
 def coord_sortkey(chrom, pos, chromdict): 
@@ -1692,6 +1680,22 @@ def grouper(iterable, n):
         yield tuple(x for x in subiter if x is not None)
 
 
+def bernoulli_rv_generator(p, block_size=int(1e5)):
+    while True:
+        rvs = scipy.stats.bernoulli.rvs(p=p, loc=0, size=block_size)
+        for x in rvs:
+            yield x
+
+
+def bernoulli_iterator(iterable, p, block_size=int(1e5)):
+    """Args:
+        p: probability of selection
+    """
+    for x, rv in zip(iter(iterable), bernoulli_rv_generator(p, block_size=block_size)):
+        if rv:  # True if 1
+            yield x
+
+
 # from Itertools Recipes
 def grouper_Itertools_Recipes(iterable, n, *, incomplete='fill', fillvalue=None):
     "Collect data into non-overlapping fixed-length chunks or blocks"
@@ -1723,3 +1727,31 @@ def get_vcf_noerr(*args, **kwargs):
 
     return vcf
         
+
+# memory usage check
+def get_rss(mode='total', unit='b'):
+    assert mode in ('self', 'children', 'total')
+    assert unit in ('b', 'k', 'm', 'g')
+
+    proc = psutil.Process()
+    children = proc.children(recursive=True)
+    rss_self = proc.memory_info().rss  # in bytes
+    rss_children = sum(p.memory_info().rss for p in children)  # in bytes
+
+    if mode == 'self':
+        rss = rss_self
+    elif mode == 'children':
+        rss = rss_children
+    elif mode == 'total':
+        rss = rss_self + rss_children
+
+    if unit == 'b':
+        rss = rss
+    elif unit == 'k':
+        rss = rss / 1024
+    elif unit == 'm':
+        rss = rss / 1024**2
+    elif unit == 'g':
+        rss = rss / 1024**3
+
+    return rss

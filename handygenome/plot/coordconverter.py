@@ -1,4 +1,5 @@
 import itertools
+import multiprocessing
 
 import numpy as np
 import pandas as pd
@@ -7,7 +8,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 import handygenome.common as common
-import handygenome.cnv.mosdepth as libmosdepth
+#import handygenome.cnv.mosdepth as libmosdepth
 
 
 class CoordConverter:
@@ -17,9 +18,9 @@ class CoordConverter:
         assert 'weight' in gr.columns, f'"gr" must include a column named "weight"'
         self.raw_gr = gr
         self.chromosomes = set(self.raw_gr.keys())
-        self.set_data()
+        self._set_data()
 
-    def set_data(self):
+    def _set_data(self):
         genome_intervals = pd.IntervalIndex.from_arrays(
             left=list(self.raw_gr.Start), right=list(self.raw_gr.End), closed='left',
         )
@@ -45,6 +46,12 @@ class CoordConverter:
 
         #self.genome_intervals = genome_intervals
         #self.plot_intervals = plot_intervals
+
+    @property
+    def xlim(self):
+        start0 = self.data.index.values[0][2].left
+        end0 = self.data.index.values[-1][2].right
+        return (start0, end0)
 
     def genomic_to_plot(self, chrom, pos0):
         if chrom not in self.chromosomes:
@@ -90,6 +97,66 @@ class CoordConverter:
         pos0 = int(np.rint(genome_intv.left + (genome_intv.length * regional_offset_fraction)))
 
         return chrom, pos0
+
+    # Axes modification
+    def set_xlim(self, ax):
+        ax.set_xlim(*self.xlim)
+
+    def get_chrom_borders(self):
+        result = dict()
+        #for chrom in self.data.index.levels[0]:
+        for chrom in set(self.data.index.get_level_values('chromosome')):
+            subdf = self.data.xs(chrom, level='chromosome')
+            intvindex = subdf.index.get_level_values('plot_interval')
+            result[chrom] = (intvindex[0].left, intvindex[-1].right)
+        return result
+
+    def draw_chrom_borders(self, ax, color='black', linewidth=1, fontsize=8, **kwargs):
+        borders_set = set()
+        xlim = self.xlim
+        chrom_borders = self.get_chrom_borders()
+        # draw chromosome names
+        for chrom, (start0, end0) in chrom_borders.items():
+            ax.text(
+                (start0 + end0) / 2, 
+                ax.get_ylim()[1], 
+                chrom, 
+                ha='center', va='bottom',
+                size=fontsize,
+            )
+
+        # draw chromosome region borderlines
+        for chrom, (start0, end0) in chrom_borders.items():
+            if start0 != xlim[0]:
+                borders_set.add(start0)
+            if end0 != xlim[1]:
+                borders_set.add(end0)
+        for pos0 in borders_set:
+            ax.axvline(pos0, color=color, linewidth=linewidth, **kwargs)
+
+    def draw_hlines(self, ax, df, y_colname, nproc=None, **kwargs):
+        ys = df.loc[:, y_colname].array
+        with multiprocessing.Pool(nproc) as pool:
+            xmins = pool.starmap(
+                self.genomic_to_plot, 
+                ((row['Chromosome'], row['Start']) for idx, row in df.iterrows())
+            )
+            xmaxs = pool.starmap(
+                self.genomic_to_plot, 
+                ((row['Chromosome'], row['End']) for idx, row in df.iterrows())
+            )
+
+        ax.hlines(ys, xmins, xmaxs, **kwargs)
+
+    def draw_dots(self, ax, df, y_colname, nproc=None, color='black', marker='o', linestyle='', **kwargs):
+        ys = df.loc[:, y_colname].array
+        with multiprocessing.Pool(nproc) as pool:
+            xs = pool.starmap(
+                self.genomic_to_plot, 
+                ((row['Chromosome'], (row['Start'] + row['End']) / 2) for idx, row in df.iterrows())
+            )
+
+        ax.plot(xs, ys, color=color, marker=marker, linestyle=linestyle, **kwargs)
 
 
 

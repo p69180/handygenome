@@ -1,6 +1,7 @@
 name: handygenome
 dependencies:
     - python
+    - conda-forge::psutil
 
     - conda-forge::jupyterlab
     - conda-forge::ipykernel
@@ -11,6 +12,7 @@ dependencies:
     - conda-forge::pandas
     - conda-forge::matplotlib
     - conda-forge::seaborn
-    - conda-forge::biopython
+    - conda-forge::biopython>=1.80
     - bioconda::pysam
     - bioconda::pyranges
+    - bioconda::pybigwig

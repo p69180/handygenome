@@ -85,6 +85,12 @@ class ReadPlus:
         self.alleleclass = dict()
         self.monoalt_support = dict()
 
+    def __del__(self):
+        del self.read
+        del self.pairs_dict
+        del self.alleleclass
+        del self.monoalt_support
+
     def __repr__(self):
         qname = self.read.query_name
         chrom = self.read.reference_name
@@ -281,23 +287,32 @@ class ReadPlus:
         include_trailing_queryonly=False,
     ):
         """Args:
-            range0: A directional range
+            range0: A range object. Its step must be +1.
         Returns:
-            A directional range composed of pairs_dict indexes.
-                (0-length range if the input range0 is 0-length)
+            If read range and target range("range0" argument) overlaps,
+                returns a range object representing pairs_dict indexes.
+                Partial overlap is okay.
+            Otherwise, returns None.
         """
         assert range0.step == 1
         assert len(range0) > 0
 
+        # check if read range contains target range
+        if not readhandler.check_overlaps_forward_nonzero(self.range0, range0):
+            return None
+
+        # handle all-queryonly cases (added on 230127)
+        if self.check_all_queryonly():
+            # now overlap is guaranteed
+            return range(0, len(self.pairs_dict['refpos0']))
+
+        # handle flanking_queryonly_default_mode
         if flanking_queryonly_default_mode:
             include_leading_queryonly = True
             include_trailing_queryonly = True
 
         min_ref_pos0 = max(self.read.reference_start, range0.start)
         max_ref_pos0 = min(self.read.reference_end - 1, range0.stop - 1)
-        if max_ref_pos0 < min_ref_pos0:
-            return None
-
         first = self.pairs_dict['refpos0'].index(min_ref_pos0)
         last = self.pairs_dict['refpos0'].index(max_ref_pos0)
 
@@ -616,6 +631,9 @@ class ReadPlus:
     def get_num_cigarM(self):
         return self.read.get_cigar_stats()[0][0]
 
+    def check_all_queryonly(self):
+        return readhandler.check_all_queryonly(self.read)
+
     ###############
     # alleleclass #
     ###############
@@ -785,6 +803,15 @@ class ReadPlusPair:
         #self._set_is_proper_pair()
         #self._set_sv_supporting()
         #self.irrelevant = (self.rp1.irrelevant or self.rp2.irrelevant)
+
+    def __del__(self):
+        del self.rp1
+        del self.rp2
+        for read in self.rplist_nonprimary:
+            del read
+        del self.rplist_nonprimary
+        del self.alleleclass
+        del self.monoalt_support
 
     def __repr__(self):
         qname = self.query_name
@@ -1028,6 +1055,10 @@ class ReadPlusPairList(list):
     def __init__(self, chromdict):
         self.chromdict = chromdict
 
+    def __del__(self):
+        for rpp in self:
+            del rpp
+
     def select_by_qname(self, qname):
         for rpp in self:
             if rpp.query_name == qname:
@@ -1208,6 +1239,7 @@ def get_rpplist_nonsv(
             rpp = get_rpp_from_refinedfetch(
                 readlist, bam, fasta, chromdict, no_matesearch, recalc_NMMD=recalc_NMMD,
             )
+            del readlist
             if rpp is not None:
                 rpplist.append(rpp)
 
@@ -1332,8 +1364,10 @@ def initial_fetch_nonsv(bam, chrom, start0, end0, view,
         """
 
         softclip_range0 = readhandler.get_softclip_ends_range0(read)
-        return (softclip_range0.stop > start0 and
-                softclip_range0.start < end0)
+        return (
+            softclip_range0.stop > start0 
+            and softclip_range0.start < end0
+        )
         #return True
 
     relevant_qname_set = set()
@@ -1352,6 +1386,8 @@ def initial_fetch_nonsv(bam, chrom, start0, end0, view,
             start0_set.add(read.reference_start)
             if readfilter_matesearch(read, long_insert_threshold):
                 start0_set.add(read.next_reference_start)
+
+        del read
 
     if len(start0_set) == 0:
         new_fetch_range = None
@@ -1503,11 +1539,14 @@ def refined_fetch_nonsv(bam, chrom, new_fetch_range, relevant_qname_set):
         fetchresult_dict[qname] = list()
 
     for read in readhandler.get_fetch(
-            bam, chrom, start=new_fetch_range.start, 
-            end=new_fetch_range.stop, 
-            readfilter=readhandler.readfilter_bad_read):
+        bam, chrom, start=new_fetch_range.start, 
+        end=new_fetch_range.stop, 
+        readfilter=readhandler.readfilter_bad_read,
+    ):
         if read.query_name in fetchresult_dict:
             fetchresult_dict[read.query_name].append(read)
+        else:
+            del read
 
     return fetchresult_dict
 
@@ -1552,6 +1591,7 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch, re
     readlist_nonprimary = list()
     for read in readlist:
         if read.reference_name not in chromdict.contigs:
+            del read
             continue
 
         if readhandler.check_primary_alignment(read):
@@ -1569,6 +1609,10 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch, re
         # found reads are all non-primary
         # supplementary reads overlapping pos0 can be missed
         rpp = None
+
+        for read in readlist_nonprimary:
+            del read
+        del readlist_nonprimary
     else:
         rplist_nonprimary = [
             ReadPlus(x, fasta, recalc_NMMD=recalc_NMMD)
@@ -1601,7 +1645,6 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch, re
         rpp = ReadPlusPair(rplist_primary, rplist_nonprimary, chromdict)
 
     return rpp
-
 
 
 #class ReadPlusPairList_old(list):

@@ -141,8 +141,13 @@ def draw_depth_ratios(
     irrelevant_chroms, haploid_chroms,
     alpha_CNlines=0.6, alpha_dot=0.5,
 ):
-    depthr_ylims = (0, np.ceil(extract_df.ratio_mean.quantile(0.95)) + 1)
-    yticks = np.arange(depthr_ylims[0], depthr_ylims[1], 0.5)
+    #depthr_ylims = (0, np.ceil(extract_df.ratio_mean.quantile(0.95)) + 1)
+    depthr_ylims = (
+        extract_df.ratio_mean.quantile(0.05) - 0.5,
+        extract_df.ratio_mean.quantile(0.95) + 0.5,
+    )
+    #yticks = np.arange(depthr_ylims[0], depthr_ylims[1], 0.5)
+    yticks = np.linspace(depthr_ylims[0], depthr_ylims[1], 5)
 
     repr_depthrs = [
         cnvmisc.theoretical_depth_ratio(CNt, cellularity, ploidy, CNn=2)

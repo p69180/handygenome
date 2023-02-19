@@ -155,7 +155,7 @@ def fetch_relevant_vr_vcfpath(vcfspec, vcf_path, search_equivs=True):
 # geneset gff3
 
 def parse_transcript_tabixline(tabixline):
-    transcript = ensembl_feature.Transcript()
+    transcript = ensembl_feature.Transcript(is_missing=False)
 
     attrs_parsed = parse_gff3_attrs(tabixline.attributes)
     transcript['id'] = attrs_parsed['ID'].split(':')[1]
@@ -189,7 +189,7 @@ def fetch_transcript(chrom, start0, end0, tabixfile_geneset):
     """Returns an empty TranscriptSet object if the tabixfile does not 
     contain chrom.
     """
-    transcript_set = ensembl_feature.TranscriptSet()
+    transcript_set = ensembl_feature.TranscriptSet(is_missing=False)
     if chrom in tabixfile_geneset.contigs:
         try:
             fetchresult = tabixfile_geneset.fetch(chrom, start0, end0)
@@ -263,7 +263,7 @@ def get_parent(tabixline):
 # repeats bed
 
 def parse_repeat_tabixline(tabixline):
-    repeat = ensembl_feature.Repeat()
+    repeat = ensembl_feature.Repeat(is_missing=False)
 
     repeat['chrom'] = tabixline.contig
     repeat['start0'] = tabixline.start
@@ -292,7 +292,7 @@ def fetch_repeat(chrom, start0, end0, tabixfile_repeats):
     """Returns an empty EnsemblFeatureSet object if the tabixfile does not 
     contain chrom.
     """
-    repeat_set = ensembl_feature.RepeatSet()
+    repeat_set = ensembl_feature.RepeatSet(is_missing=False)
     if chrom in tabixfile_repeats.contigs:
         try:
             fetchresult = tabixfile_repeats.fetch(chrom, start0, end0)
@@ -310,7 +310,7 @@ def fetch_repeat(chrom, start0, end0, tabixfile_repeats):
 # regulatory gff3
 
 def parse_regulatory_tabixline(tabixline):
-    regulatory = ensembl_feature.Regulatory()
+    regulatory = ensembl_feature.Regulatory(is_missing=False)
 
     regulatory['chrom'] = tabixline.contig
     regulatory['start0'] = tabixline.start
@@ -358,7 +358,7 @@ def fetch_regulatory(chrom, start0, end0, tabixfile_regulatory):
     contain chrom.
     """
 
-    regulatory_set = ensembl_feature.RegulatorySet()
+    regulatory_set = ensembl_feature.RegulatorySet(is_missing=False)
     if chrom in tabixfile_regulatory.contigs:
         try:
             fetchresult = tabixfile_regulatory.fetch(chrom, start0, end0)

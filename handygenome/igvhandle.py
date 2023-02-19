@@ -1,3 +1,4 @@
+import re
 import os
 import socket
 
@@ -9,16 +10,20 @@ libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcf
 
 
 class IGVHandle:
-    def __init__(self, port):
+    def __init__(self, port, pathsub=None):
         self.port = port
+        self.pathsub = pathsub
 
     def cmd(self, msg):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect(('localhost', self.port))
             s.send(msg.encode('utf-8'))
             s.shutdown(socket.SHUT_WR)
-            data = s.recv(1024).decode().replace('\n', '')
-            print(data)
+            data = s.recv(1024).decode()
+            print(data, end='')
+
+    def new(self):
+        self.cmd('new')
         
     def goto(self, loci, width=500):
         assert isinstance(loci, (list, tuple)), f'"loci" argument must be a list or a tuple.'
@@ -65,8 +70,14 @@ class IGVHandle:
         assert isinstance(filepaths, (list, tuple)), (
             f'"filepaths" argument must be a list or a tuple.')
 
-        for filepath in filepaths:
-            self.cmd(f'load {filepath}')
+        # make into absolute paths
+        filepaths = [os.path.abspath(x) for x in filepaths]
+        # do substition
+        if self.pathsub is not None:
+            filepaths = [re.sub(self.pathsub[0], self.pathsub[1], x) for x in filepaths]
+
+        for path in filepaths:
+            self.cmd(f'load {path}')
     
     def zoomin(self, n=1):
         for _ in range(n):

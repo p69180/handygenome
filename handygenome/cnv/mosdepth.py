@@ -38,7 +38,7 @@ def get_mosdepth_args(prefix, bam_path, t, use_median, no_perbase=True, bed_path
     return args
 
 
-def run_mosdepth(bam_path, t=0, use_median=False, region_bed_path=None, region_gr=None, window_size=None, donot_subset_bam=False, as_gr=True, load_perbase=False):
+def run_mosdepth(bam_path, t=8, use_median=False, region_bed_path=None, region_gr=None, window_size=None, donot_subset_bam=False, as_gr=True, load_perbase=False):
     # sanity check
     if (
         (window_size is not None)
@@ -81,7 +81,7 @@ def run_mosdepth(bam_path, t=0, use_median=False, region_bed_path=None, region_g
     if mosdepth_input_bed_path is None:
         mosdepth_input_bed_gr = None
     else:
-        mosdepth_input_bed_gr = pr.PyRanges(pr.read_bed(mosdepth_input_bed_path, as_df=True), int64=True)
+        mosdepth_input_bed_gr = pr.PyRanges(pr.read_bed(mosdepth_input_bed_path, as_df=True), int64=False)
 
     # subset input bam file
     if mosdepth_input_bed_path is not None:
@@ -141,7 +141,7 @@ def run_mosdepth(bam_path, t=0, use_median=False, region_bed_path=None, region_g
 
         if mosdepth_input_bed_gr is not None:
             df_perbase = mosdepth_input_bed_gr.window(1).join(
-                pr.PyRanges(df_perbase, int64=True),
+                pr.PyRanges(df_perbase, int64=False),
                 apply_strand_suffix=False,
             )[['depth']].df
     else:
@@ -149,9 +149,9 @@ def run_mosdepth(bam_path, t=0, use_median=False, region_bed_path=None, region_g
 
     # prepare result
     if as_gr:
-        result = pr.PyRanges(df, int64=True)
+        result = pr.PyRanges(df, int64=False)
         if load_perbase:
-            result_perbase = pr.PyRanges(df_perbase, int64=True)
+            result_perbase = pr.PyRanges(df_perbase, int64=False)
         else:
             result_perbase = None
     else:

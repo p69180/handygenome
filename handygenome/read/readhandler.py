@@ -309,6 +309,13 @@ def reverse_range(rng):
         return range(start, stop, 1)
 
 
+def check_overlaps_forward_nonzero(rng1, rng2):
+    return (
+        (rng1.start < rng2.stop)
+        and (rng1.stop > rng2.start)
+    )
+
+
 def check_overlaps(rng1, rng2):
     """
     Meaning of range
@@ -338,10 +345,7 @@ def check_overlaps(rng1, rng2):
     if len(rng1) == 0 and len(rng2) == 0:
         return rng1.start == rng2.start
     else:
-        return (
-            rng1.start < rng2.stop and
-            rng1.stop > rng2.start
-        )
+        return check_overlaps_forward_nonzero(rng1, rng2)
 
 
 def check_spans(query_range0, target_range0):
@@ -941,6 +945,10 @@ def check_cigarN_includes_range(read, start0, end0):
         start0 >= rng.start and end0 <= rng.stop
         for rng in cigarN_target_ranges
     )
+
+
+def check_all_queryonly(read):
+    return set(x[0] for x in read.cigartuples).issubset(alignhandler.CIGAROPS_QUERYONLY)
 
 
 

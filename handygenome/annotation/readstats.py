@@ -39,10 +39,25 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
             alleleinfo_kwargs=alleleinfo_kwargs,
             countonly=countonly,
         )
-        return cls.from_readstats_data(readstats_data, countonly=countonly)
+        result = cls.from_readstats_data(
+            readstats_data, 
+            vcfspec, 
+            fasta, 
+            chromdict,
+            countonly=countonly,
+        )
+        del readstats_data
+        return result
 
     @classmethod
-    def from_readstats_data(cls, readstats_data, countonly=False):
+    def from_readstats_data(
+        cls, 
+        readstats_data,  
+        vcfspec, 
+        fasta, 
+        chromdict,
+        countonly=False,
+    ):
         def allele_means(data):
             return dict(
                 (
@@ -126,6 +141,9 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
 
         # main
         result = cls(is_missing=False)
+        result.vcfspec = vcfspec
+        result.fasta = fasta
+        result.chromdict = chromdict
 
         result['rppcounts'] = readstats_data['count'].copy()
 
@@ -244,6 +262,39 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
     @classmethod
     def from_vr(cls, vr, sampleid_list=None):
         return cls.from_vr_base(vr, sampleid_list=sampleid_list)
+
+    def get_first_readstats(self):
+        return next(iter(self.values()))
+
+    @property
+    def vcfspec(self):
+        return self.get_first_readstats().vcfspec
+
+    @property
+    def fasta(self):
+        return self.get_first_readstats().fasta
+
+    @property
+    def chromdict(self):
+        return self.get_first_readstats().chromdict
+
+    def update_bams(
+        self, 
+        bam_dict,
+        rpplist_kwargs=dict(),
+        alleleinfo_kwargs=dict(),
+        countonly=False,
+    ):
+        if len(self) == 0:
+            raise Exception(f'Length of self must be greater than 0')
+
+        for sampleid, bam in bam_dict.items():
+            self[sampleid] = ReadStats.from_bam(
+                self.vcfspec, bam, self.fasta, self.chromdict,
+                rpplist_kwargs=rpplist_kwargs,
+                alleleinfo_kwargs=alleleinfo_kwargs,
+                countonly=countonly,
+            )
 
     def write(self, vr, donot_write_missing=True):
         return self.write_base(vr, donot_write_missing=donot_write_missing)
@@ -422,6 +473,8 @@ def get_readstats_data(
         readstats_data = rpplist_to_readstats_data_countonly(rpplist, vcfspec)
     else:
         readstats_data = rpplist_to_readstats_data(rpplist, vcfspec)
+
+    del rpplist
 
     return readstats_data
 

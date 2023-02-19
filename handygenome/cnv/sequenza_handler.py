@@ -41,7 +41,7 @@ def make_segments_as_df(extractfile_path, cellularity, ploidy, is_female):
     )
     os.close(fd)
     make_segments(extractfile_path, cellularity, ploidy, is_female, tsv_path)
-    df = read_cnvfile.read_sequenza_segment(tsv_path)
+    df = read_sequenza_segment(tsv_path)
     os.remove(tsv_path)
     return df
 
@@ -145,7 +145,7 @@ def load_extract(extractfile_path, chromdict, as_gr=True):
     os.remove(tsv_path)
 
     if as_gr:
-        return pr.PyRanges(df, int64=True)
+        return pr.PyRanges(df, int64=False)
     else:
         return df
 

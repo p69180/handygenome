@@ -170,14 +170,19 @@ def alleleclass_sortkey(x):
 
 
 def get_vcfspec_coverage_info(rp, vcfspec):
-    read_range0 = rp.range0
-    spans_left = (min(vcfspec.readspan_range0) in read_range0)
-    spans_right = (max(vcfspec.readspan_range0) in read_range0)
-    relevant_read_seq = rp.get_seq_from_pairs_indexes(
-        rp.get_pairs_indexes(
-            vcfspec.readspan_range0, flanking_queryonly_default_mode=True,
+    if rp.check_all_queryonly():
+        spans_left = False
+        spans_right = False
+        relevant_read_seq = None
+    else:
+        read_range0 = rp.range0
+        spans_left = (min(vcfspec.readspan_range0) in read_range0)
+        spans_right = (max(vcfspec.readspan_range0) in read_range0)
+        relevant_read_seq = rp.get_seq_from_pairs_indexes(
+            rp.get_pairs_indexes(
+                vcfspec.readspan_range0, flanking_queryonly_default_mode=True,
+            )
         )
-    )
 
     return spans_left, spans_right, relevant_read_seq
 

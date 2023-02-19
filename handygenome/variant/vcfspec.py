@@ -418,7 +418,8 @@ class Vcfspec:
             new_components = VcfspecComponents.init_empty(num_alt=1)
         else:
             allele_index = alt_index + 1
-            new_components = self.components.subset([allele_index])
+            new_components = VcfspecComponents.init_nonmissing()
+            new_components[1] = self.components[allele_index]
 
         result = self.spawn(
             alts=(self.alts[alt_index],),

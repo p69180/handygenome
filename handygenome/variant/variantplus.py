@@ -517,6 +517,7 @@ class VariantPlus:
             'view': False,
             'no_matesearch': True,
         },
+        alleleinfo_kwargs={},
     ):
         """Args:
             bam_dict: keys - sample ID, values - pysam.AlignmentFile
@@ -532,6 +533,7 @@ class VariantPlus:
                 fasta=self.fasta, 
                 chromdict=self.chromdict,
                 rpplist_kwargs=rpplist_kwargs,
+                alleleinfo_kwargs=alleleinfo_kwargs,
             )
 
     def update_readstats(
@@ -540,15 +542,15 @@ class VariantPlus:
             'view': False,
             'no_matesearch': True,
         },
+        alleleinfo_kwargs={},
+        countonly=False,
     ):
-        for sampleid, bam in bam_dict.items():
-            self.readstats_dict[sampleid] = libreadstats.ReadStats.from_bam(
-                vcfspec=self.vcfspec, 
-                bam=bam, 
-                fasta=self.fasta, 
-                chromdict=self.chromdict,
-                rpplist_kwargs=rpplist_kwargs,
-            )
+        self.readstats_dict.update_bams(
+            bam_dict=bam_dict,
+            rpplist_kwargs=rpplist_kwargs,
+            alleleinfo_kwargs=alleleinfo_kwargs,
+            countonly=countonly,
+        )
 
     def make_rpplist(
         self,
@@ -558,7 +560,7 @@ class VariantPlus:
             'view': False,
             'no_matesearch': True,
         },
-        alleleclass_kwargs=dict(),
+        alleleinfo_kwargs=dict(),
     ):
         if self.is_sv:
             rpplist = readplus.get_rpplist_sv(
@@ -581,7 +583,7 @@ class VariantPlus:
                 **rpplist_kwargs,
             )
             if set_alleleclass:
-                rpplist.update_alleleclass(vcfspec=self.vcfspec, **alleleclass_kwargs)
+                rpplist.update_alleleclass(vcfspec=self.vcfspec, **alleleinfo_kwargs)
 
         return rpplist
 
@@ -592,12 +594,12 @@ class VariantPlus:
             'view': False,
             'no_matesearch': True,
         },
-        alleleclass_kwargs=dict(),
+        alleleinfo_kwargs=dict(),
     ):
         self.rpplist_dict[sampleid] = self.make_rpplist(
             bam, set_alleleclass=set_alleleclass,
             rpplist_kwargs=rpplist_kwargs,
-            alleleclass_kwargs=alleleclass_kwargs,
+            alleleinfo_kwargs=alleleinfo_kwargs,
         )
 
     def make_readstats_data(self, bam, **kwargs):
@@ -618,7 +620,7 @@ class VariantPlus:
             'view': False,
             'no_matesearch': True,
         },
-        alleleclass_kwargs=dict(),
+        alleleinfo_kwargs=dict(),
     ):
         if verbose:
             print(f"Getting readstats_data for the sample {sampleid}")
@@ -629,7 +631,7 @@ class VariantPlus:
             bam, 
             set_alleleclass=True,
             rpplist_kwargs=rpplist_kwargs,
-            alleleclass_kwargs=alleleclass_kwargs,
+            alleleinfo_kwargs=alleleinfo_kwargs,
         )
 
 #        readstats_data = libreadstats.rpplist_to_readstats_data(
@@ -757,7 +759,7 @@ class VariantPlus:
             'view': True,
             'no_matesearch': True,
         },
-        alleleclass_kwargs=dict(),
+        alleleinfo_kwargs=dict(),
     ):
         if self.is_sv:
             raise Exception(f'SV is not supported yet')
@@ -771,7 +773,7 @@ class VariantPlus:
                 bam, 
                 set_alleleclass=True,
                 rpplist_kwargs=rpplist_kwargs,
-                alleleclass_kwargs=alleleclass_kwargs,
+                alleleinfo_kwargs=alleleinfo_kwargs,
             )
             if self.is_sv:
                 rpplist.set_alleleinfo_tag_rp_sv(self.bnds)
@@ -1116,8 +1118,12 @@ class VariantPlusList(list):
         init_oncokb=False,
         init_filterresult=False,
         sampleid_list=None,
+        prop=None,
         **kwargs,
     ):
+        """Args:
+            prop: probability for random selection. If None, all entries are selected.
+        """
         # initialize results
         result = cls(vcf_path=vcf_path, **kwargs)
 
@@ -1189,7 +1195,16 @@ class VariantPlusList(list):
         '''
 
         # create vps
-        for vr in common.iter_lineno_logging(result.vcf.fetch(), result.logger, result.logging_lineno):
+        if prop is None:
+            vr_iterator = common.iter_lineno_logging(result.vcf.fetch(), result.logger, result.logging_lineno)
+        else:
+            vr_iterator = common.iter_lineno_logging(
+                common.bernoulli_iterator(result.vcf.fetch(), p=prop, block_size=int(1e5)), 
+                result.logger, 
+                result.logging_lineno,
+            )
+
+        for vr in vr_iterator:
             if varianthandler.check_SV(vr):
                 vr_svinfo = libbnd.get_vr_svinfo_standard_vr(vr, result.fasta, result.chromdict)
                 if not vr_svinfo["is_bnd1"]:
@@ -1307,11 +1322,14 @@ class VariantPlusList(list):
         as_gr=False, 
         omit_vaf=False, 
         get_vaf_kwargs={
-            'allele_index': 1, 
+            #'allele_index': 1, 
             'exclude_other': False, 
             'ndigits': None,
         },
     ):
+        # parameter setups
+        get_vaf_kwargs['allele_index'] = alt_index + 1
+
         if vaf_sampleid is None:
             sample_ids = list(self[0].vr.header.samples)
             if len(sample_ids) == 0:
@@ -1320,6 +1338,7 @@ class VariantPlusList(list):
             else:
                 vaf_sampleid = sample_ids[0]
 
+        # main
         chroms = list()
         pos1s = list()
         starts = list()
@@ -1407,7 +1426,7 @@ class VariantPlusList(list):
         return sigresult
 
     def select_by_mutation_type(self, muttype):
-        result = VariantPlusList()
+        result = VariantPlusList(refver=self.refver)
         for vp in self:
             if vp.vcfspec.get_mutation_type() == muttype:
                 result.append(vp)
@@ -1420,7 +1439,7 @@ class VariantPlusList(list):
         return self.select_by_mutation_type('del')
 
     def select_indel(self):
-        result = VariantPlusList()
+        result = VariantPlusList(refver=self.refver)
         result.extend(self.select_ins())
         result.extend(self.select_del())
         return result

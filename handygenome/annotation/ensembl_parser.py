@@ -625,7 +625,7 @@ def parse_cmdline_vep(vr):
         #annotitem['is_non_overlapping'] = (annotitem['distance'] is not None)
 
     def subfun_transcript(raw_result_item):
-        transcript = ensembl_feature.Transcript()
+        transcript = ensembl_feature.Transcript(is_missing=False)
 
         transcript['id'] = raw_result_item['Feature']
         transcript['biotype'] = raw_result_item['BIOTYPE']
@@ -667,7 +667,7 @@ def parse_cmdline_vep(vr):
         return transcript
 
     def subfun_regulatory(raw_result_item):
-        regulatory = ensembl_feature.Regulatory()
+        regulatory = ensembl_feature.Regulatory.init_nonmissing()
 
         regulatory['id'] = raw_result_item['Feature']
         regulatory['biotype'] = raw_result_item['BIOTYPE']
@@ -679,7 +679,7 @@ def parse_cmdline_vep(vr):
         return regulatory
 
     def subfun_motif(raw_result_item):
-        motif = ensembl_feature.Motif()
+        motif = ensembl_feature.Motif.init_nonmissing()
 
         motif['id'] = raw_result_item['Feature']
         motif['consequences'] = raw_result_item['Consequence'].split('&')
@@ -742,7 +742,7 @@ def _parse_rest_lookup_transcript_singleitem(raw_result, refver, set_gene_name=T
             result.append([start, end])
         return result
 
-    transcript = ensembl_feature.Transcript()
+    transcript = ensembl_feature.Transcript.init_nonmissing()
     
     set_is_forward(transcript, raw_result['strand'])
 
@@ -802,7 +802,7 @@ def parse_rest_lookup_transcript_post(raw_result, refver, set_gene_name=True):
 
 
 def parse_rest_regulatory(raw_result):
-    regulatory = ensembl_feature.Regulatory()
+    regulatory = ensembl_feature.Regulatory.init_nonmissing()
 
     regulatory['id'] = raw_result['id']
     regulatory['chrom'] = raw_result['seq_region_name']
@@ -837,7 +837,7 @@ def parse_rest_overlap(raw_result, refver, include_motif_without_evidence=False,
         set_is_forward(annotitem, raw_result_item['strand'])
 
     def subfun_transcript(raw_result_item, refver, set_gene_name):
-        transcript = ensembl_feature.Transcript()
+        transcript = ensembl_feature.Transcript.init_nonmissing()
         subfun_common(transcript, raw_result_item)
 
         transcript['biotype'] = raw_result_item['biotype']
@@ -860,7 +860,7 @@ def parse_rest_overlap(raw_result, refver, include_motif_without_evidence=False,
         return transcript
 
     def subfun_regulatory(raw_result_item):
-        regulatory = ensembl_feature.Regulatory()
+        regulatory = ensembl_feature.Regulatory.init_nonmissing()
         subfun_common(regulatory, raw_result_item)
 
         regulatory['id'] = raw_result_item['id']
@@ -873,7 +873,7 @@ def parse_rest_overlap(raw_result, refver, include_motif_without_evidence=False,
         return regulatory
 
     def subfun_motif(raw_result_item):
-        motif = ensembl_feature.Motif()
+        motif = ensembl_feature.Motif.init_nonmissing()
         subfun_common(motif, raw_result_item)
 
         if 'epigenomes_with_experimental_evidence' in raw_result_item:
@@ -892,7 +892,7 @@ def parse_rest_overlap(raw_result, refver, include_motif_without_evidence=False,
         return motif
 
     def subfun_repeat(raw_result_item):
-        repeat = ensembl_feature.Repeat()
+        repeat = ensembl_feature.Repeat.init_nonmissing()
         subfun_common(repeat, raw_result_item)
         repeat['name'] = raw_result_item['description']
 
@@ -1007,7 +1007,7 @@ def parse_rest_vep(raw_result):
                 annotitem[key] = None
 
     def subfun_transcript(dic):
-        transcript = ensembl_feature.Transcript()
+        transcript = ensembl_feature.Transcript.init_nonmissing()
 
         transcript['id'] = dic['transcript_id']
         transcript['biotype'] = dic['biotype']
@@ -1089,7 +1089,7 @@ def parse_rest_vep(raw_result):
         return transcript
 
     def subfun_regulatory(dic):
-        regulatory = ensembl_feature.Regulatory()
+        regulatory = ensembl_feature.Regulatory.init_nonmissing()
 
         regulatory['id'] = dic['regulatory_feature_id']
         regulatory['biotype'] = dic['biotype']
@@ -1101,7 +1101,7 @@ def parse_rest_vep(raw_result):
         return regulatory
 
     def subfun_motif(dic):
-        motif = ensembl_feature.Motif()
+        motif = ensembl_feature.Motif.init_nonmissing()
 
         motif['id'] = dic['motif_feature_id']
         motif['consequences'] = dic['consequence_terms']

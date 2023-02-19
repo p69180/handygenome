@@ -37,7 +37,7 @@ readplus = importlib.import_module(".".join([top_package_name, "read", "readplus
 #DEFAULT_MQ_LIMIT = 20
 #DEFAULT_DEPTH_LIMIT = 1
 
-DEFAULT_RPILEUPSERIES_MAX_WIDTH = 5000
+#DEFAULT_RPILEUPSERIES_MAX_WIDTH = 5000
 
 #DEFAULT_AUGMENT_FACTOR_REPEAT_AREA = 1
 
@@ -82,26 +82,23 @@ ALIGNER_EQUAL_MM_GAP = Bio.Align.PairwiseAligner(
     target_internal_extend_gap_score=0,
 )
 
-ALIGNER_MAIN = ALIGNER_EQUAL_MM_GAP
+DEFAULT_ALIGNER = ALIGNER_EQUAL_MM_GAP
 
-DEFAULT_RPILEUP_PARAMS = {
-    'active_threshold': 0.05,
-    'aligner': ALIGNER_MAIN,
-    'inactive_padding': 15,
+DEFAULT_PARAMS = {
+    'active_threshold_vaf': 0.05,
+    'active_threshold_depth': 8,
+    'inactive_padding': 15,  # This value is allowed
     'allele_portion_threshold': 0.05, 
     'concat_dist_le': None,  # Now unused
-    'max_pileup_width': 100,
     'extend_pileup_by': 20,
     'vcfspec_range_factor': 1.5,
     'start0_limit': -np.inf,  # This value is allowed
     'end0_limit': np.inf,  # This value is allowed
     'MQ_limit': 20,  # This value is allowed
     'depth_limit': 1,  # This value is allowed
+    'max_pileup_width': 100,  # This value is allowed
+    'max_series_width': 5000,  # This value is allowed
 }
-
-
-class AlignmentFailureError(Exception):
-    pass
 
 
 class RealignerPileupBase(libpileup.PileupBase):
@@ -132,25 +129,30 @@ class RealignerPileupBase(libpileup.PileupBase):
 
         for ref_base, pos0 in zip(ref_seq, pos0_range):
             counter = self.get_allele_counter(pos0)
-            if len(counter) == 0:
+            if len(counter) < self.params['active_threshold_depth']:
                 is_active = False
             else:
                 non_ref_portion = 1 - (counter[ref_base] / sum(counter.values()))
-                is_active = (non_ref_portion >= self.active_threshold)
+                is_active = (non_ref_portion >= self.params['active_threshold_vaf'])
 
             yield is_active
 
     def _set_active_info(self):
-        if self.df.shape[0] > 0:
-            self.active_info = pd.Series(
-                self._active_info_generator(self.start0, self.end0, reverse=False),
-                index=self.df.columns,
-            )
+        if self.df.shape[1] == 0:
+            active_info = pd.Series([], dtype=bool)
         else:
-            self.active_info = pd.Series(
-                [False] * self.df.shape[1],
-                index=self.df.columns,
-            )
+            if self.df.shape[0] > 0:
+                active_info = pd.Series(
+                    self._active_info_generator(self.start0, self.end0, reverse=False),
+                    index=self.df.columns,
+                )
+            else:
+                active_info = pd.Series(
+                    [False] * self.df.shape[1],
+                    index=self.df.columns,
+                )
+
+        self.active_info = active_info
 
     # row specs related ones
     def _make_row_spec(self, row):
@@ -162,7 +164,7 @@ class RealignerPileupBase(libpileup.PileupBase):
         )
         result['id'] = row.name
 
-        row_is_not_empty = row != self.EMPTY_VALUE
+        row_is_not_empty = (row != self.EMPTY_VALUE)
         non_empty_index = row.index[row_is_not_empty]
         result['span_start0'] = non_empty_index.min()
         result['span_end0'] = non_empty_index.max() + 1
@@ -564,13 +566,13 @@ class PileupExtendGenerator:
     def interim_update(self, left, right):
         if left:
             self.left_is_active = self.pileup.active_info.loc[self.current_start0]
-            self.left_low_MQ = self.pileup.MQ.loc[self.current_start0] < self.pileup.MQ_limit
-            self.left_low_depth = self.pileup.get_depth(self.current_start0) < self.pileup.depth_limit
+            self.left_low_MQ = self.pileup.MQ.loc[self.current_start0] < self.pileup.params['MQ_limit']
+            self.left_low_depth = self.pileup.get_depth(self.current_start0) < self.pileup.params['depth_limit']
 
         if right:
             self.right_is_active = self.pileup.active_info.loc[self.current_end0 - 1]
-            self.right_low_MQ = self.pileup.MQ.loc[self.current_end0 - 1] < self.pileup.MQ_limit
-            self.right_low_depth = self.pileup.get_depth(self.current_end0 - 1) < self.pileup.depth_limit
+            self.right_low_MQ = self.pileup.MQ.loc[self.current_end0 - 1] < self.pileup.params['MQ_limit']
+            self.right_low_depth = self.pileup.get_depth(self.current_end0 - 1) < self.pileup.params['depth_limit']
 
     @property
     def touched_width_limit(self):
@@ -635,15 +637,15 @@ class PileupExtendGenerator:
     def _base_generator_left(self):
         """Stops only when current_start0 touches start0_limit"""
         current_start0 = self.pileup.start0
-        if current_start0 <= self.pileup.start0_limit:
+        if current_start0 <= self.pileup.params['start0_limit']:
             return
 
         while True:
-            self.pileup.extend_left(self.pileup.extend_pileup_by)
-            for _ in range(self.pileup.extend_pileup_by):
+            self.pileup.extend_left(self.pileup.params['extend_pileup_by'])
+            for _ in range(self.pileup.params['extend_pileup_by']):
                 current_start0 -= 1
                 #left_is_active = self.pileup.active_info.loc[current_start0]
-                touched_left_limit = current_start0 <= self.pileup.start0_limit
+                touched_left_limit = current_start0 <= self.pileup.params['start0_limit']
                 yield current_start0, touched_left_limit
                 if touched_left_limit:
                     return
@@ -651,15 +653,15 @@ class PileupExtendGenerator:
     def _base_generator_right(self):
         """Stops only when current_end0 touches end0_limit"""
         current_end0 = self.pileup.end0
-        if current_end0 >= self.pileup.end0_limit:
+        if current_end0 >= self.pileup.params['end0_limit']:
             return
 
         while True:
-            self.pileup.extend_right(self.pileup.extend_pileup_by)
-            for _ in range(self.pileup.extend_pileup_by):
+            self.pileup.extend_right(self.pileup.params['extend_pileup_by'])
+            for _ in range(self.pileup.params['extend_pileup_by']):
                 current_end0 += 1
                 #right_is_active = self.pileup.active_info.loc[current_end0]
-                touched_right_limit = current_end0 >= self.pileup.end0_limit
+                touched_right_limit = current_end0 >= self.pileup.params['end0_limit']
                 yield current_end0, touched_right_limit
                 if touched_right_limit:
                     return
@@ -670,29 +672,23 @@ class RealignerPileup(RealignerPileupBase):
     def __init__(
         self, 
         bam, 
-        chrom, start0=None, end0=None, 
-        refver=None, fasta=None,
+        chrom, 
+        start0=None, 
+        end0=None, 
+        refver=None, 
+        fasta=None,
 
+        aligner=DEFAULT_ALIGNER,
         init_df=True,
 
         verbose=False,
         logger=None,
 
         **kwargs,
-
-#        active_threshold=DEFAULT_ACTIVE_THRESHOLD, 
-#        aligner=ALIGNER_MAIN,
-#        inactive_padding=DEFAULT_INACTIVE_PADDING,
-#        allele_portion_threshold=DEFAULT_VCFSPEC_EXTRACTION_THRESHOLD, 
-#        concat_dist_le=DEFAULT_VCFSPEC_CONCAT_DISTANCE,  # Now unused
-#        max_pileup_width=DEFAULT_MAX_PILEUP_WIDTH,
-#        extend_pileup_by=DEFAULT_EXTEND_PILEUP_BY,
-#        vcfspec_range_factor=DEFAULT_AUGMENT_FACTOR_VCFSPEC_RANGE,
-#        start0_limit=-np.inf,  # This value is allowed
-#        end0_limit=np.inf,  # This value is allowed
-#        MQ_limit=DEFAULT_MQ_LIMIT,  # This value is allowed
-#        depth_limit=DEFAULT_DEPTH_LIMIT,  # This value is allowed
     ):
+        """Args:
+            start0 and end0 are only required when init_df == True
+        """
         # initiation
         libpileup.PileupBase.__init__(
             self, 
@@ -704,23 +700,10 @@ class RealignerPileup(RealignerPileupBase):
         )
 
         # set other parameters
-        for k, v in parse_rpileup_kwargs(**kwargs).items():
-            setattr(self, k, v)
-
+        self.params = parse_rpileup_kwargs(**kwargs)
+        self.aligner = aligner
         if init_df:
             self._set_active_info()
-
-#        self.aligner = aligner
-#        self.inactive_padding = inactive_padding
-#        self.allele_portion_threshold = allele_portion_threshold
-#        self.concat_dist_le = concat_dist_le
-#        self.max_pileup_width = max_pileup_width
-#        self.extend_pileup_by = extend_pileup_by
-#        self.vcfspec_range_factor = vcfspec_range_factor
-#        self.start0_limit = start0_limit
-#        self.end0_limit = end0_limit
-#        self.MQ_limit = MQ_limit
-#        self.depth_limit = depth_limit
 
         self.hit_left_margin = False
         self.hit_right_margin = False
@@ -729,8 +712,12 @@ class RealignerPileup(RealignerPileupBase):
     def init_and_augment(
         cls, 
         bam, 
-        chrom, start0, end0, 
-        refver=None, fasta=None,
+        chrom, 
+        start0, 
+        end0, 
+        refver=None, 
+        fasta=None,
+        aligner=DEFAULT_ALIGNER,
         verbose=False, 
         logger=None, 
         **kwargs,
@@ -739,6 +726,7 @@ class RealignerPileup(RealignerPileupBase):
             bam=bam, 
             chrom=chrom, start0=start0, end0=end0, 
             refver=refver, fasta=fasta,
+            aligner=aligner,
 
             init_df=True,
 
@@ -752,11 +740,19 @@ class RealignerPileup(RealignerPileupBase):
         return result, secresult_inactive, secresult_vcfspec
 
     def spawn(self):
-        attrs_to_copy = (
-            ('bam', 'chrom', 'refver', 'fasta', 'verbose', 'logger')
-            + tuple(DEFAULT_RPILEUP_PARAMS.keys())
+        result = self.__class__(
+            bam=self.bam,
+            chrom=self.chrom,
+            refver=self.refver,
+            fasta=self.fasta,
+            aligner=self.aligner,
+            init_df=False,
+            verbose=self.verbose,
+            logger=self.logger,
+            **self.params,
         )
-        return self._spawn_base(attrs_to_copy)
+        result.read_store = self.read_store
+        return result
     
     def subset(self, start0, end0, inplace=False):
         new_active_info = self.active_info.loc[start0:(end0 - 1)]
@@ -778,6 +774,7 @@ class RealignerPileup(RealignerPileupBase):
     def split(self, start0_list):
         split_pileups = self._split_base(start0_list)
         for pileup in split_pileups:
+            pileup.params = self.params.copy()
             pileup.prepare_vcfspecs()
         return split_pileups
 
@@ -785,31 +782,31 @@ class RealignerPileup(RealignerPileupBase):
     def check_touches_left_limit(self, start0=None):
         if start0 is None:
             start0 = self.start0
-        return start0 <= self.start0_limit
+        return start0 <= self.params['start0_limit']
 
     def check_touches_right_limit(self, end0=None):
         if end0 is None:
             end0 = self.end0
-        return end0 >= self.end0_limit
+        return end0 >= self.params['end0_limit']
 
     def check_touches_width_limit(self, start0=None, end0=None):
         if start0 is None:
             start0 = self.start0
         if end0 is None:
             end0 = self.end0
-        return end0 - start0 >= self.max_pileup_width
+        return end0 - start0 >= self.params['max_pileup_width']
 
     def check_left_MQ_low(self):
-        return self.MQ.iloc[0] < self.MQ_limit
+        return self.MQ.iloc[0] < self.params['MQ_limit']
 
     def check_right_MQ_low(self):
-        return self.MQ.iloc[-1] < self.MQ_limit
+        return self.MQ.iloc[-1] < self.params['MQ_limit']
 
     def check_left_depth_low(self):
-        return self.get_depth(self.start0) < self.depth_limit
+        return self.get_depth(self.start0) < self.params['depth_limit']
 
     def check_right_depth_low(self):
-        return self.get_depth(self.end0 - 1) < self.depth_limit
+        return self.get_depth(self.end0 - 1) < self.params['depth_limit']
 
     # extend and its helpers
     def extend_left(self, width):
@@ -827,14 +824,19 @@ class RealignerPileup(RealignerPileupBase):
         else:
             start0 = self.end0
             end0 = self.end0 + width
+
         return self.__class__(
-            fasta=self.fasta, 
             bam=self.bam, 
             chrom=self.chrom, 
             start0=start0,
             end0=end0,
+            refver=self.refver,
+            fasta=self.fasta,
+            aligner=self.aligner,
             init_df=True,
-            active_threshold=self.active_threshold,
+            verbose=self.verbose,
+            logger=self.logger,
+            **self.params,
         )
 
     def get_extend_generator(self):
@@ -857,18 +859,6 @@ class RealignerPileup(RealignerPileupBase):
         if idx == -self.width:
             idx -= 1
         return -idx - 1
-
-#    def check_inactive_margin_right(self, length):
-#        if len(self.active_info) < length:
-#            return False
-#        else:
-#            return not self.active_info[-length:].any()
-#
-#    def check_inactive_margin_left(self, length):
-#        if len(self.active_info) < length:
-#            return False
-#        else:
-#            return not self.active_info[:length].any()
 
     # extension and reduction in search for realignment area
     def augment_margins(self):
@@ -957,13 +947,13 @@ class RealignerPileup(RealignerPileupBase):
         return result_inactive, result_vcfspec
 
     # extension reduction helpers
-    def reduce_left(self, inactive_padding=None):
-        if self.width > self.inactive_padding:
+    def reduce_left(self):
+        if self.width > self.params['inactive_padding']:
             inactive_margin_length = self.get_inactive_length_left()
-            if inactive_margin_length == self.inactive_padding:
+            if inactive_margin_length == self.params['inactive_padding']:
                 left_fixed = True
-            elif inactive_margin_length > self.inactive_padding:
-                new_start0 = self.start0 + (inactive_margin_length - self.inactive_padding)
+            elif inactive_margin_length > self.params['inactive_padding']:
+                new_start0 = self.start0 + (inactive_margin_length - self.params['inactive_padding'])
                 self.subset(new_start0, self.end0, inplace=True)
                 left_fixed = True
             else:
@@ -973,13 +963,13 @@ class RealignerPileup(RealignerPileupBase):
 
         return left_fixed
 
-    def reduce_right(self, inactive_padding=None):
-        if len(self.range0) > self.inactive_padding:
+    def reduce_right(self):
+        if len(self.range0) > self.params['inactive_padding']:
             inactive_margin_length = self.get_inactive_length_right()
-            if inactive_margin_length == self.inactive_padding:
+            if inactive_margin_length == self.params['inactive_padding']:
                 right_fixed = True
-            elif inactive_margin_length > self.inactive_padding:
-                new_end0 = self.end0 - (inactive_margin_length - self.inactive_padding)
+            elif inactive_margin_length > self.params['inactive_padding']:
+                new_end0 = self.end0 - (inactive_margin_length - self.params['inactive_padding'])
                 self.subset(self.start0, new_end0, inplace=True)
                 right_fixed = True
             else:
@@ -1011,8 +1001,8 @@ class RealignerPileup(RealignerPileupBase):
         # set params
         inactive_length_left = self.get_inactive_length_left()
         inactive_length_right = self.get_inactive_length_right()
-        left_okay = (inactive_length_left >= self.inactive_padding)
-        right_okay = (inactive_length_right >= self.inactive_padding)
+        left_okay = (inactive_length_left >= self.params['inactive_padding'])
+        right_okay = (inactive_length_right >= self.params['inactive_padding'])
         
         # initial abort check
         if left_okay and right_okay:
@@ -1046,7 +1036,7 @@ class RealignerPileup(RealignerPileupBase):
                 elif not gen.left_is_active:
                     inactive_length_left += 1
 
-                left_okay = (inactive_length_left >= self.inactive_padding)
+                left_okay = (inactive_length_left >= self.params['inactive_padding'])
 
             if not self._securehelper_check_right_blocked(gen, right_okay):
                 gen.iter_right()
@@ -1055,7 +1045,7 @@ class RealignerPileup(RealignerPileupBase):
                 elif not gen.right_is_active:
                     inactive_length_right += 1
 
-                right_okay = (inactive_length_right >= self.inactive_padding)
+                right_okay = (inactive_length_right >= self.params['inactive_padding'])
 
         if (initial_start0 != gen.current_start0) or (initial_end0 != gen.current_end0):
             edited = True
@@ -1086,7 +1076,7 @@ class RealignerPileup(RealignerPileupBase):
 
     def secure_vcfspec_margins(self):
         vcfspec_margins_gr = self.get_vcfspec_margins_gr(
-            subseq_portion_threshold=self.allele_portion_threshold,
+            subseq_portion_threshold=self.params['allele_portion_threshold'],
             inverse=False,
             split_contig_vcfspec=True,
         )
@@ -1172,7 +1162,7 @@ class RealignerPileup(RealignerPileupBase):
     def get_margin_from_vcfspec(self, vcfspec):
         leftmost = vcfspec.leftmost()
         rightmost = vcfspec.rightmost()
-        padding = int(len(leftmost.REF_range0) * self.vcfspec_range_factor)
+        padding = int(len(leftmost.REF_range0) * self.params['vcfspec_range_factor'])
         return (leftmost.start0 - padding, rightmost.end0 + padding)
 
     # pyranges
@@ -1326,75 +1316,71 @@ class RealignerPileup(RealignerPileupBase):
                 sequences=[ref_seq, ''],
                 coordinates=np.array([(0, len(ref_seq)), (0, 0)]),
             )
-#            return Bio.Align.PairwiseAlignment(
-#                target=ref_seq,
-#                query='',
-#                path=[(0, 0), (len(ref_seq), 0)],
-#                score=0,
-#            )
 
         reverse_align = (not row_spec['left_filled']) and row_spec['right_filled']
         target = ref_seq
         query = row_spec['seq']
-        #if reverse_align:
-        #    target = ref_seq_reversed
-        #    query = row_spec['seq'][::-1]
-        #else:
-        #    target = ref_seq
-        #    query = row_spec['seq']
-
-        return self.main_aligner(target, query, aligner=self.aligner, reverse_align=reverse_align, raise_with_tie=raise_with_tie, logger=self.logger, row_spec=row_spec, target_reversed=ref_seq_reversed)
-
-    @classmethod
-    def main_aligner(cls, target, query, aligner=ALIGNER_MAIN, reverse_align=False, raise_with_tie=False, logger=None, row_spec=None, target_reversed=None):
-        if reverse_align:
-            if target_reversed is None:
-                target = target[::-1]
-            else:
-                target = target_reversed
-            query = query[::-1]
-
-        try:
-            alns = aligner.align(target, query)
-        except Exception as exc:
-            #raise Exception(f'Failed alignment:\nrow_spec: {row_spec}\nReference seq: {ref_seq}') from exc
-            raise AlignmentFailureError() from exc
-
-        try:
-            aln = cls.main_aligner_helper(alns, raise_with_tie, reverse_align)
-        except common.TimeoutError:
-            #if logger is not None:
-            #    logger.debug(
-            #        f'Skipping alignments tiebreaking due to timeout;\nrow_spec: {row_spec}\n'
-            #        f'Num of alignments: {len(alns)}; row_spec: {row_spec}'
-            #    )
-            aln = alns[0]
-            aln = alignhandler.amend_outer_insdel_both(aln)
-            if reverse_align:
-                aln = alignhandler.reverse_alignment(aln)
-            
-        return aln
-
-    @staticmethod
-    @common.timeout(0.05)
-    def main_aligner_helper(alns, raise_with_tie, reverse_align):
-        # amend outer insdel, remove duplicates
-        alns = list(
-            alignhandler.remove_identical_alignments(
-                alignhandler.amend_outer_insdel_both(x) for x in alns
-            )
+        return main_aligner(
+            target, 
+            query, 
+            self.aligner, 
+            reverse_align=reverse_align, 
+            raise_with_tie=raise_with_tie, 
+            logger=self.logger, 
+            row_spec=row_spec, 
+            target_reversed=ref_seq_reversed,
         )
-        # select one
-        if len(alns) == 1:
-            aln = alns[0]
-        else:
-            # tiebreaking
-            aln = alignhandler.alignment_tiebreaker(alns, raise_with_failure=raise_with_tie)
-        # reverse - should be done after tiebreaking
-        if reverse_align:
-            aln = alignhandler.reverse_alignment(aln)
 
-        return aln
+#    @classmethod
+#    def main_aligner(cls, target, query, aligner=ALIGNER_MAIN, reverse_align=False, raise_with_tie=False, logger=None, row_spec=None, target_reversed=None):
+#        if reverse_align:
+#            if target_reversed is None:
+#                target = target[::-1]
+#            else:
+#                target = target_reversed
+#            query = query[::-1]
+#
+#        try:
+#            alns = aligner.align(target, query)
+#        except Exception as exc:
+#            #raise Exception(f'Failed alignment:\nrow_spec: {row_spec}\nReference seq: {ref_seq}') from exc
+#            raise AlignmentFailureError() from exc
+#
+#        try:
+#            aln = cls.main_aligner_helper(alns, raise_with_tie, reverse_align)
+#        except common.TimeoutError:
+#            #if logger is not None:
+#            #    logger.debug(
+#            #        f'Skipping alignments tiebreaking due to timeout;\nrow_spec: {row_spec}\n'
+#            #        f'Num of alignments: {len(alns)}; row_spec: {row_spec}'
+#            #    )
+#            aln = alns[0]
+#            aln = alignhandler.amend_outer_insdel_both(aln)
+#            if reverse_align:
+#                aln = alignhandler.reverse_alignment(aln)
+#            
+#        return aln
+#
+#    @staticmethod
+#    @common.timeout(0.05)
+#    def main_aligner_helper(alns, raise_with_tie, reverse_align):
+#        # amend outer insdel, remove duplicates
+#        alns = list(
+#            alignhandler.remove_identical_alignments(
+#                alignhandler.amend_outer_insdel_both(x) for x in alns
+#            )
+#        )
+#        # select one
+#        if len(alns) == 1:
+#            aln = alns[0]
+#        else:
+#            # tiebreaking
+#            aln = alignhandler.alignment_tiebreaker(alns, raise_with_failure=raise_with_tie)
+#        # reverse - should be done after tiebreaking
+#        if reverse_align:
+#            aln = alignhandler.reverse_alignment(aln)
+#
+#        return aln
 
     def align_row_spec_to_ref_old(self, row_spec, ref_seq, ref_seq_reversed, aligner, raise_with_tie):
         # set params
@@ -1519,7 +1505,7 @@ class RealignerPileup(RealignerPileupBase):
         """Result may be empty"""
         # without splitting contig vcfspec
         splittable_region = self.get_vcfspec_margins_gr(
-            subseq_portion_threshold=(self.allele_portion_threshold * 2),
+            subseq_portion_threshold=(self.params['allele_portion_threshold'] * 2),
             inverse=True,
             split_contig_vcfspec=False,
         )
@@ -1565,7 +1551,7 @@ class RealignerPileup(RealignerPileupBase):
 
     def get_result_vcfspecs(self, as_components=False, merge=True, subseq_portion_threshold=None, MQ_threshold=40): 
         if subseq_portion_threshold is None:
-            subseq_portion_threshold = self.allele_portion_threshold
+            subseq_portion_threshold = self.params['allele_portion_threshold']
 
         if as_components:
             result = list()
@@ -1606,7 +1592,10 @@ class MultisampleRealignerPileup(RealignerPileupBase):
         pileup_dict, 
         refver=None,
         fasta=None, 
-        verbose=False, logger=None,
+        aligner=DEFAULT_ALIGNER,
+        verbose=False, 
+        logger=None,
+        **kwargs,
     ):
         """Args:
             pileup_dict: keys - sampleid; values - Pileup object
@@ -1614,10 +1603,9 @@ class MultisampleRealignerPileup(RealignerPileupBase):
         # set params
         self.pileup_dict = pileup_dict
         self.refver, self.fasta = RealignerPileupBase.refver_fasta_arghandler(refver, fasta)
-        self.allele_portion_threshold = self.first_pileup.allele_portion_threshold
-
-        # set logger
+        self.aligner = aligner
         self.verbose, self.logger = RealignerPileupBase.logger_arghandler(verbose, logger)
+        self.params = parse_rpileup_kwargs(**kwargs)
 
         # setup data structure
         self.set_df()
@@ -1860,7 +1848,7 @@ class MultisampleRealignerPileup(RealignerPileupBase):
     ):
         # set params
         if subseq_portion_threshold is None:
-            subseq_portion_threshold = self.allele_portion_threshold
+            subseq_portion_threshold = self.params['allele_portion_threshold']
 
         # 1st filtering
         # make candidate mono-ALT vcfspecs
@@ -1944,7 +1932,7 @@ class MultisampleRealignerPileup(RealignerPileupBase):
         verbose=False,
     ):
         if subseq_portion_threshold is None:
-            subseq_portion_threshold = self.allele_portion_threshold
+            subseq_portion_threshold = self.params['allele_portion_threshold']
 
 #        if as_components:
 #            result = list()
@@ -1990,10 +1978,12 @@ class RealignerPileupSeries:
     def __init__(
         self, 
         bam, 
-        chrom, start0, end0, 
+        chrom, 
+        start0, 
+        end0, 
         refver=None, 
         fasta=None,
-        max_series_width=DEFAULT_RPILEUPSERIES_MAX_WIDTH,
+        aligner=DEFAULT_ALIGNER,
         verbose=False,
         logger=None,
         **kwargs,
@@ -2006,15 +1996,9 @@ class RealignerPileupSeries:
         self.chrom = chrom
         self.bam = bam
         self.refver, self.fasta = RealignerPileupBase.refver_fasta_arghandler(refver, fasta)
-        self.max_series_width = max_series_width
-
-        # set logger
+        self.aligner = aligner
         self.verbose, self.logger = RealignerPileupBase.logger_arghandler(verbose, logger)
-
-        # set RealignerPileup kwargs
-        self.rpileup_init_kwargs = parse_rpileup_kwargs(**kwargs)
-        for k, v in self.rpileup_init_kwargs.items():
-            setattr(self, k, v)
+        self.params = parse_rpileup_kwargs(**kwargs)
 
         # setup pileup_list
         self._init_pileup_list(start0, end0)
@@ -2031,9 +2015,10 @@ class RealignerPileupSeries:
             bam=self.bam, 
             chrom=self.chrom, start0=start0, end0=end0, 
             refver=self.refver, fasta=self.fasta,
+            aligner=self.aligner,
             verbose=self.verbose, 
             logger=self.logger, 
-            **self.rpileup_init_kwargs,
+            **self.params,
         )
         self.pileup_list = [initial_pileup]
 
@@ -2099,74 +2084,141 @@ class RealignerPileupSeries:
             {'Chromosome': chroms, 'Start': start0s, 'End': end0s, 'Self_index': self_indexes}
         )
 
+    def spawn_new_pileup(self, start0, end0):
+        return RealignerPileup(
+            bam=self.bam, 
+            chrom=self.chrom, start0=start0, end0=end0, 
+            refver=self.refver, fasta=self.fasta, 
+            aligner=self.aligner,
+            init_df=True,
+            verbose=self.verbose, logger=self.logger,
+            **self.params,
+        )
+
+    def left_insert_new_pileup(self, width=1):
+        new_pileup = self.spawn_new_pileup(
+            start0=(self.start0 - width), end0=self.start0,
+        )
+        self.pileup_list.insert(0, new_pileup)
+
+    def right_insert_new_pileup(self, width=1):
+        new_pileup = self.spawn_new_pileup(
+            start0=self.end0, end0=(self.end0 + width),
+        )
+        self.pileup_list.append(new_pileup)
+
     def extend_left(self, width):
-        """Ignores MQ_limit, depth_limit, start0_limit, end0_limit,
-        max_series_width attribute"""
-        original_max_series_width = self.max_series_width
-        self.max_series_width = np.inf
-        original_start0_limit = self.start0_limit
-        self.start0_limit = -np.inf
+        """Ignores MQ_limit, depth_limit, start0_limit, end0_limit, max_series_width attributes
+        """
+        assert width > 0
 
         target_start0 = self.start0 - width
 
-        rpileup_init_kwargs = self.rpileup_init_kwargs.copy()
-        rpileup_init_kwargs['start0_limit'] = target_start0
-        rpileup_init_kwargs['MQ_limit'] = 0
-        rpileup_init_kwargs['depth_limit'] = 0
+        original_params = self.params.copy()
+        self.params['max_series_width'] = np.inf
+        self.params['start0_limit'] = target_start0
+        self.params['MQ_limit'] = 0
+        self.params['depth_limit'] = 0
 
         while True:
-            new_pileup = RealignerPileup(
-                bam=self.bam, 
-                chrom=self.chrom, start0=(self.start0 - 1), end0=self.start0, 
-                refver=self.refver, fasta=self.fasta, 
-                verbose=self.verbose, logger=self.logger,
-                **rpileup_init_kwargs,
-            )
-            self.pileup_list.insert(0, new_pileup)
+            self.left_insert_new_pileup(width=1)
             result_inactive, result_vcfspec, touched_width_limit = self.secure_left()
             if self.start0 <= target_start0:
                 break
 
-        self.max_series_width = original_max_series_width
-        self.start0_limit = original_start0_limit
+        self.params = original_params
+
+#    def extend_left_old(self, width):
+#        """Ignores MQ_limit, depth_limit, start0_limit, end0_limit,
+#        max_series_width attribute"""
+#        original_max_series_width = self.max_series_width
+#        self.max_series_width = np.inf
+#        original_start0_limit = self.start0_limit
+#        self.start0_limit = -np.inf
+#
+#        target_start0 = self.start0 - width
+#
+#        rpileup_init_kwargs = self.rpileup_init_kwargs.copy()
+#        rpileup_init_kwargs['start0_limit'] = target_start0
+#        rpileup_init_kwargs['MQ_limit'] = 0
+#        rpileup_init_kwargs['depth_limit'] = 0
+#
+#        while True:
+#            new_pileup = RealignerPileup(
+#                bam=self.bam, 
+#                chrom=self.chrom, start0=(self.start0 - 1), end0=self.start0, 
+#                refver=self.refver, fasta=self.fasta, 
+#                verbose=self.verbose, logger=self.logger,
+#                **rpileup_init_kwargs,
+#            )
+#            self.pileup_list.insert(0, new_pileup)
+#            result_inactive, result_vcfspec, touched_width_limit = self.secure_left()
+#            if self.start0 <= target_start0:
+#                break
+#
+#        self.max_series_width = original_max_series_width
+#        self.start0_limit = original_start0_limit
 
     def extend_right(self, width):
-        """Ignores MQ_limit, depth_limit, start0_limit, end0_limit,
-        max_series_width attribute"""
-        original_max_series_width = self.max_series_width
-        self.max_series_width = np.inf
-        original_end0_limit = self.end0_limit
-        self.end0_limit = np.inf
+        """Ignores MQ_limit, depth_limit, start0_limit, end0_limit, max_series_width attributes
+        """
+        assert width > 0
 
         target_end0 = self.end0 + width
 
-        rpileup_init_kwargs = self.rpileup_init_kwargs.copy()
-        rpileup_init_kwargs['end0_limit'] = target_end0
-        rpileup_init_kwargs['MQ_limit'] = 0
-        rpileup_init_kwargs['depth_limit'] = 0
+        original_params = self.params.copy()
+        self.params['max_series_width'] = np.inf
+        self.params['end0_limit'] = target_end0
+        self.params['MQ_limit'] = 0
+        self.params['depth_limit'] = 0
 
         while True:
-            new_pileup = RealignerPileup(
-                bam=self.bam, 
-                chrom=self.chrom, start0=self.end0, end0=(self.end0 + 1), 
-                refver=self.refver, fasta=self.fasta, 
-                verbose=self.verbose, logger=self.logger,
-                **rpileup_init_kwargs,
-            )
-            self.pileup_list.append(new_pileup)
+            self.right_insert_new_pileup(width=1)
             result_inactive, result_vcfspec, touched_width_limit = self.secure_right()
             if self.end0 >= target_end0:
                 break
 
-        self.max_series_width = original_max_series_width
-        self.end0_limit = original_end0_limit
+        self.params = original_params
+
+#    def extend_right_old(self, width):
+#        """Ignores MQ_limit, depth_limit, start0_limit, end0_limit,
+#        max_series_width attribute
+#        """
+#        original_max_series_width = self.max_series_width
+#        self.max_series_width = np.inf
+#        original_end0_limit = self.end0_limit
+#        self.end0_limit = np.inf
+#
+#        target_end0 = self.end0 + width
+#
+#        rpileup_init_kwargs = self.rpileup_init_kwargs.copy()
+#        rpileup_init_kwargs['end0_limit'] = target_end0
+#        rpileup_init_kwargs['MQ_limit'] = 0
+#        rpileup_init_kwargs['depth_limit'] = 0
+#
+#        while True:
+#            new_pileup = RealignerPileup(
+#                bam=self.bam, 
+#                chrom=self.chrom, start0=self.end0, end0=(self.end0 + 1), 
+#                refver=self.refver, fasta=self.fasta, 
+#                verbose=self.verbose, logger=self.logger,
+#                **rpileup_init_kwargs,
+#            )
+#            self.pileup_list.append(new_pileup)
+#            result_inactive, result_vcfspec, touched_width_limit = self.secure_right()
+#            if self.end0 >= target_end0:
+#                break
+#
+#        self.max_series_width = original_max_series_width
+#        self.end0_limit = original_end0_limit
 
     # init helpers #
     def secure_left(self):
         self.logger.debug(f'Beginning RealignerPileupSeries secure_left')
 
         left_pileup = self.pileup_list[0]
-        left_pileup.end0_limit = left_pileup.end0
+        left_pileup.params = self.params.copy()
+        left_pileup.params['end0_limit'] = left_pileup.end0
         while True:
             result_inactive, result_vcfspec = left_pileup.secure_margins()
 
@@ -2176,37 +2228,29 @@ class RealignerPileupSeries:
             self.logger.debug(f'result_vcfspec: {result_vcfspec}')
 
             if (
-                (result_inactive.left_okay and result_vcfspec.left_okay) or
-                (
+                (result_inactive.left_okay and result_vcfspec.left_okay)
+                or (
                     result_vcfspec.left_low_depth or 
                     result_vcfspec.left_low_MQ or 
                     result_vcfspec.touched_left_limit
-                ) or
-                (self.width > self.max_series_width)
+                )
+                or (self.width > self.params['max_series_width'])
             ):
                 break
             else:
                 assert result_vcfspec.touched_width_limit
                 split_points = left_pileup.get_split_points()
                 if len(split_points) == 0:
-                    rpileup_init_kwargs = self.rpileup_init_kwargs.copy()
-                    new_pileup = RealignerPileup(
-                        bam=self.bam, 
-                        chrom=self.chrom, start0=(left_pileup.start0 - 1), end0=left_pileup.start0, 
-                        refver=self.refver, fasta=self.fasta, 
-                        verbose=self.verbose, logger=self.logger,
-                        **rpileup_init_kwargs,
-                    )
-                    self.pileup_list.insert(0, new_pileup)
+                    self.left_insert_new_pileup(width=1)
                 else:
                     split_pileups = left_pileup.split(split_points[:1])
                     del self.pileup_list[0]
                     self.pileup_list = split_pileups + self.pileup_list
 
                 left_pileup = self.pileup_list[0]
-                left_pileup.end0_limit = left_pileup.end0
+                left_pileup.params['end0_limit'] = left_pileup.end0
 
-        touched_width_limit = self.width >= self.max_series_width
+        touched_width_limit = self.width >= self.params['max_series_width']
 
         self.logger.debug(f'Finished RealignerPileupSeries secure_left')
 
@@ -2216,7 +2260,8 @@ class RealignerPileupSeries:
         self.logger.debug(f'Beginning RealignerPileupSeries secure_right')
 
         right_pileup = self.pileup_list[-1]
-        right_pileup.start0_limit = right_pileup.start0
+        right_pileup.params = self.params.copy()
+        right_pileup.params['start0_limit'] = right_pileup.start0
         while True:
             result_inactive, result_vcfspec = right_pileup.secure_margins()
 
@@ -2226,48 +2271,142 @@ class RealignerPileupSeries:
             self.logger.debug(f'result_vcfspec: {result_vcfspec}')
 
             if (
-                (result_inactive.right_okay and result_vcfspec.right_okay) or
-                (
+                (result_inactive.right_okay and result_vcfspec.right_okay)
+                or (
                     result_vcfspec.right_low_depth or 
                     result_vcfspec.right_low_MQ or
                     result_vcfspec.touched_right_limit
-                ) or
-                (self.width > self.max_series_width)
+                ) 
+                or (self.width > self.params['max_series_width'])
             ):
                 break
             else:
                 assert result_vcfspec.touched_width_limit
                 split_points = right_pileup.get_split_points()
                 if len(split_points) == 0:
-                    rpileup_init_kwargs = self.rpileup_init_kwargs.copy()
-                    new_pileup = RealignerPileup(
-                        bam=self.bam, 
-                        chrom=self.chrom, start0=right_pileup.end0, end0=(right_pileup.end0 + 1), 
-                        refver=self.refver, fasta=self.fasta, 
-                        verbose=self.verbose, logger=self.logger,
-                        **rpileup_init_kwargs,
-                    )
-                    self.pileup_list.append(new_pileup)
+                    self.right_insert_new_pileup(width=1)
                 else:
                     split_pileups = right_pileup.split(split_points[-1:])
                     del self.pileup_list[-1]
                     self.pileup_list.extend(split_pileups)
 
                 right_pileup = self.pileup_list[-1]
-                right_pileup.start0_limit = right_pileup.start0
+                right_pileup.params['start0_limit'] = right_pileup.start0
 
-        touched_width_limit = self.width >= self.max_series_width
+        touched_width_limit = self.width >= self.params['max_series_width']
 
         self.logger.debug(f'Finished RealignerPileupSeries secure_right')
 
         return result_inactive, result_vcfspec, touched_width_limit
+
+#    def secure_left_old(self):
+#        self.logger.debug(f'Beginning RealignerPileupSeries secure_left')
+#
+#        left_pileup = self.pileup_list[0]
+#        left_pileup.end0_limit = left_pileup.end0
+#        while True:
+#            result_inactive, result_vcfspec = left_pileup.secure_margins()
+#
+#            self.logger.debug(self.pileup_list)
+#            self.logger.debug(f'self.start0: {self.start0}')
+#            self.logger.debug(f'result_inactive: {result_inactive}')
+#            self.logger.debug(f'result_vcfspec: {result_vcfspec}')
+#
+#            if (
+#                (result_inactive.left_okay and result_vcfspec.left_okay)
+#                or (
+#                    result_vcfspec.left_low_depth or 
+#                    result_vcfspec.left_low_MQ or 
+#                    result_vcfspec.touched_left_limit
+#                )
+#                or (self.width > self.max_series_width)
+#            ):
+#                break
+#            else:
+#                assert result_vcfspec.touched_width_limit
+#                split_points = left_pileup.get_split_points()
+#                if len(split_points) == 0:
+#                    rpileup_init_kwargs = self.rpileup_init_kwargs.copy()
+#                    new_pileup = RealignerPileup(
+#                        bam=self.bam, 
+#                        chrom=self.chrom, start0=(left_pileup.start0 - 1), end0=left_pileup.start0, 
+#                        refver=self.refver, fasta=self.fasta, 
+#                        verbose=self.verbose, logger=self.logger,
+#                        **rpileup_init_kwargs,
+#                    )
+#                    self.pileup_list.insert(0, new_pileup)
+#                else:
+#                    split_pileups = left_pileup.split(split_points[:1])
+#                    del self.pileup_list[0]
+#                    self.pileup_list = split_pileups + self.pileup_list
+#
+#                left_pileup = self.pileup_list[0]
+#                left_pileup.end0_limit = left_pileup.end0
+#
+#        touched_width_limit = self.width >= self.max_series_width
+#
+#        self.logger.debug(f'Finished RealignerPileupSeries secure_left')
+#
+#        return result_inactive, result_vcfspec, touched_width_limit
+#
+#    def secure_right_old(self):
+#        self.logger.debug(f'Beginning RealignerPileupSeries secure_right')
+#
+#        right_pileup = self.pileup_list[-1]
+#        right_pileup.start0_limit = right_pileup.start0
+#        while True:
+#            result_inactive, result_vcfspec = right_pileup.secure_margins()
+#
+#            self.logger.debug(self.pileup_list)
+#            self.logger.debug(f'self.end0: {self.end0}')
+#            self.logger.debug(f'result_inactive: {result_inactive}')
+#            self.logger.debug(f'result_vcfspec: {result_vcfspec}')
+#
+#            if (
+#                (result_inactive.right_okay and result_vcfspec.right_okay)
+#                or (
+#                    result_vcfspec.right_low_depth or 
+#                    result_vcfspec.right_low_MQ or
+#                    result_vcfspec.touched_right_limit
+#                ) or
+#                or (self.width > self.max_series_width)
+#            ):
+#                break
+#            else:
+#                assert result_vcfspec.touched_width_limit
+#                split_points = right_pileup.get_split_points()
+#                if len(split_points) == 0:
+#                    rpileup_init_kwargs = self.rpileup_init_kwargs.copy()
+#                    new_pileup = RealignerPileup(
+#                        bam=self.bam, 
+#                        chrom=self.chrom, start0=right_pileup.end0, end0=(right_pileup.end0 + 1), 
+#                        refver=self.refver, fasta=self.fasta, 
+#                        verbose=self.verbose, logger=self.logger,
+#                        **rpileup_init_kwargs,
+#                    )
+#                    self.pileup_list.append(new_pileup)
+#                else:
+#                    split_pileups = right_pileup.split(split_points[-1:])
+#                    del self.pileup_list[-1]
+#                    self.pileup_list.extend(split_pileups)
+#
+#                right_pileup = self.pileup_list[-1]
+#                right_pileup.start0_limit = right_pileup.start0
+#
+#        touched_width_limit = self.width >= self.max_series_width
+#
+#        self.logger.debug(f'Finished RealignerPileupSeries secure_right')
+#
+#        return result_inactive, result_vcfspec, touched_width_limit
 
     def get_splittable_region_best(self):
         # without splitting contig vcfspec
         return pr.concat(
             [
                 rpileup.get_vcfspec_margins_gr(
-                    subseq_portion_threshold=(rpileup.allele_portion_threshold * 2),
+                    subseq_portion_threshold=(
+                        rpileup.params['allele_portion_threshold'] * 2
+                    ),
                     inverse=True,
                     split_contig_vcfspec=False,
                 )
@@ -2279,7 +2418,9 @@ class RealignerPileupSeries:
         return pr.concat(
             [
                 rpileup.get_vcfspec_margins_gr(
-                    subseq_portion_threshold=(rpileup.allele_portion_threshold * 2),
+                    subseq_portion_threshold=(
+                        rpileup.params['allele_portion_threshold'] * 2
+                    ),
                     inverse=True,
                     split_contig_vcfspec=True,
                 )
@@ -2421,9 +2562,10 @@ class RealignerPileupSeries:
             ref_range0_right.start - int(cigartuples_right[0][1] + 20),
             ref_range0_right.start,
         )
-        alignment = RealignerPileup.main_aligner(
+        alignment = main_aligner(
             target=ref_seq,
             query=read_seq_right[:cigartuples_right[0][1]],
+            aligner=self.aligner,
             reverse_align=True,
         )
         new_cigartuples, offset = self.subseq_aln_to_cigartuples(
@@ -2447,9 +2589,10 @@ class RealignerPileupSeries:
             ref_range0_left.stop,
             ref_range0_left.stop + int(cigartuples_left[-1][1] + 20),
         )
-        alignment = RealignerPileup.main_aligner(
+        alignment = main_aligner(
             target=ref_seq,
             query=read_seq_left[-cigartuples_left[-1][1]:],
+            aligner=self.aligner,
             reverse_align=False,
         )
 
@@ -2736,38 +2879,30 @@ class MultisampleRealignerPileupSeries:
     def __init__(
         self, 
         bam_dict, 
-        chrom, start0, end0, 
+        chrom, 
+        start0, 
+        end0, 
         refver=None,
         fasta=None,
-        max_series_width=DEFAULT_RPILEUPSERIES_MAX_WIDTH, 
-        verbose=False, logger=None, 
+        aligner=DEFAULT_ALIGNER,
+        verbose=False, 
+        logger=None, 
+        init_blank=False,
         **kwargs,
     ):
         # set params
         self.chrom = chrom
         self.bam_dict = bam_dict
         self.refver, self.fasta = RealignerPileupBase.refver_fasta_arghandler(refver, fasta)
-        self.max_series_width = max_series_width
-
-        # set RealignerPileup kwargs
-        self.rpileup_init_kwargs = parse_rpileup_kwargs(**kwargs)
-        for k, v in self.rpileup_init_kwargs.items():
-            setattr(self, k, v)
-
-        # set logger
+        self.aligner = aligner
         self.verbose, self.logger = RealignerPileupBase.logger_arghandler(verbose, logger)
+        self.params = parse_rpileup_kwargs(**kwargs)
 
         # setup data
-        self.set_series_dict(start0, end0)  # self.pileupseries_dict
-        self.set_multisample_pileups()  # self.mspileup_list
-
-        #for sampleid, series in self.pileupseries_dict.items():
-        #    print(sampleid)
-        #    for rpup in series.pileup_list:
-        #        print(rpup)
-        #        print(rpup._subseq_alignments)
-
-        self.set_realigned_reads()
+        if not init_blank:
+            self.set_series_dict(start0, end0)  # self.pileupseries_dict
+            self.set_multisample_pileups()  # self.mspileup_list
+            self.set_realigned_reads()
 
     def set_series_dict(self, seed_start0, seed_end0):
         self.pileupseries_dict = dict()
@@ -2781,10 +2916,10 @@ class MultisampleRealignerPileupSeries:
                 chrom=self.chrom, start0=seed_start0, end0=seed_end0, 
                 refver=self.refver,
                 fasta=self.fasta, 
-                max_series_width=self.max_series_width,
+                aligner=self.aligner,
                 verbose=self.verbose,
                 logger=self.logger,
-                **self.rpileup_init_kwargs,
+                **self.params,
             )
             self.logger.debug(f'@@@ Finished initialization of RealignerPileupSeries of sample {sampleid} @@@\n\n')
 
@@ -2815,8 +2950,18 @@ class MultisampleRealignerPileupSeries:
                     pileup_ser.extend_left(width)
                     self.logger.debug(f'Finished EXTEND of {sampleid}\n')
 
+            #for sampleid, pileup_ser in self.pileupseries_dict.items():
+                #print(sampleid)
+                #print(pileup_ser.pileup_list[0].df)
+            #    print(pileup_ser.pileup_list[0].active_info)
+            #    print()
+            #print('----------------')
+
             # check if hit width limit
-            if any(pileup_ser.width >= self.max_series_width for pileup_ser in self.pileupseries_dict.values()):
+            if any(
+                pileup_ser.width >= self.params['max_series_width']
+                for pileup_ser in self.pileupseries_dict.values()
+            ):
                 break
             # secure
             for sampleid, pileup_ser in self.pileupseries_dict.items():
@@ -2843,8 +2988,18 @@ class MultisampleRealignerPileupSeries:
                     pileup_ser.extend_right(width)
                     self.logger.debug(f'Finished EXTEND of {sampleid}\n')
 
+            for sampleid, pileup_ser in self.pileupseries_dict.items():
+                print(sampleid)
+                #print(pileup_ser.pileup_list[-1].df)
+                print(pileup_ser.pileup_list[-1].active_info)
+                print()
+            print('----------------')
+
             # check if hit width limit
-            if any(pileup_ser.width >= self.max_series_width for pileup_ser in self.pileupseries_dict.values()):
+            if any(
+                pileup_ser.width >= self.params['max_series_width'] 
+                for pileup_ser in self.pileupseries_dict.values()
+            ):
                 break
             # secure
             for pileup_ser in self.pileupseries_dict.values():
@@ -2860,7 +3015,7 @@ class MultisampleRealignerPileupSeries:
         series_start0 = first_pileupseries.start0
         series_end0 = first_pileupseries.end0
         series_width = series_end0 - series_start0
-        max_pileup_width = first_pileupseries.pileup_list[0].max_pileup_width
+        max_pileup_width = first_pileupseries.pileup_list[0].params['max_pileup_width']
 
         # When there is no need to further split the series range
         if series_end0 - series_start0 <= max_pileup_width:
@@ -3054,7 +3209,10 @@ class MultisampleRealignerPileupSeries:
                     pileup_dict=pileup_dict, 
                     refver=self.refver,
                     fasta=self.fasta, 
-                    verbose=self.verbose, logger=self.logger,
+                    aligner=self.aligner,
+                    verbose=self.verbose, 
+                    logger=self.logger,
+                    **self.params,
                 )
             )
 
@@ -3072,6 +3230,10 @@ class MultisampleRealignerPileupSeries:
     ###########################
 
 
+class AlignmentFailureError(Exception):
+    pass
+
+
 class SparseInactiveRegionError(Exception):
     pass
 
@@ -3081,15 +3243,67 @@ class RealignmentCigarError(Exception):
 
 
 def parse_rpileup_kwargs(**kwargs):
-    if any(x not in DEFAULT_RPILEUP_PARAMS.keys() for x in kwargs.keys()):
-        raise Exception(f'Allowed kwargs keys are: {list(DEFAULT_RPILEUP_PARAMS.keys())}')
+    if any(x not in DEFAULT_PARAMS.keys() for x in kwargs.keys()):
+        raise Exception(f'Allowed kwargs keys are: {list(DEFAULT_PARAMS.keys())}')
 
-    rpileup_params = kwargs
-    for k, v in DEFAULT_RPILEUP_PARAMS.items():
-        if k not in rpileup_params:
-            rpileup_params[k] = v
+    params = kwargs
+    for k, v in DEFAULT_PARAMS.items():
+        if k not in params:
+            params[k] = v
 
-    return rpileup_params
+    return params
+
+
+def main_aligner(target, query, aligner, reverse_align=False, raise_with_tie=False, logger=None, row_spec=None, target_reversed=None):
+    if reverse_align:
+        if target_reversed is None:
+            target = target[::-1]
+        else:
+            target = target_reversed
+        query = query[::-1]
+
+    try:
+        alns = aligner.align(target, query)
+    except Exception as exc:
+        #raise Exception(f'Failed alignment:\nrow_spec: {row_spec}\nReference seq: {ref_seq}') from exc
+        raise AlignmentFailureError() from exc
+
+    try:
+        aln = main_aligner_helper(alns, raise_with_tie, reverse_align)
+    except common.TimeoutError:
+        #if logger is not None:
+        #    logger.debug(
+        #        f'Skipping alignments tiebreaking due to timeout;\nrow_spec: {row_spec}\n'
+        #        f'Num of alignments: {len(alns)}; row_spec: {row_spec}'
+        #    )
+        aln = alns[0]
+        aln = alignhandler.amend_outer_insdel_both(aln)
+        if reverse_align:
+            aln = alignhandler.reverse_alignment(aln)
+        
+    return aln
+
+
+@common.timeout(0.05)
+def main_aligner_helper(alns, raise_with_tie, reverse_align):
+    # amend outer insdel, remove duplicates
+    alns = list(
+        alignhandler.remove_identical_alignments(
+            alignhandler.amend_outer_insdel_both(x) for x in alns
+        )
+    )
+    # select one
+    if len(alns) == 1:
+        aln = alns[0]
+    else:
+        # tiebreaking
+        aln = alignhandler.alignment_tiebreaker(alns, raise_with_failure=raise_with_tie)
+    # reverse - should be done after tiebreaking
+    if reverse_align:
+        aln = alignhandler.reverse_alignment(aln)
+
+    return aln
+
 
 
 #def parse_rpileup_kwargs_old(**kwargs):

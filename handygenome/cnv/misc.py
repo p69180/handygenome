@@ -1,7 +1,10 @@
+import os
 import collections
 import random
 import itertools
-import array
+import functools
+import multiprocessing
+import operator
 
 import Bio.SeqUtils
 import numpy as np
@@ -13,28 +16,299 @@ import scipy
 #from scipy.stats.mstats import winsorize
 
 import handygenome.common as common
+import handygenome.pyranges_helper as pyranges_helper
 import handygenome.cnv.mosdepth as libmosdepth
+import handygenome.cnv.sequenza_handler as sequenza_handler
+import handygenome.cnv.gcfraction as gcfraction
 
 
 MALE_HAPLOID_CHROMS = ('X', 'Y', 'chrX', 'chrY')
 
-CCFResult = collections.namedtuple('CCFResult', ('CNm', 'ccf', 'mutated_allele'))
+
+class CCFInfo(
+    collections.namedtuple('CCFInfo', ('CNm', 'ccf', 'mutated_allele'))
+):
+    pass
 
 
 def theoretical_depth_ratio(CNt, cellularity, ploidy, CNn=2, normal_ploidy=2, avg_depth_ratio=1):
+    """Args:
+        CNn, normal_ploidy must be nonzero
+    """
     cellularity_term = ((CNt / CNn) * cellularity) + (1 - cellularity)
     ploidy_term = ((ploidy / normal_ploidy) * cellularity) + (1 - cellularity)
     return (avg_depth_ratio * cellularity_term) / ploidy_term
 
 
-def theoretical_baf(CNt, CN_B, cellularity, CNn=2):
+def inverse_theoretical_depth_ratio(depth_ratio, cellularity, ploidy, CNn=2, normal_ploidy=2, avg_depth_ratio=1):
+    """Args:
+        cellularity must be nonzero
+    Returns:
+        CNt estimate
+    """
+    ploidy_term = ((ploidy / normal_ploidy) * cellularity) + (1 - cellularity)
+    # depth_ratio * ploidy_term == avg_depth_ratio * cellularity_term
+    return (((depth_ratio * ploidy_term) / avg_depth_ratio) - (1 - cellularity)) * (CNn / cellularity)
+
+
+@functools.cache
+def delta_depth_ratio(cellularity, ploidy, CNn=2, normal_ploidy=2, avg_depth_ratio=1):
+    ploidy_term = ((ploidy / normal_ploidy) * cellularity) + (1 - cellularity)
+    return (avg_depth_ratio / ploidy_term) * (cellularity / CNn)
+
+
+def theoretical_baf(CNt, B, cellularity, CNn=2):
     if CNn <= 1:
         return None
     else:
-        return (
-            ((CN_B * cellularity) + (1 - cellularity)) /
-            ((CNt * cellularity) + CNn * (1 - cellularity))
+        denominator = (CNt * cellularity) + CNn * (1 - cellularity)
+        if denominator == 0:
+            return None
+        else:
+            return ((B * cellularity) + (1 - cellularity)) / denominator
+
+
+def inverse_theoretical_baf(baf, cellularity, CNt, CNn=2):
+    """Args:
+        cellularity must be nonzero
+    Returns:
+        B estimate
+    """
+    # baf * ((CNt * cellularity) + CNn * (1 - cellularity)) == (B * cellularity) + (1 - cellularity)
+    # baf * ((CNt * cellularity) + CNn * (1 - cellularity)) - (1 - cellularity) == (B * cellularity)
+    return (baf * ((CNt * cellularity) + CNn * (1 - cellularity)) - (1 - cellularity)) / cellularity
+
+
+def get_B(CNt, cellularity, baf):
+    B_estimate = inverse_theoretical_baf(baf, cellularity, CNt)
+    if B_estimate <= 0:
+        B = 0
+        theo_baf = theoretical_baf(CNt, B, cellularity)
+        if theo_baf is None:
+            B = None
+            diff = None
+        else:
+            diff = abs(baf - theo_baf)
+    else:
+        B_candidate_upper = int(np.ceil(B_estimate))
+        B_candidate_lower = int(np.floor(B_estimate))
+
+        theo_baf_upper = theoretical_baf(CNt, B_candidate_upper, cellularity)
+        theo_baf_lower = theoretical_baf(CNt, B_candidate_lower, cellularity)
+
+        if (theo_baf_upper is None) and (theo_baf_lower is None):
+            B = None
+            diff = None
+        elif (theo_baf_upper is not None) and (theo_baf_lower is None):
+            B = B_candidate_upper
+            diff = abs(baf - theo_baf_upper)
+        elif (theo_baf_upper is None) and (theo_baf_lower is not None):
+            B = B_candidate_lower
+            diff = abs(baf - theo_baf_lower)
+        else:
+            diff_upper = abs(theo_baf_upper - baf)
+            diff_lower = abs(theo_baf_lower - baf)
+            if diff_upper <= diff_lower:
+                B = B_candidate_upper
+                diff = diff_upper
+            else:
+                B = B_candidate_lower
+                diff = diff_lower
+
+    return B, diff
+
+
+def get_CN_from_cp(cellularity, ploidy, depth_ratio, baf, CNt_weight=1):
+    def save_cache(CNt_candidate, B_cache, score_cache, baf_diff_cache):
+        B, baf_diff = get_B(CNt_candidate, cellularity, baf)
+        if B is None:
+            # drop this CNt candidate if B cannot be calculated
+            return
+
+        ratio_diff = abs(theoretical_depth_ratio(CNt_candidate, cellularity, ploidy) - depth_ratio)
+        B_cache[CNt_candidate] = B
+        baf_diff_cache[CNt_candidate] = baf_diff
+        score_cache[CNt_candidate] = ratio_diff * CNt_weight + baf_diff
+
+    # get initial CNt candidates
+    CNt_estimate = inverse_theoretical_depth_ratio(depth_ratio, cellularity, ploidy)
+    if CNt_estimate <= 0:
+        initial_candidate_upper = 0
+        initial_candidate_lower = None
+    else:
+        initial_candidate_upper = int(np.ceil(CNt_estimate))
+        initial_candidate_lower = int(np.floor(CNt_estimate))
+
+    # set caches
+    B_cache = dict()
+    score_cache = dict()
+    baf_diff_cache = dict()
+
+    delta_ratio = delta_depth_ratio(cellularity, ploidy) * CNt_weight
+
+    # upper
+    save_cache(initial_candidate_upper, B_cache, score_cache, baf_diff_cache)
+    if initial_candidate_upper in baf_diff_cache:
+        n_further_candidates = int(baf_diff_cache[initial_candidate_upper] / delta_ratio)
+        for offset in range(n_further_candidates):
+            CNt_candidate = initial_candidate_upper + (offset + 1)
+            save_cache(CNt_candidate, B_cache, score_cache, baf_diff_cache)
+    # lower
+    if initial_candidate_lower is not None:
+        save_cache(initial_candidate_lower, B_cache, score_cache, baf_diff_cache)
+        if initial_candidate_lower in baf_diff_cache:
+            try:
+                n_further_candidates = int(baf_diff_cache[initial_candidate_lower] / delta_ratio)
+            except:
+                print(cellularity, ploidy, depth_ratio, baf)
+                print(baf, baf_diff_cache[initial_candidate_lower], initial_candidate_lower, delta_ratio)
+                raise
+
+            for offset in range(n_further_candidates):
+                CNt_candidate = initial_candidate_lower - (offset + 1)
+                if CNt_candidate < 0:
+                    break
+                save_cache(CNt_candidate, B_cache, score_cache, baf_diff_cache)
+
+    # result
+    if len(score_cache) == 0:
+        return None, None, None
+    else:
+        selected_CNt, score = min(score_cache.items(), key=operator.itemgetter(1))
+        selected_B = B_cache[selected_CNt]
+        selected_score = score_cache[selected_CNt]
+        return selected_CNt, selected_B, selected_score
+
+
+def get_CN_from_cp_wo_baf(cellularity, ploidy, depth_ratio, CNt_weight=1):
+    CNt_estimate = inverse_theoretical_depth_ratio(depth_ratio, cellularity, ploidy)
+    if CNt_estimate <= 0:
+        CNt = 0
+        diff = abs(theoretical_depth_ratio(CNt, cellularity, ploidy) - depth_ratio)
+        score = diff * CNt_weight
+    else:
+        upper_candidate = int(np.ceil(CNt_estimate))
+        lower_candidate = int(np.floor(CNt_estimate))
+
+        upper_diff = abs(theoretical_depth_ratio(upper_candidate, cellularity, ploidy) - depth_ratio)
+        lower_diff = abs(theoretical_depth_ratio(lower_candidate, cellularity, ploidy) - depth_ratio)
+        if upper_diff <= lower_diff:
+            CNt = upper_candidate
+            score = upper_diff * CNt_weight
+        else:
+            CNt = lower_candidate
+            score = lower_diff * CNt_weight
+
+    return CNt, None, score  # B is None
+
+
+def calc_cp_score(segment_df, cellularity, ploidy, is_female, CNt_weight=1):
+    score_sum = 0
+    for idx, row in segment_df.iterrows():
+        if np.isnan(row['depth_mean']):
+            continue
+
+        if check_haploid(is_female, row['Chromosome']) or np.isnan(row['baf_mean']):
+            CNt, B, score = get_CN_from_cp_wo_baf(cellularity, ploidy, row['depth_mean'], CNt_weight=CNt_weight)
+        else:
+            CNt, B, score = get_CN_from_cp(cellularity, ploidy, row['depth_mean'], row['baf_mean'], CNt_weight=CNt_weight)
+
+        if score is not None:
+            score_sum += score
+
+    return score_sum
+
+
+def get_cp_score_dict(segment_df, is_female, CNt_weight=1, nproc=None):
+    c_candidates = np.round(np.arange(0.01, 1.01, 0.01), 2)
+    p_candidates = np.round(np.arange(1, 7.1, 0.1), 1)
+    cp_pairs = tuple(itertools.product(c_candidates, p_candidates))
+    with multiprocessing.Pool(nproc) as pool:
+        scorelist = pool.starmap(
+            calc_cp_score, 
+            ((segment_df, x[0], x[1], is_female, CNt_weight) for x in cp_pairs),
         )
+    cp_scores = dict(zip(cp_pairs, scorelist))
+    return cp_scores
+
+
+def get_cpscore_peaks(cp_scores):
+    c_list = sorted(set((x[0] for x in cp_scores.keys())))
+    p_list = sorted(set((x[1] for x in cp_scores.keys())))
+    cpscore_df_source = dict()
+    for c in c_list:
+        cpscore_df_source[c] = [cp_scores[(c, p)] for p in p_list]
+    cpscore_df = pd.DataFrame.from_dict(cpscore_df_source)
+    cpscore_df.index = p_list
+    cpscore_df = -1 * cpscore_df  # to be run with get_fitresult_peaks function
+
+    peaks = sequenza_handler.get_fitresult_peaks(cpscore_df)
+    for x in peaks:
+        x['score'] = -1 * x['lpp'] 
+        del x['lpp']
+
+    return peaks
+
+
+def add_CN_to_segment(segment_df, cellularity, ploidy, is_female, CNt_weight=1):
+    CNt_list = list()
+    B_list = list()
+    score_list = list()
+    for idx, row in segment_df.iterrows():
+        if np.isnan(row['depth_mean']):
+            CNt, B, score = None, None, None
+        else:
+            if check_haploid(is_female, row['Chromosome']) or np.isnan(row['baf_mean']):
+                CNt, B, score = get_CN_from_cp_wo_baf(cellularity, ploidy, row['depth_mean'], CNt_weight=CNt_weight)
+            else:
+                CNt, B, score = get_CN_from_cp(cellularity, ploidy, row['depth_mean'], row['baf_mean'], CNt_weight=CNt_weight)
+
+        if CNt is None:
+            CNt = np.nan
+        if B is None:
+            B = np.nan
+        if score is None:
+            score = np.nan
+
+        CNt_list.append(CNt)
+        B_list.append(B)
+        score_list.append(score)
+
+    return segment_df.assign(**{'CNt': CNt_list, 'B': B_list, 'score': score_list})
+
+
+def add_theoreticals_to_segment(segment_df, cellularity, ploidy, is_female):
+    theo_depthratio_list = list()
+    theo_baf_list = list()
+    for idx, row in segment_df.iterrows():
+        if np.isnan(row['CNt']):
+            theo_depthratio = np.nan
+            theo_baf = np.nan
+        else:
+            if check_haploid(is_female, row['Chromosome']):
+                CNn = 1
+            else:
+                CNn = 2
+
+            # depthratio
+            theo_depthratio = theoretical_depth_ratio(row['CNt'], cellularity, ploidy, CNn=CNn)
+            # baf
+            if np.isnan(row['B']):
+                theo_baf = np.nan
+            else:
+                theo_baf = theoretical_baf(row['CNt'], row['B'], cellularity, CNn=CNn)
+                if theo_baf is None:
+                    theo_baf = np.nan
+
+        theo_depthratio_list.append(theo_depthratio)
+        theo_baf_list.append(theo_baf)
+
+    return segment_df.assign(
+        **{'predicted_depth_ratio': theo_depthratio_list, 'predicted_baf': theo_baf_list}
+    )
+    
+
+###################################
 
 
 def get_mean_ploidy(seg_df):
@@ -93,7 +367,7 @@ def get_ccf_CNm(vaf, cellularity, CNt, CNB=None, likelihood='diff', total_read=N
         CNt == 0 or
         np.isnan(vaf)
     ):
-        return CCFResult(None, None, None)
+        return CCFInfo(None, None, None)
 
     # get CNA
     if CNB is None:
@@ -149,70 +423,16 @@ def get_ccf_CNm(vaf, cellularity, CNt, CNB=None, likelihood='diff', total_read=N
             else:
                 mutated_allele = None
 
-    return CCFResult(CNm, ccf, mutated_allele)
+    return CCFInfo(CNm, ccf, mutated_allele)
 
 
 def check_haploid(is_female, chrom):
     return (not is_female) and (chrom in MALE_HAPLOID_CHROMS)
 
 
-
-###############################################
-
-# gc & depth processsing
-
-def add_gc_to_gr(gr, fasta, window=None):
-    """Args:
-        gr: pyranges.PyRanges
-
-    Changes in-place
-    """
-    gr.GC = make_gc(gr.Chromosome, gr.Start, gr.End, fasta, window=window)
-        
-
-def add_gc_to_df(df, fasta, window=None):
-    """Args:
-        df: pandas.DataFrame
-
-    Changes in-place
-    """
-    df.insert(
-        df.shape[1], 'GC', make_gc(df['Chromosome'], df['Start'], df['End'], fasta, window=window)
-    )
-        
-
-def make_gc(chroms, start0s, end0s, fasta, window=None):
-    if window is None:
-        def get_fetchargs(chrom, start0, end0):
-            return chrom, start0, end0
-    else:
-        chromlens = dict(zip(fasta.references, fasta.lengths))
-
-        pad_left = int(window / 2)
-        if window % 2 == 0:
-            pad_right = pad_left
-        else:
-            pad_right = pad_left + 1
-
-        def get_fetchargs(chrom, start0, end0):
-            if end0 - start0 >= window:
-                return chrom, start0, end0
-            else:
-                mid = int((start0 + end0) / 2)
-                new_start0 = max(0, mid - pad_left)
-                new_end0 = min(chromlens[chrom], mid + pad_right)
-                return chrom, new_start0, new_end0
-
-    return array.array(
-        'f',
-        (
-            Bio.SeqUtils.gc_fraction(
-                fasta.fetch(*get_fetchargs(chrom, start0, end0))
-            )
-            for chrom, start0, end0 in zip(chroms, start0s, end0s)
-        )
-    )
-
+##############################
+# depth processing functions #
+##############################
 
 def get_gc_breaks(n_bin):
     breaks = np.linspace(0, 1, (n_bin + 1), endpoint=True)
@@ -220,7 +440,20 @@ def get_gc_breaks(n_bin):
     return breaks
 
 
-# not used
+def get_depth_df_from_file(chroms, start0s, end0s, depth_file_path):
+    preset_depth_df = pd.read_csv(
+        depth_file_path, 
+        sep='\t', 
+        names=('Chromosome', 'Start', 'End', 'depth'), 
+        dtype={'Chromosome': str, 'Start': int, 'End': int, 'depth': float},
+    )
+    preset_depth_gr = pr.PyRanges(preset_depth_df)
+    result_gr = pr.PyRanges(chromosomes=chroms, starts=start0s, ends=end0s)
+    result_gr = pyranges_helper.join(result_gr, preset_depth_gr, how='left', merge='weighted_mean', as_gr=True)
+    return result_gr
+
+
+# NOT USED
 def get_gc_depth_data(depth_df, n_bin):
     assert 'GC' in depth_df.columns
 
@@ -287,7 +520,7 @@ def postprocess_depth_df(
         depth_df.loc[depth_df['mean_depth'] >= nan_upper_cutoff, ['mean_depth']] = np.nan
 
     # GC
-    add_gc_to_df(depth_df, fasta, window=gc_window)
+    gcfraction.add_gc_calculating(depth_df, fasta, window=gc_window)
 
     # norm_mean_depth
     depth_df_wo_nan = depth_df.loc[~np.isnan(depth_df['mean_depth']), :]
@@ -310,9 +543,51 @@ def postprocess_depth_df(
     depth_df.insert(depth_df.shape[1], 'sequenza_style_norm_mean_depth', (depth_df['mean_depth'].array / gcbin_average_depths_selected.array))
 
     if as_gr:
-        return pr.PyRanges(depth_df, int64=True)
+        return pr.PyRanges(depth_df, int64=False)
     else:
         return depth_df
+
+
+def get_processed_depth_df(bam_path, fasta, region_gr, outlier_cutoffs='wgs', donot_subset_bam=False, as_gr=False):
+    # set params
+    assert isinstance(outlier_cutoffs, [tuple, list]) or outlier_cutoffs in ('wgs', 'panel')
+
+    if outlier_cutoffs == 'wgs':
+        lower_cutoff = 0
+        upper_cutoff = 2000
+    elif outlier_cutoffs == 'panel':
+        lower_cutoff = 50
+        upper_cutoff = np.inf
+    else:
+        lower_cutoff, upper_cutoff = outlier_cutoffs
+
+    # run mosdepth
+    depth_df, _ = libmosdepth.run_mosdepth(
+        bam_path,
+        t=8, 
+        region_gr=region_gr, 
+        donot_subset_bam=donot_subset_bam, 
+        as_gr=False, 
+        load_perbase=False,
+    )
+
+    # postprocess
+    depth_gr = cnvmisc.postprocess_depth_df(
+        depth_df, 
+        fasta, 
+
+        gcdata_trim_limits=(0.05, 0.05),
+        gcdata_lower_cutoff=lower_cutoff,
+        gcdata_upper_cutoff=upper_cutoff,
+        nan_lower_cutoff=lower_cutoff,
+        nan_upper_cutoff=upper_cutoff,
+
+        n_gcbin=100,
+        as_gr=as_gr, 
+        gc_window=None,
+    )
+
+    return depth_gr
 
 
 def arghandler_ylims(ydata, ylims):
@@ -360,6 +635,9 @@ def plot_gc_depth(
     alpha=0.6,
     linewidth=1,
 ):
+    """Intended to be used with short regions (~10kb)
+    GC fraction value is calculated for every single base, with a window "gc_window" wide.
+    """
     pad_left = int(gc_window / 2)
     if gc_window % 2 == 0:
         pad_right = pad_left

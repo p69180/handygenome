@@ -104,15 +104,15 @@ def setup_vep(
 
 
 def make_vepinput(split_infile_path, vepinput_path, fasta, chromdict):
-    def add_outvr_nonsv(vr, in_vcf, out_vr_list):
+    def modify_outvr_nonsv(vr, out_vcf_header, out_vr_list):
         vcfspec = libvcfspec.Vcfspec.from_vr(vr)
         for sub_vcfspec in vcfspec.iter_monoalts():
-            new_vr = in_vcf.header.new_record()
+            new_vr = out_vcf_header.new_record()
             sub_vcfspec.apply_to_vr(new_vr)
             new_vr.id = sub_vcfspec.get_id()
             out_vr_list.append(new_vr)
 
-    def add_outvr_sv(vr, in_vcf, out_vr_list, bnds, fasta):
+    def modify_outvr_sv(vr, in_vcf, out_vr_list, bnds, fasta):
         vr_bnd1 = in_vcf.header.new_record()
         vr_bnd1.contig = bnds.chrom_bnd1
         vr_bnd1.pos = bnds.pos_bnd1
@@ -129,36 +129,62 @@ def make_vepinput(split_infile_path, vepinput_path, fasta, chromdict):
         vr_bnd2.id = bnds.get_id_bnd2()
         out_vr_list.append(vr_bnd2)
 
-    def add_outvr_cpgmet(vr, in_vcf, out_vr_list):
-        new_vr = in_vcf.header.new_record()
+    def modify_outvr_cpgmet(vr, out_vcf_header, out_vr_list):
+        new_vr = out_vcf_header.new_record()
         vcfspec = libvcfspec.Vcfspec.from_vr(vr)
         vcfspec.apply_to_vr(new_vr)
         new_vr.alts = ("N",)
         new_vr.id = vcfspec.get_id()
         out_vr_list.append(new_vr)
 
-    with pysam.VariantFile(split_infile_path) as in_vcf:
-        with pysam.VariantFile(
-            vepinput_path, mode="wz", header=in_vcf.header
-        ) as out_vcf:
-            out_vr_list = list()
-            for vr in in_vcf.fetch():
-                if varianthandler.check_SV(vr):
-                    pass
-                #                    vr_svinfo = breakends.get_vr_svinfo_standard_vr(
-                #                        vr, fasta, chromdict)
-                #                    if vr_svinfo['is_bnd1']:
-                #                        bnds = breakends.get_bnds_from_vr_svinfo(
-                #                            vr, vr_svinfo, fasta, chromdict)
-                #                        add_outvr_sv(vr, in_vcf, out_vr_list, bnds, fasta)
-                elif varianthandler.check_cpgmet(vr):
-                    add_outvr_cpgmet(vr, in_vcf, out_vr_list)
-                else:
-                    add_outvr_nonsv(vr, in_vcf, out_vr_list)
+    in_vcf = pysam.VariantFile(split_infile_path)
+    out_vcf_header = in_vcf.header.copy()
+    libvcfspec.VcfspecComponents.add_meta(out_vcf_header)
+    out_vcf = pysam.VariantFile(vepinput_path, mode="wz", header=out_vcf_header)
 
-            out_vr_list.sort(key=common.get_vr_sortkey(chromdict))
-            for vr in out_vr_list:
-                out_vcf.write(vr)
+    out_vr_list = list()
+    for vr in in_vcf.fetch():
+        if varianthandler.check_SV(vr):
+            pass
+        #                    vr_svinfo = breakends.get_vr_svinfo_standard_vr(
+        #                        vr, fasta, chromdict)
+        #                    if vr_svinfo['is_bnd1']:
+        #                        bnds = breakends.get_bnds_from_vr_svinfo(
+        #                            vr, vr_svinfo, fasta, chromdict)
+        #                        modify_outvr_sv(vr, in_vcf, out_vr_list, bnds, fasta)
+        elif varianthandler.check_cpgmet(vr):
+            modify_outvr_cpgmet(vr, out_vcf_header, out_vr_list)
+        else:
+            modify_outvr_nonsv(vr, out_vcf_header, out_vr_list)
+
+    out_vr_list.sort(key=common.get_vr_sortkey(chromdict))
+    for vr in out_vr_list:
+        out_vcf.write(vr)
+
+    out_vcf.close()
+    in_vcf.close()
+
+
+#    with pysam.VariantFile(split_infile_path) as in_vcf:
+#        with pysam.VariantFile(vepinput_path, mode="wz", header=in_vcf.header) as out_vcf:
+#            out_vr_list = list()
+#            for vr in in_vcf.fetch():
+#                if varianthandler.check_SV(vr):
+#                    pass
+#                #                    vr_svinfo = breakends.get_vr_svinfo_standard_vr(
+#                #                        vr, fasta, chromdict)
+#                #                    if vr_svinfo['is_bnd1']:
+#                #                        bnds = breakends.get_bnds_from_vr_svinfo(
+#                #                            vr, vr_svinfo, fasta, chromdict)
+#                #                        modify_outvr_sv(vr, in_vcf, out_vr_list, bnds, fasta)
+#                elif varianthandler.check_cpgmet(vr):
+#                    modify_outvr_cpgmet(vr, in_vcf, out_vr_list)
+#                else:
+#                    modify_outvr_nonsv(vr, in_vcf, out_vr_list)
+#
+#            out_vr_list.sort(key=common.get_vr_sortkey(chromdict))
+#            for vr in out_vr_list:
+#                out_vcf.write(vr)
 
 
 def run_vep(vepinput_path, vepoutput_path, fasta_path, species, assembly, distance):
@@ -239,7 +265,7 @@ def add_annotations(
         tabixfile_repeats,
         distance,
     ):
-        transcript_set_list = ensembl_feature.TranscriptSetALTlist()
+        transcript_set_list = ensembl_feature.TranscriptSetALTlist(is_missing=False)
         for alt_idx, vcfspec_monoalt in enumerate(vcfspec.iter_monoalts()):
             vep_vr = vep_vr_dict[vcfspec_monoalt.get_id()]
             parsed = ensembl_parser.parse_cmdline_vep(vep_vr)
@@ -265,7 +291,7 @@ def add_annotations(
 
                 motif_set = parsed["motif"]
 
-        repeat_set = ensembl_feature.RepeatSet()
+        repeat_set = ensembl_feature.RepeatSet(is_missing=False)
         repeat_set.update_repeatmasker_bed(
             vcfspec, chromdict, distance, tabixfile_repeats
         )

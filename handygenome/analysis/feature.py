@@ -1,3 +1,4 @@
+import numpy as np
 import pyranges as pr
 
 from handygenome.common import Interval
@@ -18,18 +19,50 @@ def get_gene_coords(gene_names, refver):
     return result
 
 
+def get_gene_coords_gr(gene_names, refver):
+    """Genes not searchable from "Ensembl REST lookup symbol" are discarded
+    """
+    gene_names = list(gene_names)
+    data = get_gene_coords(gene_names, refver)
+    chroms = list()
+    starts = list()
+    ends = list()
+    valid_genes = list()
+
+    for gene in gene_names:
+        if gene in data.keys():
+            intv = data[gene]
+            chroms.append(intv.chrom)
+            starts.append(intv.start0)
+            ends.append(intv.end0)
+            valid_genes.append(gene)
+        else:
+            continue
+
+    return pr.from_dict({
+        'Chromosome': chroms,
+        'Start': starts,
+        'End': ends,
+        'gene_name': valid_genes,
+    })
+
+
 def get_gene_exon_coords(gene_names, refver):
     result = dict()
     rest_result = ensembl_rest.lookup_symbol_post(gene_names, refver, expand=True)
     for x in rest_result:
-        gene_name = x['display_name']
-        chrom = x['seq_region_name']
-        start0 = x['start'] - 1
-        end0 = x['end']
+            
+        #chrom = x['seq_region_name']
+        #start0 = x['start'] - 1
+        #end0 = x['end']
 
+        gene_name = x['display_name']
         result[gene_name] = dict()
-        result[gene_name]['chrom'] = chrom
-        result[gene_name]['gene'] = range(start0, end0)
+        result[gene_name]['chrom'] = x['seq_region_name']
+        result[gene_name]['gene'] = range(x['start'] - 1, x['end'])
+        if x['strand'] not in (1, -1):
+            raise Exception(f'"strand" value from REST lookup result is neither 1 nor -1.')
+        result[gene_name]['is_forward'] = (x['strand'] == 1)
 
         transcript_info = parse_transcript_info_from_lookup_symbol(x)
         for key, val in transcript_info.items():

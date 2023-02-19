@@ -105,6 +105,9 @@ class PileupBase:
         verbose=False, 
         logger=None,
     ):
+        """Args:
+            start0 and end0 are only required when init_df == True
+        """
         # set params
         self.bam = bam
         self.chrom = chrom
@@ -154,25 +157,31 @@ class PileupBase:
             raise Exception('Input "pos0" argument is out of pileup range.')
 
     def _set_MQ(self):
-        if self.df.shape[0] > 0:
-            MQ_data = {pos0: list() for pos0 in self.df.columns}
-            for read_uid, row in self.df.iterrows():
-                read = self.read_store[read_uid]
-                start0 = max(self.start0, read.reference_start)
-                end0 = min(self.end0, read.reference_end)
-                for pos0 in range(start0, end0):
-                    MQ_data[pos0].append(read.mapping_quality)
-            self.MQ = pd.Series(
-                [np.mean(MQ_data[pos0]) for pos0 in self.df.columns],
-                index=self.df.columns,
-            )
+        if self.df.shape[1] == 0:
+            self.MQ = pd.Series([], dtype=float)
         else:
-            self.MQ = pd.Series(
-                [np.inf] * self.df.shape[1],
-                index=self.df.columns,
-            )
+            if self.df.shape[0] > 0:
+                MQ_data = {pos0: list() for pos0 in self.df.columns}
+                for read_uid, row in self.df.iterrows():
+                    read = self.read_store[read_uid]
+                    start0 = max(self.start0, read.reference_start)
+                    end0 = min(self.end0, read.reference_end)
+                    for pos0 in range(start0, end0):
+                        MQ_data[pos0].append(read.mapping_quality)
+                self.MQ = pd.Series(
+                    [
+                        np.nan if (len(MQ_data[pos0]) == 0) else np.mean(MQ_data[pos0])
+                        for pos0 in self.df.columns
+                    ],
+                    index=self.df.columns,
+                )
+            else:
+                self.MQ = pd.Series(
+                    [np.inf] * self.df.shape[1],
+                    index=self.df.columns,
+                )
 
-    def _spawn_base(self, attrs_to_copy):
+    def _spawn_base(self, attrs_to_copy, init_df=False):
         """Make a partial copy of self with essential attributes"""
         #for key in inspect.signature(self.__init__).parameters.keys():
         #    if key not in ('init_df', 'start0', 'end0'):
@@ -181,7 +190,7 @@ class PileupBase:
         kwargs = dict()
         for key in attrs_to_copy: 
             kwargs[key] = getattr(self, key)
-        kwargs['init_df'] = False
+        kwargs['init_df'] = init_df
 
         result = self.__class__(**kwargs)
         result.read_store = self.read_store
@@ -237,7 +246,14 @@ class PileupBase:
         self.df = left.df.join(right.df, how="outer")
         self.MQ = pd.concat([left.MQ, right.MQ])
 
-        self.df[self.df.isnull()] = self.__class__.EMPTY_VALUE  # turn NaN into EMPTY_VALUE
+#        try:
+#            self.df[self.df.isnull()] = self.__class__.EMPTY_VALUE  # turn NaN into EMPTY_VALUE
+#        except:
+#            print(self.df.shape)
+#            print(self.df)
+#            print(type(self.df.iloc[0, 0]))
+#            raise
+        self.df = self.df.where(self.df.notna(), other=self.__class__.EMPTY_VALUE)
         self._handle_facing_insclips(border_col_idx_left)
         self.read_store.update(other.read_store)
 
@@ -333,7 +349,8 @@ class Pileup(PileupBase):
 
     def spawn(self):
         return self._spawn_base(
-            ('bam', 'chrom', 'refver', 'fasta', 'verbose', 'logger')
+            ('bam', 'chrom', 'refver', 'fasta', 'verbose', 'logger'),
+            init_df=False,
         )
 
     # extend

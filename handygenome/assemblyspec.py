@@ -5,26 +5,28 @@ import re
 
 import collections
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
+import handygenome.common as common
 
 
 DATA_DIR = os.path.join(common.DATA_DIR, 'assembly_reports')
 if not os.path.exists(DATA_DIR):
     os.mkdir(DATA_DIR)
 
-URLS = {
+
+ASSEMBLYFILE_URLS = common.RefverDict({
     'NCBI36': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Homo_sapiens/all_assembly_versions/GCF_000001405.12_NCBI36/GCF_000001405.12_NCBI36_assembly_report.txt',
     'GRCh37': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Homo_sapiens/all_assembly_versions/GCF_000001405.25_GRCh37.p13/GCF_000001405.25_GRCh37.p13_assembly_report.txt',
     'GRCh38': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Homo_sapiens/all_assembly_versions/GCF_000001405.39_GRCh38.p13/GCF_000001405.39_GRCh38.p13_assembly_report.txt',
 
     'GRCm38': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Mus_musculus/all_assembly_versions/GCF_000001635.26_GRCm38.p6/GCF_000001635.26_GRCm38.p6_assembly_report.txt',
     'GRCm39': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Mus_musculus/all_assembly_versions/GCF_000001635.27_GRCm39/GCF_000001635.27_GRCm39_assembly_report.txt',
-}
+})
 
-PATHS = {key: os.path.join(DATA_DIR, os.path.basename(val))
-         for (key, val) in URLS.items()}
+
+PATHS = {
+    key: os.path.join(DATA_DIR, os.path.basename(val))
+    for (key, val) in ASSEMBLYFILE_URLS.items()
+}
 
 
 #INVALID_NAMES = [ 'NT_187507.1' ]
@@ -36,7 +38,7 @@ ASSEMBLY_REPORT_KEYDICT = {
     'refseq': 'RefSeq-Accn',
     'length': 'Sequence-Length',
     'role': 'Sequence-Role',
-    }
+}
 
 
 class AssemblySpec:
@@ -49,7 +51,7 @@ class AssemblySpec:
             'nochr_plus_genbank': ['1', '2', ... 'GL000191.1', ... ],
             'genbank': ['CM000663.1', 'CM000664.1', ... ],
             'refseq': ['NC_000001.11', 'NC_000002.12', ... ],
-            }
+        }
         dicts: {('ucsc', 'genbank'): dict, ... }
         chromdicts: {'ucsc': common.ChromDict object, ... }
         versions: All self.data keys except 'length' and 'role'
@@ -175,19 +177,21 @@ def parse_assembly_report(assembly_report_path):
 
 
 def get_assemblyspec_data(refver):
-    assemblyfile_url = URLS[refver]
+    assemblyfile_url = ASSEMBLYFILE_URLS[refver]
     assembly_report_path = PATHS[refver]
     if not os.path.exists(assembly_report_path):
         common.download(assemblyfile_url, assembly_report_path)
 
     return parse_assembly_report(assembly_report_path)
+    
 
 
 ##############################################################################
 
+
 SPECS = common.RefverDict(
     {
         refver: AssemblySpec(get_assemblyspec_data(refver))
-        for refver in URLS.keys()
+        for refver in ASSEMBLYFILE_URLS.keys()
     }
 )
