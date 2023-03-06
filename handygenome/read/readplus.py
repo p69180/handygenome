@@ -645,13 +645,6 @@ class ReadPlus:
         self.alleleclass[vcfspec] = liballeleinfo.get_alleleclass_asis_readplus_new(
             vcfspec=vcfspec, rp=self, **kwargs, 
         )
-#        self.alleleclass[vcfspec] = liballeleinfo.get_alleleclass_asis_readplus_new(
-#            vcfspec=vcfspec, rp=self, 
-#            coverage_cutoff=0.5, 
-#            partial_coverage_del_len_cutoff=5,
-#            compare_mode='similarity', 
-#            similarity_params={'factor': 0.1},
-#        )
 
     def set_alleleclass_tag(self, vcfspec):
         value = str(self.alleleclass[vcfspec])
@@ -1216,11 +1209,13 @@ def get_rpplist_nonsv(
         chromdict = common.ChromDict(refver=refver)
 
     LOGGER_RPPLIST.info('Beginning initial fetch')
+    chromlen = chromdict[chrom]
     (relevant_qname_set, new_fetch_range) = initial_fetch_nonsv(
         bam=bam, 
         chrom=chrom, 
         start0=start0, 
         end0=end0, 
+        chromlen=chromlen,
         view=view,
         fetch_padding_common=fetch_padding_common, 
         fetch_padding_view=fetch_padding_view,
@@ -1231,8 +1226,9 @@ def get_rpplist_nonsv(
     rpplist = ReadPlusPairList(chromdict=chromdict)
     if len(relevant_qname_set) > 0:
         LOGGER_RPPLIST.info('Beginning refined fetch')
-        fetchresult_dict = refined_fetch_nonsv(bam, chrom, new_fetch_range, 
-                                               relevant_qname_set)
+        fetchresult_dict = refined_fetch_nonsv(
+            bam, chrom, new_fetch_range, relevant_qname_set,
+        )
 
         LOGGER_RPPLIST.info('Beginning assembly into readpluspair')
         for readlist in fetchresult_dict.values():
@@ -1352,9 +1348,11 @@ def readfilter_matesearch(read, long_insert_threshold):
             abs(read.template_length) < long_insert_threshold)
 
 
-def initial_fetch_nonsv(bam, chrom, start0, end0, view,
-                        fetch_padding_common, fetch_padding_view,
-                        new_fetch_padding, long_insert_threshold):
+def initial_fetch_nonsv(
+    bam, chrom, start0, end0, chromlen, view,
+    fetch_padding_common, fetch_padding_view,
+    new_fetch_padding, long_insert_threshold,
+):
     """Read filtering done by readhandler.readfilter_bad_read"""
 
     def readfilter_qname(read, start0, end0):
@@ -1374,10 +1372,12 @@ def initial_fetch_nonsv(bam, chrom, start0, end0, view,
     start0_set = set()
 
     initial_fetch_padding = (fetch_padding_view if view else fetch_padding_common)
-    fetcher = readhandler.get_fetch(bam, chrom, 
-                                    start=(start0 - initial_fetch_padding),
-                                    end=(end0 + initial_fetch_padding),
-                                    readfilter=readhandler.readfilter_bad_read)
+    fetcher = readhandler.get_fetch(
+        bam, chrom, 
+        start=(start0 - initial_fetch_padding),
+        end=(end0 + initial_fetch_padding),
+        readfilter=readhandler.readfilter_bad_read,
+    )
 
     for read in fetcher:
         read_is_relevant = (True if view else readfilter_qname(read, start0, end0))
@@ -1392,8 +1392,10 @@ def initial_fetch_nonsv(bam, chrom, start0, end0, view,
     if len(start0_set) == 0:
         new_fetch_range = None
     else:
-        new_fetch_range = range(min(start0_set) - new_fetch_padding, 
-                                max(start0_set) + 1 + new_fetch_padding)
+        new_fetch_range = range(
+            (min(start0_set) - new_fetch_padding),
+            (max(start0_set) + 1 + new_fetch_padding),
+        )
 
     return relevant_qname_set, new_fetch_range
 
@@ -1408,20 +1410,28 @@ def initial_fetch_sv(bam, bnds, view, fetch_padding_common,
         if endis5:
             fetcher = readhandler.get_fetch(
                 bam, chrom,
-                start=(min(pos_range0)
-                       - fetch_padding_common),
-                end=(max(pos_range0) + 1
-                     + fetch_padding_common
-                     + fetch_padding_sv),
+                start=(
+                    min(pos_range0)
+                    - fetch_padding_common
+                ),
+                end=(
+                    max(pos_range0) + 1
+                    + fetch_padding_common
+                    + fetch_padding_sv
+                ),
                 readfilter=readhandler.readfilter_bad_read)
         else:
             fetcher = readhandler.get_fetch(
                 bam, chrom, 
-                start=(min(pos_range0)
-                       - fetch_padding_common
-                       - fetch_padding_sv),
-                end=(max(pos_range0) + 1
-                     + fetch_padding_common),
+                start=(
+                    min(pos_range0)
+                    - fetch_padding_common
+                    - fetch_padding_sv
+                ),
+                end=(
+                    max(pos_range0) + 1
+                    + fetch_padding_common
+                ),
                 readfilter=readhandler.readfilter_bad_read)
 
         return fetcher
@@ -1432,7 +1442,8 @@ def initial_fetch_sv(bam, bnds, view, fetch_padding_common,
             bam, chrom_bnd,
             start=(min(pos_range0) - fetch_padding_view),
             end=(max(pos_range0) + 1 + fetch_padding_view),
-            readfilter=readhandler.readfilter_bad_read)
+            readfilter=readhandler.readfilter_bad_read,
+        )
 
         return fetcher
 
@@ -1534,7 +1545,6 @@ def refined_fetch_nonsv(bam, chrom, new_fetch_range, relevant_qname_set):
     """
 
     fetchresult_dict = dict()
-
     for qname in relevant_qname_set:
         fetchresult_dict[qname] = list()
 
@@ -1563,12 +1573,16 @@ def refined_fetch_sv(bam, bnds, new_fetch_range_bnd1, new_fetch_range_bnd2,
         if new_fetch_range is not None:
             fetch = readhandler.get_fetch(
                 bam, chrom_bnd, 
-                start=new_fetch_range.start, end=new_fetch_range.stop,
-                readfilter=readhandler.readfilter_bad_read)
+                start=new_fetch_range.start, 
+                end=new_fetch_range.stop,
+                readfilter=readhandler.readfilter_bad_read,
+            )
             for read in fetch:
                 if read.query_name in fetchresult_dict:
-                    if all((read.compare(x) != 0)
-                           for x in fetchresult_dict[read.query_name]):
+                    if all(
+                        (read.compare(x) != 0)
+                        for x in fetchresult_dict[read.query_name]
+                    ):
                         fetchresult_dict[read.query_name].append(read)
 
     # init fetchresult_dict
@@ -1646,237 +1660,5 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch, re
 
     return rpp
 
-
-#class ReadPlusPairList_old(list):
-#
-#    @common.get_deco_arg_choices({'mode': ('sv', 'nonsv', 'view')})
-#    def __init__(self, bam, chrom, start0, end0, fasta, chromdict, 
-#                 mode, endis5=None,
-#                 fetch_padding_common=FETCH_PADDING_COMMON,
-#                 fetch_padding_sv=FETCH_PADDING_SV,
-#                 long_insert_threshold=LONG_INSERT_THRESHOLD,
-#                 new_fetch_padding=NEW_FETCH_PADDING,
-#                 verbose=False):
-#        """Read filtering is done by "readhandler.readfilter_bad_read".
-#        Mate-unmapped reads are filtered out.
-#        Args:
-#            mode: must be one of "sv", "nonsv", "view"
-#                sv: for SV breakends
-#                nonsv: for non-SV
-#                view: for creating a new bam with tags added
-#        """
-#
-#        # sanitycheck
-#        if mode == 'sv':
-#            if endis5 is None:
-#                raise Exception(f'"endis5" must be set if "mode" is "sv".')
-#
-#        LOGGER_RPPLIST.info('Beginning initial fetch')
-#        (relevant_qname_list, new_fetch_range) = self._initial_fetch(
-#            bam, chrom, start0, end0, mode, endis5, 
-#            fetch_padding_common, fetch_padding_sv,
-#            new_fetch_padding, long_insert_threshold)
-#
-#        if relevant_qname_list is None:
-#            self.qname_list = None
-#            self.fetch_range = None
-#            self.rpplist = None
-#            self.start = None
-#            self.end = None
-#        else:
-#            self.qname_list = relevant_qname_list
-#            self.fetch_range = new_fetch_range
-#    
-#            LOGGER_RPPLIST.info('Beginning refined fetch')
-#            fetchresult_dict = self._refined_fetch(bam, chrom, 
-#                                                   new_fetch_range, 
-#                                                   relevant_qname_list)
-#    
-#            LOGGER_RPPLIST.info('Beginning assembly into readpluspair')
-#            for readlist in fetchresult_dict.values():
-#                rpp = self._get_readpluspair(readlist, bam, fasta, chromdict)
-#                if rpp is not None:
-#                    self.append(rpp)
-#
-#            # sort
-#            self.sort(key=(lambda rpp: min(rpp.rp1.read.reference_start,
-#                                           rpp.rp2.read.reference_start)))
-#
-#    def update_alleleinfo(self, vcfspec):
-#        for rpp in self:
-#            rpp.update_alleleinfo(vcfspec)
-#
-#    def _readfilter_qname_nonsv(self, read, start0, end0):
-#        """For use in "_initial_fetch" function.
-#        The read is selected if True.
-#        For decision of whether the read query_name will be included in the
-#            "relevant_qname_list", for non-SV.
-#        """
-#
-#        #softclip_range0 = readhandler.get_softclip_ends_range0(read)
-#        #return (softclip_range0.stop > start0 and
-#        #        softclip_range0.start < end0)
-#
-#        return True
-#
-#    def _readfilter_qname_sv(self, read, start0, end0, endis5):
-#        """For use in "_initial_fetch" function.
-#        The read is selected if True.
-#        For decision of whether the read query_name will be included in the
-#            "relevant_qname_list", for SV.
-#        """
-#
-#        cond_overlapping = (read.reference_start < end0 and 
-#                            read.reference_end > start0)
-#        if endis5:
-#            cond_distant = (read.is_reverse and read.reference_start >= end0)
-#        else:
-#            cond_distant = (read.is_forward and read.reference_end <= start0)
-#
-#        result = (cond_overlapping or cond_distant)
-#
-#        return result
-#
-#    def _readfilter_matesearch(self, read, long_insert_threshold):
-#        """For use in "_initial_fetch" function.
-#        The read is selected if True.
-#        For decision of whether mate start position will be included in the 
-#            "new_fetch_range".
-#        """
-#
-#        return (read.reference_name == read.next_reference_name and
-#                abs(read.template_length) < long_insert_threshold)
-#
-#    def _get_initial_fetcher(self, bam, chrom, start0, end0, mode, endis5,
-#                             fetch_padding_common, fetch_padding_sv):
-#        if mode == 'sv':
-#            if endis5:
-#                fetcher = readhandler.get_fetch(
-#                    bam, chrom, 
-#                    start=(start0 - fetch_padding_common),
-#                    end=(end0 
-#                         + fetch_padding_common
-#                         + fetch_padding_sv),
-#                    readfilter=readhandler.readfilter_bad_read)
-#            else:
-#                fetcher = readhandler.get_fetch(
-#                    bam, chrom, 
-#                    start=(start0 
-#                           - fetch_padding_common
-#                           - fetch_padding_sv),
-#                    end=(end0 + fetch_padding_common),
-#                    readfilter=readhandler.readfilter_bad_read)
-#        elif mode in ('nonsv', 'view'):
-#            fetcher = readhandler.get_fetch(
-#                bam, chrom, 
-#                start=(start0 - fetch_padding_common),
-#                end=(end0 + fetch_padding_common),
-#                readfilter=readhandler.readfilter_bad_read)
-#
-#        return fetcher
-#
-#    def _initial_fetch(self, bam, chrom, start0, end0, mode, endis5,
-#                       fetch_padding_common, fetch_padding_sv,
-#                       new_fetch_padding, long_insert_threshold):
-#        """Read filtering done by readhandler.readfilter_bad_read"""
-#
-#        relevant_qname_list = list()
-#        start0_list = list()
-#
-#        # fetch start/end is padded with "initial_fetch_padding" to include 
-#            # reads which overlap range(start0, end0) with soft-clipped 
-#            # bases on IGV.
-#
-#        fetcher = self._get_initial_fetcher(
-#            bam, chrom, start0, end0, mode, endis5,
-#            fetch_padding_common, fetch_padding_sv)
-#
-#        for read in fetcher:
-#            if mode == 'sv':
-#                read_is_selected = self._readfilter_qname_sv(
-#                    read, start0, end0, endis5)
-#            elif mode == 'nonsv':
-#                read_is_selected = self._readfilter_qname_nonsv(
-#                    read, start0, end0)
-#            elif mode == 'view':
-#                read_is_selected = True
-#
-#            if read_is_selected:
-#                relevant_qname_list.append(read.query_name)
-#                start0_list.append(read.reference_start)
-#                if self._readfilter_matesearch(read, long_insert_threshold):
-#                    start0_list.append(read.next_reference_start)
-#
-#        if len(relevant_qname_list) == 0:
-#            relevant_qname_list = None
-#            new_fetch_range = None
-#        else:
-#            relevant_qname_list = list(set(relevant_qname_list))
-#            new_fetch_range = range(min(start0_list) - new_fetch_padding, 
-#                                    max(start0_list) + 1 + new_fetch_padding)
-#
-#        return relevant_qname_list, new_fetch_range
-#
-#    def _refined_fetch(self, bam, chrom, new_fetch_range, 
-#                       relevant_qname_list):
-#        """Read filtering is done by readfilter_bad_read.
-#        Store the fetched read only if its qname is included in the
-#            "relevant_qname_list".
-#        """
-#
-#        fetchresult_dict = dict()
-#
-#        for qname in relevant_qname_list:
-#            fetchresult_dict[qname] = list()
-#
-#        for read in readhandler.get_fetch(
-#                bam, chrom, start=new_fetch_range.start, 
-#                end=new_fetch_range.stop, 
-#                readfilter=readhandler.readfilter_bad_read):
-#            if read.query_name in fetchresult_dict:
-#                fetchresult_dict[read.query_name].append(read)
-#
-#        return fetchresult_dict
-#
-#    def _get_readpluspair(self, readlist, bam, fasta, chromdict):
-#        # classify reads into primary and non-primary ones
-#        readlist_primary = list()
-#        readlist_nonprimary = list()
-#        for read in readlist:
-#            if readhandler.check_primary_alignment(read):
-#                readlist_primary.append(read)
-#            else:
-#                readlist_nonprimary.append(read)
-#
-#        if len(readlist_primary) > 2:
-#            e_msg_list = list()
-#            e_msg_list.append('More than two primary reads found:')
-#            for read in readlist_primary:
-#                e_msg_list.append(read.to_string())
-#            raise Exception('\n'.join(e_msg_list))
-#        elif len(readlist_primary) == 0: 
-#            # found reads are all non-primary
-#            # supplementary reads overlapping pos0 can be missed
-#            rpp = None
-#        else:
-#            rplist_nonprimary = [ReadPlus(x, fasta)
-#                                 for x in readlist_nonprimary]
-#            if len(readlist_primary) == 1: # mate read is somewhere far away
-#                mate = readhandler.get_primary_mate(readlist_primary[0], bam)
-#                if mate is None:
-#                    raise Exception(
-#                        f'Mate not found for this read:\n'
-#                        f'{readlist_primary[0].to_string()}')
-#                rplist_primary = [
-#                    ReadPlus(readlist_primary[0], fasta), 
-#                    ReadPlus(mate, fasta)]
-#
-#            else: # len(readlist_primary) == 2
-#                rplist_primary = [ReadPlus(x, fasta) 
-#                                  for x in readlist_primary]
-#
-#            rpp = ReadPlusPair(rplist_primary, rplist_nonprimary, chromdict)
-#
-#        return rpp
 
 

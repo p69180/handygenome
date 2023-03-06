@@ -435,6 +435,10 @@ class RefverDict(collections.UserDict):
 
         return result
 
+    def __contains__(self, key):
+        key = self.__class__.standardize(key)
+        return super().__contains__(key)
+
     def get_valid_keys(self):
         result = list()
         for key in self.keys():
@@ -532,6 +536,38 @@ class ChromDict(collections.OrderedDict):
         # set contigs, lengths
         self.contigs = list(self.keys())
         self.lengths = list(self.values())
+
+    @functools.cached_property
+    def is_chr_prefixed(self):
+        relevant_chroms = [
+            x for x in self.contigs 
+            if RE_PATS['assembled_chromosome'].fullmatch(x) is not None
+        ]
+        startswith_chr = [x.startswith('chr') for x in relevant_chroms]
+        if all(startswith_chr):
+            return True
+        elif not any(startswith_chr):
+            return False
+        else:
+            raise Exception(f'Chromosome names are inconsistent of whether prefixed with "chr"')
+
+    @functools.cached_property
+    def XY_names(self):
+        def helper(name, xy):
+            assert xy in ('X', 'Y')
+            if name in self.contigs:
+                return name
+            else:
+                raise Exception(f'No {xy} chromosome name detected')
+            
+        if self.is_chr_prefixed:
+            X = helper('chrX', 'X')
+            Y = helper('chrY', 'Y')
+        else:
+            X = helper('X', 'X')
+            Y = helper('Y', 'Y')
+
+        return X, Y
 
     def to_gr(self):
         return pr.PyRanges(
@@ -1590,6 +1626,7 @@ def pairwise(iterable):
 
 
 def _multi_selector_base(sequence, comparing_func, key=None, with_target_val=False):
+    sequence = list(sequence)
     if key is None:
         values = sequence
     else:
@@ -1755,3 +1792,10 @@ def get_rss(mode='total', unit='b'):
         rss = rss / 1024**3
 
     return rss
+
+
+# range operations
+def check_overlaps(start0_1, end0_1, start0_2, end0_2):
+    return (start0_1 < end0_2) and (end0_1 > start0_2)
+
+

@@ -1,11 +1,9 @@
 import textwrap
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-split_module = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'split']))
-indexing = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'indexing']))
+import handygenome.common as common
+import handygenome.workflow as workflow
+import handygenome.vcfeditor.split as split_module
+import handygenome.vcfeditor.indexing as indexing
 
 
 def argument_parser(cmdargs):

@@ -38,6 +38,20 @@ def get_mosdepth_args(prefix, bam_path, t, use_median, no_perbase=True, bed_path
     return args
 
 
+def load_mosdepth_output(filename, depth_colname='mean_depth', as_gr=True):
+    """Only for *.regions.bed.gz file"""
+    df = pd.read_csv(
+        filename, 
+        sep='\t', 
+        names=['Chromosome', 'Start', 'End', depth_colname], 
+        dtype={'Chromosome': str, 'Start': int, 'End': int, depth_colname: float},
+    )
+    if as_gr:
+        return pr.PyRanges(df)
+    else:
+        return df
+
+
 def run_mosdepth(bam_path, t=8, use_median=False, region_bed_path=None, region_gr=None, window_size=None, donot_subset_bam=False, as_gr=True, load_perbase=False):
     # sanity check
     if (
@@ -122,13 +136,10 @@ def run_mosdepth(bam_path, t=8, use_median=False, region_bed_path=None, region_g
     # load mosdepth outputs
     outfile_path = os.path.join(outdir, f'{prefix}.regions.bed.gz')
     if use_median:
-        lastcol = 'median_depth'
+        depth_colname = 'median_depth'
     else:
-        lastcol = 'mean_depth'
-    df = pd.read_csv(
-        outfile_path, sep='\t', names=['Chromosome', 'Start', 'End', lastcol], 
-        dtype={'Chromosome': str, 'Start': int, 'End': int, lastcol: float},
-    )
+        depth_colname = 'mean_depth'
+    df = load_mosdepth_output(filename, depth_colname=depth_colname)
 
     if load_perbase:
         perbase_outfile_path = os.path.join(outdir, f'{prefix}.per-base.bed.gz')

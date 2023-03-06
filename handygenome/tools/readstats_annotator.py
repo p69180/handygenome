@@ -42,8 +42,8 @@ def unit_job(
     refver, 
     no_matesearch, 
     countonly, 
+    memuse_limit_gb,
     monitor_interval=10,
-    memuse_limit_gb=5.5,
 ):
     manager = multiprocessing.Manager()
     shareddict = manager.dict()
@@ -73,8 +73,11 @@ def unit_job(
             shareddict['parent_memuse_gb'] = common.get_rss(mode='total', unit='g')
             common.print_timestamp(f"Memory usage: {shareddict['parent_memuse_gb']} GB")
             if not p.is_alive():
-                p.close()
                 break
+
+        if p.exitcode != 0:
+            raise Exception(f'The subprocess finished with nonzero exit code.')
+        p.close()
 
         if shareddict['next_infile_path'] is None:
             break
@@ -123,7 +126,7 @@ def unit_job_core(
     # loop over variant records
     vr_iterator = in_vcf.fetch()
     for vr in vr_iterator:
-        print(f'Processing {str(vr)}', flush=True)  # for logging
+        common.print_timestamp(f'Processing {str(vr)}')  # for logging
 
         if added_new_samples:
             new_vr = varianthandler.reheader(vr, new_header)
@@ -133,7 +136,7 @@ def unit_job_core(
         out_vcf.write(new_vr)
 
         if shareddict['parent_memuse_gb'] > memuse_limit_gb:
-            next_split_infile_path = re.sub('\.vcf\.gz', 'a.vcf.gz', split_infile_path)
+            next_split_infile_path = re.sub('\.vcf\.gz$', 'a.vcf.gz', split_infile_path)
             next_out_vcf = pysam.VariantFile(next_split_infile_path, 'wz', header=in_vcf.header.copy())
             shareddict['next_infile_path'] = next_split_infile_path
             for vr in vr_iterator:
@@ -266,7 +269,8 @@ def argument_parser(cmdargs):
         type=workflow.arghandler_infile, 
         default=list(),
         metavar='<Input bam file path>',
-        help=f'One or more input bam file paths separated by whitespaces.')
+        help=f'One or more input bam file paths separated by whitespaces.',
+    )
     parser_dict['optional'].add_argument(
         '--idlist', 
         dest='idlist', 
@@ -274,14 +278,20 @@ def argument_parser(cmdargs):
         nargs='+', 
         default=list(),
         metavar='<Sample ID>',
-        help=(f'Sample IDs of the input bam files, in the same order, '
-              f'separated by whitespaces.'))
+        help=(
+            f'Sample IDs of the input bam files, in the same order, '
+            f'separated by whitespaces.'
+        ),
+    )
     parser_dict['optional'].add_argument(
         '--bamlist-file', dest='bamlist_file_path', required=False,
         type=workflow.arghandler_infile,
         metavar='<bam list file path>',
-        help=(f'A 2-column tab-separated file which contains sample IDs on '
-              f'the first column and bam file paths on the second column.'))
+        help=(
+            f'A 2-column tab-separated file which contains sample IDs on '
+            f'the first column and bam file paths on the second column.'
+        ),
+    )
 
     allowed_pon_cohorts = dict()
     for refver, subdict in libponbams.PON_BAM_PATHS_WITHOUT_NAMES.items():
@@ -296,10 +306,17 @@ def argument_parser(cmdargs):
         ),
     )
 
+    parser_dict['optional'].add_argument(
+        '--memlimit', dest='memuse_limit_gb', required=False,
+        default=5.5,
+        type=float,
+        metavar='<memory limit per job>',
+        help=f'Maximum memory limit per job in gigabytes.',
+    )
+
     workflow.add_outfmt_arg(parser_dict['optional'], required=False)
     workflow.add_logging_args(parser_dict)
-    workflow.add_scheduler_args(parser_dict, default_parallel=1, 
-                                default_sched='slurm')
+    workflow.add_scheduler_args(parser_dict, default_parallel=1, default_sched='slurm')
 
     # flag
     workflow.add_rmtmp_arg(parser_dict)
@@ -333,6 +350,7 @@ def write_jobscripts(
     refver, 
     no_matesearch,
     countonly,
+    memuse_limit_gb,
     jobname_prefix=__name__.split('.')[-1], 
     nproc=1,
 ):
@@ -353,6 +371,7 @@ def write_jobscripts(
         'refver': refver,
         'no_matesearch': no_matesearch,
         'countonly': countonly,
+        'memuse_limit_gb': memuse_limit_gb,
     }
     kwargs_multi = {
         'split_infile_path': split_infile_path_list,
@@ -412,6 +431,7 @@ def main(cmdargs):
         args.refver, 
         (not args.do_matesearch),
         args.countonly,
+        args.memuse_limit_gb,
     )
     logger.info('Running annotation jobs for each split file')
     workflow.run_jobs(jobscript_path_list, sched=args.sched, 

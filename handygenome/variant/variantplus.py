@@ -7,73 +7,34 @@ import random
 import shutil
 import logging
 import uuid
-#import multiprocessing
 
 import pysam
 import pyranges as pr
 import numpy as np
 import pandas as pd
 
-import importlib
-
-top_package_name = __name__.split(".")[0]
-common = importlib.import_module(".".join([top_package_name, "common"]))
-workflow = importlib.import_module(".".join([top_package_name, "workflow"]))
-
-
-varianthandler = importlib.import_module(
-    ".".join([top_package_name, "variant", "varianthandler"])
-)
-
+import handygenome.common as common
+import handygenome.workflow as workflow
+import handygenome.variant.varianthandler as varianthandler
 import handygenome.variant.filter as libfilter
 import handygenome.variant.infoformat as infoformat
 import handygenome.sv.breakends as libbnd
 import handygenome.plot.filterinfo as plot_filterinfo
-
-infoformat = importlib.import_module(
-    ".".join([top_package_name, "variant", "infoformat"])
-)
-
-initvcf = importlib.import_module(".".join([top_package_name, "vcfeditor", "initvcf"]))
-headerhandler = importlib.import_module(".".join([top_package_name, "vcfeditor", "headerhandler"]))
-
-
+import handygenome.variant.infoformat as infoformat
+import handygenome.vcfeditor.initvcf as initvcf
+import handygenome.vcfeditor.headerhandler as headerhandler
 import handygenome.annotation.data as annotdata
-
-
-ensembl_feature = importlib.import_module(
-    ".".join([top_package_name, "annotation", "ensembl_feature"])
-)
-ensembl_parser = importlib.import_module(
-    ".".join([top_package_name, "annotation", "ensembl_parser"])
-)
-ensembl_rest = importlib.import_module(
-    ".".join([top_package_name, "annotation", "ensembl_rest"])
-)
-libpopfreq = importlib.import_module(
-    ".".join([top_package_name, "annotation", "popfreq"])
-)
-libcosmic = importlib.import_module(
-    ".".join([top_package_name, "annotation", "cosmic"])
-)
-liboncokb = importlib.import_module(
-    ".".join([top_package_name, "annotation", "oncokb"])
-)
-
-readplus = importlib.import_module(".".join([top_package_name, "read", "readplus"]))
-libreadstats = importlib.import_module(
-    ".".join([top_package_name, "annotation", "readstats"])
-)
-libvcfspec = importlib.import_module(
-    ".".join([top_package_name, "variant", "vcfspec"])
-)
-indexing = importlib.import_module(
-    ".".join([top_package_name, "vcfeditor", "indexing"])
-)
-cnvmisc = importlib.import_module(
-    ".".join([top_package_name, "cnv", "misc"])
-)
-
+import handygenome.annotation.ensembl_feature as ensembl_feature
+import handygenome.annotation.ensembl_parser as ensembl_parser
+import handygenome.annotation.ensembl_rest as ensembl_rest
+import handygenome.annotation.popfreq as libpopfreq
+import handygenome.annotation.cosmic as libcosmic
+import handygenome.annotation.oncokb as liboncokb
+import handygenome.read.readplus as readplus
+import handygenome.annotation.readstats as libreadstats
+import handygenome.variant.vcfspec as libvcfspec
+import handygenome.vcfeditor.indexing as indexing
+import handygenome.cnv.misc as cnvmisc
 from handygenome.variant.filter import FilterResultInfo, FilterResultFormat
 import handygenome.variant.ponbams as libponbams
 
@@ -1149,50 +1110,50 @@ class VariantPlusList(list):
         else:
             cosmic_metadata = None
 
-        '''
-        Following code is a failed attempt to parallelize using multiprocessing.
-        Many custom classes cannot be pickled.
-
-        def vr_iterator(vcf):
-            for vr in vcf.fetch():
-                if varianthandler.check_SV(vr):
-                    vr_svinfo = libbnd.get_vr_svinfo_standard_vr(vr, result.fasta, result.chromdict)
-                    if vr_svinfo["is_bnd1"]:
-                        yield vr
-                else:
-                    yield vr
-
-        refver, fasta, chromdict = result.refver, result.fasta, result.chromdict
-        with multiprocessing.Pool(ncore) as p:
-            NR = 0
-            for vr_subiter in common.grouper(vr_iterator(result.vcf), result.logging_lineno):
-                vp_sublist = p.starmap(
-                    _init_helper_make_vp, 
-                    (
-                        (
-                            vr, 
-                            refver, 
-                            fasta, 
-                            chromdict, 
-                            init_popfreq, 
-                            init_cosmic,
-                            popfreq_metadata, 
-                            cosmic_metadata,
-                            init_transcript,
-                            init_regulatory,
-                            init_motif,
-                            init_repeat,
-                            init_readstats,
-                            init_oncokb,
-                        )
-                        for vr in vr_subiter
-                    )
-                )
-                NR += len(vp_sublist)
-                result.logger.info(f'Processing {NR:,}th line')
-                result.extend(vp_sublist)
-
-        '''
+#        '''
+#        Following code is a failed attempt to parallelize using multiprocessing.
+#        Many custom classes cannot be pickled.
+#
+#        def vr_iterator(vcf):
+#            for vr in vcf.fetch():
+#                if varianthandler.check_SV(vr):
+#                    vr_svinfo = libbnd.get_vr_svinfo_standard_vr(vr, result.fasta, result.chromdict)
+#                    if vr_svinfo["is_bnd1"]:
+#                        yield vr
+#                else:
+#                    yield vr
+#
+#        refver, fasta, chromdict = result.refver, result.fasta, result.chromdict
+#        with multiprocessing.Pool(ncore) as p:
+#            NR = 0
+#            for vr_subiter in common.grouper(vr_iterator(result.vcf), result.logging_lineno):
+#                vp_sublist = p.starmap(
+#                    _init_helper_make_vp, 
+#                    (
+#                        (
+#                            vr, 
+#                            refver, 
+#                            fasta, 
+#                            chromdict, 
+#                            init_popfreq, 
+#                            init_cosmic,
+#                            popfreq_metadata, 
+#                            cosmic_metadata,
+#                            init_transcript,
+#                            init_regulatory,
+#                            init_motif,
+#                            init_repeat,
+#                            init_readstats,
+#                            init_oncokb,
+#                        )
+#                        for vr in vr_subiter
+#                    )
+#                )
+#                NR += len(vp_sublist)
+#                result.logger.info(f'Processing {NR:,}th line')
+#                result.extend(vp_sublist)
+#
+#        '''
 
         # create vps
         if prop is None:
@@ -1346,7 +1307,6 @@ class VariantPlusList(list):
         refs = list()
         alts = list()
         vafs = list()
-
         for vp in self:
             chroms.append(vp.vcfspec.chrom)
             pos1s.append(vp.vcfspec.pos)
@@ -1361,27 +1321,21 @@ class VariantPlusList(list):
                 else:
                     vaf = vp.get_vaf(vaf_sampleid, **get_vaf_kwargs)
                     vafs.append(vaf)  # vaf can be np.nan
-
+        # make data
+        data = {
+            'Chromosome': chroms,
+            'Start': starts,
+            'End': ends,
+            'POS': pos1s,
+            'REF': refs,
+            'ALT': alts,
+        }
+        if not omit_vaf:
+            data.update({'vaf': vafs})
+        # result
         if as_gr:
-            data = {
-                'Chromosome': chroms,
-                'Start': starts,
-                'End': ends,
-                'REF': refs,
-                'ALT': alts,
-            }
-            if not omit_vaf:
-                data.update({'VAF': vafs})
-            return pr.from_dict(data, int64=False)
+            return pr.from_dict(data)
         else:
-            data = {
-                'CHROM': chroms,
-                'POS': pos1s,
-                'REF': refs,
-                'ALT': alts,
-            }
-            if not omit_vaf:
-                data.update({'VAF': vafs})
             return pd.DataFrame.from_dict(data)
 
     def get_gr(self, vaf_sampleid=None):

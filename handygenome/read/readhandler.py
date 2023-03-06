@@ -79,6 +79,10 @@ def readfilter_pileup(read):
     )
 
 
+def get_chromlen_from_bam(bam, chrom):
+    return bam.lengths[bam.references.index(chrom)]
+
+
 def get_fetch(bam, chrom, start, end, readfilter=None):
     """
     - returns a generator
@@ -87,6 +91,9 @@ def get_fetch(bam, chrom, start, end, readfilter=None):
     # set default filtering function
     if readfilter is None:
         readfilter = readfilter_bad_read
+    # modify start and end
+    start = max(0, start)
+    end = min(get_chromlen_from_bam(bam, chrom), end)
     # main
     for read in bam.fetch(chrom, start, end):
         if readfilter(read):
@@ -309,11 +316,15 @@ def reverse_range(rng):
         return range(start, stop, 1)
 
 
+#def check_overlaps_forward_nonzero(rng1, rng2):
+#    return (
+#        (rng1.start < rng2.stop)
+#        and (rng1.stop > rng2.start)
+#    )
+
+
 def check_overlaps_forward_nonzero(rng1, rng2):
-    return (
-        (rng1.start < rng2.stop)
-        and (rng1.stop > rng2.start)
-    )
+    return common.check_overlaps(rng1.start, rng1.stop, rng2.start, rng2.stop)
 
 
 def check_overlaps(rng1, rng2):

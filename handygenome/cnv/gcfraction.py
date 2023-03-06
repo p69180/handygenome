@@ -1,8 +1,11 @@
+import os
 import itertools
 
 import Bio.SeqUtils
 import pyBigWig
 import numpy as np
+import pandas as pd
+import pyranges as pr
 
 import handygenome.common as common
 
@@ -113,7 +116,12 @@ def add_gc_calculating(df, fasta, window=None):
         df: pandas.DataFrame or pyranges.PyRanges
     Changes in-place
     """
-    df.GC = calculate_gcvals(df.Chromosome, df.Start, df.End, fasta, window=window)
+    gcvals = calculate_gcvals(df.Chromosome, df.Start, df.End, fasta, window=window)
+
+    if isinstance(df, pd.DataFrame):
+        df['GC'] = gcvals
+    elif isinstance(df, pr.PyRanges):
+        df.GC = gcvals
 
 
 def add_gc_loading(df, refver, binsize, window=None):
@@ -121,11 +129,15 @@ def add_gc_loading(df, refver, binsize, window=None):
         df: pandas.DataFrame or pyranges.PyRanges
     Changes in-place
     """
-    df.GC = load_gcvals(
+    gcvals = load_gcvals(
         df.Chromosome, df.Start, df.End, 
         refver=refver, binsize=binsize, 
         fasta=common.DEFAULT_FASTAS[refver], 
         window=window, as_array=False,
     )
+    if isinstance(df, pd.DataFrame):
+        df['GC'] = gcvals
+    elif isinstance(df, pr.PyRanges):
+        df.GC = gcvals
 
 

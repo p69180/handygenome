@@ -1,17 +1,23 @@
 import os
 import itertools
+import functools
 import pprint
 import re
 
 import collections
+import pandas as pd
+import pyranges as pr
 
 import handygenome.common as common
 
 
-DATA_DIR = os.path.join(common.DATA_DIR, 'assembly_reports')
-if not os.path.exists(DATA_DIR):
-    os.mkdir(DATA_DIR)
+##################################
+# AssemblySpec class and related #
+##################################
 
+ASSEMBLYFILE_DIR = os.path.join(common.DATA_DIR, 'assembly_reports')
+if not os.path.exists(ASSEMBLYFILE_DIR):
+    os.mkdir(ASSEMBLYFILE_DIR)
 
 ASSEMBLYFILE_URLS = common.RefverDict({
     'NCBI36': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Homo_sapiens/all_assembly_versions/GCF_000001405.12_NCBI36/GCF_000001405.12_NCBI36_assembly_report.txt',
@@ -22,12 +28,10 @@ ASSEMBLYFILE_URLS = common.RefverDict({
     'GRCm39': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Mus_musculus/all_assembly_versions/GCF_000001635.27_GRCm39/GCF_000001635.27_GRCm39_assembly_report.txt',
 })
 
-
-PATHS = {
-    key: os.path.join(DATA_DIR, os.path.basename(val))
+ASSEMBLYFILE_PATHS = {
+    key: os.path.join(ASSEMBLYFILE_DIR, os.path.basename(val))
     for (key, val) in ASSEMBLYFILE_URLS.items()
 }
-
 
 #INVALID_NAMES = [ 'NT_187507.1' ]
 
@@ -178,15 +182,12 @@ def parse_assembly_report(assembly_report_path):
 
 def get_assemblyspec_data(refver):
     assemblyfile_url = ASSEMBLYFILE_URLS[refver]
-    assembly_report_path = PATHS[refver]
+    assembly_report_path = ASSEMBLYFILE_PATHS[refver]
     if not os.path.exists(assembly_report_path):
         common.download(assemblyfile_url, assembly_report_path)
 
     return parse_assembly_report(assembly_report_path)
     
-
-
-##############################################################################
 
 
 SPECS = common.RefverDict(
@@ -195,3 +196,114 @@ SPECS = common.RefverDict(
         for refver in ASSEMBLYFILE_URLS.keys()
     }
 )
+
+
+
+##################################################
+# handling of pseudoautosomal region & runs of N #
+##################################################
+
+N_REGIONS_DIR = os.path.join(common.DATA_DIR, 'N_region')
+if not os.path.exists(N_REGIONS_DIR):
+    os.mkdir(N_REGIONS_DIR)
+
+PARS = common.RefverDict(
+    # 0-based half-open system
+    # ref: https://www.ncbi.nlm.nih.gov/grc/human
+    {  
+        'GRCh37': {
+            'PAR1_X': ('X', 60_000, 2_699_520),
+            'PAR2_X': ('X', 154_931_043, 155_260_560),
+            'PAR1_Y': ('Y', 10_000, 2_649_520),
+            'PAR2_Y': ('Y', 59_034_049, 59_373_566),
+        }, 
+        'GRCh38': {
+            'PAR1_X': ('X', 10_000, 2_781_479),
+            'PAR2_X': ('X', 155_701_382, 156_030_895),
+            'PAR1_Y': ('Y', 10_000, 2_781_479),
+            'PAR2_Y': ('Y', 56_887_902, 57_217_415),
+        },
+    }
+)
+
+PAR_GRS = dict()
+for key, val in PARS.items():
+    df = pd.DataFrame.from_records(
+        iter(val.values()), 
+        columns=('Chromosome', 'Start', 'End'),
+    )
+    gr = pr.PyRanges(df).sort()
+    PAR_GRS[key] = gr
+PAR_GRS = common.RefverDict(PAR_GRS)
+
+
+def get_par_gr(refver):
+    fasta = common.DEFAULT_FASTAS[refver]
+    chromdict = common.ChromDict(fasta=fasta)
+    par_gr = PAR_GRS[refver].copy()  # X, Y
+    if chromdict.is_chr_prefixed:
+        par_gr.Chromosome = 'chr' + par_gr.Chromosome
+    return par_gr
+
+
+def make_N_region_gr(fasta):
+    pat = re.compile('N+')
+    chroms = list()
+    start0s = list()
+    end0s = list()
+    for chrom in fasta.references:
+        seq = fasta.fetch(chrom)
+        offset = 0
+        while True:
+            mat = pat.search(seq)
+            if mat is None:
+                break
+            else:
+                span = mat.span()
+                chroms.append(chrom)
+                start0s.append(offset + span[0])
+                end0s.append(offset + span[1])
+
+                offset += span[1]
+                seq = seq[span[1]:]
+
+    return pr.PyRanges(chromosomes=chroms, starts=start0s, ends=end0s)
+
+
+def get_N_regionfile_path(refver):
+    refver = common.RefverDict.standardize(refver)
+    return os.path.join(N_REGIONS_DIR, f'{refver}.N_regions.tsv.gz')
+
+
+def write_N_regionfile(refver):
+    # make gr
+    refver = common.RefverDict.standardize(refver)
+    fasta = common.DEFAULT_FASTAS[refver]
+    gr = make_N_region_gr(fasta)
+
+#    if refver in PAR_GRS:
+#        par_gr = PAR_GRS[refver].copy()
+#        # select Y chromosomes
+#        par_gr = par_gr[par_gr.Chromosome == 'Y']  
+#        # change Y into chrY if needed
+#        chromdict = common.ChromDict(fasta=fasta)
+#        if chromdict.is_chr_prefixed:
+#            par_gr.Chromosome = 'chrY'
+#        # concat
+#        gr = pr.concat((gr, par_gr)).sort()
+
+    # write
+    N_regionfile_path = get_N_regionfile_path(refver)
+    gr.df.to_csv(N_regionfile_path, sep='\t', index=False)
+
+
+def get_N_region_gr(refver):
+    N_regionfile_path = get_N_regionfile_path(refver)
+    if not os.path.exists(N_regionfile_path):
+        print('Creating a N region file. It may take a few minutes.')
+        write_N_regionfile(refver)
+    return pr.PyRanges(
+        pd.read_csv(N_regionfile_path, sep='\t', header=0, dtype={'Chromosome': str})
+    )
+        
+

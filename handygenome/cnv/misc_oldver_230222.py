@@ -18,6 +18,7 @@ import scipy
 import handygenome.common as common
 import handygenome.pyranges_helper as pyranges_helper
 import handygenome.cnv.mosdepth as libmosdepth
+import handygenome.cnv.sequenza_handler as sequenza_handler
 import handygenome.cnv.gcfraction as gcfraction
 import handygenome.assemblyspec as libassemblyspec
 
@@ -32,195 +33,99 @@ class CCFInfo(
     pass
 
 
-class CPPair(
-    collections.namedtuple('CPPair', ('cellularity', 'ploidy'))
-):
-    pass
-
-
-################
-# peak finding #
-################
-
-def get_1d_peaks(row, invert=False):
-    assert not hasattr(row, '__next__'), f'"row" must not be an iterator'
-
-    if invert:
-        row = [-x for x in row]
-
-    peaks_result, _ = scipy.signal.find_peaks(row)
-    if len(peaks_result) == 0:  # uniformly increasing
-        peak_indexes = sorted(
-            (
-                x[0] for x in
-                common.multi_max(enumerate(row), key=operator.itemgetter(1))
-            )
-        )
-    else:
-        diff = np.diff(row)
-
-        peak_indexes = list()
-        for within_row_idx in peaks_result:
-            peak_indexes.append(within_row_idx)
-            # leftward
-            current_idx = within_row_idx
-            while True:
-                current_idx -= 1
-                if diff[current_idx] != 0:
-                    break
-                else:
-                    peak_indexes.append(current_idx)
-
-                if current_idx == 0:
-                    break
-            # rightward
-            current_idx = within_row_idx - 1
-            while True:
-                current_idx += 1
-                if diff[current_idx] != 0:
-                    break
-                else:
-                    peak_indexes.append(current_idx + 1)
-
-                if current_idx == len(diff) - 1:
-                    break
-
-        peak_indexes.sort()
-
-    return peak_indexes
-
-
-def find_df_peaks(df, invert=False):
-    row_peaks = df.apply(lambda x: get_1d_peaks(x, invert=invert), axis=1)
-    row_peak_indexes = list()
-    for row_idx, peaks in enumerate(row_peaks):
-        row_peak_indexes.extend((row_idx, col_idx) for col_idx in peaks)
-
-    col_peaks = df.apply(lambda x: get_1d_peaks(x, invert=invert), axis=0)
-    col_peak_indexes = list()
-    for col_idx, peaks in enumerate(col_peaks):
-        col_peak_indexes.extend((row_idx, col_idx) for row_idx in peaks)
-
-    return list(set(row_peak_indexes).intersection(set(col_peak_indexes)))
-
-
-def find_df_peak_cpvalues(df, invert=False):
-    assert df.index.name == 'cellularity'
-    assert df.columns.name == 'ploidy'
-
-    peaks = find_df_peaks(df, invert=invert)
-    cpvalues = [CPPair(df.index[x], df.columns[y]) for (x, y) in peaks]
-    return sorted(cpvalues)
-
-
-def get_peak_info(cp_score_dict):
-    dfs = make_cpscore_dfs(cp_score_dict)
-    peaks_cpvalues = find_df_peak_cpvalues(dfs['segfit'], invert=True)
-    peak_values = list()
-    for c, p in peaks_cpvalues:
-        data = {
-            k: v for k, v in cp_score_dict[(c, p)].items()
-            if k != 'CNt_list'
-        }
-        data['cellularity'] = c
-        data['ploidy'] = p
-        peak_values.append(data)
-    peak_values = sorted(peak_values, key=(lambda x: x['segfit_score']))
-
-    return peak_values, dfs
-
-
-###############
-# CNn related #
-###############
-
-@functools.cache
-def get_CNn_gr(refver, is_female):
-    """Only accepts PAR-available reference versions"""
-    chromdict = common.DEFAULT_CHROMDICTS[refver]
-    autosomal_chroms = [
-        x for x in chromdict.contigs 
-        if (
-            (common.RE_PATS['assembled_chromosome'].fullmatch(x) is not None)
-            and (x not in MALE_HAPLOID_CHROMS)
-        )
-    ]  # 1, 2, ...,
-    X_chrom, Y_chrom = chromdict.XY_names
-    par_gr = libassemblyspec.get_par_gr(refver)
-
-    # autosomal
-    all_chrom_gr = chromdict.to_gr()
-    autosomal_gr = all_chrom_gr[all_chrom_gr.Chromosome.isin(autosomal_chroms)]
-    autosomal_gr.CNn = 2
-    # sex
-    if is_female:
-        sex_gr = all_chrom_gr[all_chrom_gr.Chromosome.isin([X_chrom, Y_chrom])]
-        sex_gr.CNn = 2
-    else:
-        all_sex_gr = all_chrom_gr[all_chrom_gr.Chromosome.isin([X_chrom, Y_chrom])]
-        nonpar_sex_gr = all_sex_gr.subtract(par_gr)
-        nonpar_sex_gr.CNn = 1
-        par_sex_gr = par_gr.copy()
-        par_sex_gr.CNn = [(2 if x == X_chrom else 0) for x in par_sex_gr.Chromosome]
-        sex_gr = pr.concat([nonpar_sex_gr, par_sex_gr]).sort()
-    # result
-    return pr.concat([autosomal_gr, sex_gr]).sort()
-
-
-def add_CNn_to_gr(gr, refver, is_female):
-    return pyranges_helper.join(
-        gr, get_CNn_gr(refver, is_female), how='left', merge='first',
-        as_gr=True,
-    )
-
-
-def get_normal_mean_ploidy(refver, is_female, target_region_gr=None):
+def get_normal_mean_ploidy(refver, is_female):
     """Only supports hg19 or hg38"""
     if is_female:
         return 2
     else:
-        # sanity check
-        if target_region_gr is not None:
-            assert 'CNn' not in target_region_gr.columns
-
         chromdict = common.DEFAULT_CHROMDICTS[refver]
-        if target_region_gr is None:
-            N_region_gr = libassemblyspec.get_N_region_gr(refver)
-            target_region_gr = chromdict.to_gr().subtract(N_region_gr)
+        N_region_gr = libassemblyspec.get_N_region_gr(refver)
+        par_gr = libassemblyspec.get_par_gr(refver)
 
-        CNn_gr = get_CNn_gr(refver, is_female)
-        target_region_gr = pyranges_helper.join(
-            target_region_gr, CNn_gr, how='left', merge='longest', as_gr=True,
-        )
+        autosomal_chroms = [
+            x for x in chromdict.contigs 
+            if (
+                (common.RE_PATS['assembled_chromosome'] is not None)
+                and (x not in MALE_HAPLOID_CHROMS)
+            )
+        ]  # 1, 2, ...,
+        X_chrom, Y_chrom = chromdict.XY_names
+            # X, Y or chrX, chrY
 
-        indexer = target_region_gr.CNn.notna()
-        CNn_list = target_region_gr.CNn.array[indexer]
-        weights = target_region_gr.lengths().array[indexer]
-        return np.average(CNn_list, weights=weights)
+        CNs = list()
+        lengths = list()
+        # autosomes
+        for chrom in autosomal_chroms:
+            CNs.append(2)
+            N_length = N_region_gr[N_region_gr.Chromosome == chrom].lengths().sum()
+            lengths.append(chromdict[chrom] - N_length)
+        # X - PAR
+        CNs.append(2)
+        PAR_X_length = par_gr[par_gr.Chromosome == X_chrom].lengths().sum()
+        lengths.append(PAR_X_length)
+        # X - non-PAR
+        CNs.append(1)
+        X_N_length = N_region_gr[N_region_gr.Chromosome == X_chrom].lengths().sum()
+        lengths.append(chromdict[X_chrom] - X_N_length - PAR_X_length)
+        # Y
+        CNs.append(1)
+        PAR_Y_length = par_gr[par_gr.Chromosome == Y_chrom].lengths().sum()
+        Y_N_length = N_region_gr[N_region_gr.Chromosome == Y_chrom].lengths().sum()
+        lengths.append(chromdict[Y_chrom] - Y_N_length - PAR_Y_length)
 
+        return np.average(CNs, weights=lengths)
 
-################
-# miscellanous #
-################
 
 def check_haploid(is_female, chrom):
     return (not is_female) and (chrom in MALE_HAPLOID_CHROMS)
 
 
-def get_quantile_df(df):
-    return df.applymap(lambda x: (df < x).to_numpy().mean())
+def get_CNn_list(refver, is_female, chroms, start0s, end0s):
+    """Assumes that N-masked regions or Y-PAR is not given as arguments"""
+    chromdict = common.DEFAULT_CHROMDICTS[refver]
+    X_chrom, Y_chrom = chromdict.XY_names
+    if refver in libassemblyspec.PARS:
+        pars = libassemblyspec.PARS[refver]
+        par1x = pars['PAR1_X']
+        par2x = pars['PAR2_X']
+        par_unavailable = False
+    else:
+        par_unavailable = True
+
+    is_haploid_dict = {
+        chrom: check_haploid(is_female, chrom)
+        for chrom in set(chroms)
+    }
+
+    # main
+    result = list()
+    for chrom, start0, end0 in zip(chroms, start0s, end0s):
+        if is_haploid_dict[chrom]:
+            if chrom == X_chrom:
+                if par_unavailable:  # Assumes CNn is globally 1 if PAR is not available
+                    CNn = 1
+                else:
+                    if any(
+                        common.check_overlaps(start0, end0, par[1], par[2])
+                        for par in (par1x, par2x)
+                    ):  # any overlap with PAR is regarded as CNn == 2
+                        CNn = 2
+                    else:
+                        CNn = 1
+            elif chrom == Y_chrom:
+                CNn = 1
+            else:
+                raise Exception(f'Non-XY haploid chromosome')
+        else:
+            CNn = 2
+
+        result.append(CNn)
+
+    return result
 
 
-def get_bafs(vaf_list):
-    bafs = np.array(vaf_list)
-    gt_half_indexes = bafs > 0.5
-    bafs[gt_half_indexes] = 1 - bafs[gt_half_indexes]
-    return bafs
+##############################################
 
-
-#################################
-# theoretical value calculation # 
-#################################
 
 def theoretical_depth_ratio(
     CNt, cellularity, tumor_mean_ploidy, CNn, normal_mean_ploidy, 
@@ -228,7 +133,6 @@ def theoretical_depth_ratio(
 ):
     """Args:
         CNn, normal_ploidy must be nonzero
-    Can be vectorized
     """
     tumor_upper_term = (CNt * cellularity) + (CNn * (1 - cellularity))
     tumor_lower_term = (tumor_mean_ploidy * cellularity) + (normal_mean_ploidy * (1 - cellularity))
@@ -346,21 +250,11 @@ def delta_depth_ratio_sequenza(cellularity, ploidy, CNn=2, normal_ploidy=2, avg_
 
 def theoretical_baf(CNt, B, cellularity, CNn):
     if CNn <= 1:
-        return np.nan
+        return None
     else:
         numerator = (B * cellularity) + (1 - cellularity)
         denominator = (CNt * cellularity) + (CNn * (1 - cellularity))
         return numerator / denominator
-
-
-def theoretical_baf_vectorized(CNt, B, cellularity, CNn):
-    numerator = (B * cellularity) + (1 - cellularity)
-    denominator = (CNt * cellularity) + (CNn * (1 - cellularity))
-    notna_values = numerator / denominator
-
-    result = pd.Series(np.repeat(np.nan, len(CNn)))
-    result.where(CNn <= 1, notna_values, inplace=True)
-    return result
 
 
 def inverse_theoretical_baf(baf, cellularity, CNt, CNn):
@@ -384,35 +278,30 @@ def inverse_theoretical_baf(baf, cellularity, CNt, CNn):
     return B
 
 
-#############################################
-# find an optimal copy number from cp value # 
-#############################################
-
-
-def get_B(CNt, cellularity, baf, CNn):
-    B_estimate = inverse_theoretical_baf(baf, cellularity, CNt, CNn)
+def get_B(CNt, cellularity, baf):
+    B_estimate = inverse_theoretical_baf(baf, cellularity, CNt)
     if B_estimate <= 0:
         B = 0
-        theo_baf = theoretical_baf(CNt, B, cellularity, CNn)
-        if np.isnan(theo_baf):
-            B = np.nan
-            diff = np.nan
+        theo_baf = theoretical_baf(CNt, B, cellularity)
+        if theo_baf is None:
+            B = None
+            diff = None
         else:
             diff = abs(baf - theo_baf)
     else:
         B_candidate_upper = int(np.ceil(B_estimate))
         B_candidate_lower = int(np.floor(B_estimate))
 
-        theo_baf_upper = theoretical_baf(CNt, B_candidate_upper, cellularity, CNn)
-        theo_baf_lower = theoretical_baf(CNt, B_candidate_lower, cellularity, CNn)
+        theo_baf_upper = theoretical_baf(CNt, B_candidate_upper, cellularity)
+        theo_baf_lower = theoretical_baf(CNt, B_candidate_lower, cellularity)
 
-        if np.isnan(theo_baf_upper) and np.isnan(theo_baf_lower):
-            B = np.nan
-            diff = np.nan
-        elif (not np.isnan(theo_baf_upper)) and np.isnan(theo_baf_lower):
+        if (theo_baf_upper is None) and (theo_baf_lower is None):
+            B = None
+            diff = None
+        elif (theo_baf_upper is not None) and (theo_baf_lower is None):
             B = B_candidate_upper
             diff = abs(baf - theo_baf_upper)
-        elif np.isnan(theo_baf_upper) and (not np.isnan(theo_baf_lower)):
+        elif (theo_baf_upper is None) and (theo_baf_lower is not None):
             B = B_candidate_lower
             diff = abs(baf - theo_baf_lower)
         else:
@@ -428,25 +317,20 @@ def get_B(CNt, cellularity, baf, CNn):
     return B, diff
 
 
-def get_CN_from_cp(cellularity, ploidy, depth_ratio, baf, CNt_weight, CNn, normal_ploidy):
+def get_CN_from_cp(cellularity, ploidy, depth_ratio, baf, CNt_weight):
     def save_cache(CNt_candidate, B_cache, segfit_score_cache, baf_diff_cache):
-        B, baf_diff = get_B(CNt_candidate, cellularity, baf, CNn)
-        if np.isnan(B):
+        B, baf_diff = get_B(CNt_candidate, cellularity, baf)
+        if B is None:
             # drop this CNt candidate if B cannot be calculated
             return
 
-        ratio_diff = abs(
-            theoretical_depth_ratio(CNt_candidate, cellularity, ploidy, CNn, normal_ploidy) 
-            - depth_ratio
-        )
+        ratio_diff = abs(theoretical_depth_ratio(CNt_candidate, cellularity, ploidy) - depth_ratio)
         B_cache[CNt_candidate] = B
         baf_diff_cache[CNt_candidate] = baf_diff
         segfit_score_cache[CNt_candidate] = ratio_diff * CNt_weight + baf_diff
 
     # get initial CNt candidates
-    CNt_estimate = inverse_theoretical_depth_ratio(
-        depth_ratio, cellularity, ploidy, CNn, normal_ploidy,
-    )
+    CNt_estimate = inverse_theoretical_depth_ratio(depth_ratio, cellularity, ploidy)
     if CNt_estimate <= 0:
         initial_candidate_upper = 0
         initial_candidate_lower = None
@@ -459,7 +343,7 @@ def get_CN_from_cp(cellularity, ploidy, depth_ratio, baf, CNt_weight, CNn, norma
     segfit_score_cache = dict()
     baf_diff_cache = dict()
 
-    delta_ratio = delta_depth_ratio(cellularity, ploidy, CNn, normal_ploidy) * CNt_weight
+    delta_ratio = delta_depth_ratio(cellularity, ploidy) * CNt_weight
 
     # upper
     save_cache(initial_candidate_upper, B_cache, segfit_score_cache, baf_diff_cache)
@@ -487,7 +371,7 @@ def get_CN_from_cp(cellularity, ploidy, depth_ratio, baf, CNt_weight, CNn, norma
 
     # result
     if len(segfit_score_cache) == 0:
-        return np.nan, np.nan, np.nan
+        return None, None, None
     else:
         CNt, segfit_score = min(segfit_score_cache.items(), key=operator.itemgetter(1))
         B = B_cache[CNt]
@@ -496,29 +380,18 @@ def get_CN_from_cp(cellularity, ploidy, depth_ratio, baf, CNt_weight, CNn, norma
         return CNt, B, segfit_score
 
 
-def get_CN_from_cp_wo_baf(cellularity, ploidy, depth_ratio, CNt_weight, CNn, normal_ploidy):
-    CNt_estimate = inverse_theoretical_depth_ratio(
-        depth_ratio, cellularity, ploidy, CNn, normal_ploidy,
-    )
+def get_CN_from_cp_wo_baf(cellularity, ploidy, depth_ratio, CNt_weight):
+    CNt_estimate = inverse_theoretical_depth_ratio(depth_ratio, cellularity, ploidy)
     if CNt_estimate <= 0:
         CNt = 0
-        diff = abs(
-            theoretical_depth_ratio(CNt, cellularity, ploidy, CNn, normal_ploidy) 
-            - depth_ratio
-        )
+        diff = abs(theoretical_depth_ratio(CNt, cellularity, ploidy) - depth_ratio)
         segfit_score = diff * CNt_weight
     else:
         upper_candidate = int(np.ceil(CNt_estimate))
         lower_candidate = int(np.floor(CNt_estimate))
 
-        upper_diff = abs(
-            theoretical_depth_ratio(upper_candidate, cellularity, ploidy, CNn, normal_ploidy) 
-            - depth_ratio
-        )
-        lower_diff = abs(
-            theoretical_depth_ratio(lower_candidate, cellularity, ploidy, CNn, normal_ploidy) 
-            - depth_ratio
-        )
+        upper_diff = abs(theoretical_depth_ratio(upper_candidate, cellularity, ploidy) - depth_ratio)
+        lower_diff = abs(theoretical_depth_ratio(lower_candidate, cellularity, ploidy) - depth_ratio)
         if upper_diff <= lower_diff:
             CNt = upper_candidate
             segfit_score = upper_diff * CNt_weight
@@ -526,205 +399,123 @@ def get_CN_from_cp_wo_baf(cellularity, ploidy, depth_ratio, CNt_weight, CNn, nor
             CNt = lower_candidate
             segfit_score = lower_diff * CNt_weight
 
-    return CNt, np.nan, segfit_score 
+    return CNt, None, segfit_score  # B is None
 
 
-#########################
-# find optimal cp value #
-#########################
+def calc_cp_score(segment_df, cellularity, ploidy, is_female, CNt_weight):
+    segfit_score_sum = 0
+    start0_list = list()
+    end0_list = list()
+    CNt_list = list()
+    for idx, row in segment_df.iterrows():
+        if np.isnan(row['depth_mean']):
+            continue
 
-
-def calc_cp_score(
-    segment_df, cellularity, ploidy, is_female, CNt_weight, normal_ploidy,
-):
-    def applied_func(row):
-        if check_haploid(is_female, row.iloc[0]) or np.isnan(row.iloc[4]):
-            CNt, B, segfit_score = get_CN_from_cp_wo_baf(cellularity, ploidy, row.iloc[3], CNt_weight, row.iloc[5], normal_ploidy)
+        if check_haploid(is_female, row['Chromosome']) or np.isnan(row['baf_mean']):
+            CNt, B, segfit_score = get_CN_from_cp_wo_baf(cellularity, ploidy, row['depth_mean'], CNt_weight)
         else:
-            CNt, B, segfit_score = get_CN_from_cp(cellularity, ploidy, row.iloc[3], row.iloc[4], CNt_weight, row.iloc[5], normal_ploidy)
+            CNt, B, segfit_score = get_CN_from_cp(cellularity, ploidy, row['depth_mean'], row['baf_mean'], CNt_weight)
 
-        return CNt, B, segfit_score
+        if segfit_score is not None:
+            #segfit_score_sum += segfit_score
+            segfit_score_sum -= segfit_score  # to make greater score better
 
-    assert {'depth_mean', 'baf_mean', 'CNn'}.issubset(segment_df.columns)
-    assert segment_df['depth_mean'].notna().all()
+        start0_list.append(row['Start'])
+        end0_list.append(row['End'])
+        CNt_list.append(CNt)
 
-    # set column order
-    segment_df = segment_df.loc[:, ['Chromosome', 'Start', 'End', 'depth_mean', 'baf_mean', 'CNn']]
+    seg_mean_ploidy = _get_mean_ploidy_from_values(start0_list, end0_list, CNt_list)
+    ploidyfit_diff = abs(seg_mean_ploidy - ploidy)
 
-    apply_result = segment_df.apply(applied_func, axis=1)
-    segfit_score_sum = sum(x[2] for x in apply_result if not np.isnan(x[2]))
-    CNt_list = np.fromiter((x[0] for x in apply_result), dtype=np.float_)
-    B_list = np.fromiter((x[1] for x in apply_result), dtype=np.float_)
-
-    return {'segfit_score': segfit_score_sum, 'CNt_list': CNt_list, 'B_list': B_list}
+    return {'segfit_score': segfit_score_sum, 'ploidyfit_diff': ploidyfit_diff}
 
 
-def get_cp_score_dict(
-    segment_df, refver, is_female, target_region_gr, 
-    CNt_weight=DEFAULT_CNT_WEIGHT, nproc=None,
-):
-    def get_calculated_tumor_ploidies_new(segment_df, scorelist, target_region_gr):
-        stripped_segment_df = segment_df.loc[:, ['Chromosome', 'Start', 'End']].copy()
-        all_indexes = list(range(stripped_segment_df.shape[0]))  # means index of segments
-        stripped_segment_df.insert(3, 'index', all_indexes)
-        index_annotated_targetregion_gr = annotate_region_with_segment(  # each region is annotated with corresponding segment index
-            target_region_gr[['Chromosome', 'Start', 'End']], 
-            pr.PyRanges(stripped_segment_df),
-        )
-        # make weights of CNt values
-        index_annotated_targetregion_gr.length = index_annotated_targetregion_gr.lengths()
-        weights_dict = index_annotated_targetregion_gr.df.loc[:, ['length', 'index']].groupby('index').sum().to_dict()['length']
-        weights = [
-            (weights_dict[x] if x in weights_dict else 0)
-            for x in all_indexes   
-        ]
-
-        CNt_values = np.array([x['CNt_list'] for x in scorelist])
-        calculated_tumor_ploidies = np.average(CNt_values, axis=1, weights=weights)
-
-        return calculated_tumor_ploidies
-
-    def get_calculated_tumor_ploidies(segment_df, scorelist, target_region_gr):
-        stripped_segment_df = segment_df.loc[:, ['Chromosome', 'Start', 'End']]
-        CNt_col_list = [
-            pd.Series(x['CNt_list'], name=f'CNt_{idx}') 
-            for idx, x in enumerate(scorelist)
-        ]
-        CNt_annotated_segment_df = pd.concat(
-            ([stripped_segment_df] + CNt_col_list), axis=1
-        )
-        CNt_annotated_segment_gr = pr.PyRanges(CNt_annotated_segment_df)
-        CNt_annotated_targetregion_gr = annotate_region_with_segment(
-            target_region_gr[['Chromosome', 'Start', 'End']], CNt_annotated_segment_gr
-        )
-        calculated_tumor_ploidies = np.average(
-            CNt_annotated_targetregion_gr.df.iloc[:, 3:],
-            axis=0,
-            weights=CNt_annotated_targetregion_gr.lengths(),
-        )
-        return calculated_tumor_ploidies
-
-    # get calculated CNt and segment fit cores
-    normal_ploidy = get_normal_mean_ploidy(refver, is_female, target_region_gr)
+def get_cp_score_dict(segment_df, is_female, CNt_weight=DEFAULT_CNT_WEIGHT, nproc=None):
     c_candidates = np.round(np.arange(0.01, 1.00, 0.01), 2)  # 0 and 1 are excluded
     p_candidates = np.round(np.arange(0.5, 7.1, 0.1), 1)  # 0.5 to 7.0
-    cp_pairs = tuple(CPPair(x, y) for (x, y) in itertools.product(c_candidates, p_candidates))
-
+    cp_pairs = tuple(itertools.product(c_candidates, p_candidates))
     with multiprocessing.Pool(nproc) as pool:
         scorelist = pool.starmap(
             calc_cp_score, 
-            (   
-                (segment_df, x.cellularity, x.ploidy, is_female, CNt_weight, normal_ploidy) 
-                for x in cp_pairs
-            ),
+            ((segment_df, x[0], x[1], is_female, CNt_weight) for x in cp_pairs),
         )
-
-    # get calculated tumor mean ploidy for each cp pair
-    calculated_tumor_ploidies = get_calculated_tumor_ploidies_new(segment_df, scorelist, target_region_gr)
-
-    # calculate ploidy fitting scores
-    for cpppair, calc_ploidy, dic in zip(cp_pairs, calculated_tumor_ploidies, scorelist):
-        dic['calculated_tumor_ploidy'] = calc_ploidy
-        dic['ploidy_diff'] = calc_ploidy - cpppair.ploidy
-        dic['ploidy_diff_ratio'] = dic['ploidy_diff'] / cpppair.ploidy
-
     cp_scores = dict(zip(cp_pairs, scorelist))
     return cp_scores
 
 
-def make_cpscore_dfs(cpscore_dict):
-    clist = sorted(set(x.cellularity for x in cpscore_dict.keys()))
-    plist = sorted(set(x.ploidy for x in cpscore_dict.keys()))
-    data = {
-        'segfit': list(), 
-        'ploidy_diff': list(), 
-        'ploidy_diff_abs': list(),
-        'ploidy_diff_ratio': list(),
-        'ploidy_diff_ratio_abs': list(),
-    }
-    for c in clist:
-        values = [
-            val for key, val in 
-            sorted(
-                ((k, v) for (k, v) in cpscore_dict.items() if k.cellularity == c),
-                key=(lambda y: y[0].ploidy),
-            )
-        ]
-        data['segfit'].append([x['segfit_score'] for x in values])
-        data['ploidy_diff'].append([x['ploidy_diff'] for x in values])
-        data['ploidy_diff_abs'].append([abs(x['ploidy_diff']) for x in values])
-        data['ploidy_diff_ratio'].append([x['ploidy_diff_ratio'] for x in values])
-        data['ploidy_diff_ratio_abs'].append([abs(x['ploidy_diff_ratio']) for x in values])
+def get_cpscore_peaks(cp_scores):
+    c_list = sorted(set((x[0] for x in cp_scores.keys())))
+    p_list = sorted(set((x[1] for x in cp_scores.keys())))
+    cpscore_df_source = dict()
+    for c in c_list:
+        cpscore_df_source[c] = [cp_scores[(c, p)] for p in p_list]
+    cpscore_df = pd.DataFrame.from_dict(cpscore_df_source)
+    cpscore_df.index = p_list
+    cpscore_df = -1 * cpscore_df  # to be run with get_fitresult_peaks function
 
-    dfs = dict()
-    for key, val in data.items():
-        df = pd.DataFrame.from_records(val, index=clist, columns=plist)
-        df.index.name = 'cellularity'
-        df.columns.name = 'ploidy'
-        dfs[key] = df
+    peaks = sequenza_handler.get_fitresult_peaks(cpscore_df)
+    for x in peaks:
+        x['score'] = -1 * x['lpp'] 
+        del x['lpp']
 
-    return dfs
+    return peaks
 
 
-def show_heatmap_peaks(score_df, invert=True, quantile=True):
-    peaks = find_df_peaks(score_df, invert=invert)
-    ys, xs = zip(*peaks)
-    if quantile:
-        ax = sns.heatmap(get_quantile_df(score_df))
-    else:
-        ax = sns.heatmap(score_df)
-    ax.plot(xs, ys, linestyle='', marker='o', markersize=1.5)
-    return ax
-
-
-##################################
-# segment dataframe modification #
-##################################
-
-
-def annotate_region_with_segment(target_region_gr, segment_gr):
-    """Add values of segment_gr, such as CNt or B, to target_region_gr"""
-    return pyranges_helper.join(
-        target_region_gr, segment_gr, how='left', merge='first', 
-        find_nearest=True, as_gr=True,
-    )
-
-
-def add_CNt_to_segment(
-    segment_df, cellularity, tumor_ploidy, normal_ploidy, is_female, 
-    CNt_weight=DEFAULT_CNT_WEIGHT,
-):
-    data = calc_cp_score(
-        segment_df, cellularity, tumor_ploidy, is_female, CNt_weight, normal_ploidy,
-    )
-    result = segment_df.copy()
-    result['CNt'] = data['CNt_list']
-    result['B'] = data['B_list']
-    return result
-
-
-def add_theoreticals_to_segment(
-    segment_df, cellularity, tumor_ploidy, normal_ploidy, is_female,
-):
-    assert {'CNn', 'CNt', 'B'}.issubset(segment_df.columns)
-
-    def depthr_getter(row):
-        return theoretical_depth_ratio(
-            row['CNt'], cellularity, tumor_ploidy, row['CNn'], normal_ploidy, 
-            tumor_avg_depth_ratio=1, normal_avg_depth_ratio=1,
-        )
-
-    def baf_getter(row):
-        if np.isnan(row['B']):
-            return np.nan
+def add_CN_to_segment(segment_df, cellularity, ploidy, is_female, CNt_weight=DEFAULT_CNT_WEIGHT):
+    CNt_list = list()
+    B_list = list()
+    score_list = list()
+    for idx, row in segment_df.iterrows():
+        if np.isnan(row['depth_mean']):
+            CNt, B, score = None, None, None
         else:
-            return theoretical_baf(row['CNt'], row['B'], cellularity, row['CNn'])
+            if check_haploid(is_female, row['Chromosome']) or np.isnan(row['baf_mean']):
+                CNt, B, score = get_CN_from_cp_wo_baf(cellularity, ploidy, row['depth_mean'], CNt_weight)
+            else:
+                CNt, B, score = get_CN_from_cp(cellularity, ploidy, row['depth_mean'], row['baf_mean'], CNt_weight)
 
-    theo_depthr_list = segment_df.apply(depthr_getter, axis=1)
-    theo_baf_list = segment_df.apply(baf_getter, axis=1)
+        if CNt is None:
+            CNt = np.nan
+        if B is None:
+            B = np.nan
+        if score is None:
+            score = np.nan
+
+        CNt_list.append(CNt)
+        B_list.append(B)
+        score_list.append(score)
+
+    return segment_df.assign(**{'CNt': CNt_list, 'B': B_list, 'score': score_list})
+
+
+def add_theoreticals_to_segment(segment_df, cellularity, ploidy, is_female):
+    theo_depthratio_list = list()
+    theo_baf_list = list()
+    for idx, row in segment_df.iterrows():
+        if np.isnan(row['CNt']):
+            theo_depthratio = np.nan
+            theo_baf = np.nan
+        else:
+            if check_haploid(is_female, row['Chromosome']):
+                CNn = 1
+            else:
+                CNn = 2
+
+            # depthratio
+            theo_depthratio = theoretical_depth_ratio(row['CNt'], cellularity, ploidy, CNn=CNn)
+            # baf
+            if np.isnan(row['B']):
+                theo_baf = np.nan
+            else:
+                theo_baf = theoretical_baf(row['CNt'], row['B'], cellularity, CNn=CNn)
+                if theo_baf is None:
+                    theo_baf = np.nan
+
+        theo_depthratio_list.append(theo_depthratio)
+        theo_baf_list.append(theo_baf)
 
     return segment_df.assign(
-        **{'predicted_depth_ratio': theo_depthr_list, 'predicted_baf': theo_baf_list}
+        **{'predicted_depth_ratio': theo_depthratio_list, 'predicted_baf': theo_baf_list}
     )
     
 
@@ -741,10 +532,6 @@ def get_mean_ploidy(seg_df):
     numerator = (seg_df.CNt * seg_lengths).sum()
     denominator = seg_lengths.sum()
     return numerator / denominator
-
-
-def get_tumor_mean_ploidy(CNt_annotated_gr):
-    return np.average(CNt_annotated_gr.CNt, weights=CNt_annotated_gr.lengths())
 
 
 def theoretical_somatic_vaf(CNt, CNm, cellularity, ccf, CNn=2):
