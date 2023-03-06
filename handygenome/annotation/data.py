@@ -1,8 +1,6 @@
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
+import handygenome.common as common
 
 
 REPEATS_PATH = common.RefverDict({
@@ -21,23 +19,12 @@ REGULATORY_PATH = common.RefverDict({
 })
 
 DBSNP_PATHS = common.RefverDict({
-    'GRCh37': '/home/users/pjh/scripts/python_genome_packages/data/popfreq/dbSNP_b155_GRCh37.p13.vcf.gz',
+    'GRCh37': f'{common.DATA_DIR}/popfreq/dbSNP_b155_GRCh37.p13.vcf.gz',
     'GRCh38': '/home/users/pjh/References/dbSNP38/modified_files/dbSNP_b155_GRCh38.p13.vcf.gz',
 })
 
-#COSMIC_PATHS = {
-#    'hg19': {
-#        'coding': '/home/users/pjh/References/COSMIC/hg19/modified_files/v95/CosmicMutantExport.vcf.gz',
-#        'noncoding': '/home/users/pjh/References/COSMIC/hg19/modified_files/v95/CosmicNCV.vcf.gz',
-#        },
-#    'GRCh38': {
-#        'coding': '/home/users/pjh/References/COSMIC/GRCh38/modified_files/v95/CosmicMutantExport.vcf.gz',
-#        'noncoding': '/home/users/pjh/References/COSMIC/GRCh38/modified_files/v95/CosmicNCV.vcf.gz',
-#        },
-#    }
-
 COSMIC_PATHS = common.RefverDict({
-    'GRCh37': '/home/users/pjh/scripts/python_genome_packages/data/cosmic/v96/grch37/nonSV.vcf.gz',
+    'GRCh37': f'{common.DATA_DIR}/cosmic/v96/grch37/nonSV.vcf.gz',
     'GRCh38': None,
 })
 
@@ -63,16 +50,6 @@ VCFS_DBSNP = common.RefverDict({
     'GRCh38': pysam.VariantFile(DBSNP_PATHS['GRCh38']),
 })
 
-#VCFS_COSMIC = {
-#    'GRCh37': {
-#        'coding': pysam.VariantFile(COSMIC_PATHS['GRCh37']['coding']),
-#        'noncoding': pysam.VariantFile(COSMIC_PATHS['GRCh37']['noncoding']),
-#        },
-#    'GRCh38': {
-#        'coding': pysam.VariantFile(COSMIC_PATHS['GRCh38']['coding']),
-#        'noncoding': pysam.VariantFile(COSMIC_PATHS['GRCh38']['noncoding']),
-#        },
-#    }
 VCFS_COSMIC = common.RefverDict({
     'GRCh37': pysam.VariantFile(COSMIC_PATHS['GRCh37']),
     'GRCh38': None,
