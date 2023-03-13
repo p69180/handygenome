@@ -442,6 +442,7 @@ def main(cmdargs):
         max_submit=args.max_submit, 
         logger=logger, 
         log_dir=tmpdir_paths['logs'],
+        job_status_logpath=os.path.join(tmpdir_paths['root'], 'job_status_log'),
         raise_on_failure=True,
     )
 

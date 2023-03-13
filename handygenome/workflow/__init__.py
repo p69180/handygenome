@@ -13,8 +13,7 @@ import tempfile
 import pyranges as pr
 
 import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
+import handygenome.common as common
 
 
 SLURMBIN = '/usr/local/slurm/bin'
@@ -110,8 +109,10 @@ def get_split_filenames(n_file, outdir, prefix, suffix):
 
     result = list()
     padded_indices = common.get_padded_indices(n_file)
-    result = [os.path.join(outdir, prefix + idx_pad + suffix)
-              for idx_pad in padded_indices]
+    result = [
+        os.path.join(outdir, prefix + idx_pad + suffix)
+        for idx_pad in padded_indices
+    ]
     
     return result
 
@@ -926,27 +927,40 @@ class JobList(list):
         verbose=True, 
         logpath=None, 
         logger=None,
+        job_status_logpath=None,
     ):
+        # general logger
+        if logger is None:
+            self.logger = get_logger(
+                formatter=DEFAULT_LOG_FORMATTERS['without_name'], 
+                stderr=verbose, 
+                filenames=(
+                    None if logpath is None else [logpath]
+                ),
+            )
+        else:
+            self.logger = logger
+
+        # job status summary logger
+        self.job_status_logpath = job_status_logpath
+
+        # other attrs
         for jobscript_path in jobscript_path_list:
             self.append(
-                Job(jobscript_path=jobscript_path, verbose=verbose, logger=logger)
+                Job(jobscript_path=jobscript_path, verbose=verbose, logger=self.logger)
             )
 
         self.intv_submit = intv_submit
         self.intv_check = intv_check
         self.max_submit = max_submit
-
-        if logger is None:
-            self.logger = get_logger(
-                formatter=DEFAULT_LOG_FORMATTERS['without_name'], 
-                stderr=verbose, filenames=[logpath],
-            )
-        else:
-            self.logger = logger
-
         self.success = None
         self.sublists = dict()
         self.update()
+
+    def write_job_status_log(self, msg):
+        if self.job_status_logpath is not None:
+            with open(self.job_status_logpath, 'wt') as f:
+                f.write(f'[{common.get_timestamp()}] {msg}')
 
     def get_num_pending_running(self):
         return len(self.sublists['pending']) + len(self.sublists['running'])
@@ -980,37 +994,69 @@ class JobList(list):
 
         def log_status():
             n_notsubmit = len(self.sublists['notsubmit'])
+            n_pending = len(self.sublists['pending'])
+            n_running = len(self.sublists['running'])
+            n_finished = len(self.sublists['finished'])
+
             info_pending = make_infostring('pending')
             info_running = make_infostring('running')
             info_finished = make_infostring('finished')
 
-            msg = textwrap.dedent(f"""\
-                Current job status:
-                  Not submitted yet: {n_notsubmit}
+            self.write_job_status_log(
+                textwrap.dedent(
+                    f"""\
+                    Current job status:
+                        Not submitted yet: {n_notsubmit}
 
-                  Pending: {info_pending}
+                        Pending: {info_pending}
 
-                  Running: {info_running}
+                        Running: {info_running}
 
-                  Finished: {info_finished}
-                """)
-            self.logger.info(msg)
+                        Finished: {info_finished}
+                    """
+                )
+            )
+            self.logger.info(
+                textwrap.dedent(
+                    f"""\
+                    Current job status:
+                        Not submitted yet: {n_notsubmit}
+                        Pending: {n_pending}
+                        Running: {n_running}
+                        Finished: {n_finished}"""
+                )
+            )
 
         def log_epilogue():
+            n_success = len(self.sublists['success'])
+            n_failure = len(self.sublists['failure'])
+            n_unknown = len(self.sublists['unknown'])
+
             info_success = make_infostring('success')
             info_failure = make_infostring('failure')
             info_unknown = make_infostring('unknown')
 
-            msg = textwrap.dedent(f"""\
-                All finished.
+            self.write_job_status_log(
+                textwrap.dedent(
+                    f"""\
+                    All finished.
+                        Successful jobs: {info_success}
 
-                Successful jobs: {info_success}
+                        Failed jobs: {info_failure}
 
-                Failed jobs: {info_failure}
-
-                Jobs with unknown exit statuses: {info_unknown}
-                """)
-            self.logger.info(msg)
+                        Jobs with unknown exit statuses: {info_unknown}
+                    """
+                )
+            )
+            self.logger.info(
+                textwrap.dedent(
+                    f"""\
+                    All finished.
+                        Successful jobs: {n_success}
+                        Failed jobs: {n_failure}
+                        Jobs with unknown exit statuses: {n_unknown}"""
+                )
+            )
 
         # main
         try:
@@ -1027,9 +1073,11 @@ class JobList(list):
             self.logger.info(
                 f'RECEIVED A KEYBOARD INTERRUPT; '
                 f'will cancel all pending and running jobs with scancel,'
-                f' then exit immediately.')
-            for job in itertools.chain(self.sublists['pending'], 
-                                       self.sublists['running']):
+                f' then exit immediately.'
+            )
+            for job in itertools.chain(
+                self.sublists['pending'], self.sublists['running']
+            ):
                 job.cancel()
             raise SystemExit(1)
         else:
@@ -1175,6 +1223,7 @@ def run_jobs(
     max_submit, 
     logger, 
     log_dir, 
+    job_status_logpath=None,
     raise_on_failure=True,
 ):
     assert sched in ('local', 'slurm')
@@ -1188,6 +1237,7 @@ def run_jobs(
             intv_submit=intv_submit,
             max_submit=max_submit,
             logger=logger,
+            job_status_logpath=job_status_logpath,
         )
         joblist.submit_and_wait()
 
