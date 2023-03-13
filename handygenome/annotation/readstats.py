@@ -109,13 +109,17 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
             recurrence_cutoff_fraction,
             recurrence_cutoff_denominator,
         ):
-            summary = dict()
+            summary_without_recurrence = dict()
+            summary_only_recurrence = dict()
             for alleleclass, values in data.items():    
                 if len(values) == 0:
-                    summary[alleleclass] = np.nan
+                    #summary_without_recurrence[alleleclass] = np.nan
+                    summary_without_recurrence[alleleclass] = 0
+                    summary_only_recurrence[alleleclass] = 0
                 else:
-                    mNM_count_sum = 0
                     counter = collections.Counter(values)
+                    mNM_count_sum_with_recurrence = 0
+                    mNM_count_sum_without_recurrence = 0
                     for key, val in counter.items():
                         refpos0 = key[0]
                         relevant_rppcount = sum(
@@ -123,21 +127,24 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
                             for range0_list in rpp_range0_dict[alleleclass]
                         )
                         if relevant_rppcount == 0:
-                            raise Exception(f'The number of relevant rpp is 0. mNM element: {key}')
-                        #assert relevant_rppcount > 0
-                        #print(alleleclass, key, (val / relevant_rppcount))
+                            raise Exception(
+                                f'The number of relevant rpp is 0. mNM element: {key}'
+                            )
+
                         if (
                             (val / relevant_rppcount) >= recurrence_cutoff_fraction and
                             relevant_rppcount >= recurrence_cutoff_denominator
-                        ):
-                            continue
+                        ):  # This means a recurrent MM
+                            mNM_count_sum_with_recurrence += 1
                         else:
-                            mNM_count_sum += 1
-                    #print('mNM_count_sum', mNM_count_sum)
-                            
-                    summary[alleleclass] = mNM_count_sum / rppcounts_dict[alleleclass]
+                            mNM_count_sum_without_recurrence += 1
 
-            return summary
+                    summary_without_recurrence[alleleclass] = (
+                        mNM_count_sum_without_recurrence / rppcounts_dict[alleleclass]
+                    )
+                    summary_only_recurrence[alleleclass] = mNM_count_sum_with_recurrence
+
+            return summary_without_recurrence, summary_only_recurrence
 
         # main
         result = cls(is_missing=False)
@@ -157,7 +164,7 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
             result['mean_cliplens'] = allele_means(readstats_data['cliplen'])
             result['median_cliplens'] = allele_medians(readstats_data['cliplen'])
 
-            result['mNM'] = handle_mNM(
+            result['mNM'], result['recurrent_mNM'] = handle_mNM(
                 readstats_data['mNM'], 
                 readstats_data['count'], 
                 readstats_data['rpp_range0'], 
@@ -184,13 +191,18 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
 
         values = np.fromiter((self[key][x] for x in allele_indexes), dtype=float)
         weights = np.fromiter((self['rppcounts'][x] for x in allele_indexes), dtype=int)
+
+        nan_indexes = np.isnan(values)
+        values = values[~nan_indexes]
+        weights = weights[~nan_indexes]
+
         if sum(weights) == 0:
             return np.nan
         else:
-            return common.nanaverage(values, weights=weights)
+            return np.average(values, weights=weights)
 
     get_allele_indexes_mean = get_allele_indexes_average
-    get_alleleindexes_mean = get_allele_indexes_average
+    #get_alleleindexes_mean = get_allele_indexes_average
 
     def get_total_rppcount(self, exclude_other=False):
         if exclude_other:
@@ -414,7 +426,6 @@ def rpplist_to_readstats_data(
         if rpp.rp2 is not None:
             add_var_pos0s_rp(rpp.rp2, data, alleleclass_rpp, vcfspec)
 
-
     # turn into numpy arrays
 #    for key in data.keys():
 #        if key != 'count':
@@ -462,10 +473,6 @@ def get_readstats_data(
         end0=vcfspec.end0, 
         **rpplist_kwargs,
     )
-    #rpplist.update_alleleinfo(
-    #    vcfspec=vcfspec, 
-    #    **alleleinfo_kwargs,
-    #)
     rpplist.update_alleleclass(
         vcfspec=vcfspec, 
         **alleleinfo_kwargs,
@@ -478,85 +485,4 @@ def get_readstats_data(
     del rpplist
 
     return readstats_data
-
-
-#def summarize_readstats_data(readstats_data):
-#    def ref_mean(data):
-#        return np.mean(data[0])
-#
-#    def alt_means(data, alt_keys):
-#        return [np.mean(data[x]) for x in alt_keys]
-#
-#    def allele_means(data):
-#        return dict((alleleclass, np.mean(array)) 
-#                    for (alleleclass, array) in data.items())
-#
-#    def allele_medians(data):
-#        return dict((alleleclass, np.median(array)) 
-#                    for (alleleclass, array) in data.items())
-#
-#    def varpos_kstest(data):
-#        summary = dict()
-#        for alleleclass, array in data.items():
-#            if len(array) == 0:
-#                pval = np.nan
-#            else:
-#                pval = scipy.stats.kstest(array, 'uniform').pvalue
-#            summary[alleleclass] = pval
-#
-#        return summary
-#
-#    def setup_old(readstats, readstats_data):
-#        alt_keys = sorted(x for x in readstats_data['count'].keys()
-#                          if isinstance(x, int) and (x > 0))
-#
-#        readstats['ref_rppcount'] = readstats_data['count'][0]
-#        readstats['alt_rppcounts'] = [readstats_data['count'][x] 
-#                                      for x in alt_keys]
-#        readstats['other_rppcount'] = readstats_data['count'][-1]
-#        readstats['none_rppcount'] = readstats_data['count'][None]
-#        readstats['clipoverlap_rppcount'] = readstats_data['count']['softclip_overlap']
-#        
-#        readstats['ref_mean_BQ'] = ref_mean(readstats_data['BQ'])
-#        readstats['alt_mean_BQs'] = alt_means(readstats_data['BQ'], alt_keys)
-#
-#        readstats['ref_mean_MQ'] = ref_mean(readstats_data['MQ'])
-#        readstats['alt_mean_MQs'] = alt_means(readstats_data['MQ'], alt_keys)
-#
-#        readstats['ref_mean_cliplen'] = ref_mean(readstats_data['cliplen'])
-#        readstats['alt_mean_cliplens'] = alt_means(readstats_data['cliplen'], alt_keys)
-#
-#    def setup_new(readstats, readstats_data):
-#        readstats['rppcounts'] = readstats_data['count'].copy()
-#
-#        readstats['mean_BQs'] = allele_means(readstats_data['BQ'])
-#        readstats['median_BQs'] = allele_medians(readstats_data['BQ'])
-#
-#        readstats['mean_MQs'] = allele_means(readstats_data['MQ'])
-#        readstats['median_MQs'] = allele_medians(readstats_data['MQ'])
-#
-#        readstats['mean_cliplens'] = allele_means(readstats_data['cliplen'])
-#        readstats['median_cliplens'] = allele_medians(readstats_data['cliplen'])
-#
-#        readstats['varpos_uniform_pvalues'] = varpos_kstest(readstats_data['pos0_left_fraction'])
-#        readstats['mean_varpos_fractions'] = allele_means(readstats_data['pos0_left_fraction'])
-#        readstats['median_varpos_fractions'] = allele_medians(readstats_data['pos0_left_fraction'])
-#
-#    # main
-#    readstats = ReadStats()
-#    readstats.set_is_not_missing()
-#    setup_new(readstats, readstats_data)
-#
-#    return readstats
-
-
-#def add_meta(vcfheader):
-#    vcfheader.add_meta(
-#        key='FORMAT',
-#        items=[('ID', READSTATS_FORMAT_KEY),
-#               ('Type', 'String'),
-#               ('Number', 1),
-#               ('Description', 
-#                'Read information statistics for the sample.')])
-    
 

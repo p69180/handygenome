@@ -42,27 +42,61 @@ import handygenome.variant.ponbams as libponbams
 #READCOUNT_FORMAT_KEY = "allele_readcounts"
 
 
+class VariantPlusInitParams(dict):
+    def __init__(self):
+        """prop: probability for random selection. If None, all entries are selected.
+        """
+        self.update({
+            'init_popfreq': False,
+            'init_cosmic': False,
+            'init_transcript': False,
+            'init_regulatory': False,
+            'init_motif': False,
+            'init_repeat': False,
+            'init_readstats': False,
+            'init_oncokb': False,
+            'init_filterresult': False,
+
+            'sampleid_list': None,
+        })
+
+    def update_args(self, init_all_attrs, vp_init_params_arg):
+        """'init_all_attrs' takes precedence over 'vp_init_params_arg'"""
+
+        assert set(vp_init_params_arg.keys()).issubset(self.keys()), (
+            f'Unavailable keys for VariantPlus initation parameters. Valid keys are: '
+            f'{set(self.keys())}'
+        )
+
+        self.update(vp_init_params_arg)
+        if init_all_attrs:
+            for key in (
+                'init_popfreq',
+                'init_cosmic',
+                'init_transcript',
+                'init_regulatory',
+                'init_motif',
+                'init_repeat',
+                'init_readstats',
+                'init_oncokb',
+                'init_filterresult',
+            ):
+                self[key] = True
+
+
 class VariantPlus:
-    """Attributes:
-        vr
-        refver
-        fasta
-        chromdict
-        vcfspec
-        is_sv
-        is_bnd1
-        bnds
-        annotdb
-        annotdb_bnd1
-        annotdb_bnd2
-    """
     # CONSTRUCTORS
     @classmethod
     def from_vr(
-        cls, vr, refver=None, fasta=None, chromdict=None,
+        cls, vr, 
+        refver=None, fasta=None, chromdict=None,
         init_all_attrs=True,
         vp_init_params=dict(),
+        preset_vp_init_params=None,
+        popfreq_metadata=None, 
+        cosmic_metadata=None,
     ):
+        # set params
         result = cls()
 
         result.vr = vr
@@ -77,26 +111,42 @@ class VariantPlus:
         )
         result.vcfspec = libvcfspec.Vcfspec.from_vr(result.vr, refver=result.refver)
 
-        result.init_common(**kwargs)
+        # set init params
+        result.set_vp_init_params(init_all_attrs, vp_init_params, preset_vp_init_params)
+
+        # init
+        result.init_common(popfreq_metadata, cosmic_metadata)
 
         return result
 
     @classmethod
-    def from_vcfspec(cls, vcfspec, chromdict=None, **kwargs):
+    def from_vcfspec(
+        cls, vcfspec, 
+        chromdict=None, 
+        init_all_attrs=True,
+        vp_init_params=dict(),
+        preset_vp_init_params=None,
+        popfreq_metadata=None, 
+        cosmic_metadata=None,
+    ):
+        # set params
         result = cls()
 
         result.vcfspec = vcfspec
         result.refver = result.vcfspec.refver
         result.fasta = result.vcfspec.fasta
         result.chromdict = (
-            #common.ChromDict(fasta=result.fasta) 
             common.DEFAULT_CHROMDICTS[result.refver]
             if chromdict is None else 
             chromdict
         )
         result.vr = initvcf.create_vr(chromdict=result.chromdict, vcfspec=result.vcfspec)
 
-        result.init_common(**kwargs)
+        # set init params
+        result.set_vp_init_params(init_all_attrs, vp_init_params, preset_vp_init_params)
+
+        # init
+        result.init_common(popfreq_metadata, cosmic_metadata)
 
         return result
 
@@ -105,28 +155,14 @@ class VariantPlus:
         vcfspec = bnds.get_vcfspec_bnd1()
         return cls.from_vcfspec(vcfspec, chromdict, **kwargs)
 
-    def init_common(
-        self, 
-        vp_init_params,
+    def set_vp_init_params(self, init_all_attrs, vp_init_params, preset_vp_init_params):
+        if preset_vp_init_params is None:
+            self.vp_init_params = VariantPlusInitParams()
+            self.vp_init_params.update_args(init_all_attrs, vp_init_params)
+        else:
+            self.vp_init_params = preset_vp_init_params
 
-#        init_popfreq=True, 
-#        init_cosmic=True,
-#        popfreq_metadata=None, 
-#        cosmic_metadata=None,
-#
-#        init_transcript=True,
-#        init_regulatory=True,
-#        init_motif=True,
-#        init_repeat=True,
-#
-#        init_readstats=True,
-#
-#        init_oncokb=True,
-#
-#        init_filterresult=True,
-#
-#        sampleid_list=None,
-    ):
+    def init_common(self, popfreq_metadata, cosmic_metadata):
         # SV attrs
         self.is_sv = varianthandler.check_SV(self.vr)
         self.set_bnds_attributes()  # is_bnd1, bnds
@@ -134,34 +170,34 @@ class VariantPlus:
         # popfreq & cosmic
         self._init_popfreq(
             metadata=popfreq_metadata, 
-            init_blank=(not vp_init_params['init_popfreq']),
+            init_blank=(not self.vp_init_params['init_popfreq']),
         )
         self._init_cosmic(
             metadata=cosmic_metadata, 
-            init_blank=(not vp_init_params['init_cosmic']),
+            init_blank=(not self.vp_init_params['init_cosmic']),
         )
 
         # features
-        self._init_transcript(init_blank=(not vp_init_params['init_transcript']))
+        self._init_transcript(init_blank=(not self.vp_init_params['init_transcript']))
 
-        self._init_transcript(init_blank=(not vp_init_params['init_transcript']))
-        self._init_regulatory(init_blank=(not vp_init_params['init_regulatory']))
-        self._init_motif(init_blank=(not vp_init_params['init_motif']))
-        self._init_repeat(init_blank=(not vp_init_params['init_repeat']))
+        self._init_transcript(init_blank=(not self.vp_init_params['init_transcript']))
+        self._init_regulatory(init_blank=(not self.vp_init_params['init_regulatory']))
+        self._init_motif(init_blank=(not self.vp_init_params['init_motif']))
+        self._init_repeat(init_blank=(not self.vp_init_params['init_repeat']))
 
         # readstats, readstats_data, rpplists
         self.rpplist_dict = dict()
         self.readstats_data_dict = dict()
         self._init_readstats(
-            init_blank=(not vp_init_params['init_readstats']), 
-            sampleid_list=vp_init_params['sampleid_list'],
+            init_blank=(not self.vp_init_params['init_readstats']), 
+            sampleid_list=self.vp_init_params['sampleid_list'],
         )
 
         # oncokb
-        self._init_oncokb(init_blank=(not vp_init_params['init_oncokb']))
+        self._init_oncokb(init_blank=(not self.vp_init_params['init_oncokb']))
 
         # filter result
-        self._init_filterresult(init_blank=(not vp_init_params['init_filterresult']))
+        self._init_filterresult(init_blank=(not self.vp_init_params['init_filterresult']))
 
     def __repr__(self):
         if self.transcript is None:
@@ -491,10 +527,7 @@ class VariantPlus:
 
     def create_readstats(
         self, bam_dict,
-        rpplist_kwargs={
-            'view': False,
-            'no_matesearch': True,
-        },
+        rpplist_kwargs={},
         alleleinfo_kwargs={},
     ):
         """Args:
@@ -516,10 +549,7 @@ class VariantPlus:
 
     def update_readstats(
         self, bam_dict, 
-        rpplist_kwargs={
-            'view': False,
-            'no_matesearch': True,
-        },
+        rpplist_kwargs={},
         alleleinfo_kwargs={},
         countonly=False,
     ):
@@ -530,14 +560,26 @@ class VariantPlus:
             countonly=countonly,
         )
 
+    def make_readstats(
+        self, 
+        bam, 
+        rpplist_kwargs={},
+        alleleinfo_kwargs={},
+    ):
+        return libreadstats.ReadStats.from_bam(
+            vcfspec=self.vcfspec, 
+            bam=bam, 
+            fasta=self.fasta, 
+            chromdict=self.chromdict,
+            rpplist_kwargs=rpplist_kwargs,
+            alleleinfo_kwargs=alleleinfo_kwargs,
+        )
+
     def make_rpplist(
         self,
         bam,
         set_alleleclass=True,
-        rpplist_kwargs={
-            'view': False,
-            'no_matesearch': True,
-        },
+        rpplist_kwargs={},
         alleleinfo_kwargs=dict(),
     ):
         if self.is_sv:
@@ -568,10 +610,7 @@ class VariantPlus:
     def set_rpplist(
         self, sampleid, bam, 
         set_alleleclass=True,
-        rpplist_kwargs={
-            'view': False,
-            'no_matesearch': True,
-        },
+        rpplist_kwargs={},
         alleleinfo_kwargs=dict(),
     ):
         self.rpplist_dict[sampleid] = self.make_rpplist(
@@ -594,10 +633,7 @@ class VariantPlus:
         sampleid, 
         bam, 
         verbose=False, 
-        rpplist_kwargs={
-            'view': False,
-            'no_matesearch': True,
-        },
+        rpplist_kwargs={},
         alleleinfo_kwargs=dict(),
     ):
         if verbose:
@@ -824,7 +860,6 @@ class VariantPlus:
         )
         fig.show()
 
-    #@common.get_deco_num_set_differently(('pon_samples', 'pon_cohorts'), 1)
     def show_pon(self, query_sample, allele_index=1, exclude_query=True, pon_cohorts=None, pon_samples=None, **kwargs):
         fig = plot_filterinfo.show_pon(
             query_sample=query_sample, 
@@ -836,111 +871,6 @@ class VariantPlus:
             **kwargs,
         )
         fig.show()
-        
-
-#    #@common.get_deco_num_set(('bam', 'sampleid'), 1)
-#    def show_igv_old(
-#        self, igv, bam=None, sampleid=None, tmpbam_name=None,
-#        rpplist_kwargs={
-#            'view': True,
-#            'no_matesearch': True,
-#        },
-#        alleleclass_kwargs=dict(),
-#        viewaspairs=True,
-#    ):
-#        """Args:
-#            tmpbam_name: Basename of temporary bam. It will be shown as track name on IGV. If not set, when "sampleid" argument is set, it will be "<sampleid>_for_show.bam".
-#        """
-#        # sanity check
-#        if tmpbam_name is not None:
-#            if not tmpbam_name.endswith('.bam'):
-#                raise Exception(f'"tmpbam_name" must end with ".bam". Otherwise, IGV cannot appropriately load it.')
-#
-#        # get rpplist
-#        if sampleid is not None:
-#            if sampleid not in self.rpplist_dict.keys():
-#                raise Exception(
-#                    f"rpplist for the sampleid {sampleid} is not created. To bypass this problem, 1) run this method with 'bam' argument, or 2) run VariantPlus.set_rpplist method first."
-#                )
-#            rpplist = self.rpplist_dict[sampleid]
-#        elif bam is not None:
-#            rpplist = self.make_rpplist(
-#                bam, set_alleleclass=True,
-#                rpplist_kwargs=rpplist_kwargs,
-#                alleleclass_kwargs=alleleclass_kwargs,
-#            )
-#
-#        if len(rpplist) == 0:
-#            return
-#
-#        # add alleleclass tag to ReadPlus and ReadPlusPair objects
-#        if self.is_sv:
-#            rpplist.set_alleleinfo_tag_rp_sv(self.bnds)
-#            rpplist.set_alleleinfo_tag_rpp_sv(self.bnds)
-#        else:
-#            rpplist.set_alleleclass_tag_rp(self.vcfspec)
-#            rpplist.set_alleleclass_tag_rpp(self.vcfspec)
-#
-#        # set tmpbam_path
-#        tmpbam_dir = workflow.get_tmpfile_path(prefix='tmpdir_show_igv_', dir=os.getcwd(), delete=False, is_dir=True)
-#        if tmpbam_name is None:  # tmpbam_name is basename of temporary bam path
-#            if sampleid is None:
-#                tmpbam_path = workflow.get_tmpfile_path(suffix='.bam', dir=tmpbam_dir, delete=False)
-#            else:
-#                tmpbam_path = os.path.join(tmpbam_dir, f'{sampleid}_for_show.bam')
-#        else:
-#            tmpbam_path = os.path.join(tmpbam_dir, tmpbam_name)
-#
-#        # main
-#        rpplist.write_bam(outfile_path=tmpbam_path)
-#        igv.load([tmpbam_path])
-#
-#        if self.is_sv:
-#            (reads_range0_bnd1, reads_range0_bnd2) = rpplist.get_ref_range0_sv(
-#                self.bnds
-#            )
-#            pos_range0_bnd1 = self.bnds.get_pos_range0_bnd1()
-#            pos_range0_bnd2 = self.bnds.get_pos_range0_bnd2()
-#
-#            width_bnd1 = max(
-#                pos_range0_bnd1.start - reads_range0_bnd1.start,
-#                reads_range0_bnd1.stop - pos_range0_bnd1.stop,
-#            )
-#            width_bnd2 = max(
-#                pos_range0_bnd2.start - reads_range0_bnd2.start,
-#                reads_range0_bnd2.stop - pos_range0_bnd2.stop,
-#            )
-#            width = max(width_bnd1, width_bnd2)
-#
-#            igv.goto([self.bnds], width=width)
-#        else:
-#            reads_ref_range0 = rpplist.get_ref_range0(self.vcfspec.chrom)
-#            width = max(
-#                self.vcfspec.pos0 - reads_ref_range0.start,
-#                reads_ref_range0.stop - self.vcfspec.pos0,
-#            )
-#
-#            igv.goto([self.vcfspec], width=width)
-#
-#        igv.cmd("group")
-#
-#        if viewaspairs:
-#            igv.viewaspairs()
-#        else:
-#            igv.viewaspairs_off()
-#
-#        igv.cmd(f"colorBy TAG {readplus.ALLELEINFO_TAG_RPP}")
-#
-#        shutil.rmtree(tmpbam_dir)
-
-    #def show_readcounts(self, sampleids=None, **kwargs):
-    #    pass
-        #if sampleids is None:
-        #    sampleids = sorted(self.vr.samples.keys())
-
-        #variantviz.show_readcounts(
-        #    self, sampleid_order=sampleids, title=str(self.vcfspec), **kwargs
-        #)
 
     # miscellaneous
     def get_gr(self):
@@ -968,12 +898,6 @@ class VariantPlus:
                 result.add(tr['gene_name'])
 
         return result
-#        return set(
-#            itertools.chain.from_iterable(
-#                tr_set.get_gene_names(canonical=canonical, overlap=overlap)
-#                for tr_set in self.transcript
-#            )
-#        )
 
     def get_protein_changes(self, one_letter=True):
         result = set()
@@ -984,9 +908,6 @@ class VariantPlus:
                     result.add(hgvsp)
                 
         return result
-
-    #def check_intergenic(self):
-    #    return len(self.annotdb.transcript) == 0
 
     def get_info(self, key, collapse_tuple=True):
         return infoformat.get_value_info(self.vr, key, collapse_tuple=collapse_tuple)
@@ -1064,8 +985,8 @@ class VariantPlusList(list):
             self.chromdict = chromdict
 
         # vp initiation parameters
-        self.vp_init_params = self.get_default_vp_init_params() 
-        self.update_vp_init_params(self.vp_init_params, init_all_attrs, vp_init_params_arg)
+        self.vp_init_params = VariantPlusInitParams()
+        self.vp_init_params.update_args(init_all_attrs, vp_init_params)
 
         # lineno, verbose, logger
         self.logging_lineno = logging_lineno
@@ -1076,62 +997,30 @@ class VariantPlusList(list):
         else:
             self.logger = logger
 
-    @staticmethod
-    def get_default_vp_init_params():
-        """prop: probability for random selection. If None, all entries are selected.
-        """
-        return {
-            'init_popfreq': False,
-            'init_cosmic': False,
-            'init_transcript': False,
-            'init_regulatory': False,
-            'init_motif': False,
-            'init_repeat': False,
-            'init_readstats': False,
-            'init_oncokb': False,
-            'init_filterresult': False,
-
-            'sampleid_list': None,
-            'prop': None,
-        }
-
-    @staticmethod
-    def update_vp_init_params(vp_init_params, init_all_attrs, vp_init_params_arg):
-        """'init_all_attrs' takes precedence over 'vp_init_params_arg'"""
-        assert set(vp_init_params_arg.keys()).issubset(vp_init_params.keys()), (
-            f'Unavailable keys for "vp_init_params" argument. Valid keys are: '
-            f'{set(vp_init_params.keys())}'
-        )
-
-        vp_init_params.update(vp_init_params_arg)
-        if init_all_attrs:
-            for key in (
-                'init_popfreq',
-                'init_cosmic',
-                'init_transcript',
-                'init_regulatory',
-                'init_motif',
-                'init_repeat',
-                'init_readstats',
-                'init_oncokb',
-                'init_filterresult',
-            ):
-                vp_init_params[key] = True
+        # others
+        self.is_sorted = False
+        self._index_gr = None
 
     @classmethod
-    def concat(cls, others, **kwargs):
-        others = list(others)
-        if len(set(x.refver for x in others)) != 1:
+    def concat(cls, vplist_list, **kwargs):
+        """Args:
+            vplist_list: An iterable of VariantPlusList objects
+        """
+        vplist_list = list(vplist_list)
+        if len(set(x.refver for x in vplist_list)) != 1:
             raise Exception(f'Different refvers of input VariantPlusList objects')
 
-        result = cls(refver=others[0].refver, **kwargs)
-        for other in others:
+        result = cls(refver=vplist_list[0].refver, **kwargs)
+        for other in vplist_list:
             result.extend(other)
 
         return result
 
     @classmethod
-    def from_vps(cls, vps, **kwargs):
+    def from_vps(
+        cls, vps, 
+        **kwargs
+    ):
         vp_iterator = iter(vps)
         vp = next(vp_iterator)
         result = cls(refver=vp.refver, **kwargs)
@@ -1142,7 +1031,6 @@ class VariantPlusList(list):
     @classmethod
     def from_vcf(
         cls,
-
         vcf_path,
         logging_lineno=1000, 
         preview_lineno=15, 
@@ -1151,6 +1039,7 @@ class VariantPlusList(list):
         init_all_attrs=True,
         vp_init_params=dict(),
 
+        prop=None,
         fetch_chrom=None,
         fetch_start0=None,
         fetch_end0=None,
@@ -1167,18 +1056,8 @@ class VariantPlusList(list):
             init_all_attrs=init_all_attrs,
             vp_init_params=vp_init_params,
         )
+
         result.load_vps_from_vcf(
-            init_all_attrs=init_all_attrs,
-            init_popfreq=init_popfreq,
-            init_cosmic=init_cosmic,
-            init_transcript=init_transcript,
-            init_regulatory=init_regulatory,
-            init_motif=init_motif,
-            init_repeat=init_repeat,
-            init_readstats=init_readstats,
-            init_oncokb=init_oncokb,
-            init_filterresult=init_filterresult,
-            sampleid_list=sampleid_list,
             prop=prop,
             fetch_chrom=fetch_chrom,
             fetch_start0=fetch_start0,
@@ -1191,8 +1070,23 @@ class VariantPlusList(list):
     def from_vcf_lazy(
         cls,
         vcf_path,
+        logging_lineno=1000, 
+        preview_lineno=15, 
+        verbose=True, 
+        logger=None,
+        init_all_attrs=True,
+        vp_init_params=dict(),
     ):
-        result = cls(vcf_path=vcf_path, **kwargs)
+        result = cls(
+            vcf_path=vcf_path, 
+            logging_lineno=logging_lineno, 
+            preview_lineno=preview_lineno, 
+            verbose=verbose, 
+            logger=logger,
+            init_all_attrs=init_all_attrs,
+            vp_init_params=vp_init_params,
+        )
+        return result
 
     def _run_vcf_fetch(self, fetch_chrom, fetch_start0, fetch_end0):
         assert isinstance(self.vcf, pysam.VariantFile)
@@ -1210,22 +1104,17 @@ class VariantPlusList(list):
 
         return fetcher
 
-    def _get_vr_iterator_from_vcf(self, fetcher, prop):
+    def _get_vr_iterator_from_vcf(self, fetch_chrom, fetch_start0, fetch_end0, prop):
+        fetcher = self._run_vcf_fetch(fetch_chrom, fetch_start0, fetch_end0)
+
         if prop is None:
-            vr_iterator = common.iter_lineno_logging(fetcher, self.logger, self.logging_lineno)
+            vr_iterator = fetcher
         else:
-            vr_iterator = common.iter_lineno_logging(
-                common.bernoulli_iterator(fetcher, p=prop, block_size=int(1e5)), 
-                self.logger, 
-                self.logging_lineno,
-            )
+            vr_iterator = common.bernoulli_iterator(fetcher, p=prop, block_size=int(1e5))
 
         return vr_iterator
 
-    def get_vp_iter_from_vr_iter(
-        self, 
-        vr_iterator,
-    ):
+    def _get_vp_iter_from_vr_iter(self, vr_iterator):
         for vr in vr_iterator:
             if varianthandler.check_SV(vr):
                 vr_svinfo = libbnd.get_vr_svinfo_standard_vr(vr, self.fasta, self.chromdict)
@@ -1237,28 +1126,60 @@ class VariantPlusList(list):
                 refver=self.refver,
                 fasta=self.fasta,
                 chromdict=self.chromdict,
-
-                init_popfreq=init_popfreq,
-                init_cosmic=init_cosmic,
-                popfreq_metadata=popfreq_metadata, 
-                cosmic_metadata=cosmic_metadata,
-
-                init_transcript=init_transcript,
-                init_regulatory=init_regulatory,
-                init_motif=init_motif,
-                init_repeat=init_repeat,
-                init_readstats=init_readstats,
-                init_oncokb=init_oncokb,
-                init_filterresult=init_filterresult,
-
-                sampleid_list=sampleid_list,
+                preset_vp_init_params=self.vp_init_params,
             )
+
+            yield vp
+
+    def get_vp_iter_from_vcf(
+        self, 
+        *,
+        fetch_chrom=None, fetch_start0=None, fetch_end0=None, 
+        prop=None,
+        vpfilter=None,
+    ):
+        # "prop" is treated in VariantRecord iteration step for performance
+        vr_iterator = self._get_vr_iterator_from_vcf(
+            fetch_chrom, fetch_start0, fetch_end0, prop
+        )
+        vp_iterator = self._get_vp_iter_from_vr_iter(vr_iterator)
+        vp_iterator = filter(vpfilter, vp_iterator)
+        vp_iterator = common.iter_lineno_logging(vp_iterator, self.logger, self.logging_lineno)
+        return vp_iterator
+
+    def get_vp_iter_from_self(
+        self, 
+        fetch_chrom=None, fetch_start0=None, fetch_end0=None, 
+        prop=None,
+        vpfilter=None,
+    ):
+        # filter by coordinates
+        if fetch_chrom is None:
+            vp_iterator = iter(self)
+        else:
+            # self gets sorted
+            coord_indexes = self.get_coord_indexes(fetch_chrom, fetch_start0, fetch_end0)
+            if coord_indexes is None:
+                vp_iterator = iter(())
+            else:
+                sl = slice(coord_indexes.iloc[0], coord_indexes.iloc[-1] + 1)
+                vp_iterator = itertools.islice(self, sl.start, sl.stop, sl.step)
+        # filter by prop
+        if prop is not None:
+            vp_iterator = common.bernoulli_iterator(vp_iterator, p=prop, block_size=int(1e5))
+        # filter by vpfilter
+        vp_iterator = filter(vpfilter, vp_iterator)
+
+        vp_iterator = common.iter_lineno_logging(vp_iterator, self.logger, self.logging_lineno)
+        return vp_iterator
 
     def load_vps_from_vcf(
         self,
+        prop=None,
         fetch_chrom=None,
         fetch_start0=None,
         fetch_end0=None,
+        vpfilter=None,
     ):
         # set other params
         if self.vp_init_params['init_popfreq']:
@@ -1271,42 +1192,24 @@ class VariantPlusList(list):
         else:
             cosmic_metadata = None
 
-        # run pysam.VariantFile.fetch 
-        fetcher = self._run_vcf_fetch(fetch_chrom, fetch_start0, fetch_end0)
-
         # make iterator 
-        vr_iterator = self._get_vr_iterator_from_vcf(fetcher, self.vp_init_params['prop'])
+        vp_iterator = self.get_vp_iter_from_vcf(
+            fetch_chrom=fetch_chrom, 
+            fetch_start0=fetch_start0, 
+            fetch_end0=fetch_end0, 
+            prop=prop,
+        )
 
         # run iterator
-        for vr in vr_iterator:
-            if varianthandler.check_SV(vr):
-                vr_svinfo = libbnd.get_vr_svinfo_standard_vr(vr, self.fasta, self.chromdict)
-                if not vr_svinfo["is_bnd1"]:
-                    continue
+        if vpfilter is None:
+            self.extend(vp_iterator)
+        else:
+            self.extend(filter(vpfilter, vp_iterator))
 
-            vp = VariantPlus.from_vr(
-                vr=vr,
-                refver=self.refver,
-                fasta=self.fasta,
-                chromdict=self.chromdict,
-
-                init_popfreq=self.vp_init_params['init_popfreq'],
-                init_cosmic=self.vp_init_params['init_cosmic'],
-                popfreq_metadata=popfreq_metadata, 
-                cosmic_metadata=cosmic_metadata,
-
-                init_transcript=self.vp_init_params['init_transcript'],
-                init_regulatory=self.vp_init_params['init_regulatory'],
-                init_motif=self.vp_init_params['init_motif'],
-                init_repeat=self.vp_init_params['init_repeat'],
-                init_readstats=self.vp_init_params['init_readstats'],
-                init_oncokb=self.vp_init_params['init_oncokb'],
-                init_filterresult=self.vp_init_params['init_filterresult'],
-
-                sampleid_list=self.vp_init_params['sampleid_list'],
-            )
-
-            self.append(vp)
+        # set sorted flag
+        if self.vcf is not None:
+            if self.vcf.index is not None:
+                self.is_sorted = True
 
 #        '''
 #        Following code is a failed attempt to parallelize using multiprocessing.
@@ -1444,26 +1347,53 @@ class VariantPlusList(list):
     # others #
     ##########
 
-    @functools.cached_property
-    def vcfspec_list(self):
-        return [vp.vcfspec for vp in self]
+    def set_unsorted(self):
+        self.is_sorted = False
+        self._index_gr = None
 
-    @functools.cached_property
-    def index_gr(self):
+    def append(self, vp):
+        #super().append(vp)
+        list.append(self, vp)
+        self.set_unsorted()
+
+    def extend(self, vp_iter):
+        #super().extend(vp_iter)
+        list.extend(self, vp_iter)
+        self.set_unsorted()
+
+    def get_index_gr(self):
+        if not self.is_sorted:
+            self.sort()
+
         gr = self.get_df(vaf_sampleid=None, as_gr=True, omit_vaf=True)
-        gr.Vcfspec = self.vcfspec_list
-        gr.Index = list(range(gr.df.shape[0]))  # In this form of assignment, left-side term must be a list.
+        gr.Vcfspec = self
+        gr.Index = list(range(gr.df.shape[0]))
+            # In this form of assignment, right-side term must be a list.
+
         return gr
+
+    #@functools.cached_property
+    @property
+    def index_gr(self):
+        if self._index_gr is None:
+            self._index_gr = self.get_index_gr()
+        return self._index_gr
 
     def fetch_by_vcfspec(self, vcfspec):
         selector = (self.index_gr.Vcfspec == vcfspec)
-        if not selector.any():
-            raise ValueError(f'Input vcfspec is not present in the VariantPlusList.')
+        #if not selector.any():
+        #    raise ValueError(f'Input vcfspec is not present in the VariantPlusList.')
         #idx = self.index_gr.Vcfspec.loc[selector].index[0]
-        idx = self.index_gr.Index.loc[selector][0]
-        return self[idx]
+        #idx = self.index_gr.Index.loc[selector][0]
+        indexes = np.where(selector)[0]
+        if len(indexes) == 0:
+            raise ValueError(f'Input Vcfspec is not present in the VariantPlusList.')
+        elif len(indexes) > 1:
+            raise Exception(f'Duplicate Vcfspec in the VariantPlusList')
 
-    def fetch_by_coord(self, chrom, start0=None, end0=None):
+        return self[indexes[0]]
+
+    def get_coord_indexes(self, chrom, start0, end0):
         if (start0 is None) and (end0 is None):
             gr_subset = self.index_gr[chrom]
         else:
@@ -1474,9 +1404,16 @@ class VariantPlusList(list):
             gr_subset = self.index_gr[chrom, start0:end0]
 
         if gr_subset.df.shape[0] == 0:
-            return list()
+            return None
         else:
-            sl = slice(gr_subset.Index.iloc[0], gr_subset.Index.iloc[-1] + 1)
+            return gr_subset.Index
+
+    def fetch_by_coord(self, chrom, start0=None, end0=None):
+        coord_indexes = self.get_coord_indexes(chrom, start0, end0)
+        if coord_indexes is None:
+            return self.spawn()
+        else:
+            sl = slice(coord_indexes.iloc[0], coord_indexes.iloc[-1] + 1)
             return self[sl]
 
     def sample(self, n=1):
@@ -1557,11 +1494,13 @@ class VariantPlusList(list):
         kwargs = {
             key: getattr(self, key) for key in 
             (
-                'vcf_path', 'vcf', 'refver', 
+                'vcf_path', 'vcf', 
+                'refver', 'fasta', 'chromdict',
                 'logging_lineno', 'preview_lineno', 'verbose', 
-                'fasta', 'chromdict',
             )
         }
+        kwargs['vp_init_params'] = self.vp_init_params
+        kwargs['init_all_attrs'] = False
         result = self.__class__(**kwargs)
         return result
 
@@ -1618,8 +1557,12 @@ class VariantPlusList(list):
 
     def sort(self):
         super().sort(key=self.get_vp_sortkey())
+        self.is_sorted = True
 
-    # writing related methods
+    ###########################
+    # writing-related methods #
+    ###########################
+
     def get_output_header(self):
         if len(self) == 0:
             merged_header = initvcf.create_header(self.chromdict)
@@ -1655,16 +1598,34 @@ class VariantPlusList(list):
         # prepare header
         header, conflicting_keys = self.get_output_header()
         # main
-        self.sort()
+        if not self.is_sorted:
+            self.sort()
         mode_pysam = common.write_mode_arghandler(mode_bcftools, mode_pysam)
         with pysam.VariantFile(outfile_path, mode=mode_pysam, header=header) as out_vcf:
-            #for vp in self:
-            for vp in common.iter_lineno_logging(self, self.logger, self.logging_lineno):
+            #for vp in common.iter_lineno_logging(self, self.logger, self.logging_lineno):
+            for vp in self.get_vp_iter_from_self():
                 if vp.is_sv:
                     self.write_each_vr(vp.vr, out_vcf, conflicting_keys)
                     self.write_each_vr(vp.get_vr_bnd2(), out_vcf, conflicting_keys)
                 else:
                     self.write_each_vr(vp.vr, out_vcf, conflicting_keys)
+        if index:
+            indexing.index_vcf(outfile_path)
+
+    def write_with_filter(
+        self, outfile_path, vpfilter, mode_bcftools="z", mode_pysam=None, index=True
+    ):
+        """Loads VariantRecords from VCF file, filters, and writes"""
+        header = self.vcf.header.copy()
+        mode_pysam = common.write_mode_arghandler(mode_bcftools, mode_pysam)
+        with pysam.VariantFile(outfile_path, mode=mode_pysam, header=header) as out_vcf:
+            for vp in self.get_vp_iter_from_vcf(vpfilter=vpfilter):
+                if vp.is_sv:
+                    out_vcf.write(vp.vr)
+                    out_vcf.write(vp.get_vr_bnd2())
+                else:
+                    out_vcf.write(vp.vr)
+
         if index:
             indexing.index_vcf(outfile_path)
 

@@ -168,11 +168,12 @@ class ReadPlus:
 
         return BQlist
 
-    def get_mNM_clipspec_data(self, vcfspec):
+    def get_mNM_clipspec_data(self, vcfspec, split_del=False):
         """mNM
             - Softclip is not included
             - Insertion on the right or left border is not included
-            - Consecutive mismatches/deletions are split into single-base positions
+            - Consecutive mismatches are split into single-base positions
+            - Multi-base deletion can be split or treated as one (option)
             - Multi-base insertion is treated as one
         clipspec
             - Leading/trailing insertions are included
@@ -185,14 +186,14 @@ class ReadPlus:
                 tuple format:
                     - Mismatch: (reference pos0, 0, read base)
                     - Insertion: (reference pos0, 1, inserted bases)
-                    - Deletion: (reference pos0, 2)
+                    - Deletion: (reference pos0, 2, deletion length)
             clipspec_data:
                 list of Clipspec instances
         """
         # set parameters
         mNM_data = list()
         clipspec_data = list()
-        vcfspec_ref_range0 = vcfspec.get_range0()
+        #vcfspec_ref_range0 = vcfspec.get_range0()
         current_refpos0 = self.read.reference_start
 
         # main
@@ -205,49 +206,53 @@ class ReadPlus:
             key=(lambda x: ((x[0] is None), (x[1] is None))),
         ):
             if (not key[0]) and key[1]:  # D
-                for refpos0, querypos0, refseq in subiter:
-                    current_refpos0 += 1
-                    if refpos0 in vcfspec_ref_range0:
-                        continue
-
-                    mNM_data.append((refpos0, 2))
+                if split_del:
+                    for refpos0, querypos0, refseq in subiter:
+                        current_refpos0 += 1
+                        #if refpos0 in vcfspec_ref_range0:
+                        #    continue
+                        mNM_data.append((refpos0, 2, 1))
+                else:
+                    subiter_list = list(subiter)
+                    current_refpos0 += len(subiter_list)
+                    mNM_data.append((subiter_list[0][0], 2, len(subiter_list)))
 
             elif (not key[0]) and (not key[1]):  # match
                 for refpos0, querypos0, refseq in subiter:
                     current_refpos0 += 1
-                    if refpos0 in vcfspec_ref_range0:
-                        continue
+                    #if refpos0 in vcfspec_ref_range0:
+                    #    continue
 
                     if refseq.islower():
                         current_read_base = self.read.query_sequence[querypos0]
                         mNM_data.append((refpos0, 0, current_read_base))
 
             elif key[0] and (not key[1]):  # I, S
-                if current_refpos0 in vcfspec_ref_range0:
-                    continue
-                else:
-                    subiter_list = list(subiter)
-                    read_slice = slice(subiter_list[0][1], subiter_list[-1][1] + 1)
-                    inserted_seq = self.read.query_sequence[read_slice]
+                #if current_refpos0 in vcfspec_ref_range0:
+                #    continue
+                #else:
+                subiter_list = list(subiter)
+                read_slice = slice(subiter_list[0][1], subiter_list[-1][1] + 1)
+                inserted_seq = self.read.query_sequence[read_slice]
 
-                    if current_refpos0 == self.read.reference_start:
-                        clipspec = Clipspec(
-                            pos0=current_refpos0, 
-                            is_5prime=True,
-                            seq=inserted_seq,
-                            qual=tuple(self.read.query_qualities)[read_slice],
-                        )
-                        clipspec_data.append(clipspec)
-                    elif current_refpos0 == self.read.reference_end:
-                        clipspec = Clipspec(
-                            pos0=current_refpos0, 
-                            is_5prime=False,
-                            seq=inserted_seq,
-                            qual=tuple(self.read.query_qualities)[read_slice],
-                        )
-                        clipspec_data.append(clipspec)
-                    else:
-                        mNM_data.append((current_refpos0, 1, inserted_seq))
+                if current_refpos0 == self.read.reference_start:
+                    clipspec = Clipspec(
+                        pos0=current_refpos0, 
+                        is_5prime=True,
+                        seq=inserted_seq,
+                        qual=tuple(self.read.query_qualities)[read_slice],
+                    )
+                    clipspec_data.append(clipspec)
+                elif current_refpos0 == self.read.reference_end:
+                    clipspec = Clipspec(
+                        pos0=current_refpos0, 
+                        is_5prime=False,
+                        seq=inserted_seq,
+                        qual=tuple(self.read.query_qualities)[read_slice],
+                    )
+                    clipspec_data.append(clipspec)
+                else:
+                    mNM_data.append((current_refpos0, 1, inserted_seq))
 
         return mNM_data, clipspec_data
 

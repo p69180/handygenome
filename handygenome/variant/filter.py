@@ -252,7 +252,7 @@ class SamplewiseFilter(FilterBase):
         other_allele_indexes = tuple(sorted(
             set(range(len(vp.vr.alleles))).difference({allele_index})
         ))
-        other_value = readstats.get_alleleindexes_mean(
+        other_value = readstats.get_allele_indexes_average(
             readstats_key, other_allele_indexes
         )
 
