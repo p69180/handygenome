@@ -58,7 +58,11 @@ class VariantPlus:
     """
     # CONSTRUCTORS
     @classmethod
-    def from_vr(cls, vr, refver=None, fasta=None, chromdict=None, **kwargs):
+    def from_vr(
+        cls, vr, refver=None, fasta=None, chromdict=None,
+        init_all_attrs=True,
+        vp_init_params=dict(),
+    ):
         result = cls()
 
         result.vr = vr
@@ -103,48 +107,61 @@ class VariantPlus:
 
     def init_common(
         self, 
-        init_popfreq=True, 
-        init_cosmic=True,
-        popfreq_metadata=None, 
-        cosmic_metadata=None,
+        vp_init_params,
 
-        init_transcript=True,
-        init_regulatory=True,
-        init_motif=True,
-        init_repeat=True,
-
-        init_readstats=True,
-
-        init_oncokb=True,
-
-        init_filterresult=True,
-
-        sampleid_list=None,
+#        init_popfreq=True, 
+#        init_cosmic=True,
+#        popfreq_metadata=None, 
+#        cosmic_metadata=None,
+#
+#        init_transcript=True,
+#        init_regulatory=True,
+#        init_motif=True,
+#        init_repeat=True,
+#
+#        init_readstats=True,
+#
+#        init_oncokb=True,
+#
+#        init_filterresult=True,
+#
+#        sampleid_list=None,
     ):
         # SV attrs
         self.is_sv = varianthandler.check_SV(self.vr)
         self.set_bnds_attributes()  # is_bnd1, bnds
 
         # popfreq & cosmic
-        self._init_popfreq(metadata=popfreq_metadata, init_blank=(not init_popfreq))
-        self._init_cosmic(metadata=cosmic_metadata, init_blank=(not init_cosmic))
+        self._init_popfreq(
+            metadata=popfreq_metadata, 
+            init_blank=(not vp_init_params['init_popfreq']),
+        )
+        self._init_cosmic(
+            metadata=cosmic_metadata, 
+            init_blank=(not vp_init_params['init_cosmic']),
+        )
 
         # features
-        self._init_transcript(init_blank=(not init_transcript))
-        self._init_regulatory(init_blank=(not init_regulatory))
-        self._init_motif(init_blank=(not init_motif))
-        self._init_repeat(init_blank=(not init_repeat))
+        self._init_transcript(init_blank=(not vp_init_params['init_transcript']))
+
+        self._init_transcript(init_blank=(not vp_init_params['init_transcript']))
+        self._init_regulatory(init_blank=(not vp_init_params['init_regulatory']))
+        self._init_motif(init_blank=(not vp_init_params['init_motif']))
+        self._init_repeat(init_blank=(not vp_init_params['init_repeat']))
 
         # readstats, readstats_data, rpplists
         self.rpplist_dict = dict()
         self.readstats_data_dict = dict()
-        self._init_readstats(init_blank=(not init_readstats), sampleid_list=sampleid_list)
+        self._init_readstats(
+            init_blank=(not vp_init_params['init_readstats']), 
+            sampleid_list=vp_init_params['sampleid_list'],
+        )
 
         # oncokb
-        self._init_oncokb(init_blank=(not init_oncokb))
+        self._init_oncokb(init_blank=(not vp_init_params['init_oncokb']))
 
         # filter result
-        self._init_filterresult(init_blank=(not init_filterresult))
+        self._init_filterresult(init_blank=(not vp_init_params['init_filterresult']))
 
     def __repr__(self):
         if self.transcript is None:
@@ -1007,10 +1024,16 @@ class VariantPlusList(list):
     ################
 
     def __init__(
-        self, vcf_path=None, vcf=None, refver=None,
+        self, 
+        vcf_path=None, vcf=None, 
+        refver=None,
         fasta=None, chromdict=None,
-        logging_lineno=1000, preview_lineno=15, 
-        verbose=True, logger=None,
+        logging_lineno=1000, 
+        preview_lineno=15, 
+        verbose=True, 
+        logger=None,
+        init_all_attrs=True,
+        vp_init_params=dict(),
     ):
         # vcf_path, vcf
         self.vcf_path = vcf_path
@@ -1025,7 +1048,7 @@ class VariantPlusList(list):
         # refver, fasta, chromdict
         if refver is None:
             if self.vcf is None:
-                raise Exception(f'When "refver" is not set, "vcf_path" must be set.')
+                raise Exception(f'When "refver" is not set, "vcf_path" or "vcf" must be set.')
             self.refver = common.infer_refver_vcfheader(self.vcf.header)
         else:
             self.refver = refver
@@ -1040,6 +1063,10 @@ class VariantPlusList(list):
         else:
             self.chromdict = chromdict
 
+        # vp initiation parameters
+        self.vp_init_params = self.get_default_vp_init_params() 
+        self.update_vp_init_params(self.vp_init_params, init_all_attrs, vp_init_params_arg)
+
         # lineno, verbose, logger
         self.logging_lineno = logging_lineno
         self.preview_lineno = preview_lineno
@@ -1048,6 +1075,48 @@ class VariantPlusList(list):
             self.logger = self.get_logger(self.verbose)
         else:
             self.logger = logger
+
+    @staticmethod
+    def get_default_vp_init_params():
+        """prop: probability for random selection. If None, all entries are selected.
+        """
+        return {
+            'init_popfreq': False,
+            'init_cosmic': False,
+            'init_transcript': False,
+            'init_regulatory': False,
+            'init_motif': False,
+            'init_repeat': False,
+            'init_readstats': False,
+            'init_oncokb': False,
+            'init_filterresult': False,
+
+            'sampleid_list': None,
+            'prop': None,
+        }
+
+    @staticmethod
+    def update_vp_init_params(vp_init_params, init_all_attrs, vp_init_params_arg):
+        """'init_all_attrs' takes precedence over 'vp_init_params_arg'"""
+        assert set(vp_init_params_arg.keys()).issubset(vp_init_params.keys()), (
+            f'Unavailable keys for "vp_init_params" argument. Valid keys are: '
+            f'{set(vp_init_params.keys())}'
+        )
+
+        vp_init_params.update(vp_init_params_arg)
+        if init_all_attrs:
+            for key in (
+                'init_popfreq',
+                'init_cosmic',
+                'init_transcript',
+                'init_regulatory',
+                'init_motif',
+                'init_repeat',
+                'init_readstats',
+                'init_oncokb',
+                'init_filterresult',
+            ):
+                vp_init_params[key] = True
 
     @classmethod
     def concat(cls, others, **kwargs):
@@ -1073,51 +1142,171 @@ class VariantPlusList(list):
     @classmethod
     def from_vcf(
         cls,
+
         vcf_path,
+        logging_lineno=1000, 
+        preview_lineno=15, 
+        verbose=True, 
+        logger=None,
         init_all_attrs=True,
-        init_popfreq=False,
-        init_cosmic=False,
-        init_transcript=False,
-        init_regulatory=False,
-        init_motif=False,
-        init_repeat=False,
-        init_readstats=False,
-        init_oncokb=False,
-        init_filterresult=False,
-        sampleid_list=None,
-        prop=None,
+        vp_init_params=dict(),
+
         fetch_chrom=None,
         fetch_start0=None,
         fetch_end0=None,
-        **kwargs,
     ):
         """Args:
             prop: probability for random selection. If None, all entries are selected.
         """
-        # initialize results
+        result = cls(
+            vcf_path=vcf_path, 
+            logging_lineno=logging_lineno, 
+            preview_lineno=preview_lineno, 
+            verbose=verbose, 
+            logger=logger,
+            init_all_attrs=init_all_attrs,
+            vp_init_params=vp_init_params,
+        )
+        result.load_vps_from_vcf(
+            init_all_attrs=init_all_attrs,
+            init_popfreq=init_popfreq,
+            init_cosmic=init_cosmic,
+            init_transcript=init_transcript,
+            init_regulatory=init_regulatory,
+            init_motif=init_motif,
+            init_repeat=init_repeat,
+            init_readstats=init_readstats,
+            init_oncokb=init_oncokb,
+            init_filterresult=init_filterresult,
+            sampleid_list=sampleid_list,
+            prop=prop,
+            fetch_chrom=fetch_chrom,
+            fetch_start0=fetch_start0,
+            fetch_end0=fetch_end0,
+        )
+
+        return result
+
+    @classmethod
+    def from_vcf_lazy(
+        cls,
+        vcf_path,
+    ):
         result = cls(vcf_path=vcf_path, **kwargs)
 
-        # set params
-        if init_all_attrs:
-            init_popfreq = True
-            init_cosmic = True
-            init_transcript = True
-            init_regulatory = True
-            init_motif = True
-            init_repeat = True
-            init_readstats = True
-            init_oncokb = True
-            init_filterresult = True
+    def _run_vcf_fetch(self, fetch_chrom, fetch_start0, fetch_end0):
+        assert isinstance(self.vcf, pysam.VariantFile)
+        assert (fetch_start0 is None) == (fetch_end0 is None)
+        
+        if fetch_chrom is None:
+            fetcher = self.vcf.fetch()
+        else:
+            if ((fetch_start0 is None) or (fetch_end0 is None)):
+                fetcher = self.vcf.fetch(contig=fetch_chrom)
+            else:
+                fetcher = self.vcf.fetch(
+                    contig=fetch_chrom, start=fetch_start0, stop=fetch_end0,
+                )
 
-        if init_popfreq:
-            popfreq_metadata = libpopfreq.PopfreqMetadata.from_vcfheader(result.vcf.header)
+        return fetcher
+
+    def _get_vr_iterator_from_vcf(self, fetcher, prop):
+        if prop is None:
+            vr_iterator = common.iter_lineno_logging(fetcher, self.logger, self.logging_lineno)
+        else:
+            vr_iterator = common.iter_lineno_logging(
+                common.bernoulli_iterator(fetcher, p=prop, block_size=int(1e5)), 
+                self.logger, 
+                self.logging_lineno,
+            )
+
+        return vr_iterator
+
+    def get_vp_iter_from_vr_iter(
+        self, 
+        vr_iterator,
+    ):
+        for vr in vr_iterator:
+            if varianthandler.check_SV(vr):
+                vr_svinfo = libbnd.get_vr_svinfo_standard_vr(vr, self.fasta, self.chromdict)
+                if not vr_svinfo["is_bnd1"]:
+                    continue
+
+            vp = VariantPlus.from_vr(
+                vr=vr,
+                refver=self.refver,
+                fasta=self.fasta,
+                chromdict=self.chromdict,
+
+                init_popfreq=init_popfreq,
+                init_cosmic=init_cosmic,
+                popfreq_metadata=popfreq_metadata, 
+                cosmic_metadata=cosmic_metadata,
+
+                init_transcript=init_transcript,
+                init_regulatory=init_regulatory,
+                init_motif=init_motif,
+                init_repeat=init_repeat,
+                init_readstats=init_readstats,
+                init_oncokb=init_oncokb,
+                init_filterresult=init_filterresult,
+
+                sampleid_list=sampleid_list,
+            )
+
+    def load_vps_from_vcf(
+        self,
+        fetch_chrom=None,
+        fetch_start0=None,
+        fetch_end0=None,
+    ):
+        # set other params
+        if self.vp_init_params['init_popfreq']:
+            popfreq_metadata = libpopfreq.PopfreqMetadata.from_vcfheader(self.vcf.header)
         else:
             popfreq_metadata = None
 
-        if init_cosmic:
-            cosmic_metadata = libcosmic.CosmicMetadata.from_vcfheader(result.vcf.header)
+        if self.vp_init_params['init_cosmic']:
+            cosmic_metadata = libcosmic.CosmicMetadata.from_vcfheader(self.vcf.header)
         else:
             cosmic_metadata = None
+
+        # run pysam.VariantFile.fetch 
+        fetcher = self._run_vcf_fetch(fetch_chrom, fetch_start0, fetch_end0)
+
+        # make iterator 
+        vr_iterator = self._get_vr_iterator_from_vcf(fetcher, self.vp_init_params['prop'])
+
+        # run iterator
+        for vr in vr_iterator:
+            if varianthandler.check_SV(vr):
+                vr_svinfo = libbnd.get_vr_svinfo_standard_vr(vr, self.fasta, self.chromdict)
+                if not vr_svinfo["is_bnd1"]:
+                    continue
+
+            vp = VariantPlus.from_vr(
+                vr=vr,
+                refver=self.refver,
+                fasta=self.fasta,
+                chromdict=self.chromdict,
+
+                init_popfreq=self.vp_init_params['init_popfreq'],
+                init_cosmic=self.vp_init_params['init_cosmic'],
+                popfreq_metadata=popfreq_metadata, 
+                cosmic_metadata=cosmic_metadata,
+
+                init_transcript=self.vp_init_params['init_transcript'],
+                init_regulatory=self.vp_init_params['init_regulatory'],
+                init_motif=self.vp_init_params['init_motif'],
+                init_repeat=self.vp_init_params['init_repeat'],
+                init_readstats=self.vp_init_params['init_readstats'],
+                init_oncokb=self.vp_init_params['init_oncokb'],
+                init_filterresult=self.vp_init_params['init_filterresult'],
+
+                sampleid_list=self.vp_init_params['sampleid_list'],
+            )
+
+            self.append(vp)
 
 #        '''
 #        Following code is a failed attempt to parallelize using multiprocessing.
@@ -1163,56 +1352,6 @@ class VariantPlusList(list):
 #                result.extend(vp_sublist)
 #
 #        '''
-
-        # create VariantPlus objects
-        # make pysam.VariantFile.fetch
-        if fetch_chrom is None:
-            fetcher = result.vcf.fetch()
-        else:
-            if ((fetch_start0 is None) or (fetch_end0 is None)):
-                fetcher = result.vcf.fetch(contig=fetch_chrom)
-            else:
-                fetcher = result.vcf.fetch(contig=fetch_chrom, start=fetch_start0, stop=fetch_end0)
-        # make iterator 
-        if prop is None:
-            vr_iterator = common.iter_lineno_logging(fetcher, result.logger, result.logging_lineno)
-        else:
-            vr_iterator = common.iter_lineno_logging(
-                common.bernoulli_iterator(fetcher, p=prop, block_size=int(1e5)), 
-                result.logger, 
-                result.logging_lineno,
-            )
-        # run iterator
-        for vr in vr_iterator:
-            if varianthandler.check_SV(vr):
-                vr_svinfo = libbnd.get_vr_svinfo_standard_vr(vr, result.fasta, result.chromdict)
-                if not vr_svinfo["is_bnd1"]:
-                    continue
-
-            vp = VariantPlus.from_vr(
-                vr=vr,
-                refver=result.refver,
-                fasta=result.fasta,
-                chromdict=result.chromdict,
-
-                init_popfreq=init_popfreq,
-                init_cosmic=init_cosmic,
-                popfreq_metadata=popfreq_metadata, 
-                cosmic_metadata=cosmic_metadata,
-
-                init_transcript=init_transcript,
-                init_regulatory=init_regulatory,
-                init_motif=init_motif,
-                init_repeat=init_repeat,
-                init_readstats=init_readstats,
-                init_oncokb=init_oncokb,
-                init_filterresult=init_filterresult,
-
-                sampleid_list=sampleid_list,
-            )
-            result.append(vp)
-
-        return result
 
     ########
     # repr #

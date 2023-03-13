@@ -136,7 +136,8 @@ def unit_job_core(
         out_vcf.write(new_vr)
 
         if shareddict['parent_memuse_gb'] > memuse_limit_gb:
-            next_split_infile_path = re.sub('\.vcf\.gz$', 'a.vcf.gz', split_infile_path)
+            #next_split_infile_path = re.sub('\.vcf\.gz$', 'a.vcf.gz', split_infile_path)
+            next_split_infile_path = toolsetup.make_next_infile(split_infile_path)
             next_out_vcf = pysam.VariantFile(next_split_infile_path, 'wz', header=in_vcf.header.copy())
             shareddict['next_infile_path'] = next_split_infile_path
             for vr in vr_iterator:

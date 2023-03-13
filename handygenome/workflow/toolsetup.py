@@ -3,11 +3,39 @@ import re
 import inspect
 import textwrap
 import stat
+import string
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
+import handygenome.common as common
+import handygenome.workflow as workflow
+
+
+SPLIT_INFILE_PAT = re.compile(r'([0-9]+)([A-Za-z]*)(\.vcf\.gz)')
+LETTERS = sorted(string.ascii_letters)
+
+
+def make_next_infile(fname):
+    """Examples:
+        012.vcf.gz => 012A.vcf.gz => 012B.vcf.gz => ...
+        0114Z.vcf.gz => 0114a.vcf.gz => 0114b.vcf.gz => ...
+        0234z.vcf.gz => 0234zA.vcf.gz => 0234zB.vcf.gz => ...
+    """
+    bname = os.path.basename(fname)
+    dname = os.path.dirname(fname)
+    mat = SPLIT_INFILE_PAT.fullmatch(bname)
+    assert mat is not None
+
+    chars = mat.group(2)
+    if chars == '':
+        next_chars = LETTERS[0]
+    else:
+        lastchar = chars[-1]
+        if lastchar == LETTERS[-1]:
+            next_chars = chars + LETTERS[0]
+        else:
+            next_chars = chars[:-1] + LETTERS[LETTERS.index(lastchar) + 1]
+
+    next_bname = mat.group(1) + next_chars + mat.group(3)
+    return os.path.join(dname, next_bname)
 
 
 def setup_logger(args, logger_name=None, tmpdir_root=None, 
