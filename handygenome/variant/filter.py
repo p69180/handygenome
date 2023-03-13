@@ -21,13 +21,21 @@ SUFFICIENT_PON_SAMPLE_NUM = 10
 
 
 # preset filter combinations
-
-#@common.get_deco_num_notNone(('pon_samples', 'pon_cohorts'), 1)
-def get_preset_filter(
+def get_preset_filter_germline(
     with_pon=True, 
     pon_samples=None, 
     pon_cohorts=('BGI', 'PCAWG', 'SNULUNG'),
     refver='hg19',
+    cutoff_diffbq=-5,
+    cutoff_absbq=20,
+    cutoff_diffmq=-15,
+    cutoff_absmq=40,
+    cutoff_clipovlp=2.0,
+    cutoff_cliplen=20,
+    cutoff_altcount=2,
+    cutoff_otherratio=1.5,
+    cutoff_totalcount=10,
+    cutoff_unifpval=0.05,
 ):
     # sanity check
     if with_pon:
@@ -43,26 +51,84 @@ def get_preset_filter(
 #                popnames=("GnomAD", "1000Genomes", "KOREAN", "Korea1K"), 
 #                cutoff=0.01,
 #            ),
-            DiffMeanBQFilter(cutoff=-5),
-            AbsMeanBQFilter(cutoff=20),
-            DiffMeanMQFilter(cutoff=-15),
-            AbsMeanMQFilter(cutoff=40),
-            ClipoverlapFilter(cutoff=1),
-            ReadcountFilter(cutoff=2),
-            OthercountRatioFilter(cutoff=1.5),
-
-            VarposUniformFilter(cutoff=0.05),
+            DiffMeanBQFilter(cutoff=cutoff_diffbq),
+            AbsMeanBQFilter(cutoff=cutoff_absbq),
+            DiffMeanMQFilter(cutoff=cutoff_diffmq),
+            AbsMeanMQFilter(cutoff=cutoff_absmq),
+            ClipoverlapFilter(cutoff=cutoff_clipovlp),
+            CliplenFilter(cutoff=cutoff_cliplen),
+            ReadcountFilter(cutoff=cutoff_altcount),
+            OthercountRatioFilter(cutoff=cutoff_otherratio),
+            TotaldepthGTFilter(cutoff=cutoff_totalcount),
+            VarposUniformFilter(cutoff=cutoff_unifpval),
         ]
     )
     if with_pon:
         result.append(
-            get_ponfilter(pon_samples=pon_samples, pon_cohorts=pon_cohorts, refver=refver, mode='wgs')
+            get_ponfilter(
+                pon_samples=pon_samples, 
+                pon_cohorts=pon_cohorts, 
+                refver=refver, 
+                mode='wgs',
+            )
         )
 
     return result
 
 
-#@common.get_deco_num_notNone(('pon_samples', 'pon_cohorts'), 1)
+def get_preset_filter_somatic(
+    with_pon=True, 
+    pon_samples=None, 
+    pon_cohorts=('BGI', 'PCAWG', 'SNULUNG'),
+    refver='hg19',
+    cutoff_diffbq=-5,
+    cutoff_absbq=20,
+    cutoff_diffmq=-15,
+    cutoff_absmq=40,
+    cutoff_clipovlp=2.0,
+    cutoff_altcount=2,
+    cutoff_otherratio=1.5,
+    cutoff_totalcount=10,
+    cutoff_unifpval=0.05,
+):
+    # sanity check
+    if with_pon:
+        if sum([
+            pon_samples is not None,
+            pon_cohorts is not None,
+        ]) != 1:
+            raise Exception(f'If "with_pon" is True, exactly 1 of "pon_samples" and "pon_cohorts" must be set.')
+
+    result = FilterList(
+        [
+#            PopfreqFilter(
+#                popnames=("GnomAD", "1000Genomes", "KOREAN", "Korea1K"), 
+#                cutoff=0.01,
+#            ),
+            DiffMeanBQFilter(cutoff=cutoff_diffbq),
+            AbsMeanBQFilter(cutoff=cutoff_absbq),
+            DiffMeanMQFilter(cutoff=cutoff_diffmq),
+            AbsMeanMQFilter(cutoff=cutoff_absmq),
+            ClipoverlapFilter(cutoff=cutoff_clipovlp),
+            ReadcountFilter(cutoff=cutoff_altcount),
+            OthercountRatioFilter(cutoff=cutoff_otherratio),
+            TotaldepthGTFilter(cutoff=cutoff_totalcount),
+            VarposUniformFilter(cutoff=cutoff_unifpval),
+        ]
+    )
+    if with_pon:
+        result.append(
+            get_ponfilter(
+                pon_samples=pon_samples, 
+                pon_cohorts=pon_cohorts, 
+                refver=refver, 
+                mode='wgs',
+            )
+        )
+
+    return result
+
+
 def get_preset_filter_panelseq(
     with_pon=True, 
     pon_samples=None, 
@@ -353,6 +419,20 @@ class ClipoverlapFilter(SamplewiseFilter):
             return ratio > self.params["cutoff"]
 
 
+class CliplenFilter(SamplewiseFilter):
+    def __init__(self, cutoff=20):
+        self.params = {
+            "cutoff": cutoff,
+        }
+
+    def check(self, vp, sampleid, allele_index=None):
+        readstats = vp.readstats_dict[sampleid]
+        avg_cliplen = vp.readstats_dict[sampleid].get_allele_indexes_average(
+            key='mean_cliplens', allele_indexes=None,
+        )
+        return avg_cliplen < self.params['cutoff']
+
+
 class VarposUniformFilter(SamplewiseFilter):
     def __init__(self, cutoff=0.05):
         self.params = {
@@ -423,14 +503,28 @@ class OthercountRatioFilter(SamplewiseFilter):
             return ratio > self.params["cutoff"]
 
 
-class TotaldepthFilter(SamplewiseFilter):
+class TotaldepthGTFilter(SamplewiseFilter):
     def __init__(self, cutoff=20):
         self.params = {
             "cutoff": cutoff,
         }
 
-    def check(self, vp, sampleid, exclude_other=False):
-        return vp.readstats_dict[sampleid].get_total_rppcount(exclude_other=exclude_other) >= self.params['cutoff']
+    def check(self, vp, sampleid, allele_index=None, exclude_other=False):
+        return vp.readstats_dict[sampleid].get_total_rppcount(
+            exclude_other=exclude_other,
+        ) >= self.params['cutoff']
+
+
+class TotaldepthLTFilter(SamplewiseFilter):
+    def __init__(self, cutoff=200):
+        self.params = {
+            "cutoff": cutoff,
+        }
+
+    def check(self, vp, sampleid, allele_index=None, exclude_other=False):
+        return vp.readstats_dict[sampleid].get_total_rppcount(
+            exclude_other=exclude_other,
+        ) <= self.params['cutoff']
 
 
 ############################

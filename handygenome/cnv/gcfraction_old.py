@@ -1,57 +1,59 @@
-"""This version abandons gc data saving with bigwig and saves DataFrame as tsv file"""
-
 import os
 import itertools
 import functools
 
 import Bio.SeqUtils
+import pyBigWig
 import numpy as np
 import pandas as pd
 import pyranges as pr
 
 import handygenome.common as common
-import handygenome.pyranges_helper as pyranges_helper
 
 
-GCDATA_DIR = os.path.join(common.DATA_DIR, 'gcdata')
-if not os.path.exists(GCDATA_DIR):
-    os.mkdir(GCDATA_DIR)
+GCWIG_DIR = os.path.join(common.DATA_DIR, 'gcwig')
+GCARRAY_DIR = os.path.join(common.DATA_DIR, 'gcarrays')
 
 
 # making and saving gc fraction bigwig files
 
-def write_gcfile(outfile_path, fasta, binsize=100):
-    chromdict = common.ChromDict(fasta=fasta)
-    bin_gr = chromdict.to_gr().window(binsize)
-    gc_df = bin_gr.df
-    gc_df['GC'] = calculate_gcvals(
-        tuple(bin_gr.Chromosome), 
-        tuple(bin_gr.Start), 
-        tuple(bin_gr.End), 
-        fasta, 
-        window=None, 
-        as_array=True,
-    )
-    gc_df.to_csv(outfile_path, sep='\t', header=True, index=False)
+def write_gcwig(outfile_path, fasta, binsize=100, verbose=False):
+    bw = pyBigWig.open(outfile_path, 'w')
+    # make header
+    header = list() 
+    for chrom, length in zip(fasta.references, fasta.lengths):
+        header.append((chrom, length))
+    bw.addHeader(header)
+    # write lines
+    for chrom, length in zip(fasta.references, fasta.lengths):
+        if verbose:
+            print(chrom)
+        rng = range(0, length, binsize)
+        start0s = (x for x in rng)
+        end0s = (min(length, x + binsize) for x in rng)
+        chroms = itertools.repeat(chrom, len(rng))
+        values = calculate_gcvals(chroms, start0s, end0s, fasta, window=None, as_array=False)
+        bw.addEntries(chrom, 0, values=values, span=binsize, step=binsize)
+
+    bw.close()
 
 
-def get_gcfile_path(refver, binsize):
+def get_gcwig_path(refver, binsize):
     refver = common.RefverDict.standardize(refver)
-    gcdata_refver_dir = os.path.join(GCDATA_DIR, refver)
-    if not os.path.exists(gcdata_refver_dir):
-        os.mkdir(gcdata_refver_dir)
-    return os.path.join(gcdata_refver_dir, f'gc_binsize_{100}.tsv.gz')
+    gcwig_dir = os.path.join(GCWIG_DIR, refver)
+    if not os.path.exists(gcwig_dir):
+        os.mkdir(gcwig_dir)
+    return os.path.join(gcwig_dir, f'gc_binsize{100}.bigwig')
 
 
-@functools.cache
-def get_gc_df(refver, binsize):
-    gcfile_path = get_gcfile_path(refver, binsize)
+def get_gcwig(refver, binsize):
+    gcfile_path = get_gcwig_path(refver, binsize)
     if not os.path.exists(gcfile_path):
-        common.print_timestamp(f'There is no pre-existing gc data file. A new one is being created. It may take a few minutes.')
+        common.print_timestamp(f'There is no pre-existing gc bigwig file. A new one is being created. It may take a few minutes.')
         fasta = common.DEFAULT_FASTAS[refver]
-        write_gcfile(gcfile_path, fasta, binsize=binsize)
-        common.print_timestamp(f'Finished making a gc data file.')
-    return pd.read_csv(gcfile_path, sep='\t', header=0, dtype={'Chromosome': 'category', 'Start': int, 'End': int, 'GC': float})
+        write_gcwig(gcfile_path, fasta, binsize=binsize, verbose=False)
+        common.print_timestamp(f'Finished making a gc bigwig file.')
+    return pyBigWig.open(gcfile_path)
 
 
 ###########################################
@@ -93,7 +95,7 @@ def calculate_gcvals_generator(chroms, start0s, end0s, fasta, get_fetchargs):
 
 @functools.cache
 def calculate_gcvals(chroms, start0s, end0s, fasta, window=None, as_array=True):
-    common.print_timestamp('Beginning gc fraction calculation')
+    print('Beginning gc fraction calculation')
     get_fetchargs = make_fetchargs_func(window, fasta)
     #val_gen = calculate_gcvals_generator(chroms, start0s, end0s, fasta, get_fetchargs)
     val_gen = (
@@ -118,27 +120,32 @@ def calculate_gcvals_with_df(df, fasta, window=None, as_array=True):
     )
 
 
-def load_gcvals(chroms, start0s, end0s, refver, binsize, window=None, fasta=None):
-    """Returns:
-        A pandas Series
-    """
-    assert not ((window is not None) and (fasta is None))
-
+# MUCH SLOWER THAN calculate_gcvals...
+def load_gcvals(chroms, start0s, end0s, refver, binsize, fasta, window=None, as_array=True, exact=True):
     get_fetchargs = make_fetchargs_func(window, fasta)
-    gc_df = get_gc_df(refver, binsize)
-    left_gr = pr.PyRanges(chromosomes=chroms, starts=start0s, ends=end0s)
-    joined_gr = pyranges_helper.join(left_gr, pr.PyRanges(gc_df), merge='weighted_mean', how='left')
+    gcwig = get_gcwig(refver, binsize)
+    val_gen = (
+        gcwig.stats(
+            *get_fetchargs(chrom, start0, end0), 
+            type='mean', 
+            exact=exact,
+        )[0]
+        for chrom, start0, end0 in zip(chroms, start0s, end0s)
+    )
 
-    return joined_gr.GC
+    if as_array:
+        return np.fromiter(val_gen, float)
+    else:
+        return list(val_gen)
 
 
-def load_gcvals_with_df(df, refver, binsize, fasta, window=None):
+def load_gcvals_with_df(df, refver, binsize, fasta, window=None, as_array=True, exact=True):
     return load_gcvals(
         df.Chromosome, df.Start, df.End, 
-        refver=refver, 
-        binsize=binsize, 
+        refver=refver, binsize=binsize, 
         fasta=common.DEFAULT_FASTAS[refver], 
-        window=window,
+        window=window, as_array=as_array,
+        exact=exact,
     )
 
 
@@ -180,10 +187,9 @@ def add_gc_loading(df, refver, binsize, window=None):
     """
     gcvals = load_gcvals(
         df.Chromosome, df.Start, df.End, 
-        refver=refver, 
-        binsize=binsize, 
+        refver=refver, binsize=binsize, 
         fasta=common.DEFAULT_FASTAS[refver], 
-        window=window,
+        window=window, as_array=False,
     )
     if isinstance(df, pd.DataFrame):
         df['GC'] = gcvals

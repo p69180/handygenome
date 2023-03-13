@@ -397,11 +397,11 @@ def main(cmdargs):
     # make tmpdir tree
     tmpdir_paths = workflow.get_tmpdir_paths(
         ['scripts', 'logs', 'split_infiles', 'split_outfiles'],
-        prefix='_'.join(
-            [
-                os.path.basename(args.infile_path),
-                __name__.split('.')[-1]
-            ]
+        prefix = (
+            os.path.basename(args.infile_path)
+            + '_'
+            + __name__.split('.')[-1]
+            + '_'
         ),
         where=os.path.dirname(args.infile_path),
     )
@@ -434,11 +434,15 @@ def main(cmdargs):
         args.memuse_limit_gb,
     )
     logger.info('Running annotation jobs for each split file')
-    workflow.run_jobs(jobscript_path_list, sched=args.sched, 
-                      intv_check=args.intv_check, 
-                      intv_submit=args.intv_submit, 
-                      logger=logger, log_dir=tmpdir_paths['logs'],
-                      raise_on_failure=True)
+    workflow.run_jobs(
+        jobscript_path_list, sched=args.sched, 
+        intv_check=args.intv_check, 
+        intv_submit=args.intv_submit, 
+        max_submit=args.max_submit, 
+        logger=logger, 
+        log_dir=tmpdir_paths['logs'],
+        raise_on_failure=True,
+    )
 
     # concatenates split files
     logger.info('Merging split files')

@@ -25,7 +25,7 @@ class IGVHandle:
     def new(self):
         self.cmd('new')
         
-    def goto(self, loci, width=500):
+    def goto(self, loci, width=200):
         assert isinstance(loci, (list, tuple)), f'"loci" argument must be a list or a tuple.'
 
         cmd_src = list()

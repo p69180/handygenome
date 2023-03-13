@@ -1079,6 +1079,8 @@ class ReadPlusPairList(list):
         
         return ref_range0
 
+    get_range0 = get_ref_range0
+
     def get_ref_range0_sv(self, bnds):
         start_list_bnd1 = list()
         end_list_bnd1 = list()
@@ -1200,6 +1202,7 @@ def get_rpplist_nonsv(
     new_fetch_padding=NEW_FETCH_PADDING,
     long_insert_threshold=LONG_INSERT_THRESHOLD,
     recalc_NMMD=False,
+    include_irrelevant_reads=False,
 ):
     if fasta is None or chromdict is None:
         refver = common.infer_refver_bamheader(bam.header)
@@ -1224,10 +1227,14 @@ def get_rpplist_nonsv(
     )
 
     rpplist = ReadPlusPairList(chromdict=chromdict)
-    if len(relevant_qname_set) > 0:
+    if (
+        include_irrelevant_reads
+        or ((not include_irrelevant_reads) and (len(relevant_qname_set) > 0))
+    ):
+    #if len(relevant_qname_set) > 0:
         LOGGER_RPPLIST.info('Beginning refined fetch')
         fetchresult_dict = refined_fetch_nonsv(
-            bam, chrom, new_fetch_range, relevant_qname_set,
+            bam, chrom, new_fetch_range, relevant_qname_set, include_irrelevant_reads,
         )
 
         LOGGER_RPPLIST.info('Beginning assembly into readpluspair')
@@ -1370,6 +1377,7 @@ def initial_fetch_nonsv(
 
     relevant_qname_set = set()
     start0_set = set()
+    end0_set = set()
 
     initial_fetch_padding = (fetch_padding_view if view else fetch_padding_common)
     fetcher = readhandler.get_fetch(
@@ -1384,8 +1392,11 @@ def initial_fetch_nonsv(
         if read_is_relevant:
             relevant_qname_set.add(read.query_name)
             start0_set.add(read.reference_start)
+            end0_set.add(read.reference_end)
             if readfilter_matesearch(read, long_insert_threshold):
                 start0_set.add(read.next_reference_start)
+                if read.template_length > 0:
+                    end0_set.add(read.reference_start + read.template_length)
 
         del read
 
@@ -1394,7 +1405,8 @@ def initial_fetch_nonsv(
     else:
         new_fetch_range = range(
             (min(start0_set) - new_fetch_padding),
-            (max(start0_set) + 1 + new_fetch_padding),
+            #(max(start0_set) + 1 + new_fetch_padding),
+            (max(end0_set) + new_fetch_padding),
         )
 
     return relevant_qname_set, new_fetch_range
@@ -1538,25 +1550,37 @@ def initial_fetch_sv(bam, bnds, view, fetch_padding_common,
 
 #### refined fetch ####
 
-def refined_fetch_nonsv(bam, chrom, new_fetch_range, relevant_qname_set):
+def refined_fetch_nonsv(
+    bam, 
+    chrom, 
+    new_fetch_range, 
+    relevant_qname_set, 
+    include_irrelevant_reads,
+):
     """Read filtering is done by readfilter_bad_read.
-    Store the fetched read only if its qname is included in the
-        "relevant_qname_set".
+    #Store the fetched read only if its qname is included in the
+    #    "relevant_qname_set".
     """
-
     fetchresult_dict = dict()
-    for qname in relevant_qname_set:
-        fetchresult_dict[qname] = list()
-
     for read in readhandler.get_fetch(
         bam, chrom, start=new_fetch_range.start, 
         end=new_fetch_range.stop, 
         readfilter=readhandler.readfilter_bad_read,
     ):
-        if read.query_name in fetchresult_dict:
+        if read.query_name in relevant_qname_set:
+            fetchresult_dict.setdefault(read.query_name, list())
             fetchresult_dict[read.query_name].append(read)
         else:
-            del read
+            if include_irrelevant_reads:
+                fetchresult_dict.setdefault(read.query_name, list())
+                fetchresult_dict[read.query_name].append(read)
+            else:
+                del read
+
+        #if read.query_name in fetchresult_dict:
+        #    fetchresult_dict[read.query_name].append(read)
+        #else:
+        #    del read
 
     return fetchresult_dict
 

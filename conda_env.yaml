@@ -15,4 +15,4 @@ dependencies:
     - conda-forge::biopython>=1.80
     - bioconda::pysam
     - bioconda::pyranges
-    - bioconda::pybigwig
+    #- bioconda::pybigwig

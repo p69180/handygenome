@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 import pyranges as pr
 
+import handygenome.common as common
+
 
 def sort_df_by_coord(df, chromdict):
     coord_cols = df.loc[:, ['Chromosome', 'Start', 'End']]
@@ -27,16 +29,16 @@ def isec_union(gr1, gr2):
     return result
 
 
-def inner_join(gr_left, gr_right):
+def inner_join(left_gr, right_gr):
     """For handling grs with lots of columns"""
-    new_right_df = gr_right.df.loc[:, ['Chromosome', 'Start', 'End']]
+    new_right_df = right_gr.df.loc[:, ['Chromosome', 'Start', 'End']]
     new_right_df.insert(3, 'index', range(new_right_df.shape[0]))
-    new_gr_right = pr.PyRanges(new_right_df)
-    joined_gr = gr_left.join(new_gr_right)
-    right_values_df = gr_right.df.iloc[joined_gr.index.to_list(), 3:].reset_index(drop=True)
+    new_right_gr = pr.PyRanges(new_right_df)
+    joined_gr = left_gr.join(new_right_gr)
+    right_values_df = right_gr.df.iloc[joined_gr.index.to_list(), 3:].reset_index(drop=True)
     right_values_df.reset_index(drop=True, inplace=True)
     
-    old_columns = gr_left.columns.to_list()
+    old_columns = left_gr.columns.to_list()
     new_columns = [
         (f'{x}_b' if x in old_columns else x)
         for x in right_values_df.columns
@@ -50,6 +52,8 @@ def inner_join(gr_left, gr_right):
 def add_new_coordinates(joined_gr, how):
     """Accepts a result of 'join' method, which has columns 'Start_b' and 'End_b'"""
     assert how in ("union", "intersection", "swap")
+    assert {'Start_b', 'End_b'}.issubset(joined_gr.columns)
+
     Start = joined_gr.Start
     End = joined_gr.End
 
@@ -65,36 +69,122 @@ def add_new_coordinates(joined_gr, how):
     return joined_gr
 
 
-def join(gr_left, gr_right, how='inner', merge=None, find_nearest=False, as_gr=True):
+# this is of similar speed to add_new_coordinates
+def add_new_coordinates_new(joined_gr, how):
+    """Accepts a result of 'join' method, which has columns 'Start_b' and 'End_b'"""
+    assert how in ("union", "intersection")
+    assert {'Start_b', 'End_b'}.issubset(joined_gr.columns)
+
+    df = joined_gr.df
+    starts_subarr = df.loc[:, ['Start', 'Start_b']].to_numpy()
+    ends_subarr = df.loc[:, ['End', 'End_b']].to_numpy()
+
+    if how == 'union':
+        new_starts = starts_subarr.min(axis=1)
+        new_ends = ends_subarr.max(axis=1)
+    elif how == 'intersection':
+        new_starts = starts_subarr.max(axis=1)
+        new_ends = ends_subarr.min(axis=1)
+
+    joined_gr.new_Start = new_starts
+    joined_gr.new_End = new_ends
+
+    return joined_gr
+
+
+# join helper
+def extract_unmatched_rows(left_gr, right_gr, joined_gr, find_nearest, added_columns):
+    unmatched_rows_gr = left_gr.subtract(joined_gr)
+    if unmatched_rows_gr.empty:
+        return None
+
+    if find_nearest:
+        unmatched_rows_gr = unmatched_rows_gr.nearest(
+            right_gr, overlap=False, how=None,
+        )
+    else:
+        nrow = unmatched_rows_gr.df.shape[0]
+        for colname in added_columns:
+            setattr(unmatched_rows_gr, colname, np.repeat(np.nan, nrow))
+
+    # remove unused columns
+    cols_to_drop = set(unmatched_rows_gr.columns).intersection(
+        {'Start_b', 'End_b', 'Distance'}
+    )
+    unmatched_rows_gr = unmatched_rows_gr[
+        unmatched_rows_gr.columns.drop(cols_to_drop).to_list()
+    ]
+    return unmatched_rows_gr
+
+
+def join_new(left_gr, right_gr, how='inner', find_nearest=False, merge='mean', as_gr=True):
+    assert merge in {'mean'}
+    assert how in {'inner', 'left'}
+
+    # join
+    with warnings.catch_warnings(): 
+        warnings.simplefilter('ignore', category=FutureWarning)
+        joined_gr = left_gr.join(right_gr)
+
+    joined_df = joined_gr.df
+    added_cols = joined_gr.columns.drop(left_gr.columns).drop(['Start_b', 'End_b']).to_list()
+
+    # unmatched rows
+    if how == 'left':
+        unmatched_rows_gr = extract_unmatched_rows(
+            left_gr, right_gr, joined_gr, find_nearest, added_cols,
+        )
+    elif how == 'inner':
+        unmatched_rows_gr = None
+
+    # merge
+    coord_cols = np.concatenate(
+        [
+            joined_df['Chromosome'].cat.codes.values[:, np.newaxis],
+            joined_df.loc[:, ['Start', 'End']],
+        ],
+        axis=1,
+    )
+    values, counts = common.array_grouper(coord_cols, omit_values=True)
+    indexer = list(
+        itertools.chain.from_iterable(
+            itertools.repeat(val, count) for val, count in enumerate(counts)
+        )
+    )
+    grouper = joined_df.groupby(indexer)
+    with warnings.catch_warnings(): 
+        warnings.simplefilter('ignore', category=FutureWarning)
+        aggresult = grouper[added_cols].mean().reset_index(drop=True)
+
+    result = pd.concat(
+        [
+            joined_df.loc[:, left_gr.columns.to_list()].drop_duplicates(
+                ['Chromosome', 'Start', 'End'], keep='first',
+            ).reset_index(drop=True), 
+            aggresult,
+        ], 
+        axis=1,
+    )
+    result = pr.PyRanges(result)
+
+    # merge matched and nonmatched grs
+    if unmatched_rows_gr is not None:
+        result = pr.concat([unmatched_rows_gr, matched_rows_gr]).sort()
+
+    # return
+    if not as_gr:
+        result = result.df
+
+    return result
+
+
+def join(left_gr, right_gr, how='inner', merge=None, find_nearest=False, as_gr=True, verbose=False):
     """Args:
-        find_nearest: Match a nearest row from "gr_right" for each
-            non-overlapping row of "gr_left". Only relevant when "how" is "left".
+        find_nearest: Match a nearest row from "right_gr" for each
+            non-overlapping row of "left_gr". Only relevant when "how" is "left".
     Returns:
         A pyranges.PyRanges object 
     """
-    def join_left_helper(gr_left, gr_right, joined_gr, find_nearest, added_columns):
-        unmatched_rows_gr = gr_left.subtract(joined_gr)
-        if unmatched_rows_gr.empty:
-            return None
-
-        if find_nearest:
-            unmatched_rows_gr = unmatched_rows_gr.nearest(
-                gr_right, overlap=False, how=None,
-            )
-        else:
-            nrow = unmatched_rows_gr.df.shape[0]
-            for colname in added_columns:
-                setattr(unmatched_rows_gr, colname, np.repeat(np.nan, nrow))
-
-        # remove unused columns
-        cols_to_drop = set(unmatched_rows_gr.columns).intersection(
-            {'Start_b', 'End_b', 'Distance'}
-        )
-        unmatched_rows_gr = unmatched_rows_gr[
-            unmatched_rows_gr.columns.drop(cols_to_drop).to_list()
-        ]
-        return unmatched_rows_gr
-
     def merge_helper(joined_gr, added_columns, merge):
         # modify joined_gr
         joined_gr = joined_gr.sort()
@@ -244,29 +334,33 @@ def join(gr_left, gr_right, how='inner', merge=None, find_nearest=False, as_gr=T
     # main
     assert merge in ('mean', 'weighted_mean', 'first', 'longest', 'longest_nonmerge', None)
     assert how in ('left', 'inner')
-    assert isinstance(gr_left, pr.PyRanges)
-    assert isinstance(gr_right, pr.PyRanges)
-    assert len(set(gr_right.columns).difference(['Chromosome', 'Start', 'End'])) > 0, (
-        f'"gr_right" Must have columns other than "Chromosome", "Start", "End".'
+    assert isinstance(left_gr, pr.PyRanges)
+    assert isinstance(right_gr, pr.PyRanges)
+    assert len(set(right_gr.columns).difference(['Chromosome', 'Start', 'End'])) > 0, (
+        f'"right_gr" Must have columns other than "Chromosome", "Start", "End".'
     )
 
     # do join
+    common.funclogger(1)
     with warnings.catch_warnings(): 
         warnings.simplefilter('ignore', category=FutureWarning)
-        joined_gr = gr_left.join(gr_right)  
-        #joined_gr = inner_join(gr_left, gr_right)
+        joined_gr = left_gr.join(right_gr)  
             # this is inner join
             # setting "how='left'" does not work and results in inner join (230209)
-    added_columns = joined_gr.columns.drop(gr_left.columns).to_list()
+    common.funclogger(2)
+
+    added_columns = joined_gr.columns.drop(left_gr.columns).to_list()
         # This includes "Start_b" and "End_b"
+    common.funclogger(3)
 
     # handle unmatched rows
     if how == 'left':
-        unmatched_rows_gr = join_left_helper(
-            gr_left, gr_right, joined_gr, find_nearest, added_columns,
+        unmatched_rows_gr = extract_unmatched_rows(
+            left_gr, right_gr, joined_gr, find_nearest, added_columns,
         )
     elif how == 'inner':
         unmatched_rows_gr = None
+    common.funclogger(4)
 
     # handle matched rows - merge rows with identical (chrom, start, end)
     if merge is None:
@@ -279,6 +373,7 @@ def join(gr_left, gr_right, how='inner', merge=None, find_nearest=False, as_gr=T
         )
     elif merge in ('mean', 'weighted_mean', 'longest', 'longest_nonmerge'):
         matched_rows_gr = merge_helper(joined_gr, added_columns, merge)
+    common.funclogger(5)
 
     # handle matched rows - remove unused columns
     cols_to_drop = set(matched_rows_gr.columns).intersection(
@@ -302,12 +397,12 @@ def join(gr_left, gr_right, how='inner', merge=None, find_nearest=False, as_gr=T
         return result.df
 
 
-#def join_grs_left_groupby(gr_left, gr_right, merge='mean'):
+#def join_grs_left_groupby(left_gr, right_gr, merge='mean'):
 #    assert merge in ('mean', 'first')
 #
-#    joined_gr = gr_left.join(gr_right)
+#    joined_gr = left_gr.join(right_gr)
 #
-#    joined_df = joined_gr[list(joined_gr.columns[len(gr_left.columns) + 2:])].df 
+#    joined_df = joined_gr[list(joined_gr.columns[len(left_gr.columns) + 2:])].df 
 #    data = list()
 #
 #    for key, subdf in joined_df.groupby(['Chromosome', 'Start', 'End']):
@@ -317,7 +412,7 @@ def join(gr_left, gr_right, how='inner', merge=None, find_nearest=False, as_gr=T
 #            data.append(list(key) + list(subdf.iloc[0:, 3:]))
 #
 #    averaged_joined_df = pd.DataFrame.from_records(data, columns=list(joined_df.columns))
-#    result_df = gr_left.df.join(
+#    result_df = left_gr.df.join(
 #        averaged_joined_df.set_index(['Chromosome', 'Start', 'End'], drop=True), 
 #        on=['Chromosome', 'Start', 'End'],
 #    )
@@ -325,13 +420,13 @@ def join(gr_left, gr_right, how='inner', merge=None, find_nearest=False, as_gr=T
 #    return pr.PyRanges(result_df, int64=False)
 #
 #
-#def join_grs_left_itertools(gr_left, gr_right, merge='mean'):
+#def join_grs_left_itertools(left_gr, right_gr, merge='mean'):
 #    assert merge in ('mean', 'first')
 #
-#    joined_gr = gr_left.join(gr_right)
+#    joined_gr = left_gr.join(right_gr)
 #    joined_gr = joined_gr.sort()
 #
-#    added_value_columns = joined_gr.columns.drop(gr_left.columns.to_list() + ['Start_b', 'End_b']).to_list()
+#    added_value_columns = joined_gr.columns.drop(left_gr.columns.to_list() + ['Start_b', 'End_b']).to_list()
 #    assert len(added_value_columns) > 0
 #    new_columns = ['Chromosome', 'Start', 'End'] + added_value_columns
 #    joined_df = joined_gr.df.loc[:, new_columns]
@@ -360,7 +455,7 @@ def join(gr_left, gr_right, how='inner', merge=None, find_nearest=False, as_gr=T
 #        data.append(data_items)
 #
 #    averaged_joined_df = pd.DataFrame.from_records(data, columns=list(joined_df.columns))
-#    result_df = gr_left.df.join(
+#    result_df = left_gr.df.join(
 #        averaged_joined_df.set_index(['Chromosome', 'Start', 'End'], drop=True), 
 #        on=['Chromosome', 'Start', 'End'],
 #    )

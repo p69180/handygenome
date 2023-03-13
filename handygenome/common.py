@@ -569,12 +569,19 @@ class ChromDict(collections.OrderedDict):
 
         return X, Y
 
-    def to_gr(self):
-        return pr.PyRanges(
+    @functools.cached_property
+    def assembled_chroms(self):
+        return [x for x in self.contigs if RE_PATS['assembled_chromosome'].fullmatch(x) is not None]
+
+    def to_gr(self, assembled_only=False):
+        result = pr.PyRanges(
             chromosomes=self.contigs,
             starts=([0] * len(self.contigs)),
             ends=self.lengths
         )
+        if assembled_only:
+            result = result[result.Chromosome.isin(self.assembled_chroms)]
+        return result
 
     def to_interval_list(self):
         intvlist = IntervalList()
@@ -1798,4 +1805,52 @@ def get_rss(mode='total', unit='b'):
 def check_overlaps(start0_1, end0_1, start0_2, end0_2):
     return (start0_1 < end0_2) and (end0_1 > start0_2)
 
+
+# misc
+def get_indexes_of_array(values, ordered_keys):
+    result = np.zeros(len(values))
+    for idx, key in enumerate(ordered_keys):
+        result[np.where(values == key)[0]] = idx
+
+    return result
+
+
+def nanaverage(values, weights):
+    assert isinstance(values, np.ndarray)
+    assert isinstance(weights, np.ndarray)
+
+    selector = ~np.isnan(values)
+    new_values = values[selector]
+    new_weights = weights[selector]
+    return np.average(new_values, weights=new_weights)
+
+
+def funclogger(msg):
+    funcname = inspect.stack()[1].function
+    print_timestamp(f'{funcname}: {msg}')
+    
+
+def array_grouper(arr, omit_values=False):
+    assert arr.ndim in (1, 2)
+
+    diff = np.empty(arr.shape[0], dtype=bool)
+    diff[0] = True
+    if arr.ndim == 1:
+        diff[1:] = np.diff(arr)
+    elif arr.ndim == 2:
+        diff[1:] = np.diff(arr, axis=0).any(axis=1)
+
+    indexes = np.nonzero(diff)[0]
+
+    if omit_values:
+        values = None
+    else:
+        values = arr[indexes]
+
+    counts = np.empty(indexes.shape, dtype=int)
+    counts[:-1] = np.diff(indexes)
+    counts[-1] = arr.shape[0] - indexes[-1]
+        
+    return values, counts
+                
 

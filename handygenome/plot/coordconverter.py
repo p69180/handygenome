@@ -109,58 +109,33 @@ class CoordConverter:
         plot_coords = self.genomic_to_plot(chrom, pos0_list)
         return (indexes, plot_coords)
 
-    def isec_trim_data_df_old(self, df):
-        assert '_index' not in df.columns
-        
-        df = df.assign(_index=range(df.shape[0]))
-        joined_gr = pyranges_helper.join(
-            self.totalregion_gr, 
-            pr.PyRanges(df), 
-            how='inner', merge=None, find_nearest=False, as_gr=True,
-        )
-        joined_gr.new_position('intersection')
-            # now "Start" and "End" of joined_gr are isec coordinates
-            # now joined_gr has "_index" column
-        joined_df = joined_gr.df
-
-        #indexes_bychrom = dict()
-        subdfs_bychrom = dict()
-        for chrom, subdf in joined_df.groupby('Chromosome'):
-            #indexes_bychrom[chrom] = np.array(subdf['_index'])
-            subdfs_bychrom[chrom] = subdf
-
-        return joined_df, subdfs_bychrom
-
     def isec_trim_data_df(self, df):
         assert '_index' not in df.columns
 
         isec_gr = pr.PyRanges(df).intersect(self.totalregion_gr)
         isec_gr._index = list(range(isec_gr.df.shape[0]))
-        isec_df = isec_gr.df
 
-        #indexes_bychrom = dict()
-        subdfs_bychrom = dict()
-        for chrom, subdf in isec_df.groupby('Chromosome'):
-            #indexes_bychrom[chrom] = np.array(subdf['_index'])
-            subdfs_bychrom[chrom] = subdf
+        subgrs_bychrom = dict()
+        for chrom in isec_gr.Chromosome.unique():
+            subgrs_bychrom[chrom] = isec_gr[chrom]
 
-        return isec_df, subdfs_bychrom
+        return isec_gr, subgrs_bychrom
 
-    def get_ordered_plot_coords(self, subdfs_bychrom, pos0_colname, nproc=None):
+    def get_ordered_plot_coords(self, subgrs_bychrom, pos0_colname, nproc=None):
         # Multiprocessing is slower than serial jobs!!
 #        with multiprocessing.Pool(nproc) as pool:
 #            result = pool.starmap(
 #                self.genomic_to_plot_with_indexes, 
 #                (
 #                    (chrom, subdf[pos0_colname], subdf['_index']) 
-#                    for chrom, subdf in subdfs_bychrom.items()
+#                    for chrom, subdf in subgrs_bychrom.items()
 #                )
 #            )
 
         result = list()
-        for chrom, subdf in subdfs_bychrom.items():
+        for chrom, subgr in subgrs_bychrom.items():
             result.append(
-                self.genomic_to_plot_with_indexes(chrom, subdf[pos0_colname], subdf['_index'])
+                self.genomic_to_plot_with_indexes(chrom, getattr(subgr, pos0_colname), subgr._index)
             )
 
         index_coord_pairs = itertools.chain.from_iterable(zip(*x) for x in result)
@@ -201,7 +176,7 @@ class CoordConverter:
         result = list()
         for chrom, subdf in self.iter_totalregion_df():
             result.append(
-                (chrom, subdf['plot_interval_start0s'][0], subdf['plot_interval_end0s'][-1])
+                (chrom, subdf['plot_interval_start0s'].iloc[0], subdf['plot_interval_end0s'].iloc[-1])
             )
         return result
 
@@ -227,31 +202,39 @@ class CoordConverter:
         for pos0 in border_pos0s:
             ax.axvline(pos0, color=color, linewidth=linewidth, **kwargs)
 
-    def draw_hlines(self, ax, df, y_colname, offset=0, nproc=None, **kwargs):
+    def prepare_plot_data(self, df, nproc=None):
         # create isec between total region and input data
-        isec_df, subdfs_bychrom = self.isec_trim_data_df(df)
+        isec_gr, subgrs_bychrom = self.isec_trim_data_df(df)
         # Add "End_minus1" columns; "End" columns cannot be used for plot coordinate calculation
-        for chrom, subdf in  subdfs_bychrom.items():
-            subdf.insert(subdf.shape[1], 'End_minus1', subdf['End'] - 1)
+        for chrom, subgr in  subgrs_bychrom.items():
+            subgr.End_minus1 = subgr.End - 1
+
+        xmins = self.get_ordered_plot_coords(subgrs_bychrom, 'Start', nproc=nproc)
+        xmaxs_minus1 = self.get_ordered_plot_coords(subgrs_bychrom, 'End_minus1', nproc=nproc)
+        xmaxs = xmaxs_minus1 + 1
+
+        return {
+            'isec_gr': isec_gr,
+            'subgrs_bychrom': subgrs_bychrom,
+            'xmins': xmins,
+            'xmaxs': xmaxs,
+        }
+
+    def draw_hlines(self, ax, y_colname, *, df=None, df_plotdata=None, offset=0, nproc=None, **kwargs):
+        if df_plotdata is None:
+            df_plotdata = self.prepare_plot_data(df, nproc=nproc)
+            
         # get ordered ys 
-        ys = isec_df.loc[:, y_colname].array + offset
+        ys = getattr(df_plotdata['isec_gr'], y_colname) + offset
         ys = np.fromiter(
             (
                 x[0] for x in 
-                sorted(zip(ys, isec_df['_index']), key=operator.itemgetter(1))
+                sorted(zip(ys, df_plotdata['isec_gr']._index), key=operator.itemgetter(1))
             ),
             dtype=np.float_,
         )
-        # get ordered xmins and xmaxs
-        import time
-        t1 = time.perf_counter()
-        xmins = self.get_ordered_plot_coords(subdfs_bychrom, 'Start', nproc=nproc)
-        xmaxs_minus1 = self.get_ordered_plot_coords(subdfs_bychrom, 'End_minus1', nproc=nproc)
-        xmaxs = xmaxs_minus1 + 1
-        t2 = time.perf_counter()
-        print(t2 - t1)
 
-        ax.hlines(ys, xmins, xmaxs, **kwargs)
+        ax.hlines(ys, df_plotdata['xmins'], df_plotdata['xmaxs'], **kwargs)
 
     def draw_dots(self, ax, df, y_colname, nproc=None, color='black', marker='o', linestyle='', **kwargs):
         joined_gr = pyranges_helper.join(self.totalregion_gr, pr.PyRanges(df), how='inner', merge='first', find_nearest=False, as_gr=True)

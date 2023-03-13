@@ -5,6 +5,8 @@ import itertools
 import functools
 import multiprocessing
 import operator
+import warnings
+import inspect
 
 import Bio.SeqUtils
 import numpy as np
@@ -862,15 +864,36 @@ def get_ccf_CNm(vaf, cellularity, CNt, CNB=None, likelihood='diff', total_read=N
 def get_gc_breaks(n_bin):
     breaks = np.linspace(0, 1, (n_bin + 1), endpoint=True)
     breaks[0] = -0.001
-    return breaks
+    intervals = pd.IntervalIndex.from_breaks(breaks, closed='right')
+
+    return breaks, intervals
 
 
-def remove_outliers(depth_df, trim_limits=(0.05, 0.05), lower_cutoff=None, upper_cutoff=None):
-    """Absolute cutoff-based trimming is done first, then proportional trimming is later
+def handle_outliers(depth_df, trim_limits=None, lower_cutoff=None, upper_cutoff=None):
+    """Args:
+        trim_limits: Tuple with length 2 (lower proportion, upper proportion).
+            Used as an argument to "scipy.stats.mstats.trim".
+            Example: (0.05, 0.05)
+    Returns:
+        Tuple (depth_df, selector)
+            depth_df: The input dataframe, with outlier depth values replaced with np.nan
+            selector: boolean array indicating non-outlier rows
+        Outlier handling processes:
+            1) Removes/masks oringinal nan values
+            2) Removes/masks based on relative proportions
+            3) Removes/masks based on absolute cutoff values
     """
+    assert 'mean_depth' in depth_df.columns
+
     # remove nan
-    #selector = np.repeat(True, depth_df.shape[0])
-    selector = ~np.isnan(depth_df['mean_depth'])
+    selector = depth_df['mean_depth'].notna()
+
+    # trim by proportion
+    if trim_limits is not None:
+        trimmed_depth = scipy.stats.mstats.trim(
+            depth_df['mean_depth'], limits=trim_limits, relative=True,
+        )
+        selector = np.logical_and(selector, ~trimmed_depth.mask)
 
     # trim by absolute cutoff
     if lower_cutoff is not None:
@@ -878,15 +901,11 @@ def remove_outliers(depth_df, trim_limits=(0.05, 0.05), lower_cutoff=None, upper
     if upper_cutoff is not None:
         selector = np.logical_and(selector, depth_df['mean_depth'] <= upper_cutoff)
 
-    depth_df = depth_df.loc[selector, :]
+    # result
+    selector = selector.to_numpy()
+    depth_df.loc[~selector, 'mean_depth'] = np.nan
 
-    # trim by proportion
-    trimmed_depth = scipy.stats.mstats.trim(
-        depth_df['mean_depth'], limits=trim_limits, relative=True,
-    )
-    depth_df = depth_df.loc[~trimmed_depth.mask, :]
-
-    return depth_df
+    return depth_df, selector
 
 
 def get_depth_df_from_file(chroms, start0s, end0s, depth_file_path):
@@ -924,46 +943,68 @@ def get_gc_depth_data(depth_df, n_bin):
     return gcbin_average_depths, gcbin_norm_average_depths, cutresult
 
 
-def get_gcbin_data(depth_df, gc_breaks):
+def get_gcbin_data(depth_df, gc_breaks, make_raw_data=False):
     """This does not apply weights when calculating averages. Suitable for even-sized bins"""
     # cut by gc bins
-    cutresult = pd.cut(depth_df['GC'], bins=gc_breaks)
+    cutresult = pd.cut(depth_df['GC'], bins=gc_breaks, include_lowest=False)
     # make results
-    gcbin_depth_data = {intv: list() for intv in cutresult.dtype.categories}
-    for intv, depth in zip(cutresult, depth_df['mean_depth']):
-        gcbin_depth_data[intv].append(depth)
+    if make_raw_data:
+        gcbin_depth_data = {intv: list() for intv in cutresult.dtype.categories}
+        for intv, depth in zip(cutresult, depth_df['mean_depth']):
+            gcbin_depth_data[intv].append(depth)
 
-    gcbin_average_depths = {
-        intv: (np.nan if len(data) == 0 else np.mean(data))
-        for intv, data in gcbin_depth_data.items()
-    }
+        gcbin_average_depths = {
+            intv: (np.nan if len(data) == 0 else np.mean(data))
+            for intv, data in gcbin_depth_data.items()
+        }
+    else:
+        gcbin_depth_data = None
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+
+            gcbin_average_depths = dict()
+            for intv in cutresult.dtype.categories:
+                gcbin_average_depths[intv] = np.nanmean(
+                    depth_df['mean_depth'].loc[(cutresult == intv).array]
+                )
+
     gcbin_average_depths = pd.Series(gcbin_average_depths)
     gcbin_norm_average_depths = gcbin_average_depths / gcbin_average_depths.mean(skipna=True)
 
     return gcbin_depth_data, gcbin_average_depths, gcbin_norm_average_depths, cutresult
 
 
+@common.get_deco_num_set_differently(('fasta', 'refver', 'gc_vals'), 1)
 def postprocess_depth_df(
     depth_df, 
     *,
-    fasta=None, 
     refver=None,
-    binsize=None,
+    fasta=None, 
+    gc_vals=None,
+
     gc_window=None,
 
-    nan_lower_cutoff=None,
-    nan_upper_cutoff=None,
+    preset_cutoffs='wgs',
 
-    gcdata_trim_limits=(0.05, 0.05),
-    gcdata_lower_cutoff=None,
-    gcdata_upper_cutoff=None,
+    lower_cutoff=None,
+    upper_cutoff=None,
+    trim_limits=None,
+
+    #nan_lower_cutoff=None,
+    #nan_upper_cutoff=None,
+
+    #gcdata_trim_limits=(0.05, 0.05),
+    #gcdata_lower_cutoff=None,
+    #gcdata_upper_cutoff=None,
 
     n_gcbin=100, 
     as_gr=True, 
+
+    verbose=False,
 ):
     """Args:
-        fasta, refver, binsize: Only used for gc fraction calculation.
-            Allowed argument usage: "fasta" only OR "refver" and "binsize" only
+        fasta, refver: Only used for gc fraction calculation. Only one of
+            "fasta" or "refver" must be set. Using "refver" is recommended.
 
     Returns:
         postprocessed df & gcbin average depth dict
@@ -973,59 +1014,111 @@ def postprocess_depth_df(
             - gc_corrected_mean_depth
             - sequenza_style_norm_mean_depth
     """
-    # sanity check
-    if not (
-        (
-            (fasta is not None )
+    # not used
+    def arg_sanitycheck():
+        # get gc calculation mode
+        if (
+            (fasta is not None)
             and (refver is None)
             and (binsize is None)
-        )
-        or (
-            (fasta is None )
+        ):
+            gccalc_mode = 'calc'
+        elif (
+            (fasta is None)
             and (refver is not None)
             and (binsize is not None)
-        )
-    ):
-        raise Exception(
-            f'Allowed argument usage for GC fraction annotation: '
-            f'1) use "fasta", do NOT use "refver" and "binsize" ; '
-            f'2) use "refver" and "binsize", do NOT use "fasta"'
-        )
+        ):
+            gccalc_mode = 'load'
+        else:
+            raise Exception(
+                f'Allowed argument usage for GC fraction annotation: '
+                f'1) use "fasta", do NOT use "refver" and "binsize" ; '
+                f'2) use "refver" and "binsize", do NOT use "fasta"'
+            )
 
+    if verbose:
+        def printlog(msg):
+            funcname = inspect.stack()[0].function
+            common.print_timestamp(f'{funcname}: {msg}')
+    else:
+        def printlog(msg):
+            pass
+
+    # sanity check
     assert 'mean_depth' in depth_df.columns, f'"depth_df" must include a column named "mean_depth"'
 
-    # replace outliers with np.nan
-    if nan_lower_cutoff is not None:
-        depth_df.loc[depth_df['mean_depth'] < nan_lower_cutoff, ['mean_depth']] = np.nan
-    if nan_upper_cutoff is not None:
-        depth_df.loc[depth_df['mean_depth'] >= nan_upper_cutoff, ['mean_depth']] = np.nan
+    # set outlier cutoffs
+    if preset_cutoffs == 'wgs':
+        printlog(f'Running "postprocess_depth_df" function with preset cutoff mode "wgs"')
+        lower_cutoff = 0
+        upper_cutoff = 2000
+        #nan_lower_cutoff = gcdata_lower_cutoff = 0
+        #nan_upper_cutoff = gcdata_upper_cutoff = 2000
+    elif preset_cutoffs == 'panel':
+        printlog(f'Running "postprocess_depth_df" function with preset cutoff mode "panel"')
+        lower_cutoff = 50
+        upper_cutoff = np.inf
+        #nan_lower_cutoff = gcdata_lower_cutoff = 50
+        #nan_upper_cutoff = gcdata_upper_cutoff = np.inf
 
-    # GC
-    gcfraction.add_gc_calculating(depth_df, fasta, window=gc_window)
+    # replace outliers with np.nan
+    #if nan_lower_cutoff is not None:
+    #    depth_df.loc[depth_df['mean_depth'] < nan_lower_cutoff, ['mean_depth']] = np.nan
+    #if nan_upper_cutoff is not None:
+    #    depth_df.loc[depth_df['mean_depth'] >= nan_upper_cutoff, ['mean_depth']] = np.nan
+
+    # add GC fractions
+    printlog(f'Adding GC fraction values')
+    if gc_vals is None:
+        gcfraction.add_gc_calculating(depth_df, refver=refver, fasta=fasta, window=gc_window)
+    else:
+        depth_df['GC'] = gc_vals
+
+    # replace outliers with nan
+    depth_df, selector = handle_outliers(
+        depth_df, trim_limits=trim_limits, lower_cutoff=lower_cutoff, upper_cutoff=upper_cutoff
+    )
 
     # norm_mean_depth
-    depth_df_wo_nan = depth_df.loc[~np.isnan(depth_df['mean_depth']), :]
-    global_mean_depth = np.average(depth_df_wo_nan['mean_depth'], weights=(depth_df_wo_nan['End'] - depth_df_wo_nan['Start']))
-    depth_df.insert(depth_df.shape[1], 'norm_mean_depth', (depth_df['mean_depth'] / global_mean_depth).array)
+    printlog(f'Getting normalized depths')
+    global_mean_depth = common.nanaverage(
+        depth_df['mean_depth'].to_numpy(), 
+        weights=(depth_df['End'] - depth_df['Start']).to_numpy(),
+    )
+    depth_df['norm_mean_depth'] = (depth_df['mean_depth'] / global_mean_depth).array
 
     # get gc depth data
-    gc_breaks = get_gc_breaks(n_gcbin)
-    trimmed_depth_df = remove_outliers(depth_df, trim_limits=gcdata_trim_limits, lower_cutoff=gcdata_lower_cutoff, upper_cutoff=gcdata_upper_cutoff)
-    gcbin_depth_data, gcbin_average_depths, gcbin_norm_average_depths, cutresult = get_gcbin_data(trimmed_depth_df, gc_breaks)
+    printlog(f'Getting depth data by gc value ranges')
+    gc_breaks, gc_intervals = get_gc_breaks(n_gcbin)
+    (
+        gcbin_depth_data, 
+        gcbin_average_depths, 
+        gcbin_norm_average_depths, 
+        cutresult 
+    ) = get_gcbin_data(depth_df, gc_breaks, make_raw_data=False)
+    cutresult_idx = common.get_indexes_of_array(cutresult, gcbin_norm_average_depths.index)
 
     # gc_corrected_mean_depth
-    cutresult = pd.cut(depth_df['GC'], bins=gc_breaks)
-    gcbin_norm_average_depths_selected = gcbin_norm_average_depths.loc[cutresult]
-    depth_df.insert(depth_df.shape[1], 'gc_corrected_mean_depth', (depth_df['mean_depth'].array / gcbin_norm_average_depths_selected.array))
+    printlog(f'Getting GC-corrected depths')
+    gcbin_norm_average_depths_selected = gcbin_norm_average_depths.iloc[cutresult_idx]
+    depth_df['gc_corrected_mean_depth'] = (
+        depth_df['mean_depth'].array / gcbin_norm_average_depths_selected.array
+    )
 
     # sequenza_style_norm_mean_depth
-    gcbin_average_depths_selected = gcbin_average_depths.loc[cutresult]
-    depth_df.insert(depth_df.shape[1], 'sequenza_style_norm_mean_depth', (depth_df['mean_depth'].array / gcbin_average_depths_selected.array))
+    printlog(f'Getting GC-corrected normalized depths (sequenza style)')
+    gcbin_average_depths_selected = gcbin_average_depths.iloc[cutresult_idx]
+    depth_df['sequenza_style_norm_mean_depth'] = (
+        depth_df['mean_depth'].array / gcbin_average_depths_selected.array
+    )
 
+    # result
     if as_gr:
-        return pr.PyRanges(depth_df, int64=False), gcbin_average_depths
-    else:
-        return depth_df, gcbin_average_depths
+        depth_df = pr.PyRanges(depth_df, int64=False)
+
+    printlog(f'Finished')
+
+    return depth_df, gcbin_average_depths
 
 
 def get_processed_depth_df(bam_path, fasta, region_gr, gc_window=None, outlier_cutoffs='wgs', donot_subset_bam=False, as_gr=False):
@@ -1072,24 +1165,63 @@ def get_processed_depth_df(bam_path, fasta, region_gr, gc_window=None, outlier_c
 
 
 def make_depth_ratio_df(tumor_depth_df, normal_depth_df, as_gr=False):
+    def assign_ratio(result, new_colname, numerator, denominator):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+
+            arr = numerator / denominator
+            arr[np.isinf(arr)] = np.nan
+            result[new_colname] = arr
+
     # sanity check
-    assert isinstance(tumor_depth_df, pd.DataFrame) and isinstance(normal_depth_df, pd.DataFrame)
+    required_cols = {'mean_depth', 'GC', 'norm_mean_depth', 'gc_corrected_mean_depth', 'sequenza_style_norm_mean_depth'}
+    assert isinstance(tumor_depth_df, pd.DataFrame)
+    assert isinstance(normal_depth_df, pd.DataFrame)
     assert all(
-        {'mean_depth', 'GC', 'norm_mean_depth', 'gc_corrected_mean_depth', 'sequenza_style_norm_mean_depth'}.issubset(df.columns)
+        required_cols.issubset(df.columns)
         for df in (tumor_depth_df, normal_depth_df)
     )
 
     compared_columns = ['Chromosome', 'Start', 'End', 'GC']
-    if not (tumor_depth_df.loc[:, compared_columns] == normal_depth_df.loc[:, compared_columns]).to_numpy().all():
-        raise Exception(f'The columns {compared_columns} of the two input dataframes must be identical.')
+    tumor_common_cols = tumor_depth_df.loc[:, compared_columns]
+    normal_common_cols = normal_depth_df.loc[:, compared_columns]
+    if not (normal_common_cols == tumor_common_cols).all(axis=None):
+        raise Exception(
+            f'The columns {compared_columns} of the two input dataframes must be identical.'
+        )
 
     # main
-    result = tumor_depth_df.loc[:, compared_columns].copy()
-    result['depth_ratio_sequenzastyle'] = tumor_depth_df['sequenza_style_norm_mean_depth'] / normal_depth_df['sequenza_style_norm_mean_depth']
-    result['depth_ratio_mystyle'] = tumor_depth_df['gc_corrected_mean_depth'] / normal_depth_df['gc_corrected_mean_depth']
-    for colname in ('mean_depth', 'norm_mean_depth', 'gc_corrected_mean_depth', 'sequenza_style_norm_mean_depth'):
-        result[f'tumor_{colname}'] = tumor_depth_df.loc[:, colname]
-        result[f'normal_{colname}'] = normal_depth_df.loc[:, colname]
+    result = tumor_common_cols
+    assign_ratio(
+        result, 
+        'depth_ratio_sequenzastyle', 
+        tumor_depth_df['sequenza_style_norm_mean_depth'].values, 
+        normal_depth_df['sequenza_style_norm_mean_depth'].values,
+    )
+    assign_ratio(
+        result, 
+        'depth_ratio_mystyle', 
+        tumor_depth_df['gc_corrected_mean_depth'].values, 
+        normal_depth_df['gc_corrected_mean_depth'].values,
+    )
+
+#    result['depth_ratio_sequenzastyle'] = (
+#        tumor_depth_df['sequenza_style_norm_mean_depth'].array
+#        / normal_depth_df['sequenza_style_norm_mean_depth'].array
+#    )
+#    result['depth_ratio_mystyle'] = (
+#        tumor_depth_df['gc_corrected_mean_depth'].array
+#        / normal_depth_df['gc_corrected_mean_depth'].array
+#    )
+
+    for colname in (
+        'mean_depth', 
+        'norm_mean_depth', 
+        'gc_corrected_mean_depth', 
+        'sequenza_style_norm_mean_depth',
+    ):
+        result[f'tumor_{colname}'] = tumor_depth_df.loc[:, colname].array
+        result[f'normal_{colname}'] = normal_depth_df.loc[:, colname].array
 
     if as_gr:
         return pr.PyRanges(result)
@@ -1257,7 +1389,7 @@ def plot_gc_distribution(
             ylims = arghandler_ylims(depth_df['mean_depth'], ylims)
         depth_breaks = np.linspace(ylims[0], ylims[1], 100, endpoint=True)
         #gc_breaks = np.linspace(0, 1, 101, endpoint=True)
-        gc_breaks = get_gc_breaks(n_gcbin)
+        gc_breaks, gc_intervals = get_gc_breaks(n_gcbin)
 
         # get histogram
         H, xedges, yedges = np.histogram2d(
@@ -1279,12 +1411,13 @@ def plot_gc_distribution(
     # main
     assert histogram_mode in ('1d', '2d')
 
-    depth_df = remove_outliers(depth_df, trim_limits=trim_limits, lower_cutoff=lower_cutoff, upper_cutoff=upper_cutoff)
-    gc_breaks = get_gc_breaks(n_gcbin)
-    gcbin_depth_data, gcbin_average_depths, gcbin_norm_average_depths, cutresult = get_gcbin_data(depth_df, gc_breaks)
+    depth_df, selector = handle_outliers(depth_df, trim_limits=trim_limits, lower_cutoff=lower_cutoff, upper_cutoff=upper_cutoff)
+    trimmed_depth_df = depth_df.iloc[selector, :]
+    gc_breaks, gc_intervals = get_gc_breaks(n_gcbin)
+    gcbin_depth_data, gcbin_average_depths, gcbin_norm_average_depths, cutresult = get_gcbin_data(trimmed_depth_df, gc_breaks, make_raw_data=True)
     fig_avg_scatter = make_average_scatter(gcbin_average_depths, ylims=scatter_ylims)
     if histogram_mode == '2d':
-        fig_heatmap = make_heatmap_hist2d(depth_df, n_gcbin, ylims=heatmap_ylims, vmax=heatmap_vmax)
+        fig_heatmap = make_heatmap_hist2d(trimmed_depth_df, n_gcbin, ylims=heatmap_ylims, vmax=heatmap_vmax)
     elif histogram_mode == '1d':
         fig_heatmap = make_heatmap(gcbin_depth_data, ylims=heatmap_ylims, vmax=heatmap_vmax)
 

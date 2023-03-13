@@ -716,6 +716,8 @@ class VariantPlus:
         new=True,
         readheight='collapse',
         viewaspairs=True,
+        colorby='FIRST_OF_PAIR_STRAND',
+        colorby_alleleclass=False,
         rpplist_kwargs={
             'view': True,
             'no_matesearch': True,
@@ -781,7 +783,11 @@ class VariantPlus:
 
         igv.cmd(readheight)
         igv.cmd("group TAG a2")
-        igv.cmd(f"colorBy TAG {readplus.ALLELECLASS_TAG_RPP}")
+        if colorby_alleleclass:
+            igv.cmd(f"colorBy TAG {readplus.ALLELECLASS_TAG_RPP}")
+        else:
+            igv.cmd(f"colorBy {colorby}")
+
         shutil.rmtree(tmpbam_dir)
 
     def show_readstats_data(self, bam, alt_index=0, varpos_key='left'):
@@ -1003,7 +1009,7 @@ class VariantPlusList(list):
     def __init__(
         self, vcf_path=None, vcf=None, refver=None,
         fasta=None, chromdict=None,
-        logging_lineno=1000, preview_lineno=30, 
+        logging_lineno=1000, preview_lineno=15, 
         verbose=True, logger=None,
     ):
         # vcf_path, vcf
@@ -1080,6 +1086,9 @@ class VariantPlusList(list):
         init_filterresult=False,
         sampleid_list=None,
         prop=None,
+        fetch_chrom=None,
+        fetch_start0=None,
+        fetch_end0=None,
         **kwargs,
     ):
         """Args:
@@ -1155,16 +1164,25 @@ class VariantPlusList(list):
 #
 #        '''
 
-        # create vps
+        # create VariantPlus objects
+        # make pysam.VariantFile.fetch
+        if fetch_chrom is None:
+            fetcher = result.vcf.fetch()
+        else:
+            if ((fetch_start0 is None) or (fetch_end0 is None)):
+                fetcher = result.vcf.fetch(contig=fetch_chrom)
+            else:
+                fetcher = result.vcf.fetch(contig=fetch_chrom, start=fetch_start0, stop=fetch_end0)
+        # make iterator 
         if prop is None:
-            vr_iterator = common.iter_lineno_logging(result.vcf.fetch(), result.logger, result.logging_lineno)
+            vr_iterator = common.iter_lineno_logging(fetcher, result.logger, result.logging_lineno)
         else:
             vr_iterator = common.iter_lineno_logging(
-                common.bernoulli_iterator(result.vcf.fetch(), p=prop, block_size=int(1e5)), 
+                common.bernoulli_iterator(fetcher, p=prop, block_size=int(1e5)), 
                 result.logger, 
                 result.logging_lineno,
             )
-
+        # run iterator
         for vr in vr_iterator:
             if varianthandler.check_SV(vr):
                 vr_svinfo = libbnd.get_vr_svinfo_standard_vr(vr, result.fasta, result.chromdict)
@@ -1227,6 +1245,61 @@ class VariantPlusList(list):
             #level='info',
             formatter=formatter,
         )
+
+    ###########################################
+    # show readstats summary for all variants #
+    ###########################################
+
+    def get_all_vp_readstats(self, key, sampleid, allele_index=1):
+        return np.fromiter(
+            (
+                vp.readstats_dict[sampleid][key][allele_index] 
+                for vp in self
+            ),
+            dtype=float,
+        )
+
+    def get_all_vp_readstats_diff(self, key, sampleid, allele_indexes=(1, 0)):
+        return np.fromiter(
+            (
+                (
+                    vp.readstats_dict[sampleid][key][allele_indexes[0]] 
+                    - vp.readstats_dict[sampleid][key][allele_indexes[1]] 
+                )
+                for vp in self
+            ),
+            dtype=float,
+        )
+
+    def get_all_vp_readstats_average(self, key, sampleid):
+        return np.fromiter(
+            (
+                vp.readstats_dict[sampleid].get_allele_indexes_average(
+                    key, allele_indexes=None,
+                ) 
+                for vp in self
+            ),
+            dtype=float,
+        )
+
+    def get_all_vp_total_depths(self, sampleid, exclude_other=False):
+        return np.fromiter(
+            (
+                vp.readstats_dict[sampleid].get_total_rppcount(exclude_other=exclude_other)
+                for vp in self
+            ),
+            dtype=float,
+        )
+
+    def get_all_vp_vafs(self, sampleid, allele_index=1, exclude_other=False):
+        return np.fromiter(
+            (
+                vp.get_vaf(sampleid, allele_index=allele_index, exclude_other=exclude_other)
+                for vp in self
+            ),
+            dtype=float,
+        )
+        
 
     ##########
     # others #

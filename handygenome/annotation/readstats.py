@@ -177,19 +177,20 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
     #def write(self, vr, sampleid):
     #    return self.write_base(vr, sampleid)
 
-    def get_allele_indexes_mean(self, key, allele_indexes):
-        numerator = sum(
-            self[key][x] * self['rppcounts'][x]
-            for x in allele_indexes
-        )
-        denominator = sum(self['rppcounts'][x] for x in allele_indexes)
+    def get_allele_indexes_average(self, key, allele_indexes=None):
+        assert key != 'rppcounts'
+        if allele_indexes is None:
+            allele_indexes = tuple(self[key].keys())
 
-        if denominator == 0:
+        values = np.fromiter((self[key][x] for x in allele_indexes), dtype=float)
+        weights = np.fromiter((self['rppcounts'][x] for x in allele_indexes), dtype=int)
+        if sum(weights) == 0:
             return np.nan
         else:
-            return numerator / denominator
+            return common.nanaverage(values, weights=weights)
 
-    get_alleleindexes_mean = get_allele_indexes_mean
+    get_allele_indexes_mean = get_allele_indexes_average
+    get_alleleindexes_mean = get_allele_indexes_average
 
     def get_total_rppcount(self, exclude_other=False):
         if exclude_other:

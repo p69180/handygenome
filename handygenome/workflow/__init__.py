@@ -32,8 +32,9 @@ RE_PATS = dict()
 RE_PATS['scontrol_split_job'] = re.compile('^([^=]+)(=(.*))?$')
 RE_PATS['scontrol_split_nodes'] = re.compile(r'(?<=\S)\s+(?=\S+=)')
 
-DEFAULT_INTV_CHECK = 60 # seconds
-DEFAULT_INTV_SUBMIT = 1 # seconds
+DEFAULT_INTV_CHECK = 60  # seconds
+DEFAULT_INTV_SUBMIT = 1  # seconds
+DEFAULT_MAX_SUBMIT = None  # no limits
 
 HELP_WIDTH = 50
 DESCRIPTION_WIDTH = 80
@@ -462,6 +463,19 @@ def add_submitint_arg(
         help=textwrap.fill(help, width=HELP_WIDTH))
 
 
+def add_maxsubmit_arg(
+    parser, 
+    required=False, 
+    default=DEFAULT_MAX_SUBMIT,
+    help=f'Allowed maximum number of pending and running jobs at a time.',
+):
+    parser.add_argument(
+        '--slurm-max-submit', dest='max_submit', required=required,
+        default=default, type=int, metavar='<slurm maximum submit>', 
+        help=textwrap.fill(help, width=HELP_WIDTH)
+    )
+
+
 def add_index_arg(parser_dict,
                   help='If set, output vcf file is not indexed.'):
     parser_dict['flag'].add_argument(
@@ -543,17 +557,19 @@ def add_logging_args(parser_dict):
             width=HELP_WIDTH))
 
 
-def add_scheduler_args(parser_dict, default_parallel=1, default_sched='slurm',
-                       default_check_interval=DEFAULT_INTV_CHECK,
-                       default_submit_interval=DEFAULT_INTV_SUBMIT):
-    add_parallel_arg(parser_dict['optional'], required=False, 
-                     default=default_parallel)
-    add_sched_arg(parser_dict['optional'], required=False, 
-                  default=default_sched)
-    add_checkint_arg(parser_dict['optional'], required=False, 
-                     default=default_check_interval)
-    add_submitint_arg(parser_dict['optional'], required=False, 
-                      default=default_submit_interval)
+def add_scheduler_args(
+    parser_dict, 
+    default_parallel=1, 
+    default_sched='slurm',
+    default_check_interval=DEFAULT_INTV_CHECK,
+    default_submit_interval=DEFAULT_INTV_SUBMIT,
+    default_max_submit=DEFAULT_MAX_SUBMIT,
+):
+    add_parallel_arg(parser_dict['optional'], required=False, default=default_parallel)
+    add_sched_arg(parser_dict['optional'], required=False, default=default_sched)
+    add_checkint_arg(parser_dict['optional'], required=False, default=default_check_interval)
+    add_submitint_arg(parser_dict['optional'], required=False, default=default_submit_interval)
+    add_maxsubmit_arg(parser_dict['optional'], required=False, default=default_max_submit)
 
 
 def add_rmtmp_arg(parser_dict):
@@ -772,9 +788,11 @@ class Job:
         self.sbatch_err_info = None
         self.stdout_path = None
         self.stderr_path = None
-        self.status = {'pending': False, 
-                       'running': False, 
-                       'finished': False}
+        self.status = {
+            'pending': False, 
+            'running': False, 
+            'finished': False,
+        }
 
         if logger is None:
             self.logger = get_logger(
@@ -899,37 +917,61 @@ class JobList(list):
         
     """
 
-    def __init__(self, jobscript_path_list, verbose=True, logpath=None, 
-                 logger=None):
+    def __init__(
+        self, 
+        jobscript_path_list, 
+        intv_submit=DEFAULT_INTV_SUBMIT,
+        intv_check=DEFAULT_INTV_CHECK,
+        max_submit=DEFAULT_MAX_SUBMIT,
+        verbose=True, 
+        logpath=None, 
+        logger=None,
+    ):
         for jobscript_path in jobscript_path_list:
-            self.append(Job(jobscript_path=jobscript_path, verbose=verbose, 
-                            logger=logger))
+            self.append(
+                Job(jobscript_path=jobscript_path, verbose=verbose, logger=logger)
+            )
+
+        self.intv_submit = intv_submit
+        self.intv_check = intv_check
+        self.max_submit = max_submit
 
         if logger is None:
             self.logger = get_logger(
                 formatter=DEFAULT_LOG_FORMATTERS['without_name'], 
-                stderr=verbose, filenames=[logpath])
+                stderr=verbose, filenames=[logpath],
+            )
         else:
             self.logger = logger
 
         self.success = None
         self.sublists = dict()
-        self.set_sublists_statuses()
-        self.set_sublists_exitcodes()
+        self.update()
 
-    def submit(self, intv_submit=DEFAULT_INTV_SUBMIT):
-        assert not any(job.submitted for job in self), (
-            'One or more jobs have been already submitted.')
+    def get_num_pending_running(self):
+        return len(self.sublists['pending']) + len(self.sublists['running'])
 
-        for job in self:
-            job.submit()
-            time.sleep(intv_submit)
+    def submit(self):
+        if self.max_submit is None:
+            num_to_submit = len(self.sublists['notsubmit'])
+        else:
+            num_pending_running = self.get_num_pending_running()
+            num_to_submit = min(
+                self.max_submit - num_pending_running, 
+                len(self.sublists['notsubmit']),
+            )
+
+        if num_to_submit > 0:
+            for job in self.sublists['notsubmit'][:num_to_submit]:
+                job.submit()
+                time.sleep(self.intv_submit)
+            self.update()
 
     def cancel_all_running(self):
         for job in self.sublists['running']:
             job.cancel()
 
-    def wait(self, intv_check=DEFAULT_INTV_CHECK):
+    def submit_and_wait(self):
         def make_infostring(sublist_key):
             n_jobs = len(self.sublists[sublist_key])
             details = ', '.join(job.__repr__()
@@ -945,8 +987,11 @@ class JobList(list):
             msg = textwrap.dedent(f"""\
                 Current job status:
                   Not submitted yet: {n_notsubmit}
+
                   Pending: {info_pending}
+
                   Running: {info_running}
+
                   Finished: {info_finished}
                 """)
             self.logger.info(msg)
@@ -958,8 +1003,11 @@ class JobList(list):
 
             msg = textwrap.dedent(f"""\
                 All finished.
+
                 Successful jobs: {info_success}
+
                 Failed jobs: {info_failure}
+
                 Jobs with unknown exit statuses: {info_unknown}
                 """)
             self.logger.info(msg)
@@ -968,12 +1016,12 @@ class JobList(list):
         try:
             while True:
                 self.update()
-                self.set_sublists_statuses()
+                self.submit()
                 log_status()
                 if all(job.status['finished'] for job in self):
                     break
                 else:
-                    time.sleep(intv_check)
+                    time.sleep(self.intv_check)
                     continue
         except KeyboardInterrupt:
             self.logger.info(
@@ -993,8 +1041,42 @@ class JobList(list):
         return [job.exitcode for job in self]
 
     def update(self):
+        self.update_jobs()
+        self.set_sublists()
+
+    def update_jobs(self):
         for job in self:
-            job.update()
+            if job.submitted:
+                job.update()
+
+    def set_sublists(self):
+        for key in (
+            'notsubmit', 
+            'pending', 
+            'running', 
+            'finished', 
+            'success', 
+            'failure', 
+            'unknown',
+        ):
+            self.sublists[key] = list()
+
+        for job in self:
+            if not job.submitted:
+                self.sublists['notsubmit'].append(job)
+            if job.status['pending']:
+                self.sublists['pending'].append(job)
+            if job.status['running']:
+                self.sublists['running'].append(job)
+            if job.status['finished']:
+                self.sublists['finished'].append(job)
+
+            if job.success is True:
+                self.sublists['success'].append(job)
+            if job.success is False:
+                self.sublists['failure'].append(job)
+            if job.success is None:
+                self.sublists['unknown'].append(job)
 
     def set_sublists_statuses(self):
         self.sublists['notsubmit'] = [job for job in self 
@@ -1085,16 +1167,29 @@ scontrol command: {cmdargs}'''
 ###############################
 
 
-def run_jobs(jobscript_paths, sched, intv_check, intv_submit, logger, 
-             log_dir, raise_on_failure=True):
+def run_jobs(
+    jobscript_paths, 
+    sched, 
+    intv_check, 
+    intv_submit, 
+    max_submit, 
+    logger, 
+    log_dir, 
+    raise_on_failure=True,
+):
     assert sched in ('local', 'slurm')
 
     if sched == 'local':
         success, exitcode_list = run_jobs_local(jobscript_paths)
     elif sched == 'slurm':
-        joblist = JobList(jobscript_paths, logger=logger)
-        joblist.submit(intv_submit=intv_submit)
-        joblist.wait(intv_check=intv_check)
+        joblist = JobList(
+            jobscript_paths, 
+            intv_check=intv_check,
+            intv_submit=intv_submit,
+            max_submit=max_submit,
+            logger=logger,
+        )
+        joblist.submit_and_wait()
 
         success = joblist.success
         exitcode_list = joblist.get_exitcodes()
