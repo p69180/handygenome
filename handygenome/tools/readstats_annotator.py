@@ -339,7 +339,7 @@ def argument_parser(cmdargs):
 
     parser_dict['optional'].add_argument(
         '--depth-limits', dest='depth_limits', required=False,
-        default=[0, 1000],
+        default=list(libreadstats.DEFAULT_DEPTH_LIMITS),
         type=float,
         metavar='<depth upper limit>',
         nargs=2,
@@ -352,7 +352,7 @@ def argument_parser(cmdargs):
     )
     parser_dict['optional'].add_argument(
         '--mq-limits', dest='mq_limits', required=False,
-        default=[0.001, -1],
+        default=list(libreadstats.DEFAULT_MQ_LIMITS),
         type=float,
         metavar='<depth upper limit>',
         nargs=2,

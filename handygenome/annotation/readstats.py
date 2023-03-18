@@ -23,7 +23,7 @@ liballeleinfo = importlib.import_module('.'.join([top_package_name, 'read', 'all
 
 ZERO_ONE_UNIFORM = scipy.stats.uniform(loc=0, scale=1)
 DEFAULT_DEPTH_LIMITS = (0, 1000)
-DEFAULT_MQ_LIMITS = (0.001, np.inf)
+DEFAULT_MQ_LIMITS = (10, -1)
 
 
 def get_position_info(bam, chrom, pos0):
