@@ -405,6 +405,9 @@ class Vcfspec:
         if not self.components.is_missing:
             self.components.write(vr)
 
+    def get_alleleclasses(self):
+        return (None,) + tuple(range(-1, len(self.alts) + 1))
+
     def iter_monoalts(self):
         for alt_index in self.iter_alt_indexes():
             yield self.get_monoalt(alt_index=alt_index)

@@ -1854,3 +1854,7 @@ def array_grouper(arr, omit_values=False):
     return values, counts
                 
 
+def get_ranks(arr):
+    ranks = scipy.stats.rankdata(data, method='max')
+    return ranks / len(ranks)
+

@@ -120,6 +120,13 @@ def write_jobscripts(
             f'The lengths of "script_path_list", "log_path_list", '
             f'and components of "kwargs_multi" are not all the same.'
         )
+    for key, val in kwargs_single.items():
+        if val != eval(repr(val)):
+            raise Exception(f'Keyword argument {key}: {val} cannot be represented as string')
+    for key, vallist in kwargs_multi.items():
+        for val in vallist:
+            if val != eval(repr(val)):
+                raise Exception(f'Keyword argument {key}: {val} cannot be represented as string')
 
     # main
     tab = ' ' * 4

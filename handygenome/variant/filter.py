@@ -28,14 +28,14 @@ def get_preset_filter_germline(
     refver='hg19',
     cutoff_diffbq=-5,
     cutoff_absbq=20,
-    cutoff_diffmq=-15,
-    cutoff_absmq=40,
+    cutoff_diffmq=-10,
+    cutoff_absmq=45,
     cutoff_clipovlp=2.0,
     cutoff_cliplen=20,
     cutoff_altcount=2,
     cutoff_otherratio=1.5,
     cutoff_totalcount=10,
-    cutoff_unifpval=0.05,
+    cutoff_unifpval=0.01,
 ):
     # sanity check
     if with_pon:

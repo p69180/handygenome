@@ -22,9 +22,26 @@ liballeleinfo = importlib.import_module('.'.join([top_package_name, 'read', 'all
 
 
 ZERO_ONE_UNIFORM = scipy.stats.uniform(loc=0, scale=1)
+DEFAULT_DEPTH_LIMITS = (0, 1000)
+DEFAULT_MQ_LIMITS = (0.001, np.inf)
+
+
+def get_position_info(bam, chrom, pos0):
+    mqlist = list()
+    for idx, read in enumerate(bam.fetch(chrom, pos0, pos0 + 1)):
+        mqlist.append(read.mapping_quality)
+    depth = idx + 1
+    return depth, mqlist
 
 
 class ReadStats(annotitem.AnnotItemFormatSingle):
+    @staticmethod
+    def handle_limits_arg(limits):
+        result = limits.copy()
+        if result[1] == -1:
+            result[1] = np.inf
+        return result
+        
     @classmethod
     def from_bam(
         cls, 
@@ -32,21 +49,34 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         rpplist_kwargs=dict(),
         alleleinfo_kwargs=dict(),
         countonly=False,
+        depth_limits=DEFAULT_DEPTH_LIMITS,
+        mq_limits=DEFAULT_MQ_LIMITS,
     ):
-        readstats_data = get_readstats_data(
-            vcfspec, bam, fasta, chromdict,
-            rpplist_kwargs=rpplist_kwargs,
-            alleleinfo_kwargs=alleleinfo_kwargs,
-            countonly=countonly,
-        )
-        result = cls.from_readstats_data(
-            readstats_data, 
-            vcfspec, 
-            fasta, 
-            chromdict,
-            countonly=countonly,
-        )
-        del readstats_data
+        depth, mqlist = get_position_info(bam, vcfspec.chrom, vcfspec.pos0)
+        mean_mq = np.mean(mqlist)
+        depth_limits = cls.handle_limits_arg(depth_limits)
+        mq_limits = cls.handle_limits_arg(mq_limits)
+        if (
+            ((depth >= depth_limits[0]) and (depth <= depth_limits[1])) 
+            and ((mean_mq >= mq_limits[0]) and (mean_mq <= mq_limits[1]))
+        ):
+            readstats_data = get_readstats_data(
+                vcfspec, bam, fasta, chromdict,
+                rpplist_kwargs=rpplist_kwargs,
+                alleleinfo_kwargs=alleleinfo_kwargs,
+                countonly=countonly,
+            )
+            result = cls.from_readstats_data(
+                readstats_data, 
+                vcfspec, 
+                fasta, 
+                chromdict,
+                countonly=countonly,
+            )
+            del readstats_data
+        else:
+            result = cls.init_invalid(vcfspec, fasta, chromdict, countonly=countonly)
+
         return result
 
     @classmethod
@@ -148,6 +178,7 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
 
         # main
         result = cls(is_missing=False)
+        result.is_invalid = False
         result.vcfspec = vcfspec
         result.fasta = fasta
         result.chromdict = chromdict
@@ -178,6 +209,44 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
             result['varpos_uniform_pvalues'] = varpos_kstest(readstats_data['pos0_left_fraction'])
             result['mean_varpos_fractions'] = allele_means(readstats_data['pos0_left_fraction'])
             result['median_varpos_fractions'] = allele_medians(readstats_data['pos0_left_fraction'])
+
+        return result
+
+    @classmethod
+    def init_invalid(cls, vcfspec, fasta, chromdict, countonly=False):
+        # main
+        result = cls(is_missing=False)
+        result.is_invalid = True
+        result.vcfspec = vcfspec
+        result.fasta = fasta
+        result.chromdict = chromdict
+
+        result['rppcounts'] = {
+            alleleclass: np.nan 
+            for alleleclass in vcfspec.get_alleleclasses()
+        }
+        result['rppcounts']['softclip_overlap'] = np.nan
+
+        if not countonly:
+            for key in (
+                'mean_BQs',
+                'median_BQs',
+                'mean_MQs',
+                'median_MQs',
+                'mean_cliplens',
+                'median_cliplens',
+                'mNM',
+                'recurrent_mNM',
+                'pairorient_pvalues',
+                'readorient_pvalues',
+                'varpos_uniform_pvalues',
+                'mean_varpos_fractions',
+                'median_varpos_fractions',
+            ):
+                result[key] = {
+                    alleleclass: np.nan 
+                    for alleleclass in vcfspec.get_alleleclasses()
+                }
 
         return result
 
@@ -261,6 +330,8 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         rpplist_kwargs=dict(),
         alleleinfo_kwargs=dict(),
         countonly=False,
+        depth_limits=DEFAULT_DEPTH_LIMITS,
+        mq_limits=DEFAULT_MQ_LIMITS,
     ):
         result = cls()
         for sampleid, bam in bam_dict.items():
@@ -269,6 +340,8 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
                 rpplist_kwargs=rpplist_kwargs,
                 alleleinfo_kwargs=alleleinfo_kwargs,
                 countonly=countonly,
+                depth_limits=depth_limits,
+                mq_limits=mq_limits,
             )
         return result
 
@@ -297,6 +370,8 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         rpplist_kwargs=dict(),
         alleleinfo_kwargs=dict(),
         countonly=False,
+        depth_limits=DEFAULT_DEPTH_LIMITS,
+        mq_limits=DEFAULT_MQ_LIMITS,
     ):
         if len(self) == 0:
             raise Exception(f'Length of self must be greater than 0')
@@ -307,6 +382,8 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
                 rpplist_kwargs=rpplist_kwargs,
                 alleleinfo_kwargs=alleleinfo_kwargs,
                 countonly=countonly,
+                depth_limits=depth_limits,
+                mq_limits=mq_limits,
             )
 
     def write(self, vr, donot_write_missing=True):
@@ -353,7 +430,7 @@ def rpplist_to_readstats_data(
             data['pos0_3prime_fraction'][alleleclass_rpp].append(var_querypos0s['3prime_fraction'])
 
     # initialize
-    alleleclass_keys = (None,) + tuple(range(-1, len(vcfspec.alts) + 1))
+    alleleclass_keys = vcfspec.get_alleleclasses()
     data = dict()
 
     # fields initialized as integer
@@ -441,7 +518,7 @@ def rpplist_to_readstats_data_countonly(
     rpplist, vcfspec, flanklen=liballeleinfo.DEFAULT_FLANKLEN,
 ):
     # initialize
-    alleleclass_keys = (None,) + tuple(range(-1, len(vcfspec.alts) + 1))
+    alleleclass_keys = vcfspec.get_alleleclasses()
     data = dict()
     data['count'] = {x: 0 for x in alleleclass_keys}
     data['count']['softclip_overlap'] = 0
@@ -485,4 +562,5 @@ def get_readstats_data(
     del rpplist
 
     return readstats_data
+
 

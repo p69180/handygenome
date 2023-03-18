@@ -43,6 +43,8 @@ def unit_job(
     no_matesearch, 
     countonly, 
     memuse_limit_gb,
+    depth_limits,
+    mq_limits,
     monitor_interval=10,
 ):
     manager = multiprocessing.Manager()
@@ -62,6 +64,8 @@ def unit_job(
         'countonly': countonly, 
         'shareddict': shareddict,
         'memuse_limit_gb': memuse_limit_gb,
+        'depth_limits': depth_limits,
+        'mq_limits': mq_limits,
     }
 
     while True:
@@ -99,6 +103,8 @@ def unit_job_core(
     countonly, 
     shareddict,
     memuse_limit_gb,
+    depth_limits,
+    mq_limits,
 ):
     # basic setup
     bam_dict = {
@@ -132,7 +138,10 @@ def unit_job_core(
             new_vr = varianthandler.reheader(vr, new_header)
         else:
             new_vr = vr
-        update_new_vr(new_vr, fasta, chromdict, bam_dict, pon_bam_dict, no_matesearch, countonly)
+        update_new_vr(
+            new_vr, fasta, chromdict, bam_dict, pon_bam_dict, no_matesearch, countonly,
+            depth_limits, mq_limits,
+        )
         out_vcf.write(new_vr)
 
         if shareddict['parent_memuse_gb'] > memuse_limit_gb:
@@ -160,17 +169,24 @@ def update_header(vcfheader, id_list, pon_id_list):
     return added_new_samples
 
 
-def update_new_vr(new_vr, fasta, chromdict, bam_dict, pon_bam_dict, no_matesearch, countonly):
+def update_new_vr(
+    new_vr, fasta, chromdict, bam_dict, pon_bam_dict, no_matesearch, countonly,
+    depth_limits, mq_limits,
+):
     vcfspec = libvcfspec.Vcfspec.from_vr(new_vr)
     readstats_dict = libreadstats.ReadStatsSampledict.from_bam_dict(
         bam_dict, vcfspec, fasta, chromdict,
         rpplist_kwargs={'no_matesearch': no_matesearch},
         countonly=countonly,
+        depth_limits=depth_limits, 
+        mq_limits=mq_limits,
     )
     readstats_dict.update_bams(
         bam_dict=pon_bam_dict,
         rpplist_kwargs={'no_matesearch': no_matesearch},
         countonly=True,
+        depth_limits=depth_limits, 
+        mq_limits=mq_limits,
     )
     readstats_dict.write(new_vr)
 
@@ -242,6 +258,12 @@ def argument_parser(cmdargs):
                     args.pon_idlist.append(sampleid)
                     args.pon_bamlist.append(bam_path)
 
+    def depth_mq_limit_processing(args):
+        if args.depth_limits[1] == -1:
+            args.depth_limits[1] = np.inf
+        if args.mq_limits[1] == -1:
+            args.mq_limits[1] = np.inf
+
     parser_dict = workflow.init_parser(
         description=(
             f'Calculates allele-supporting read count information for each '
@@ -309,10 +331,37 @@ def argument_parser(cmdargs):
 
     parser_dict['optional'].add_argument(
         '--memlimit', dest='memuse_limit_gb', required=False,
-        default=5.5,
+        default=5.0,
         type=float,
         metavar='<memory limit per job>',
         help=f'Maximum memory limit per job in gigabytes.',
+    )
+
+    parser_dict['optional'].add_argument(
+        '--depth-limits', dest='depth_limits', required=False,
+        default=[0, 1000],
+        type=float,
+        metavar='<depth upper limit>',
+        nargs=2,
+        help=(
+            f'Limits (both inclusive) of valid depth range. '
+            f'If depth of certain site is out of this range, ReadStats '
+            f'information will be all set as NaN. -1 given as the second value '
+            f'is interpreted as positive infinity.'
+        ),
+    )
+    parser_dict['optional'].add_argument(
+        '--mq-limits', dest='mq_limits', required=False,
+        default=[0.001, -1],
+        type=float,
+        metavar='<depth upper limit>',
+        nargs=2,
+        help=(
+            f'Limits (both inclusive) of valid mapping quality range. '
+            f'If mapping quality of certain site is out of this range, ReadStats '
+            f'information will be all set as NaN. -1 given as the second value '
+            f'is interpreted as positive infinity.'
+        ),
     )
 
     workflow.add_outfmt_arg(parser_dict['optional'], required=False)
@@ -337,6 +386,7 @@ def argument_parser(cmdargs):
     args = parser_dict['main'].parse_args(cmdargs)
     sanity_check(args)
     bam_path_processing(args)
+    #depth_mq_limit_processing(args)
 
     return args
 
@@ -352,6 +402,8 @@ def write_jobscripts(
     no_matesearch,
     countonly,
     memuse_limit_gb,
+    depth_limits,
+    mq_limits,
     jobname_prefix=__name__.split('.')[-1], 
     nproc=1,
 ):
@@ -373,6 +425,8 @@ def write_jobscripts(
         'no_matesearch': no_matesearch,
         'countonly': countonly,
         'memuse_limit_gb': memuse_limit_gb,
+        'depth_limits': depth_limits,
+        'mq_limits': mq_limits,
     }
     kwargs_multi = {
         'split_infile_path': split_infile_path_list,
@@ -433,6 +487,8 @@ def main(cmdargs):
         (not args.do_matesearch),
         args.countonly,
         args.memuse_limit_gb,
+        args.depth_limits,
+        args.mq_limits,
     )
     logger.info('Running annotation jobs for each split file')
     workflow.run_jobs(
