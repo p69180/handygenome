@@ -28,19 +28,47 @@ DEFAULT_MQ_LIMITS = (10, -1)
 
 def get_position_info(bam, chrom, pos0):
     mqlist = list()
+    idx = -1
     for idx, read in enumerate(bam.fetch(chrom, pos0, pos0 + 1)):
         mqlist.append(read.mapping_quality)
     depth = idx + 1
     return depth, mqlist
 
 
+def get_position_info_pileup(bam, chrom, pos0):
+    pup = bam.pileup(
+        chrom, pos0, pos0 + 1, 
+        truncate=True, 
+        stepper='nofilter', 
+        ignore_overlaps=False, 
+        flag_filter=0, 
+        ignore_orphans=False, 
+        min_base_quality=0, 
+        min_mapping_quality=0,
+    )
+    pupcol = next(pup)
+    mqlist = pupcol.get_mapping_qualities()
+    depth = pupcol.get_num_aligned()
+    return depth, mqlist
+
+
 class ReadStats(annotitem.AnnotItemFormatSingle):
     @staticmethod
     def handle_limits_arg(limits):
-        result = limits.copy()
+        result = list(limits)
         if result[1] == -1:
             result[1] = np.inf
         return result
+
+    @staticmethod
+    def check_position_validity(depth, mqlist, depth_limits, mq_limits):
+        mean_mq = np.mean(mqlist) if mqlist else np.nan
+        depth_okay = (depth >= depth_limits[0]) and (depth <= depth_limits[1])
+        mq_okay = (
+            np.isnan(mean_mq)
+            or ((mean_mq >= mq_limits[0]) and (mean_mq <= mq_limits[1]))
+        )
+        return depth_okay and mq_okay
         
     @classmethod
     def from_bam(
@@ -53,13 +81,10 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         mq_limits=DEFAULT_MQ_LIMITS,
     ):
         depth, mqlist = get_position_info(bam, vcfspec.chrom, vcfspec.pos0)
-        mean_mq = np.mean(mqlist)
         depth_limits = cls.handle_limits_arg(depth_limits)
         mq_limits = cls.handle_limits_arg(mq_limits)
-        if (
-            ((depth >= depth_limits[0]) and (depth <= depth_limits[1])) 
-            and ((mean_mq >= mq_limits[0]) and (mean_mq <= mq_limits[1]))
-        ):
+
+        if cls.check_position_validity(depth, mqlist, depth_limits, mq_limits):
             readstats_data = get_readstats_data(
                 vcfspec, bam, fasta, chromdict,
                 rpplist_kwargs=rpplist_kwargs,
@@ -213,7 +238,9 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         return result
 
     @classmethod
-    def init_invalid(cls, vcfspec, fasta, chromdict, countonly=False):
+    def init_invalid(cls, vcfspec, fasta, chromdict, countonly=False, verbose=True):
+        if verbose:
+            common.print_timestamp(f'Initiating ReadStats object as invalid mode')
         # main
         result = cls(is_missing=False)
         result.is_invalid = True
@@ -324,6 +351,20 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
     }
     unit_class = ReadStats
 
+    @staticmethod
+    def handle_limits_arg(limits, bam_dict):
+        if isinstance(limits, (tuple, list)):
+            new_limits = {key: list(limits) for key in bam_dict.keys()}
+        elif isinstance(limits, dict):
+            #if set(limits.keys()) != set(bam_dict.keys()):
+            if not set(bam_dict.keys()).issubset(set(limits.keys())):
+                raise Exception(f'Keys of "limits" argument are not a superset of the keys of "bam_dict".')
+            new_limits = limits
+        else:
+            raise Exception(f'"limits" argument must be either a tuple, list, or dict')
+
+        return new_limits
+
     @classmethod
     def from_bam_dict(
         cls, bam_dict, vcfspec, fasta, chromdict,
@@ -333,6 +374,9 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         depth_limits=DEFAULT_DEPTH_LIMITS,
         mq_limits=DEFAULT_MQ_LIMITS,
     ):
+        depth_limits = cls.handle_limits_arg(depth_limits, bam_dict)
+        mq_limits = cls.handle_limits_arg(mq_limits, bam_dict)
+
         result = cls()
         for sampleid, bam in bam_dict.items():
             result[sampleid] = ReadStats.from_bam(
@@ -340,8 +384,8 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
                 rpplist_kwargs=rpplist_kwargs,
                 alleleinfo_kwargs=alleleinfo_kwargs,
                 countonly=countonly,
-                depth_limits=depth_limits,
-                mq_limits=mq_limits,
+                depth_limits=depth_limits[sampleid],
+                mq_limits=mq_limits[sampleid],
             )
         return result
 
@@ -376,14 +420,17 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         if len(self) == 0:
             raise Exception(f'Length of self must be greater than 0')
 
+        depth_limits = self.handle_limits_arg(depth_limits, bam_dict)
+        mq_limits = self.handle_limits_arg(mq_limits, bam_dict)
+
         for sampleid, bam in bam_dict.items():
             self[sampleid] = ReadStats.from_bam(
                 self.vcfspec, bam, self.fasta, self.chromdict,
                 rpplist_kwargs=rpplist_kwargs,
                 alleleinfo_kwargs=alleleinfo_kwargs,
                 countonly=countonly,
-                depth_limits=depth_limits,
-                mq_limits=mq_limits,
+                depth_limits=depth_limits[sampleid],
+                mq_limits=mq_limits[sampleid],
             )
 
     def write(self, vr, donot_write_missing=True):
@@ -540,7 +587,8 @@ def get_readstats_data(
 ):
     """Only for non-sv cases"""
 
-    rpplist_kwargs.update({'view': False})
+    #rpplist_kwargs.update({'view': False})
+    rpplist_kwargs['view'] = False
     rpplist = readplus.get_rpplist_nonsv(
         bam=bam, 
         fasta=fasta, 

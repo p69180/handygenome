@@ -73,3 +73,38 @@ def check_header_compatibility(bamheader_list):
     )
         
     
+def get_average_depth(bam, readlen=None, aligned_length=None):
+    if bam.is_cram:
+        raise Exception(f'Cannot infer average depth from a cram file.')
+    if not bam.has_index():
+        raise Exception(f'Bam file must be indexed.')
+
+    if aligned_length is None:
+        aligned_length = sum(bam.lengths)
+    readcounts = sum(x.mapped for x in bam.get_index_statistics())
+    if readlen is None:
+        readlen = check_read_length(bam)
+        
+    return (readcounts * readlen) / aligned_length
+
+
+def check_read_length(bam):
+    """Gets maximum of the first 100 reads"""
+    values = list()
+    for read in bam.fetch():
+        if read.is_unmapped:
+            continue
+
+        if 'H' in read.cigarstring:
+            continue
+
+        length = read.query_length
+        if length == 0:
+            continue
+
+        values.append(length)
+        if len(values) == 100:
+            break
+
+    return max(values)
+

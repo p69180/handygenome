@@ -13,6 +13,8 @@ import itertools
 
 import pysam
 import numpy as np
+import pyranges as pr
+import pandas as pd
 
 import handygenome.common as common
 import handygenome.workflow as workflow
@@ -27,6 +29,7 @@ import handygenome.vcfeditor.split as libsplit
 import handygenome.vcfeditor.concat as libconcat
 import handygenome.variant.vcfspec as libvcfspec
 import handygenome.variant.ponbams as libponbams
+import handygenome.bameditor as bameditor
 
 
 LOGGER_NAME = __name__.split('.')[-1]
@@ -258,12 +261,6 @@ def argument_parser(cmdargs):
                     args.pon_idlist.append(sampleid)
                     args.pon_bamlist.append(bam_path)
 
-    def depth_mq_limit_processing(args):
-        if args.depth_limits[1] == -1:
-            args.depth_limits[1] = np.inf
-        if args.mq_limits[1] == -1:
-            args.mq_limits[1] = np.inf
-
     parser_dict = workflow.init_parser(
         description=(
             f'Calculates allele-supporting read count information for each '
@@ -339,7 +336,8 @@ def argument_parser(cmdargs):
 
     parser_dict['optional'].add_argument(
         '--depth-limits', dest='depth_limits', required=False,
-        default=list(libreadstats.DEFAULT_DEPTH_LIMITS),
+        #default=list(libreadstats.DEFAULT_DEPTH_LIMITS),
+        default=None,
         type=float,
         metavar='<depth upper limit>',
         nargs=2,
@@ -347,7 +345,29 @@ def argument_parser(cmdargs):
             f'Limits (both inclusive) of valid depth range. '
             f'If depth of certain site is out of this range, ReadStats '
             f'information will be all set as NaN. -1 given as the second value '
-            f'is interpreted as positive infinity.'
+            f'is interpreted as positive infinity. '
+            f'Default: lower is 0, upper is '
+            f'(--depthlimit-cov-ratio value) * (average depth of the bam file)'
+        ),
+    )
+    parser_dict['optional'].add_argument(
+        '--depthlimit-cov-ratio', dest='depthlimit_cov_ratio', required=False,
+        default=4,
+        type=float,
+        metavar='<bam coverage multiplication factor>',
+        help=(
+            f'Upper depth limit is set as (this value) * (average bam depth).'
+            f'If "--depth-limits" option is used, this option is ignored.'
+        ),
+    )
+    parser_dict['optional'].add_argument(
+        '--target-bed', dest='target_bed_path', required=False,
+        default=None,
+        metavar='<target region bed file>',
+        help=(
+            f'If this option is used, bam file average depth calculation will '
+            f'be based on the region length derived from this file. '
+            f'If "--depth-limits" option is used, this option is ignored.'
         ),
     )
     parser_dict['optional'].add_argument(
@@ -386,9 +406,48 @@ def argument_parser(cmdargs):
     args = parser_dict['main'].parse_args(cmdargs)
     sanity_check(args)
     bam_path_processing(args)
-    #depth_mq_limit_processing(args)
 
     return args
+
+
+def depth_mq_limit_processing(args):
+    if args.depth_limits is None:
+        if args.target_bed_path is None:
+            sample_bam_path = next(itertools.chain(args.bamlist, args.pon_bamlist))
+            with pysam.AlignmentFile(sample_bam_path) as in_bam:
+                region_length = sum(in_bam.lengths)
+        else:
+            region_gr = pr.read_bed(args.target_bed_path)
+            region_length = region_gr.merge().length
+#            region_gr = pr.PyRanges(
+#                pd.read_csv(
+#                    args.target_bed_path, 
+#                    sep='\t', 
+#                    names=['Chromosome', 'Start', 'End'], 
+#                    usecols=[0, 1, 2], 
+#                    dtype={'Chromosome': str, 'Start': int, 'End': int}
+#                )
+#            )
+
+
+    mq_limits = dict()
+    depth_limits = dict()
+    for sampleid, bam_path in zip(
+        itertools.chain(args.idlist, args.pon_idlist),
+        itertools.chain(args.bamlist, args.pon_bamlist),
+    ):
+        mq_limits[sampleid] = list(args.mq_limits)
+        if args.depth_limits is None:
+            with pysam.AlignmentFile(bam_path) as in_bam:
+                upper = (
+                    bameditor.get_average_depth(in_bam, aligned_length=region_length) 
+                    * args.depthlimit_cov_ratio
+                )
+                depth_limits[sampleid] = [0, upper]
+        else:
+            depth_limits[sampleid] = list(args.depth_limits)
+
+    return depth_limits, mq_limits
 
 
 def write_jobscripts(
@@ -449,6 +508,12 @@ def write_jobscripts(
 def main(cmdargs):
     args = argument_parser(cmdargs)
 
+    # postprocess depth and mq limits
+    common.print_timestamp(f'Processing depth and MQ limits (may take a while calculating average depths of bam files)')
+    depth_limits, mq_limits = depth_mq_limit_processing(args)
+    common.print_timestamp(f'Depth limits: {depth_limits}')
+    common.print_timestamp(f'MQ limits: {mq_limits}')
+
     # make tmpdir tree
     tmpdir_paths = workflow.get_tmpdir_paths(
         ['scripts', 'logs', 'split_infiles', 'split_outfiles'],
@@ -487,8 +552,8 @@ def main(cmdargs):
         (not args.do_matesearch),
         args.countonly,
         args.memuse_limit_gb,
-        args.depth_limits,
-        args.mq_limits,
+        depth_limits,
+        mq_limits,
     )
     logger.info('Running annotation jobs for each split file')
     workflow.run_jobs(
