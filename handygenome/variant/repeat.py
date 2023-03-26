@@ -74,7 +74,10 @@ def search_for_repeat(query_seq, chrom, start0, fasta, extend_by=50):
     refseq_gen = ref_seq_generator_forward(chrom, start0, fasta, extend_by)
     chunk_refseq_gen = itertools.zip_longest(*([refseq_gen] * query_len), fillvalue=None)
     for ref_seq in chunk_refseq_gen:
-        if ''.join(ref_seq) == query_seq:
+        if None in ref_seq:
+            # Hitting the start or end of reference sequence
+            break
+        elif ''.join(ref_seq) == query_seq:
             end0 += query_len
         else:
             break
@@ -83,7 +86,9 @@ def search_for_repeat(query_seq, chrom, start0, fasta, extend_by=50):
     refseq_gen = ref_seq_generator_backward(chrom, start0 - 1, fasta, extend_by)
     chunk_refseq_gen = itertools.zip_longest(*([refseq_gen] * query_len), fillvalue=None)
     for ref_seq in chunk_refseq_gen:
-        if ''.join(ref_seq[::-1]) == query_seq:
+        if None in ref_seq:
+            break
+        elif ''.join(ref_seq[::-1]) == query_seq:
             start0 -= query_len
         else:
             break

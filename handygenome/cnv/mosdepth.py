@@ -139,7 +139,7 @@ def run_mosdepth(bam_path, t=8, use_median=False, region_bed_path=None, region_g
         depth_colname = 'median_depth'
     else:
         depth_colname = 'mean_depth'
-    df = load_mosdepth_output(filename, depth_colname=depth_colname)
+    df = load_mosdepth_output(outfile_path, depth_colname=depth_colname, as_gr=False)
 
     if load_perbase:
         perbase_outfile_path = os.path.join(outdir, f'{prefix}.per-base.bed.gz')

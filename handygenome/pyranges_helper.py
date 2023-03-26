@@ -117,9 +117,22 @@ def extract_unmatched_rows(left_gr, right_gr, joined_gr, find_nearest, added_col
     return unmatched_rows_gr
 
 
+def join_sanity_check(left_gr, right_gr):
+    assert isinstance(left_gr, pr.PyRanges)
+    assert isinstance(right_gr, pr.PyRanges)
+
+    common_cols = set.intersection(set(left_gr.columns), set(right_gr.columns))
+    assert not common_cols.difference({'Chromosome', 'Start', 'End'})
+
+    assert len(set(right_gr.columns).difference(['Chromosome', 'Start', 'End'])) > 0, (
+        f'"right_gr" Must have columns other than "Chromosome", "Start", "End".'
+    )
+
+
 def join_new(left_gr, right_gr, how='inner', find_nearest=False, merge='mean', as_gr=True):
     assert merge in {'mean'}
     assert how in {'inner', 'left'}
+    join_sanity_check(left_gr, right_gr)
 
     # join
     with warnings.catch_warnings(): 
@@ -127,7 +140,11 @@ def join_new(left_gr, right_gr, how='inner', find_nearest=False, merge='mean', a
         joined_gr = left_gr.join(right_gr)
 
     joined_df = joined_gr.df
-    added_cols = joined_gr.columns.drop(left_gr.columns).drop(['Start_b', 'End_b']).to_list()
+    added_cols = [x for x in right_gr.columns.to_list() if x not in ('Chromosome', 'Start', 'End')]
+    #if joined_gr.empty:
+        #added_cols = pd.Series(joined_gr.columns).drop(left_gr.columns).drop(['Start_b', 'End_b']).to_list()
+    #else:
+        #added_cols = joined_gr.columns.drop(left_gr.columns).drop(['Start_b', 'End_b']).to_list()
 
     # unmatched rows
     if how == 'left':
@@ -138,38 +155,46 @@ def join_new(left_gr, right_gr, how='inner', find_nearest=False, merge='mean', a
         unmatched_rows_gr = None
 
     # merge
-    coord_cols = np.concatenate(
-        [
-            joined_df['Chromosome'].cat.codes.values[:, np.newaxis],
-            joined_df.loc[:, ['Start', 'End']],
-        ],
-        axis=1,
-    )
-    values, counts = common.array_grouper(coord_cols, omit_values=True)
-    indexer = list(
-        itertools.chain.from_iterable(
-            itertools.repeat(val, count) for val, count in enumerate(counts)
+    if joined_gr.empty:
+        matched_rows_gr = joined_gr
+    else:
+        coord_cols = np.concatenate(
+            [
+                joined_df['Chromosome'].cat.codes.values[:, np.newaxis],
+                joined_df.loc[:, ['Start', 'End']],
+            ],
+            axis=1,
         )
-    )
-    grouper = joined_df.groupby(indexer)
-    with warnings.catch_warnings(): 
-        warnings.simplefilter('ignore', category=FutureWarning)
-        aggresult = grouper[added_cols].mean().reset_index(drop=True)
+        values, counts = common.array_grouper(coord_cols, omit_values=True)
+        indexer = list(
+            itertools.chain.from_iterable(
+                itertools.repeat(val, count) for val, count in enumerate(counts)
+            )
+        )
+        grouper = joined_df.groupby(indexer)
+        with warnings.catch_warnings(): 
+            warnings.simplefilter('ignore', category=FutureWarning)
+            aggresult = grouper[added_cols].mean().reset_index(drop=True)
 
-    result = pd.concat(
-        [
-            joined_df.loc[:, left_gr.columns.to_list()].drop_duplicates(
-                ['Chromosome', 'Start', 'End'], keep='first',
-            ).reset_index(drop=True), 
-            aggresult,
-        ], 
-        axis=1,
-    )
-    result = pr.PyRanges(result)
+        matched_rows = pd.concat(
+            [
+                joined_df.loc[:, left_gr.columns.to_list()].drop_duplicates(
+                    ['Chromosome', 'Start', 'End'], keep='first',
+                ).reset_index(drop=True), 
+                aggresult,
+            ], 
+            axis=1,
+        )
+        matched_rows_gr = pr.PyRanges(matched_rows)
 
     # merge matched and nonmatched grs
-    if unmatched_rows_gr is not None:
-        result = pr.concat([unmatched_rows_gr, matched_rows_gr]).sort()
+    if unmatched_rows_gr is None:
+        result = matched_rows_gr
+    else:
+        if matched_rows_gr.empty:
+            result = unmatched_rows_gr
+        else:
+            result = pr.concat([unmatched_rows_gr, matched_rows_gr]).sort()
 
     # return
     if not as_gr:
@@ -334,61 +359,66 @@ def join(left_gr, right_gr, how='inner', merge=None, find_nearest=False, as_gr=T
     # main
     assert merge in ('mean', 'weighted_mean', 'first', 'longest', 'longest_nonmerge', None)
     assert how in ('left', 'inner')
-    assert isinstance(left_gr, pr.PyRanges)
-    assert isinstance(right_gr, pr.PyRanges)
-    assert len(set(right_gr.columns).difference(['Chromosome', 'Start', 'End'])) > 0, (
-        f'"right_gr" Must have columns other than "Chromosome", "Start", "End".'
-    )
+    join_sanity_check(left_gr, right_gr)
 
     # do join
-    common.funclogger(1)
+    #common.funclogger(1)
     with warnings.catch_warnings(): 
         warnings.simplefilter('ignore', category=FutureWarning)
         joined_gr = left_gr.join(right_gr)  
             # this is inner join
             # setting "how='left'" does not work and results in inner join (230209)
-    common.funclogger(2)
-
-    added_columns = joined_gr.columns.drop(left_gr.columns).to_list()
+    #common.funclogger(2)
+    final_added_columns = [x for x in right_gr.columns.to_list() if x not in ('Chromosome', 'Start', 'End')]
+    added_columns = ['Start_b', 'End_b'] + final_added_columns
+    #if joined_gr.empty:
+        #added_columns = pd.Series(joined_gr.columns).drop(left_gr.columns).to_list()
+    #else:
+        #added_columns = joined_gr.columns.drop(left_gr.columns).to_list()
         # This includes "Start_b" and "End_b"
-    common.funclogger(3)
+    #common.funclogger(3)
 
     # handle unmatched rows
     if how == 'left':
         unmatched_rows_gr = extract_unmatched_rows(
-            left_gr, right_gr, joined_gr, find_nearest, added_columns,
+            left_gr, right_gr, joined_gr, find_nearest, final_added_columns,
         )
     elif how == 'inner':
         unmatched_rows_gr = None
-    common.funclogger(4)
+    #common.funclogger(4)
 
-    # handle matched rows - merge rows with identical (chrom, start, end)
-    if merge is None:
+    if joined_gr.empty:
         matched_rows_gr = joined_gr
-    elif merge == 'first':
-        matched_rows_gr = pr.PyRanges(
-            joined_gr.df.drop_duplicates(
-                subset=['Chromosome', 'Start', 'End'], keep='first', ignore_index=True,
+    else:
+        # handle matched rows - merge rows with identical (chrom, start, end)
+        if merge is None:
+            matched_rows_gr = joined_gr
+        elif merge == 'first':
+            matched_rows_gr = pr.PyRanges(
+                joined_gr.df.drop_duplicates(
+                    subset=['Chromosome', 'Start', 'End'], keep='first', ignore_index=True,
+                )
             )
-        )
-    elif merge in ('mean', 'weighted_mean', 'longest', 'longest_nonmerge'):
-        matched_rows_gr = merge_helper(joined_gr, added_columns, merge)
-    common.funclogger(5)
+        elif merge in ('mean', 'weighted_mean', 'longest', 'longest_nonmerge'):
+            matched_rows_gr = merge_helper(joined_gr, added_columns, merge)
+        #common.funclogger(5)
 
-    # handle matched rows - remove unused columns
-    cols_to_drop = set(matched_rows_gr.columns).intersection(
-        {'Start_b', 'End_b', 'new_Start', 'new_End', 'isec_length'}
-    )
-    matched_rows_gr = matched_rows_gr[
-        matched_rows_gr.columns.drop(cols_to_drop).to_list()
-    ]
+        # handle matched rows - remove unused columns
+        cols_to_drop = set(matched_rows_gr.columns).intersection(
+            {'Start_b', 'End_b', 'new_Start', 'new_End', 'isec_length'}
+        )
+        matched_rows_gr = matched_rows_gr[
+            matched_rows_gr.columns.drop(cols_to_drop).to_list()
+        ]
 
     # concat matched and unmatched rows
     if unmatched_rows_gr is None:
         result = matched_rows_gr
     else:
-        result = pr.concat([unmatched_rows_gr, matched_rows_gr])
-    result = result.sort()
+        if matched_rows_gr.empty:
+            result = unmatched_rows_gr
+        else:
+            result = pr.concat([unmatched_rows_gr, matched_rows_gr]).sort()
 
     # return
     if as_gr:

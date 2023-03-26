@@ -1209,11 +1209,9 @@ def get_rpplist_nonsv(
     recalc_NMMD=False,
     include_irrelevant_reads=False,
 ):
-    if fasta is None or chromdict is None:
+    if (fasta is None) or (chromdict is None):
         refver = common.infer_refver_bamheader(bam.header)
-    if fasta is None:
         fasta = common.DEFAULT_FASTAS[refver]
-    if chromdict is None:
         chromdict = common.ChromDict(refver=refver)
 
     LOGGER_RPPLIST.info('Beginning initial fetch')

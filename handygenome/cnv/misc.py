@@ -40,24 +40,70 @@ class CPPair(
     pass
 
 
+####################
+# argument handler #
+####################
+
+def check_having_coord_cols(arg):
+    if not (
+        {'Chromosome', 'Start', 'End'}.issubset(arg.columns)
+        or arg.index.names == ['Chromosome', 'Start', 'End']
+    ):
+        raise Exception(f'Input dataframe must have columns "Chromosome", "Start", and "End".')
+
+
+def arg_into_df(arg):
+    if arg is None:
+        return None
+    elif isinstance(arg, pd.DataFrame):
+        check_having_coord_cols(arg)
+        return arg
+    elif isinstance(arg, pr.PyRanges):
+        return arg.df
+    else:
+        raise Exception(f'Argument must be either None, pd.DataFrame, or pr.PyRanges')
+
+
+def arg_into_gr(arg):
+    if arg is None:
+        return None
+    elif isinstance(arg, pd.DataFrame):
+        check_having_coord_cols(arg)
+        return pr.PyRanges(arg)
+    elif isinstance(arg, pr.PyRanges):
+        return arg
+    else:
+        raise Exception(f'Argument must be either None, pd.DataFrame, or pr.PyRanges')
+
+
 ################
 # peak finding #
 ################
 
 def get_1d_peaks(row, invert=False):
-    assert not hasattr(row, '__next__'), f'"row" must not be an iterator'
+    #assert not hasattr(row, '__next__'), f'"row" must not be an iterator'
 
+    row = np.array(row)
     if invert:
-        row = [-x for x in row]
+        row = -1 * row
 
     peaks_result, _ = scipy.signal.find_peaks(row)
     if len(peaks_result) == 0:  # uniformly increasing
-        peak_indexes = sorted(
-            (
-                x[0] for x in
-                common.multi_max(enumerate(row), key=operator.itemgetter(1))
-            )
-        )
+        peak_indexes = list()
+        if len(row) > 1:
+            if row[0] > row[1]:
+                peak_indexes.append(0)
+            if row[-1] > row[-2]:
+                peak_indexes.append(len(row) - 1)
+        elif len(row) == 1:
+            peak_indexes.append(0)
+            
+#        peak_indexes = sorted(
+#            (
+#                x[0] for x in
+#                common.multi_max(enumerate(row), key=operator.itemgetter(1))
+#            )
+#        )
     else:
         diff = np.diff(row)
 
@@ -92,6 +138,80 @@ def get_1d_peaks(row, invert=False):
     return peak_indexes
 
 
+def get_df_diagonals(df, upslope=True):
+    """Sorting of diagonal rows: top-down
+    Sorting of values in a row: left-right
+    """
+    def get_start_coord_upslope(n, nrow):
+        if n < nrow:
+            return (n, 0)
+        else:
+            return (nrow - 1, n - (nrow - 1))
+        
+    def get_diags_upslope(df, N, nrow, ncol):
+        result = list()
+        for n in range(N):
+            pairs = list() 
+            coord = get_start_coord_upslope(n, nrow)
+            while True:
+                if (coord[0] < 0) or (coord[1] >= ncol):
+                    break
+
+                val = df.iloc[coord[0], coord[1]]
+                pairs.append((coord, val))
+                coord = (coord[0] - 1, coord[1] + 1)
+            result.append(pairs)
+        return result
+
+    def get_start_coord_downslope(n, ncol):
+        if n < ncol:
+            return (0, ncol - 1 - n)
+        else:
+            return (n - (ncol - 1), 0)
+        
+    def get_diags_downslope(df, N, nrow, ncol):
+        result = list()
+        for n in range(N):
+            pairs = list() 
+            coord = get_start_coord_downslope(n, ncol)
+            while True:
+                if (coord[0] >= nrow) or (coord[1] >= ncol):
+                    break
+
+                val = df.iloc[coord[0], coord[1]]
+                pairs.append((coord, val))
+                coord = (coord[0] + 1, coord[1] + 1)
+            result.append(pairs)
+        return result
+
+    N = sum(df.shape) - 1
+    nrow = df.shape[0]
+    ncol = df.shape[1]
+
+    if upslope:
+        return get_diags_upslope(df, N, nrow, ncol)
+    else:
+        return get_diags_downslope(df, N, nrow, ncol)
+
+
+def get_peak_coords_from_diagonals(diagonals, invert=False):
+    peak_coords = list()
+    for diag in diagonals:
+        peak_indexes = get_1d_peaks([x[1] for x in diag], invert=invert)
+        peak_coords.extend(diag[idx][0] for idx in peak_indexes)
+    return peak_coords
+
+
+def get_df_diagonal_peaks(df, invert=False):
+    upslope_diags = get_df_diagonals(df, upslope=True)
+    upslope_peak_coords = get_peak_coords_from_diagonals(upslope_diags, invert=invert)
+
+    downslope_diags = get_df_diagonals(df, upslope=False)
+    downslope_peak_coords = get_peak_coords_from_diagonals(downslope_diags, invert=invert)
+        
+    return upslope_peak_coords, downslope_peak_coords
+
+
 def find_df_peaks(df, invert=False):
     row_peaks = df.apply(lambda x: get_1d_peaks(x, invert=invert), axis=1)
     row_peak_indexes = list()
@@ -106,18 +226,38 @@ def find_df_peaks(df, invert=False):
     return list(set(row_peak_indexes).intersection(set(col_peak_indexes)))
 
 
+def find_df_peaks_4directions(df, invert=False):
+    row_peaks = df.apply(lambda x: get_1d_peaks(x, invert=invert), axis=1)
+    row_peak_indexes = list()
+    for row_idx, peaks in enumerate(row_peaks):
+        row_peak_indexes.extend((row_idx, col_idx) for col_idx in peaks)
+
+    col_peaks = df.apply(lambda x: get_1d_peaks(x, invert=invert), axis=0)
+    col_peak_indexes = list()
+    for col_idx, peaks in enumerate(col_peaks):
+        col_peak_indexes.extend((row_idx, col_idx) for row_idx in peaks)
+
+    upslope_peak_coords, downslope_peak_coords = get_df_diagonal_peaks(df, invert=invert)
+
+    return set.intersection(
+        set(row_peak_indexes), set(col_peak_indexes),
+        set(upslope_peak_coords), set(downslope_peak_coords),
+    )
+
+
 def find_df_peak_cpvalues(df, invert=False):
     assert df.index.name == 'cellularity'
     assert df.columns.name == 'ploidy'
 
-    peaks = find_df_peaks(df, invert=invert)
+    #peaks = find_df_peaks(df, invert=invert)
+    peaks = find_df_peaks_4directions(df, invert=invert)
     cpvalues = [CPPair(df.index[x], df.columns[y]) for (x, y) in peaks]
     return sorted(cpvalues)
 
 
-def get_peak_info(cp_score_dict):
+def get_peak_info(cp_score_dict, key='segfit', invert=True):
     dfs = make_cpscore_dfs(cp_score_dict)
-    peaks_cpvalues = find_df_peak_cpvalues(dfs['segfit'], invert=True)
+    peaks_cpvalues = find_df_peak_cpvalues(dfs[key], invert=invert)
     peak_values = list()
     for c, p in peaks_cpvalues:
         data = {
@@ -127,7 +267,7 @@ def get_peak_info(cp_score_dict):
         data['cellularity'] = c
         data['ploidy'] = p
         peak_values.append(data)
-    peak_values = sorted(peak_values, key=(lambda x: x['segfit_score']))
+    #peak_values = sorted(peak_values, key=(lambda x: x['segfit_score']))
 
     return peak_values, dfs
 
@@ -547,11 +687,14 @@ def calc_cp_score(
 
         return CNt, B, segfit_score
 
-    assert {'depth_mean', 'baf_mean', 'CNn'}.issubset(segment_df.columns)
-    assert segment_df['depth_mean'].notna().all()
+    assert {'depthratio_segment_mean', 'baf_segment_mean', 'CNn'}.issubset(segment_df.columns)
+    assert segment_df['depthratio_segment_mean'].notna().all()
 
     # set column order
-    segment_df = segment_df.loc[:, ['Chromosome', 'Start', 'End', 'depth_mean', 'baf_mean', 'CNn']]
+    segment_df = segment_df.loc[
+        :, 
+        ['Chromosome', 'Start', 'End', 'depthratio_segment_mean', 'baf_segment_mean', 'CNn']
+    ]
 
     apply_result = segment_df.apply(applied_func, axis=1)
     segfit_score_sum = sum(x[2] for x in apply_result if not np.isnan(x[2]))
@@ -668,15 +811,53 @@ def make_cpscore_dfs(cpscore_dict):
     return dfs
 
 
-def show_heatmap_peaks(score_df, invert=True, quantile=True):
-    peaks = find_df_peaks(score_df, invert=invert)
+def show_heatmap_peaks(score_df, invert=True, quantile=True, figsize=None):
+    #peaks = find_df_peaks(score_df, invert=invert)
+    peaks = find_df_peaks_4directions(score_df, invert=invert)
     ys, xs = zip(*peaks)
+
+    fig, ax = plt.subplots(figsize=figsize)
     if quantile:
-        ax = sns.heatmap(get_quantile_df(score_df))
+        ax = sns.heatmap(get_quantile_df(score_df), ax=ax)
     else:
-        ax = sns.heatmap(score_df)
+        ax = sns.heatmap(score_df, ax=ax)
     ax.plot(xs, ys, linestyle='', marker='o', markersize=1.5)
-    return ax
+
+    return fig, ax
+
+
+def show_heatmap_peaks_new(dfs, invert=True, quantile=True, figsize=None, fourway=True):
+    if fourway:
+        peaks = find_df_peaks_4directions(dfs['segfit'], invert=invert)
+    else:
+        peaks = find_df_peaks(dfs['segfit'], invert=invert)
+
+    ys, xs = zip(*peaks)
+    ploidy_ratios = [dfs['ploidy_diff_ratio'].iloc[y, x] for y, x in zip(ys, xs)]
+    segscores = [dfs['segfit'].iloc[y, x] for y, x in zip(ys, xs)]
+
+    fig, ax = plt.subplots(figsize=figsize)
+    if quantile:
+        ax = sns.heatmap(get_quantile_df(dfs['segfit']), ax=ax)
+    else:
+        ax = sns.heatmap(dfs['segfit'], ax=ax)
+    ax.plot(xs, ys, linestyle='', marker='o', markersize=3)
+    for x, y, pratio, segscore in zip(xs, ys, ploidy_ratios, segscores):
+        cellularity = dfs['segfit'].index[y]
+        ploidy = dfs['segfit'].columns[x]
+        text = '\n'.join([
+            f'cellularity: {cellularity}',
+            f'ploidy: {ploidy}',
+            f'segfit score: {round(segscore, 6)}',
+            f'ploidy diff ratio: {round(pratio, 6)}',
+        ])
+        ax.text(
+            x + 0.5, y - 0.5, text, 
+            fontsize=6,
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
+        )
+
+    return fig, ax
 
 
 ##################################
@@ -684,11 +865,11 @@ def show_heatmap_peaks(score_df, invert=True, quantile=True):
 ##################################
 
 
-def annotate_region_with_segment(target_region_gr, segment_gr):
+def annotate_region_with_segment(target_region_gr, segment_gr, as_gr=True):
     """Add values of segment_gr, such as CNt or B, to target_region_gr"""
     return pyranges_helper.join(
         target_region_gr, segment_gr, how='left', merge='first', 
-        find_nearest=True, as_gr=True,
+        find_nearest=True, as_gr=as_gr,
     )
 
 
@@ -696,6 +877,8 @@ def add_CNt_to_segment(
     segment_df, cellularity, tumor_ploidy, normal_ploidy, is_female, 
     CNt_weight=DEFAULT_CNT_WEIGHT,
 ):
+    assert isinstance(segment_df, pd.DataFrame)
+
     data = calc_cp_score(
         segment_df, cellularity, tumor_ploidy, is_female, CNt_weight, normal_ploidy,
     )
@@ -708,6 +891,7 @@ def add_CNt_to_segment(
 def add_theoreticals_to_segment(
     segment_df, cellularity, tumor_ploidy, normal_ploidy, is_female,
 ):
+    assert isinstance(segment_df, pd.DataFrame)
     assert {'CNn', 'CNt', 'B'}.issubset(segment_df.columns)
 
     def depthr_getter(row):
@@ -726,7 +910,7 @@ def add_theoreticals_to_segment(
     theo_baf_list = segment_df.apply(baf_getter, axis=1)
 
     return segment_df.assign(
-        **{'predicted_depth_ratio': theo_depthr_list, 'predicted_baf': theo_baf_list}
+        **{'depthratio_predicted': theo_depthr_list, 'baf_predicted': theo_baf_list}
     )
     
 
@@ -974,17 +1158,17 @@ def get_gcbin_data(depth_df, gc_breaks, make_raw_data=False):
     return gcbin_depth_data, gcbin_average_depths, gcbin_norm_average_depths, cutresult
 
 
-@common.get_deco_num_set_differently(('fasta', 'refver', 'gc_vals'), 1)
+@common.get_deco_num_set_differently(('fasta', 'refver', 'gc_df'), 1)
 def postprocess_depth_df(
     depth_df, 
     *,
     refver=None,
     fasta=None, 
-    gc_vals=None,
+    gc_df=None,
 
     gc_window=None,
 
-    preset_cutoffs='wgs',
+    preset_cutoffs=None,
 
     lower_cutoff=None,
     upper_cutoff=None,
@@ -1014,28 +1198,6 @@ def postprocess_depth_df(
             - gc_corrected_mean_depth
             - sequenza_style_norm_mean_depth
     """
-    # not used
-    def arg_sanitycheck():
-        # get gc calculation mode
-        if (
-            (fasta is not None)
-            and (refver is None)
-            and (binsize is None)
-        ):
-            gccalc_mode = 'calc'
-        elif (
-            (fasta is None)
-            and (refver is not None)
-            and (binsize is not None)
-        ):
-            gccalc_mode = 'load'
-        else:
-            raise Exception(
-                f'Allowed argument usage for GC fraction annotation: '
-                f'1) use "fasta", do NOT use "refver" and "binsize" ; '
-                f'2) use "refver" and "binsize", do NOT use "fasta"'
-            )
-
     if verbose:
         def printlog(msg):
             funcname = inspect.stack()[0].function
@@ -1045,34 +1207,31 @@ def postprocess_depth_df(
             pass
 
     # sanity check
+    depth_df = arg_into_df(depth_df)
     assert 'mean_depth' in depth_df.columns, f'"depth_df" must include a column named "mean_depth"'
+    assert preset_cutoffs in ('wgs', 'panel', None)
 
     # set outlier cutoffs
     if preset_cutoffs == 'wgs':
         printlog(f'Running "postprocess_depth_df" function with preset cutoff mode "wgs"')
         lower_cutoff = 0
         upper_cutoff = 2000
-        #nan_lower_cutoff = gcdata_lower_cutoff = 0
-        #nan_upper_cutoff = gcdata_upper_cutoff = 2000
     elif preset_cutoffs == 'panel':
         printlog(f'Running "postprocess_depth_df" function with preset cutoff mode "panel"')
         lower_cutoff = 50
         upper_cutoff = np.inf
-        #nan_lower_cutoff = gcdata_lower_cutoff = 50
-        #nan_upper_cutoff = gcdata_upper_cutoff = np.inf
-
-    # replace outliers with np.nan
-    #if nan_lower_cutoff is not None:
-    #    depth_df.loc[depth_df['mean_depth'] < nan_lower_cutoff, ['mean_depth']] = np.nan
-    #if nan_upper_cutoff is not None:
-    #    depth_df.loc[depth_df['mean_depth'] >= nan_upper_cutoff, ['mean_depth']] = np.nan
 
     # add GC fractions
     printlog(f'Adding GC fraction values')
-    if gc_vals is None:
+    if gc_df is None:
         gcfraction.add_gc_calculating(depth_df, refver=refver, fasta=fasta, window=gc_window)
     else:
-        depth_df['GC'] = gc_vals
+        gc_df = arg_into_df(gc_df)
+        assert 'GC' in gc_df.columns
+        assert gc_df.index.names == ['Chromosome', 'Start', 'End']
+            # gc_df must have a MultiIndex ['Chromosome', 'Start', 'End']
+
+        depth_df = depth_df.join(gc_df, on=['Chromosome', 'Start', 'End'], how='left')
 
     # replace outliers with nan
     depth_df, selector = handle_outliers(
@@ -1121,19 +1280,16 @@ def postprocess_depth_df(
     return depth_df, gcbin_average_depths
 
 
-def get_processed_depth_df(bam_path, fasta, region_gr, gc_window=None, outlier_cutoffs='wgs', donot_subset_bam=False, as_gr=False):
-    # set params
-    assert isinstance(outlier_cutoffs, (tuple, list)) or outlier_cutoffs in ('wgs', 'panel')
-
-    if outlier_cutoffs == 'wgs':
-        lower_cutoff = 0
-        upper_cutoff = 2000
-    elif outlier_cutoffs == 'panel':
-        lower_cutoff = 50
-        upper_cutoff = np.inf
-    else:
-        lower_cutoff, upper_cutoff = outlier_cutoffs
-
+def get_processed_depth_df(
+    bam_path, fasta, region_gr, 
+    gc_window=None, 
+    preset_cutoffs='wgs',
+    lower_cutoff=None,
+    upper_cutoff=None,
+    trim_limits=None,
+    donot_subset_bam=False, 
+    as_gr=False,
+):
     # run mosdepth
     depth_df, _ = libmosdepth.run_mosdepth(
         bam_path,
@@ -1151,11 +1307,10 @@ def get_processed_depth_df(bam_path, fasta, region_gr, gc_window=None, outlier_c
         fasta=fasta, 
         gc_window=gc_window,
 
-        gcdata_trim_limits=(0.05, 0.05),
-        gcdata_lower_cutoff=lower_cutoff,
-        gcdata_upper_cutoff=upper_cutoff,
-        nan_lower_cutoff=lower_cutoff,
-        nan_upper_cutoff=upper_cutoff,
+        preset_cutoffs=preset_cutoffs,
+        lower_cutoff=lower_cutoff,
+        upper_cutoff=upper_cutoff,
+        trim_limits=trim_limits,
 
         n_gcbin=100,
         as_gr=as_gr, 
@@ -1174,9 +1329,9 @@ def make_depth_ratio_df(tumor_depth_df, normal_depth_df, as_gr=False):
             result[new_colname] = arr
 
     # sanity check
+    tumor_depth_df = arg_into_df(tumor_depth_df)
+    normal_depth_df = arg_into_df(normal_depth_df)
     required_cols = {'mean_depth', 'GC', 'norm_mean_depth', 'gc_corrected_mean_depth', 'sequenza_style_norm_mean_depth'}
-    assert isinstance(tumor_depth_df, pd.DataFrame)
-    assert isinstance(normal_depth_df, pd.DataFrame)
     assert all(
         required_cols.issubset(df.columns)
         for df in (tumor_depth_df, normal_depth_df)
@@ -1205,15 +1360,6 @@ def make_depth_ratio_df(tumor_depth_df, normal_depth_df, as_gr=False):
         normal_depth_df['gc_corrected_mean_depth'].values,
     )
 
-#    result['depth_ratio_sequenzastyle'] = (
-#        tumor_depth_df['sequenza_style_norm_mean_depth'].array
-#        / normal_depth_df['sequenza_style_norm_mean_depth'].array
-#    )
-#    result['depth_ratio_mystyle'] = (
-#        tumor_depth_df['gc_corrected_mean_depth'].array
-#        / normal_depth_df['gc_corrected_mean_depth'].array
-#    )
-
     for colname in (
         'mean_depth', 
         'norm_mean_depth', 
@@ -1227,6 +1373,51 @@ def make_depth_ratio_df(tumor_depth_df, normal_depth_df, as_gr=False):
         return pr.PyRanges(result)
     else:
         return result
+
+
+def merge_normal_tumor_bafs(tumor_baf_gr, normal_baf_gr, region_gr, as_gr=False):
+    # convert df types
+    tumor_baf_gr = arg_into_gr(tumor_baf_gr)
+    normal_baf_gr = arg_into_gr(normal_baf_gr)
+    region_gr = arg_into_gr(region_gr)
+
+    # sanity check
+    assert 'baf' in tumor_baf_gr.columns
+    assert 'baf' in normal_baf_gr.columns
+
+    # remove annotation columns
+    result = region_gr[[]]  
+
+    # tumor
+    result = pyranges_helper.join_new(
+        result, tumor_baf_gr,
+        how='left', find_nearest=False, merge='mean',
+        as_gr=False,
+    )
+    result.rename(columns={'baf': 'tumor_baf'}, inplace=True)
+    result = pr.PyRanges(result)
+
+    # normal
+    result = pyranges_helper.join_new(
+        result, normal_baf_gr,
+        how='left', find_nearest=False, merge='mean',
+        as_gr=False,
+    )
+    result.rename(columns={'baf': 'normal_baf'}, inplace=True)
+
+    # return
+    if as_gr:
+        return pr.PyRanges(result)
+    else:
+        return result
+
+
+def handle_merged_baf_df(merged_baf_df):
+    """Find regions with normal sample baf deviating from 0.5"""
+    pass
+
+
+    
 
 
 #########################################

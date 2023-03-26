@@ -54,6 +54,7 @@ import functools
 import gzip
 import subprocess
 import signal
+import logging
 
 import psutil
 import pysam
@@ -190,6 +191,32 @@ def deco_timer(func):
         return value
 
     return wrapper_timer
+
+
+###################################################
+
+# logger
+def make_funclogger(level, name):
+    level = getattr(logging, level.upper())
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    logger.propagate = False
+    
+    formatter = logging.Formatter(
+        fmt='[%(asctime)s %(levelname)s] %(module)s.%(funcName): %(message)s', 
+        datefmt='%Z %Y-%m-%d %H:%M:%S',
+    )
+
+    sh = logging.StreamHandler()
+    sh.setLevel(level)
+    sh.setFormatter(formatter)
+    logger.addHandler(sh)
+
+    return logger
+
+
+FUNCLOGGER_DEBUG = make_funclogger(level='debug', name='FUNCLOGGER_DEBUG')
+FUNCLOGGER_INFO = make_funclogger(level='info', name='FUNCLOGGER_INFO')
 
 
 ###################################################

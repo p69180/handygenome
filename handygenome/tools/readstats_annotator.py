@@ -30,6 +30,8 @@ import handygenome.vcfeditor.concat as libconcat
 import handygenome.variant.vcfspec as libvcfspec
 import handygenome.variant.ponbams as libponbams
 import handygenome.bameditor as bameditor
+import handygenome.ucscdata as ucscdata
+import handygenome.blacklist as blacklist
 
 
 LOGGER_NAME = __name__.split('.')[-1]
@@ -48,13 +50,33 @@ def unit_job(
     memuse_limit_gb,
     depth_limits,
     mq_limits,
+    include_blacklist,
     monitor_interval=10,
 ):
+    # setup manager
     manager = multiprocessing.Manager()
     shareddict = manager.dict()
     shareddict['parent_memuse_gb'] = common.get_rss(mode='total', unit='g')
     common.print_timestamp(f"Memory usage: {shareddict['parent_memuse_gb']} GB")
 
+    # setup paramaters
+#    bam_dict = {
+#        sampleid: pysam.AlignmentFile(bam_path)
+#        for sampleid, bam_path in zip(id_list, bam_path_list)
+#    }
+#    pon_bam_dict = {
+#        sampleid: pysam.AlignmentFile(bam_path)
+#        for sampleid, bam_path in zip(pon_id_list, pon_bam_path_list)
+#    }
+#    fasta = common.DEFAULT_FASTAS[refver]
+#    chromdict = common.DEFAULT_CHROMDICTS[refver]
+
+    cytoband_gr = ucscdata.get_cytoband_gr(refver=refver, rename_hg19=True)
+    centromere_gr = cytoband_gr[cytoband_gr.Stain == 'acen']
+    blacklist_gr = pr.concat([centromere_gr, blacklist.CURATED_BLACKLIST_GRS[refver]])
+    blacklist_gr = blacklist_gr.sort().merge()
+
+    # make subprocess arguments
     subproc_kwargs = {
         'split_infile_path': split_infile_path, 
         'split_outfiles_dir': split_outfiles_dir, 
@@ -69,8 +91,11 @@ def unit_job(
         'memuse_limit_gb': memuse_limit_gb,
         'depth_limits': depth_limits,
         'mq_limits': mq_limits,
+        'include_blacklist': include_blacklist,
+        'blacklist_gr': blacklist_gr,
     }
 
+    # main
     while True:
         p = multiprocessing.Process(target=unit_job_core, kwargs=subproc_kwargs)
         shareddict['next_infile_path'] = None
@@ -108,6 +133,8 @@ def unit_job_core(
     memuse_limit_gb,
     depth_limits,
     mq_limits,
+    include_blacklist,
+    blacklist_gr,
 ):
     # basic setup
     bam_dict = {
@@ -141,9 +168,10 @@ def unit_job_core(
             new_vr = varianthandler.reheader(vr, new_header)
         else:
             new_vr = vr
+
         update_new_vr(
             new_vr, fasta, chromdict, bam_dict, pon_bam_dict, no_matesearch, countonly,
-            depth_limits, mq_limits,
+            depth_limits, mq_limits, blacklist_gr,
         )
         out_vcf.write(new_vr)
 
@@ -174,15 +202,21 @@ def update_header(vcfheader, id_list, pon_id_list):
 
 def update_new_vr(
     new_vr, fasta, chromdict, bam_dict, pon_bam_dict, no_matesearch, countonly,
-    depth_limits, mq_limits,
+    depth_limits, mq_limits, blacklist_gr,
 ):
     vcfspec = libvcfspec.Vcfspec.from_vr(new_vr)
+    if vcfspec.to_gr().intersect(blacklist_gr).empty:
+        init_invalid = False
+    else:
+        init_invalid = True
+
     readstats_dict = libreadstats.ReadStatsSampledict.from_bam_dict(
         bam_dict, vcfspec, fasta, chromdict,
         rpplist_kwargs={'no_matesearch': no_matesearch},
         countonly=countonly,
         depth_limits=depth_limits, 
         mq_limits=mq_limits,
+        init_invalid=init_invalid,
     )
     readstats_dict.update_bams(
         bam_dict=pon_bam_dict,
@@ -190,6 +224,7 @@ def update_new_vr(
         countonly=True,
         depth_limits=depth_limits, 
         mq_limits=mq_limits,
+        init_invalid=init_invalid,
     )
     readstats_dict.write(new_vr)
 
@@ -401,6 +436,15 @@ def argument_parser(cmdargs):
         '--countonly', dest='countonly', action='store_true',
         help=f'If set, only read count informations is calculated. Suitable for PON data.'
     )
+    parser_dict['flag'].add_argument(
+        '--include-blacklist', dest='include_blacklist', action='store_true',
+        help=(
+            f'By default, variants within blacklist region '
+            f'(centromere + curated blacklist regions) '
+            f'will be annotated as NaN. '
+            f'If this option is set, blacklist region variants will be fully annotated.'
+        ),
+    )
 
     # main
     args = parser_dict['main'].parse_args(cmdargs)
@@ -463,6 +507,7 @@ def write_jobscripts(
     memuse_limit_gb,
     depth_limits,
     mq_limits,
+    include_blacklist,
     jobname_prefix=__name__.split('.')[-1], 
     nproc=1,
 ):
@@ -486,6 +531,7 @@ def write_jobscripts(
         'memuse_limit_gb': memuse_limit_gb,
         'depth_limits': depth_limits,
         'mq_limits': mq_limits,
+        'include_blacklist': include_blacklist,
     }
     kwargs_multi = {
         'split_infile_path': split_infile_path_list,
@@ -554,6 +600,7 @@ def main(cmdargs):
         args.memuse_limit_gb,
         depth_limits,
         mq_limits,
+        args.include_blacklist,
     )
     logger.info('Running annotation jobs for each split file')
     workflow.run_jobs(

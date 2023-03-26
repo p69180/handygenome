@@ -26,9 +26,16 @@ class CoordConverter:
                 input DataFrame is respected.
         """
         # sanity check
-        assert isinstance(df, pd.DataFrame)
-        assert {'Chromosome', 'Start', 'End'}.issubset(df.columns)
-       
+        assert (
+            isinstance(df, pr.PyRanges)
+            or (
+                isinstance(df, pd.DataFrame)
+                and {'Chromosome', 'Start', 'End'}.issubset(df.columns)
+            )
+        )
+
+        if isinstance(df, pr.PyRanges):
+            df = df.df
         self.set_params(df)
 
     def set_params(self, df):
@@ -40,9 +47,13 @@ class CoordConverter:
         """
         # set totalregion_df and totalregion_gr
         if 'weight' in df.columns:
-            totalregion_df = df.loc[:, ['Chromosome', 'Start', 'End', 'weight']].copy().reset_index(drop=True)
+            totalregion_df = df.loc[
+                :, ['Chromosome', 'Start', 'End', 'weight']
+            ].copy().reset_index(drop=True)
         else:
-            totalregion_df = df.loc[:, ['Chromosome', 'Start', 'End']].copy().reset_index(drop=True)
+            totalregion_df = df.loc[
+                :, ['Chromosome', 'Start', 'End']
+            ].copy().reset_index(drop=True)
             totalregion_df['weight'] = 1
 
         totalregion_df['raw_region_length'] = (
@@ -109,42 +120,42 @@ class CoordConverter:
         plot_coords = self.genomic_to_plot(chrom, pos0_list)
         return (indexes, plot_coords)
 
-    def isec_trim_data_df(self, df):
-        assert '_index' not in df.columns
+#    def isec_trim_data_df(self, df):
+#        assert '_index' not in df.columns
+#
+#        isec_gr = pr.PyRanges(df).intersect(self.totalregion_gr)
+#        isec_gr._index = list(range(isec_gr.df.shape[0]))
+#
+#        subgrs_bychrom = dict()
+#        for chrom in isec_gr.Chromosome.unique():
+#            subgrs_bychrom[chrom] = isec_gr[chrom]
+#
+#        return isec_gr, subgrs_bychrom
 
-        isec_gr = pr.PyRanges(df).intersect(self.totalregion_gr)
-        isec_gr._index = list(range(isec_gr.df.shape[0]))
-
-        subgrs_bychrom = dict()
-        for chrom in isec_gr.Chromosome.unique():
-            subgrs_bychrom[chrom] = isec_gr[chrom]
-
-        return isec_gr, subgrs_bychrom
-
-    def get_ordered_plot_coords(self, subgrs_bychrom, pos0_colname, nproc=None):
-        # Multiprocessing is slower than serial jobs!!
-#        with multiprocessing.Pool(nproc) as pool:
-#            result = pool.starmap(
-#                self.genomic_to_plot_with_indexes, 
-#                (
-#                    (chrom, subdf[pos0_colname], subdf['_index']) 
-#                    for chrom, subdf in subgrs_bychrom.items()
-#                )
+#    def get_ordered_plot_coords(self, subgrs_bychrom, pos0_colname, nproc=None):
+#        # Multiprocessing is slower than serial jobs!!
+##        with multiprocessing.Pool(nproc) as pool:
+##            result = pool.starmap(
+##                self.genomic_to_plot_with_indexes, 
+##                (
+##                    (chrom, subdf[pos0_colname], subdf['_index']) 
+##                    for chrom, subdf in subgrs_bychrom.items()
+##                )
+##            )
+#
+#        result = list()
+#        for chrom, subgr in subgrs_bychrom.items():
+#            result.append(
+#                self.genomic_to_plot_with_indexes(chrom, getattr(subgr, pos0_colname), subgr._index)
 #            )
-
-        result = list()
-        for chrom, subgr in subgrs_bychrom.items():
-            result.append(
-                self.genomic_to_plot_with_indexes(chrom, getattr(subgr, pos0_colname), subgr._index)
-            )
-
-        index_coord_pairs = itertools.chain.from_iterable(zip(*x) for x in result)
-        plot_coords = np.fromiter(
-            (x[1] for x in sorted(index_coord_pairs, key=operator.itemgetter(0))),
-            dtype=np.int_,
-        )
-
-        return plot_coords
+#
+#        index_coord_pairs = itertools.chain.from_iterable(zip(*x) for x in result)
+#        plot_coords = np.fromiter(
+#            (x[1] for x in sorted(index_coord_pairs, key=operator.itemgetter(0))),
+#            dtype=np.int_,
+#        )
+#
+#        return plot_coords
 
     def plot_to_genomic(self, x):
         plot_intvlist = self.data.index.get_level_values('plot_interval')
@@ -169,110 +180,152 @@ class CoordConverter:
         return chrom, pos0
 
     # Axes modification
-    def set_xlim(self, ax):
-        ax.set_xlim(*self.xlim)
+    #def set_xlim(self, ax):
+    #    ax.set_xlim(*self.xlim)
 
     def get_chrom_borders(self):
         result = list()
-        for chrom, subdf in self.iter_totalregion_df():
+        for key, subdf in self.iter_totalregion_df():
+            chroms = set(subdf['Chromosome'])
+            assert len(chroms) == 1
+            chrom = chroms.pop()
             result.append(
                 (chrom, subdf['plot_interval_start0s'].iloc[0], subdf['plot_interval_end0s'].iloc[-1])
             )
         return result
 
-    def draw_chrom_borders(self, ax, color='black', linewidth=1, fontsize=8, **kwargs):
-        border_pos0s = set()
-        xlim = self.xlim
-        chrom_borders = self.get_chrom_borders()
-        for chrom, start0, end0 in chrom_borders:
-            ax.text(
-                (start0 + end0) / 2, 
-                ax.get_ylim()[1], 
-                chrom, 
-                ha='center', va='bottom',
-                size=fontsize,
-            )
+#    def draw_chrom_borders(self, ax, color='black', linewidth=1, fontsize=8, **kwargs):
+#        border_pos0s = set()
+#        xlim = self.xlim
+#        chrom_borders = self.get_chrom_borders()
+#        for chrom, start0, end0 in chrom_borders:
+#            ax.text(
+#                (start0 + end0) / 2, 
+#                ax.get_ylim()[1], 
+#                chrom, 
+#                ha='center', va='bottom',
+#                size=fontsize,
+#            )
+#
+#        # draw chromosome region borderlines
+#        for chrom, start0, end0 in chrom_borders:
+#            if start0 != xlim[0]:
+#                border_pos0s.add(start0)
+#            if end0 != xlim[1]:
+#                border_pos0s.add(end0)
+#        for pos0 in border_pos0s:
+#            ax.axvline(pos0, color=color, linewidth=linewidth, **kwargs)
 
-        # draw chromosome region borderlines
-        for chrom, start0, end0 in chrom_borders:
-            if start0 != xlim[0]:
-                border_pos0s.add(start0)
-            if end0 != xlim[1]:
-                border_pos0s.add(end0)
-        for pos0 in border_pos0s:
-            ax.axvline(pos0, color=color, linewidth=linewidth, **kwargs)
+#    def prepare_plot_data(self, df, nproc=None):
+#        # create isec between total region and input data
+#        isec_gr, subgrs_bychrom = self.isec_trim_data_df(df)
+#        # Add "End_minus1" columns; "End" columns cannot be used for plot coordinate calculation
+#        for chrom, subgr in subgrs_bychrom.items():
+#            subgr.End_minus1 = subgr.End - 1
+#
+#        xmins = self.get_ordered_plot_coords(subgrs_bychrom, 'Start', nproc=nproc)
+#        xmaxs_minus1 = self.get_ordered_plot_coords(subgrs_bychrom, 'End_minus1', nproc=nproc)
+#        xmaxs = xmaxs_minus1 + 1
+#
+#        return {
+#            'isec_gr': isec_gr,
+#            'subgrs_bychrom': subgrs_bychrom,
+#            'xmins': xmins,
+#            'xmaxs': xmaxs,
+#        }
 
-    def prepare_plot_data(self, df, nproc=None):
-        # create isec between total region and input data
-        isec_gr, subgrs_bychrom = self.isec_trim_data_df(df)
-        # Add "End_minus1" columns; "End" columns cannot be used for plot coordinate calculation
-        for chrom, subgr in  subgrs_bychrom.items():
-            subgr.End_minus1 = subgr.End - 1
-
-        xmins = self.get_ordered_plot_coords(subgrs_bychrom, 'Start', nproc=nproc)
-        xmaxs_minus1 = self.get_ordered_plot_coords(subgrs_bychrom, 'End_minus1', nproc=nproc)
-        xmaxs = xmaxs_minus1 + 1
-
-        return {
-            'isec_gr': isec_gr,
-            'subgrs_bychrom': subgrs_bychrom,
-            'xmins': xmins,
-            'xmaxs': xmaxs,
-        }
-
-    def draw_hlines(self, ax, y_colname, *, df=None, df_plotdata=None, offset=0, nproc=None, **kwargs):
-        if df_plotdata is None:
-            df_plotdata = self.prepare_plot_data(df, nproc=nproc)
-            
-        # get ordered ys 
-        ys = getattr(df_plotdata['isec_gr'], y_colname) + offset
-        ys = np.fromiter(
-            (
-                x[0] for x in 
-                sorted(zip(ys, df_plotdata['isec_gr']._index), key=operator.itemgetter(1))
-            ),
-            dtype=np.float_,
-        )
-
-        ax.hlines(ys, df_plotdata['xmins'], df_plotdata['xmaxs'], **kwargs)
-
-    def draw_dots(self, ax, df, y_colname, nproc=None, color='black', marker='o', linestyle='', **kwargs):
-        joined_gr = pyranges_helper.join(self.totalregion_gr, pr.PyRanges(df), how='inner', merge='first', find_nearest=False, as_gr=True)
-        joined_df = joined_gr.df
-
-        ys = joined_df.loc[:, y_colname].array
-        with multiprocessing.Pool(nproc) as pool:
-            xs = pool.starmap(
-                self.genomic_to_plot, 
-                ((row['Chromosome'], (row['Start'] + row['End']) / 2) for idx, row in joined_df.iterrows())
-            )
-
-        ax.plot(xs, ys, color=color, marker=marker, linestyle=linestyle, **kwargs)
-
-    def draw_bgcolors(self, ax, df, nproc=None, **kwargs):
-        joined_gr = pyranges_helper.join(self.totalregion_gr, pr.PyRanges(df), how='inner', merge='first', find_nearest=False, as_gr=True)
-        joined_df = joined_gr.df
-
-        with multiprocessing.Pool(nproc) as pool:
-            xmins = pool.starmap(
-                self.genomic_to_plot, 
-                ((row['Chromosome'], row['Start']) for idx, row in joined_df.iterrows())
-            )
-            xmaxs = pool.starmap(
-                self.genomic_to_plot, 
-                ((row['Chromosome'], row['End']) for idx, row in joined_df.iterrows())
-            )
-
-        ylims = ax.get_ylim()
-        ymin = ylims[0]
-        height = ylims[1] - ylims[0]
-        widths = np.array(xmaxs) - np.array(xmins)
-
-        boxes = [
-            Rectangle((xm, ymin), width=w, height=height)
-            for (xm, w) in zip(xmins, widths)
-        ]
-        ax.add_collection(PatchCollection(boxes, **kwargs))
+#    def draw_hlines(
+#        self, ax, y_colname, *, 
+#        df=None, df_plotdata=None, offset=0, nproc=None, 
+#        plot_kwargs={},
+#    ):
+#        default_plot_kwargs = {}
+#        default_plot_kwargs.update(plot_kwargs)
+#
+#        if df_plotdata is None:
+#            df_plotdata = self.prepare_plot_data(df, nproc=nproc)
+#            
+#        ys, xmins, xmaxs = self.merge_adjacent_hlines_data(
+#            getattr(df_plotdata['isec_gr'], y_colname).to_numpy() + offset,
+#            df_plotdata['xmins'],
+#            df_plotdata['xmaxs'],
+#        )
+#        ax.hlines(ys, xmins, xmaxs, **default_plot_kwargs)
+#
+#    @classmethod
+#    def merge_adjacent_hlines_data(cls, ys, xmins, xmaxs):
+#        flags = (ys[:-1] == ys[1:]) & (xmaxs[:-1] == xmins[1:])
+#        idx = 0
+#        indexes = list()
+#        if not flags[0]:
+#            indexes.append((0, 0))
+#
+#        for key, subiter in itertools.groupby(flags):
+#            len_val = len(tuple(subiter))
+#            if key:
+#                start = idx
+#                end = idx + len_val
+#                indexes.append((start, end))
+#                idx += len_val
+#            else:
+#                indexes.extend((k, k) for k in range(idx + 1, idx + len_val))
+#                idx += len_val
+#
+#        if not key:
+#            indexes.append((idx, idx))
+#
+#        new_ys = ys[[x[0] for x in indexes]]
+#        new_xmins = xmins[[x[0] for x in indexes]]
+#        new_xmaxs = xmaxs[[x[1] for x in indexes]]
+#
+#        return new_ys, new_xmins, new_xmaxs
+#
+#    def draw_dots(
+#        self, ax, y_colname, *, 
+#        df=None, df_plotdata=None, nproc=None, 
+#        plot_kwargs={},
+#    ):
+#        default_plot_kwargs = {
+#            'color': 'black',
+#            'marker': 'o',
+#            'linestyle': '',
+#        }
+#        default_plot_kwargs.update(plot_kwargs)
+#
+#        if df_plotdata is None:
+#            df_plotdata = self.prepare_plot_data(df, nproc=nproc)
+#
+#        xs = (df_plotdata['xmins'] + (df_plotdata['xmaxs'] - 1)) / 2
+#        ys = getattr(df_plotdata['isec_gr'], y_colname).to_numpy()
+#        ax.plot(xs, ys, **default_plot_kwargs)
+#
+#    def draw_bgcolors(
+#        self, ax, *, 
+#        df=None, df_plotdata=None, nproc=None,
+#        plot_kwargs={},
+#    ):
+#        default_plot_kwargs = {
+#            'color': 'yellow',
+#            'alpha': 0.1,
+#            'zorder': 0,
+#        }
+#        default_plot_kwargs.update(plot_kwargs)
+#
+#        if df_plotdata is None:
+#            df_plotdata = self.prepare_plot_data(df, nproc=nproc)
+#
+#        ylims = ax.get_ylim()
+#        ymin = ylims[0]
+#        height = ylims[1] - ylims[0]
+#        xmaxs = df_plotdata['xmaxs']
+#        xmins = df_plotdata['xmins']
+#        widths = xmaxs - xmins
+#
+#        boxes = [
+#            Rectangle((xm, ymin), width=w, height=height)
+#            for (xm, w) in zip(xmins, widths)
+#        ]
+#        ax.add_collection(PatchCollection(boxes, **default_plot_kwargs))
 
 
 #class CoordConverter_old:

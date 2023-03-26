@@ -73,7 +73,10 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
     @classmethod
     def from_bam(
         cls, 
-        vcfspec, bam, fasta, chromdict,
+        vcfspec, 
+        bam, 
+        fasta=None, 
+        chromdict=None,
         rpplist_kwargs=dict(),
         alleleinfo_kwargs=dict(),
         countonly=False,
@@ -109,8 +112,8 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         cls, 
         readstats_data,  
         vcfspec, 
-        fasta, 
-        chromdict,
+        fasta=None, 
+        chromdict=None,
         countonly=False,
     ):
         def allele_means(data):
@@ -205,8 +208,16 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         result = cls(is_missing=False)
         result.is_invalid = False
         result.vcfspec = vcfspec
-        result.fasta = fasta
-        result.chromdict = chromdict
+        result.fasta = (
+            common.DEFAULT_FASTAS[vcfspec.refver]
+            if fasta is None else
+            fasta
+        )
+        result.chromdict = (
+            common.DEFAULT_CHROMDICTS[vcfspec.refver]
+            if chromdict is None else
+            chromdict
+        )
 
         result['rppcounts'] = readstats_data['count'].copy()
 
@@ -238,15 +249,23 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         return result
 
     @classmethod
-    def init_invalid(cls, vcfspec, fasta, chromdict, countonly=False, verbose=True):
+    def init_invalid(cls, vcfspec, fasta=None, chromdict=None, countonly=False, verbose=True):
         if verbose:
             common.print_timestamp(f'Initiating ReadStats object as invalid mode')
         # main
         result = cls(is_missing=False)
         result.is_invalid = True
         result.vcfspec = vcfspec
-        result.fasta = fasta
-        result.chromdict = chromdict
+        result.fasta = (
+            common.DEFAULT_FASTAS[vcfspec.refver]
+            if fasta is None else
+            fasta
+        )
+        result.chromdict = (
+            common.DEFAULT_CHROMDICTS[vcfspec.refver]
+            if chromdict is None else
+            chromdict
+        )
 
         result['rppcounts'] = {
             alleleclass: np.nan 
@@ -367,26 +386,35 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
 
     @classmethod
     def from_bam_dict(
-        cls, bam_dict, vcfspec, fasta, chromdict,
+        cls, 
+        bam_dict, 
+        vcfspec, 
+        fasta=None, 
+        chromdict=None,
         rpplist_kwargs=dict(),
         alleleinfo_kwargs=dict(),
         countonly=False,
         depth_limits=DEFAULT_DEPTH_LIMITS,
         mq_limits=DEFAULT_MQ_LIMITS,
+        init_invalid=False,
     ):
         depth_limits = cls.handle_limits_arg(depth_limits, bam_dict)
         mq_limits = cls.handle_limits_arg(mq_limits, bam_dict)
 
         result = cls()
-        for sampleid, bam in bam_dict.items():
-            result[sampleid] = ReadStats.from_bam(
-                vcfspec, bam, fasta, chromdict,
-                rpplist_kwargs=rpplist_kwargs,
-                alleleinfo_kwargs=alleleinfo_kwargs,
-                countonly=countonly,
-                depth_limits=depth_limits[sampleid],
-                mq_limits=mq_limits[sampleid],
-            )
+        if init_invalid:
+            for sampleid, bam in bam_dict.items():
+                result[sampleid] = ReadStats.init_invalid(vcfspec, fasta, chromdict, countonly=countonly)
+        else:
+            for sampleid, bam in bam_dict.items():
+                result[sampleid] = ReadStats.from_bam(
+                    vcfspec, bam, fasta, chromdict,
+                    rpplist_kwargs=rpplist_kwargs,
+                    alleleinfo_kwargs=alleleinfo_kwargs,
+                    countonly=countonly,
+                    depth_limits=depth_limits[sampleid],
+                    mq_limits=mq_limits[sampleid],
+                )
         return result
 
     @classmethod
@@ -416,6 +444,7 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         countonly=False,
         depth_limits=DEFAULT_DEPTH_LIMITS,
         mq_limits=DEFAULT_MQ_LIMITS,
+        init_invalid=False,
     ):
         if len(self) == 0:
             raise Exception(f'Length of self must be greater than 0')
@@ -423,15 +452,21 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         depth_limits = self.handle_limits_arg(depth_limits, bam_dict)
         mq_limits = self.handle_limits_arg(mq_limits, bam_dict)
 
-        for sampleid, bam in bam_dict.items():
-            self[sampleid] = ReadStats.from_bam(
-                self.vcfspec, bam, self.fasta, self.chromdict,
-                rpplist_kwargs=rpplist_kwargs,
-                alleleinfo_kwargs=alleleinfo_kwargs,
-                countonly=countonly,
-                depth_limits=depth_limits[sampleid],
-                mq_limits=mq_limits[sampleid],
-            )
+        if init_invalid:
+            for sampleid, bam in bam_dict.items():
+                self[sampleid] = ReadStats.init_invalid(
+                    self.vcfspec, self.fasta, self.chromdict, countonly=countonly,
+                )
+        else:
+            for sampleid, bam in bam_dict.items():
+                self[sampleid] = ReadStats.from_bam(
+                    self.vcfspec, bam, self.fasta, self.chromdict,
+                    rpplist_kwargs=rpplist_kwargs,
+                    alleleinfo_kwargs=alleleinfo_kwargs,
+                    countonly=countonly,
+                    depth_limits=depth_limits[sampleid],
+                    mq_limits=mq_limits[sampleid],
+                )
 
     def write(self, vr, donot_write_missing=True):
         return self.write_base(vr, donot_write_missing=donot_write_missing)
@@ -580,7 +615,9 @@ def rpplist_to_readstats_data_countonly(
 
 
 def get_readstats_data(
-    vcfspec, bam, fasta, chromdict, 
+    vcfspec, bam, 
+    fasta=None, 
+    chromdict=None, 
     rpplist_kwargs=dict(),
     alleleinfo_kwargs=dict(),
     countonly=False,

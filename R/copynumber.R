@@ -174,15 +174,15 @@ write_segs <- function(segs, outfile_path) {
             'Chromosome'=segs$chrom,
             'Start'=(segs$start.pos - 1),
             'End'=segs$end.pos,
-            'depth_mean'=segs$logR.mean,
-            'baf_mean'=segs$BAF.mean
+            'depth_segment_mean'=segs$logR.mean,
+            'baf_segment_mean'=segs$BAF.mean
         )
     } else {
         df_to_write <- base::data.frame(
             'Chromosome'=segs$chrom,
             'Start'=(segs$start.pos - 1),
             'End'=segs$end.pos,
-            'depth_mean'=segs$mean
+            'depth_segment_mean'=segs$mean
         )
     }
 

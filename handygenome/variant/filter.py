@@ -29,7 +29,7 @@ def get_preset_filter_germline(
     cutoff_diffbq=-5,
     cutoff_absbq=20,
     cutoff_diffmq=-10,
-    cutoff_absmq=45,
+    cutoff_absmq=40,
     cutoff_clipovlp=2.0,
     cutoff_cliplen=20,
     cutoff_altcount=2,

@@ -673,6 +673,15 @@ class VariantPlus:
         return readstats.get_total_rppcount(exclude_other=exclude_other)
 
     def get_vaf(self, sampleid, allele_index=1, exclude_other=False, ndigits=None):
+        if isinstance(sampleid, (list, tuple)):
+            return [
+                self.get_vaf_singlesample(x, allele_index=allele_index, exclude_other=exclude_other, ndigits=ndigits)
+                for x in sampleid
+            ]
+        else:
+            return self.get_vaf_singlesample(sampleid, allele_index=allele_index, exclude_other=exclude_other, ndigits=ndigits)
+
+    def get_vaf_singlesample(self, sampleid, allele_index=1, exclude_other=False, ndigits=None):
         readstats = self.readstats_dict[sampleid]
         vaf = readstats.get_vaf(alleleclass=allele_index, exclude_other=exclude_other)
         if np.isnan(vaf):
@@ -876,9 +885,9 @@ class VariantPlus:
     def get_gr(self):
         return pr.from_dict(
             {
-                "Chromosome": [self.vr.contig],
-                "Start": [self.vr.pos - 1],
-                "End": [self.vr.pos],
+                "Chromosome": [self.chrom],
+                "Start": [self.start0],
+                "End": [self.end0],
             }
         )
 
@@ -1104,7 +1113,9 @@ class VariantPlusList(list):
 
         return fetcher
 
-    def _get_vr_iterator_from_vcf(self, fetch_chrom, fetch_start0, fetch_end0, prop):
+    def get_vr_iter_from_vcf(
+        self, fetch_chrom=None, fetch_start0=None, fetch_end0=None, prop=None,
+    ):
         fetcher = self._run_vcf_fetch(fetch_chrom, fetch_start0, fetch_end0)
 
         if prop is None:
@@ -1139,7 +1150,7 @@ class VariantPlusList(list):
         vpfilter=None,
     ):
         # "prop" is treated in VariantRecord iteration step for performance
-        vr_iterator = self._get_vr_iterator_from_vcf(
+        vr_iterator = self.get_vr_iter_from_vcf(
             fetch_chrom, fetch_start0, fetch_end0, prop
         )
         vp_iterator = self._get_vp_iter_from_vr_iter(vr_iterator)
@@ -1430,23 +1441,33 @@ class VariantPlusList(list):
         alt_index=0,
         vaf_sampleid=None, 
         as_gr=False, 
-        omit_vaf=False, 
+        #omit_vaf=False, 
         get_vaf_kwargs={
             #'allele_index': 1, 
             'exclude_other': False, 
             'ndigits': None,
         },
+        lazy=False,
+        vcf_iter_kwargs=dict(),
     ):
         # parameter setups
         get_vaf_kwargs['allele_index'] = alt_index + 1
 
         if vaf_sampleid is None:
-            sample_ids = list(self[0].vr.header.samples)
+            if lazy:
+                first_vr = next(self.get_vr_iter_from_vcf(**vcf_iter_kwargs))
+                sample_ids = list(first_vr.header.samples)
+            else:
+                sample_ids = list(first_vp.vr.header.samples)
+
             if len(sample_ids) == 0:
                 vaf_sampleid = None
-                omit_vaf = True
+                #omit_vaf = True
             else:
-                vaf_sampleid = sample_ids[0]
+                vaf_sampleid = sample_ids
+        else:
+            if not isinstance(vaf_sampleid, (tuple, list)):
+                vaf_sampleid = [vaf_sampleid]
 
         # main
         chroms = list()
@@ -1455,8 +1476,16 @@ class VariantPlusList(list):
         ends = list()
         refs = list()
         alts = list()
-        vafs = list()
-        for vp in self:
+
+        if vaf_sampleid is not None:
+            vafs = [list() for x in vaf_sampleid]
+
+        if lazy:
+            vp_iterator = self.get_vp_iter_from_vcf(**vcf_iter_kwargs)
+        else:
+            vp_iterator = iter(self)
+
+        for vp in vp_iterator:
             chroms.append(vp.vcfspec.chrom)
             pos1s.append(vp.vcfspec.pos)
             starts.append(vp.vcfspec.pos0)
@@ -1464,12 +1493,13 @@ class VariantPlusList(list):
             refs.append(vp.vcfspec.ref)
             alts.append(vp.vcfspec.alts[alt_index])
 
-            if not omit_vaf:
-                if vaf_sampleid is None:
-                    vafs.append(np.nan)
-                else:
-                    vaf = vp.get_vaf(vaf_sampleid, **get_vaf_kwargs)
-                    vafs.append(vaf)  # vaf can be np.nan
+            if vaf_sampleid is not None:
+                for vaf_val, sublist in zip(
+                    vp.get_vaf(vaf_sampleid, **get_vaf_kwargs),
+                    vafs,
+                ):
+                    sublist.append(vaf_val)
+
         # make data
         data = {
             'Chromosome': chroms,
@@ -1479,8 +1509,10 @@ class VariantPlusList(list):
             'REF': refs,
             'ALT': alts,
         }
-        if not omit_vaf:
-            data.update({'vaf': vafs})
+        if vaf_sampleid is not None:
+            for sid, vaf_sublist in zip(vaf_sampleid, vafs):
+                data.update({f'vaf_{sid}': vaf_sublist})
+
         # result
         if as_gr:
             return pr.from_dict(data)

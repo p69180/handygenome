@@ -44,14 +44,27 @@ def get_gcfile_path(refver, binsize):
 
 
 @functools.cache
-def get_gc_df(refver, binsize):
+def get_gc_df(refver, binsize, coords_as_index=True):
     gcfile_path = get_gcfile_path(refver, binsize)
+
     if not os.path.exists(gcfile_path):
         common.print_timestamp(f'There is no pre-existing gc data file. A new one is being created. It may take a few minutes.')
         fasta = common.DEFAULT_FASTAS[refver]
         write_gcfile(gcfile_path, fasta, binsize=binsize)
         common.print_timestamp(f'Finished making a gc data file.')
-    return pd.read_csv(gcfile_path, sep='\t', header=0, dtype={'Chromosome': 'category', 'Start': int, 'End': int, 'GC': float})
+
+    if coords_as_index:
+        index_col = ['Chromosome', 'Start', 'End']
+    else:
+        index_col = None
+
+    return pd.read_csv(
+        gcfile_path, 
+        sep='\t', 
+        header=0, 
+        dtype={'Chromosome': 'category', 'Start': int, 'End': int, 'GC': float},
+        index_col=index_col,
+    )
 
 
 ###########################################
