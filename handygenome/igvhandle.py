@@ -2,11 +2,9 @@ import re
 import os
 import socket
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-breakends = importlib.import_module('.'.join([top_package_name, 'sv', 'breakends']))
-libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
+import handygenome.common as common
+import handygenome.sv.breakends as breakends
+import handygenome.variant.vcfspec as libvcfspec
 
 
 class IGVHandle:
@@ -26,7 +24,7 @@ class IGVHandle:
         self.cmd('new')
         
     def goto(self, loci, width=200):
-        assert isinstance(loci, (list, tuple)), f'"loci" argument must be a list or a tuple.'
+        assert isinstance(loci, (list, tuple)), f'"loci" argument must be a list'
 
         cmd_src = list()
         for locus in loci:
@@ -67,8 +65,7 @@ class IGVHandle:
         self.cmd(f'goto {" ".join(cmd_src)}')
 
     def load(self, filepaths):
-        assert isinstance(filepaths, (list, tuple)), (
-            f'"filepaths" argument must be a list or a tuple.')
+        filepaths = common.arg_to_list(filepaths)
 
         # make into absolute paths
         filepaths = [os.path.abspath(x) for x in filepaths]

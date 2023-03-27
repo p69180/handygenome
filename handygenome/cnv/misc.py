@@ -1158,6 +1158,10 @@ def get_gcbin_data(depth_df, gc_breaks, make_raw_data=False):
     return gcbin_depth_data, gcbin_average_depths, gcbin_norm_average_depths, cutresult
 
 
+def get_normal_wgs_depth_cutoffs(depth_df):
+    mean = depth_df['mean_depth'].mean()
+
+
 @common.get_deco_num_set_differently(('fasta', 'refver', 'gc_df'), 1)
 def postprocess_depth_df(
     depth_df, 
@@ -1209,7 +1213,7 @@ def postprocess_depth_df(
     # sanity check
     depth_df = arg_into_df(depth_df)
     assert 'mean_depth' in depth_df.columns, f'"depth_df" must include a column named "mean_depth"'
-    assert preset_cutoffs in ('wgs', 'panel', None)
+    assert preset_cutoffs in ('wgs', 'normal_wgs', 'panel', None)
 
     # set outlier cutoffs
     if preset_cutoffs == 'wgs':

@@ -1885,3 +1885,9 @@ def get_ranks(arr):
     ranks = scipy.stats.rankdata(data, method='max')
     return ranks / len(ranks)
 
+
+def arg_to_list(arg):
+    if not isinstance(arg, (tuple, list)):
+        arg = [arg]
+    return arg
+        

@@ -7,6 +7,8 @@ import random
 import shutil
 import logging
 import uuid
+import array
+import multiprocessing
 
 import pysam
 import pyranges as pr
@@ -1436,18 +1438,73 @@ class VariantPlusList(list):
         else:
             return random.sample(self, k=n)
 
+#    def get_df_multiprocessing(
+#        self, 
+#        alt_index=0,
+#        vaf_sampleid=None, 
+#        as_gr=False, 
+#        get_vaf_kwargs={
+#            'exclude_other': False, 
+#            'ndigits': None,
+#        },
+#        lazy=False,
+#        vcf_iter_kwargs=dict(),
+#        nproc=1,
+#    ):
+#        # parameter setups
+#        get_vaf_kwargs['allele_index'] = alt_index + 1
+#
+#        if vaf_sampleid is None:
+#            if lazy:
+#                first_vr = next(self.get_vr_iter_from_vcf(**vcf_iter_kwargs))
+#                sample_ids = list(first_vr.header.samples)
+#            else:
+#                sample_ids = list(first_vp.vr.header.samples)
+#
+#            if len(sample_ids) == 0:
+#                vaf_sampleid = None
+#                #omit_vaf = True
+#            else:
+#                vaf_sampleid = sample_ids
+#        else:
+#            if not isinstance(vaf_sampleid, (tuple, list)):
+#                vaf_sampleid = [vaf_sampleid]
+#
+#        # run multiprocessing
+#        if lazy:
+#            vp_iterator = self.get_vp_iter_from_vcf(**vcf_iter_kwargs)
+#        else:
+#            vp_iterator = iter(self)
+#
+#        with multiprocessing.Pool(nproc) as pool:
+#            source_data = pool.starmap(
+#                vplist_get_df_subproc, 
+#                (
+#                    (vp, alt_index, vaf_sampleid, get_vaf_kwargs) 
+#                    for vp in vp_iterator
+#                ),
+#            )
+#
+#        # make data
+#        columns = ['Chromosome', 'Start', 'End', 'REF', 'ALT']
+#        if vaf_sampleid is not None:
+#            columns.extend(f'vaf_{sid}' for sid in vaf_sampleid)
+#        data = dict(zip(columns, zip(*source_data)))
+#
+#        # result
+#        if as_gr:
+#            return pr.from_dict(data)
+#        else:
+#            return pd.DataFrame.from_dict(data)
+
     def get_df(
         self, 
         alt_index=0,
         vaf_sampleid=None, 
         as_gr=False, 
         #omit_vaf=False, 
-        get_vaf_kwargs={
-            #'allele_index': 1, 
-            'exclude_other': False, 
-            'ndigits': None,
-        },
         lazy=False,
+        get_vaf_kwargs=dict(),
         vcf_iter_kwargs=dict(),
     ):
         # parameter setups
@@ -1660,6 +1717,47 @@ class VariantPlusList(list):
 
         if index:
             indexing.index_vcf(outfile_path)
+
+
+def vplist_get_df_subproc(vp, alt_index, vaf_sampleid, get_vaf_kwargs):
+    result = list()
+    result.extend(
+        (vp.chrom, vp.start0, vp.end0, vp.ref, vp.alts[alt_index])
+    )
+    if vaf_sampleid is not None:
+        result.extend(vp.get_vaf(vaf_sampleid, **get_vaf_kwargs))
+    return result
+
+
+def get_vafdf(
+    vcf_path, sampleid, 
+    alt_index=0, 
+    as_gr=False, 
+    get_vaf_kwargs=dict(),
+    vcf_iter_kwargs=dict(),
+    logging_lineno=1000, 
+    verbose=True,
+):
+    sampleid = common.arg_to_list(sampleid)
+    vplist = VariantPlusList.from_vcf_lazy(
+        vcf_path, 
+        logging_lineno=logging_lineno, 
+        verbose=verbose,
+        init_all_attrs=False,
+        vp_init_params=dict(
+            init_readstats=True,
+            sampleid_list=sampleid,
+        ),
+    )
+    vafdf = vplist.get_df(
+        alt_index=alt_index, 
+        vaf_sampleid=sampleid,
+        as_gr=as_gr,
+        lazy=True,
+        get_vaf_kwargs=get_vaf_kwargs,
+        vcf_iter_kwargs=vcf_iter_kwargs,
+    )
+    return vafdf
 
 
 # not used
