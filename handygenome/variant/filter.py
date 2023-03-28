@@ -15,8 +15,8 @@ from handygenome.annotation.annotitem import AnnotItemInfoSingle, AnnotItemForma
 import handygenome.variant.ponbams as libponbams
 
 
-PON_LOGGER_INFO = workflow.get_debugging_logger('PONfilter', verbose=False)
-PON_LOGGER_DEBUG = workflow.get_debugging_logger('PONfilter', verbose=True)
+PON_LOGGER_INFO = workflow.get_debugging_logger(title='PONfilter', verbose=False)
+PON_LOGGER_DEBUG = workflow.get_debugging_logger(title='PONfilter', verbose=True)
 SUFFICIENT_PON_SAMPLE_NUM = 10
 
 

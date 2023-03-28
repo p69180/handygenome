@@ -86,12 +86,15 @@ def get_logger(name=None, formatter=None, level='info', stderr=True,
     return logger
 
 
-def get_debugging_logger(verbose=True):
+def get_debugging_logger(title=None, verbose=True):
+    if title is None:
+        title = '%(module)s.%(funcName)s'
+
     return get_logger(
         name=str(uuid.uuid4()),
         level=('debug' if verbose else 'info'),
         formatter=logging.Formatter(
-            fmt=f'[%(asctime)s.%(msecs)03d %(module)s.%(funcName)s] line %(lineno)d: %(message)s', 
+            fmt=f'[%(asctime)s.%(msecs)03d {title}] line %(lineno)d: %(message)s', 
             datefmt='%Z %Y-%m-%d %H:%M:%S'
         ),
     )
