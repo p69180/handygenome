@@ -162,7 +162,7 @@ def unit_job_core(
     # loop over variant records
     vr_iterator = in_vcf.fetch()
     for vr in vr_iterator:
-        vrspec = '\t'.join([vr.contig, vr.pos, vr.ref, vr.alts])
+        vrspec = '\t'.join([vr.contig, str(vr.pos), vr.ref, ','.join(vr.alts)])
         common.print_timestamp(f'Processing {vrspec}')  # for logging
 
         if added_new_samples:

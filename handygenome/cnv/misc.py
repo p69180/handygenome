@@ -76,6 +76,15 @@ def arg_into_gr(arg):
         raise Exception(f'Argument must be either None, pd.DataFrame, or pr.PyRanges')
 
 
+def genome_df_sanitycheck(df):
+    if df.columns[:3].to_list() != ['Chromosome', 'Start', 'End']:
+        raise Exception(f'First three columns of detph DataFrame must be "Chromosome", "Start", and "End".')
+
+
+def get_genome_df_annotcols(df):
+    return [x for x in df.columns if x not in ('Chromosome', 'Start', 'End')]
+
+
 ################
 # peak finding #
 ################
@@ -1420,7 +1429,71 @@ def handle_merged_baf_df(merged_baf_df):
     """Find regions with normal sample baf deviating from 0.5"""
     pass
 
-    
+
+@common.get_deco_num_set_differently(('refver', 'chromdict'), 1)
+def upsize_depth_df_bin(depth_df, size, refver=None, chromdict=None, annot_cols=None):
+    """Input must be sorted"""
+    def get_chrom_df_groupers(chrom_df, chromlen, new_binsize, old_binsize):
+        nrow = chrom_df.shape[0]
+        assert nrow == np.ceil(chromlen / old_binsize).astype(int)
+
+        n_newbin = np.ceil(chromlen / new_binsize).astype(int)
+        olddf_idx_ends = np.fromiter(
+            (
+                min(int((new_binsize * x) / old_binsize), nrow)
+                for x in range(1, n_newbin + 1)
+            ),
+            dtype=int,
+        )
+        group_lengths = np.diff(olddf_idx_ends, prepend=0)
+        groupers = np.repeat(range(len(group_lengths)), group_lengths)
+        return groupers, n_newbin
+
+    def upsize_chrom_df(chrom_df, new_binsize, groupers, n_newbin, chromlen, annot_cols):
+        starts = np.arange(n_newbin) * new_binsize
+        ends = np.concatenate((starts[1:], [chromlen]))
+        nonannot_subdf = pd.DataFrame({
+            'Chromosome': chrom_df['Chromosome'][0],
+            'Start': starts,
+            'End': ends,
+        })
+
+        if annot_cols is None:
+            annot_cols = get_genome_df_annotcols(chrom_df)
+        annot_subdf = chrom_df.groupby(by=groupers, axis=0, sort=False)[annot_cols].mean()
+        annot_subdf.reset_index(inplace=True, drop=True)
+
+        result = pd.concat([nonannot_subdf, annot_subdf], axis=1)
+        return result
+
+    # arg handling
+    if annot_cols is None:
+        annot_cols = get_genome_df_annotcols(depth_df)
+    if chromdict is None:
+        chromdict = common.DEFAULT_CHROMDICTS[refver]
+
+    dfs_bychrom = pyranges_helper.group_df_bychrom(depth_df)
+    new_binsize = size
+
+    # get input df bin size
+    first_df = next(iter(dfs_bychrom.values()))
+    assert first_df.shape[0] >= 2
+    old_binsize = first_df['End'][0] - first_df['Start'][0]
+    if size <= old_binsize:
+        raise Exception(f'Upsized bin size ({size}) must be greater than old bin size ({old_binsize})')
+
+    # process each subdf by chrom
+    newbin_dfs_bychrom = dict()
+    for chrom, chrom_df in dfs_bychrom.items():
+        chromlen = chromdict[chrom]
+        groupers, n_newbin = get_chrom_df_groupers(chrom_df, chromlen, new_binsize, old_binsize)
+        newbin_dfs_bychrom[chrom] = upsize_chrom_df(chrom_df, new_binsize, groupers, n_newbin, chromlen, annot_cols)
+
+    # sort and concat
+    sorted_chroms = sorted(newbin_dfs_bychrom.keys(), key=(lambda x: chromdict.contigs.index(x)))
+    result = pd.concat((newbin_dfs_bychrom[x] for x in sorted_chroms), axis=0)
+
+    return result
 
 
 #########################################
