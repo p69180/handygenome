@@ -7,7 +7,12 @@ import pandas as pd
 import pyranges as pr
 
 import handygenome.common as common
+import handygenome.workflow as workflow
 import handygenome.cnv.misc as cnvmisc
+
+
+LOGGER_INFO = workflow.get_debugging_logger(verbose=False)
+LOGGER_DEBUG = workflow.get_debugging_logger(verbose=True)
 
 
 def sort_df_by_coord(df, chromdict):
@@ -495,12 +500,12 @@ def fetch_nearest(joined_df, right_df, left_rowidxs, annot_columns):
     return joined_df
 
 
-def join_singlechrom_dfs(left_df, right_df, how, keep_right_coords, find_nearest, annot_columns, merge):
-    print(f'Comparing coordinates')
+def join_singlechrom_dfs(left_df, right_df, how, keep_right_coords, find_nearest, annot_columns, merge, logger):
+    logger.debug(f'Comparing coordinates')
     compare_result = compare_coords(left_df, right_df)
     left_rowidxs, right_rowidxs = np.where(compare_result)
 
-    print(f'Subsetting right df')
+    logger.debug(f'Subsetting right df')
     if keep_right_coords:
         left_subdf = left_df.iloc[left_rowidxs, :]
         right_subdf = right_df.iloc[right_rowidxs, 3:]
@@ -515,16 +520,16 @@ def join_singlechrom_dfs(left_df, right_df, how, keep_right_coords, find_nearest
     right_subdf.index = left_rowidxs
     
     # do merge
-    print(f'Doing merge')
+    logger.debug(f'Doing merge')
     merged_right_subdf = merge_right_subdf(right_subdf, merge, annot_columns)
 
     # join with left_df
-    print(f'Joining with left df')
+    logger.debug(f'Joining with left df')
     joined_df = left_df.join(merged_right_subdf, how=how)
 
     # fetch nearest
     if (how == 'left') and find_nearest:
-        print(f'Doing fetch nearest')
+        logger.debug(f'Doing fetch nearest')
         joined_df = fetch_nearest(joined_df, right_df, left_rowidxs, annot_columns)
 
     return joined_df
@@ -671,12 +676,12 @@ def group_df_bychrom(df):
     return result
 
 
-def join_main_newest(left_df, right_df, how, merge, find_nearest, index_col):
+def join_main_newest(left_df, right_df, how, merge, find_nearest, index_col, sort, chromdict, logger):
     ###
     annot_columns = right_df.columns[3:].to_list()
 
     ###
-    print(f'Grouping dataframes by chromosome')
+    logger.debug(f'Grouping dataframes by chromosome')
     left_bychrom = group_df_bychrom(left_df)
     right_bychrom = group_df_bychrom(right_df)
 
@@ -684,14 +689,14 @@ def join_main_newest(left_df, right_df, how, merge, find_nearest, index_col):
     right_chroms = set(right_bychrom.keys())
     common_chroms = left_chroms.intersection(right_chroms)
     leftonly_chroms = left_chroms.difference(right_chroms)
-    rightonly_chroms = right_chroms.difference(left_chroms)
+    #rightonly_chroms = right_chroms.difference(left_chroms)
 
     ###
-    print(f'Doing join by chromosome')
+    logger.debug(f'Doing join by chromosome')
     keep_right_coords = (merge in ('weighted_mean', 'longest'))
     joined_bychrom = dict()
     for chrom in common_chroms:
-        print(f'chrom {chrom}')
+        logger.info(f'chrom {chrom}')
         joined_df = join_singlechrom_dfs(
             left_bychrom[chrom], 
             right_bychrom[chrom], 
@@ -700,6 +705,7 @@ def join_main_newest(left_df, right_df, how, merge, find_nearest, index_col):
             find_nearest,
             annot_columns,
             merge,
+            logger,
         )
         #joined_df = merge_joined_df(
         #    joined_df, right_df, merge, index_col, how, annot_columns,
@@ -707,18 +713,39 @@ def join_main_newest(left_df, right_df, how, merge, find_nearest, index_col):
         joined_bychrom[chrom] = joined_df
 
     ###
-    print(f'Concatenating dataframes of all chromosomes')
+    logger.debug(f'Concatenating dataframes of all chromosomes')
     if how == 'inner':
-        result = pd.concat(list(joined_bychrom.values()), axis=0)
+        if sort:
+            sorted_chroms = sorted(
+                common_chroms, 
+                key=(lambda x: chromdict.contigs.index(x)),
+            )
+            concat_dfs = (
+                joined_bychrom[x] for x in sorted_chroms
+            )
+        else:
+            concat_dfs = iter(joined_bychrom.values())
     elif how == 'left':
-        result = pd.concat(
-            (
-                list(joined_bychrom.values()) 
-                + [left_bychrom[chrom] for chrom in leftonly_chroms]
-            ), 
-            axis=0,
-        )
+        if sort:
+            sorted_chroms = sorted(
+                itertools.chain(common_chroms, leftonly_chroms),
+                key=(lambda x: chromdict.contigs.index(x)),
+            )
+            concat_dfs = (
+                (
+                    left_bychrom[x]  
+                    if x in leftonly_chroms else
+                    joined_bychrom[x]
+                )
+                for x in sorted_chroms
+            )
+        else:
+            concat_dfs = itertools.chain(
+                iter(joined_bychrom.values()),
+                (left_bychrom[chrom] for chrom in leftonly_chroms),
+            )
 
+    result = pd.concat(concat_dfs, axis=0)
     result.reset_index(inplace=True, drop=True)
     if keep_right_coords:
         result.drop(columns=['Start_right', 'End_right'], inplace=True)
@@ -728,7 +755,8 @@ def join_main_newest(left_df, right_df, how, merge, find_nearest, index_col):
 
 def join_newest(
     left_df, right_df, how='inner', find_nearest=False, merge=None, as_gr=False,
-    sort=False, chromdict=None, 
+    sort=False, chromdict=None, refver=None,
+    verbose=False,
 ):
     index_col = '__index'
 
@@ -739,64 +767,23 @@ def join_newest(
         None,
     )
     assert how in ('left', 'inner')
+    if sort and ((chromdict is None) and (refver is None)):
+        raise Exception(f'If "sort" is True, "chromdict" or "refver" must be given')
     join_df_sanitycheck(left_df, right_df, index_col)
+
+    # set logger
+    logger = (LOGGER_DEBUG if verbose else LOGGER_INFO)
 
     # arg handling
     left_df = join_preprocess_df(left_df)
     right_df = join_preprocess_df(right_df)
+    if chromdict is None:
+        chromdict = common.DEFAULT_CHROMDICTS[refver]
 
     # join
-    result = join_main_newest(left_df, right_df, how, merge, find_nearest, index_col)
+    result = join_main_newest(left_df, right_df, how, merge, find_nearest, index_col, sort, chromdict, logger)
 
     return result
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

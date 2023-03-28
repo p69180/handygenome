@@ -162,7 +162,8 @@ def unit_job_core(
     # loop over variant records
     vr_iterator = in_vcf.fetch()
     for vr in vr_iterator:
-        common.print_timestamp(f'Processing {str(vr)}')  # for logging
+        vrspec = '\t'.join([vr.contig, vr.pos, vr.ref, vr.alts])
+        common.print_timestamp(f'Processing {vrspec}')  # for logging
 
         if added_new_samples:
             new_vr = varianthandler.reheader(vr, new_header)
@@ -363,7 +364,7 @@ def argument_parser(cmdargs):
 
     parser_dict['optional'].add_argument(
         '--memlimit', dest='memuse_limit_gb', required=False,
-        default=5.0,
+        default=4.0,
         type=float,
         metavar='<memory limit per job>',
         help=f'Maximum memory limit per job in gigabytes.',

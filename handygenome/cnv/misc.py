@@ -1381,9 +1381,9 @@ def make_depth_ratio_df(tumor_depth_df, normal_depth_df, as_gr=False):
 
 def merge_normal_tumor_bafs(tumor_baf_gr, normal_baf_gr, region_gr, as_gr=False):
     # convert df types
-    tumor_baf_gr = arg_into_gr(tumor_baf_gr)
-    normal_baf_gr = arg_into_gr(normal_baf_gr)
-    region_gr = arg_into_gr(region_gr)
+    #tumor_baf_gr = arg_into_gr(tumor_baf_gr)
+    #normal_baf_gr = arg_into_gr(normal_baf_gr)
+    #region_gr = arg_into_gr(region_gr)
 
     # sanity check
     assert 'baf' in tumor_baf_gr.columns
@@ -1393,7 +1393,7 @@ def merge_normal_tumor_bafs(tumor_baf_gr, normal_baf_gr, region_gr, as_gr=False)
     result = region_gr[[]]  
 
     # tumor
-    result = pyranges_helper.join_new(
+    result = pyranges_helper.join_newest(
         result, tumor_baf_gr,
         how='left', find_nearest=False, merge='mean',
         as_gr=False,
@@ -1402,7 +1402,7 @@ def merge_normal_tumor_bafs(tumor_baf_gr, normal_baf_gr, region_gr, as_gr=False)
     result = pr.PyRanges(result)
 
     # normal
-    result = pyranges_helper.join_new(
+    result = pyranges_helper.join_newest(
         result, normal_baf_gr,
         how='left', find_nearest=False, merge='mean',
         as_gr=False,
@@ -1419,7 +1419,6 @@ def merge_normal_tumor_bafs(tumor_baf_gr, normal_baf_gr, region_gr, as_gr=False)
 def handle_merged_baf_df(merged_baf_df):
     """Find regions with normal sample baf deviating from 0.5"""
     pass
-
 
     
 
