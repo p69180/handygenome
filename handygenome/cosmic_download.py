@@ -1,8 +1,7 @@
 import base64
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
+import handygenome.common as common
+import handygenome.deco as deco
 
 
 def get_cosmic_auth_string(email, password):
@@ -10,7 +9,7 @@ def get_cosmic_auth_string(email, password):
     return auth_string
 
 
-@common.get_deco_arg_choices({'refver': ('GRCh37', 'GRCh38')})
+@deco.get_deco_arg_choices({'refver': ('GRCh37', 'GRCh38')})
 def get_cosmic_file_url(auth_string, refver, cosmicver, cosmicfile):
     open_url = f'https://cancer.sanger.ac.uk/cosmic/file_download/{refver}/cosmic/{cosmicver}/{cosmicfile}'
     url = common.http_get(open_url, headers={'Authorization' : f'Basic {auth_string}'})['url']

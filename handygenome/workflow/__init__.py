@@ -14,6 +14,7 @@ import pyranges as pr
 
 import importlib
 import handygenome.common as common
+import handygenome.deco as deco
 
 
 SLURMBIN = '/usr/local/slurm/bin'
@@ -776,7 +777,7 @@ class Job:
                           'TIMEOUT')
     jobstates_unknown = ('REVOKED',)
 
-    @common.get_deco_num_set_differently(
+    @deco.get_deco_num_set_differently(
         ('jobscript_path', 'jobscript_string'), 1)
     def __init__(self, jobscript_path=None, jobscript_string=None, 
                  verbose=True, logger=None):

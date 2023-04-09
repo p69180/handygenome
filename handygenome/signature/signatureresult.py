@@ -1,16 +1,15 @@
 import pysam
 import pandas as pd
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-varianthandler = importlib.import_module('.'.join([top_package_name, 'variant', 'varianthandler']))
-signature_misc = importlib.import_module('.'.join([top_package_name, 'signature', 'misc']))
-sigprofiler = importlib.import_module('.'.join([top_package_name, 'signature', 'sigprofiler']))
-cataloguing = importlib.import_module('.'.join([top_package_name, 'signature', 'cataloguing']))
-plotter_sbs96 = importlib.import_module('.'.join([top_package_name, 'signature', 'plotter_sbs96']))
-libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
+import handygenome.common as common
+import handygenome.workflow as workflow
+import handygenome.variant.varianthandler as varianthandler
+import handygenome.signature.misc as signature_misc
+import handygenome.signature.sigprofiler as sigprofiler
+import handygenome.signature.cataloguing as cataloguing
+import handygenome.signature.plotter_sbs96 as plotter_sbs96
+import handygenome.variant.vcfspec as libvcfspec
+import handygenome.deco as deco
 
 
 LOGGER = workflow.get_logger(__name__, level='info')
@@ -53,9 +52,9 @@ class SignatureResult:
             raise Exception(f'Unavailable catalogue type')
 
 
-@common.get_deco_arg_choices({'refver': signature_misc.AVAILABLE_REFVERS})
-@common.get_deco_arg_choices({'catalogue_type': ('sbs96', 'id83')})
-@common.get_deco_arg_choices({'cataloguer': ('custom', 'sigprofiler')})
+@deco.get_deco_arg_choices({'refver': signature_misc.AVAILABLE_REFVERS})
+@deco.get_deco_arg_choices({'catalogue_type': ('sbs96', 'id83')})
+@deco.get_deco_arg_choices({'cataloguer': ('custom', 'sigprofiler')})
 def get_sigresult_from_vcfspecs(vcfspec_iter, refver='GRCh37', 
                                 catalogue_type='sbs96',
                                 cataloguer='custom',
@@ -110,7 +109,7 @@ def get_sigresult_from_vcfspecs(vcfspec_iter, refver='GRCh37',
     return sigresult
 
 
-@common.get_deco_arg_choices({'refver': signature_misc.AVAILABLE_REFVERS})
+@deco.get_deco_arg_choices({'refver': signature_misc.AVAILABLE_REFVERS})
 def get_sigresult_from_vcfpath(vcf_path, refver='GRCh37', **kwargs):
     vcfspec_iter = (
         libvcfspec.Vcfspec.from_vr(vr)

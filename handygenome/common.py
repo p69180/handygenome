@@ -35,6 +35,7 @@ pysam file mode string
 
 import sys
 import os
+
 import re
 import time
 import datetime
@@ -55,15 +56,18 @@ import gzip
 import subprocess
 import signal
 import logging
+import importlib
 
 import psutil
 import pysam
+import pandas as pd
 import pyranges as pr
 import numpy as np
 import Bio.Seq
 import scipy.stats
 
-import importlib
+import handygenome.deco as deco
+
 TOP_PACKAGE_NAME = __name__.split('.')[0]
 TOP_PACKAGE = importlib.import_module(TOP_PACKAGE_NAME)
 PROJECT_PATH = os.path.dirname(os.path.dirname(TOP_PACKAGE.__file__))
@@ -173,217 +177,6 @@ def cpformat(obj, **kwargs):
 
 def cpprint(obj):
     print(cpformat(obj))
-
-
-# timer decorator
-
-def deco_timer(func):
-    """Print the runtime of the decorated function"""
-
-    @functools.wraps(func)
-    def wrapper_timer(*args, **kwargs):
-        start_time = time.perf_counter()    # 1
-        value = func(*args, **kwargs)
-        end_time = time.perf_counter()      # 2
-        run_time = end_time - start_time
-        print(run_time)
-
-        return value
-
-    return wrapper_timer
-
-
-###################################################
-
-# logger
-def make_funclogger(level, name):
-    level = getattr(logging, level.upper())
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-    logger.propagate = False
-    
-    formatter = logging.Formatter(
-        fmt='[%(asctime)s %(levelname)s] %(module)s.%(funcName): %(message)s', 
-        datefmt='%Z %Y-%m-%d %H:%M:%S',
-    )
-
-    sh = logging.StreamHandler()
-    sh.setLevel(level)
-    sh.setFormatter(formatter)
-    logger.addHandler(sh)
-
-    return logger
-
-
-FUNCLOGGER_DEBUG = make_funclogger(level='debug', name='FUNCLOGGER_DEBUG')
-FUNCLOGGER_INFO = make_funclogger(level='info', name='FUNCLOGGER_INFO')
-
-
-###################################################
-
-# argument sanity check decorators
-
-def get_deco_num_set(names, n):
-    def decorator(func):
-        sig = inspect.signature(func)
-        if not set(names).issubset(sig.parameters.keys()):
-            raise Exception(
-                f'The names of parameters given to '
-                f'"get_deco_num_set" function '
-                f'is not included in the parameter names of '
-                f'the function "{func.__name__}".')
-
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            ba = sig.bind(*args, **kwargs)
-            n_set = sum((name in ba.arguments) for name in names)
-            if n_set != n:
-                raise ValueError(
-                    f'For the function "{func.__name__}", the '
-                    #f'number of parameters set from arguments '
-                    f'number of parameters being set, '
-                    f'among {tuple(names)}, must be {n}.')
-
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
-
-
-def get_deco_num_notNone(names, n):
-    def decorator(func):
-        sig = inspect.signature(func)
-        if not set(names).issubset(sig.parameters.keys()):
-            raise Exception(
-                f'The names of parameters given to '
-                f'"get_deco_num_set_differently" function '
-                f'is not included in the parameter names of '
-                f'the function "{func.__name__}".')
-
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            ba = sig.bind(*args, **kwargs)
-            ba.apply_defaults()
-
-            n_notNone = 0
-            for name in names:
-                set_val = ba.arguments[name]
-                if set_val is not None:
-                    n_notNone += 1
-
-            if n_notNone != n:
-                raise ValueError(
-                    f'For the function "{func.__name__}", the '
-                    f'number of parameters, among {tuple(names)}, '
-                    f'being set as a value different from the default, '
-                    f'must be {n}.')
-
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
-
-
-def get_deco_num_set_differently(names, n):
-    def decorator(func):
-        sig = inspect.signature(func)
-        if not set(names).issubset(sig.parameters.keys()):
-            raise Exception(
-                f'The names of parameters given to '
-                f'"get_deco_num_set_differently" function '
-                f'is not included in the parameter names of '
-                f'the function "{func.__name__}".')
-
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            ba = sig.bind(*args, **kwargs)
-            ba.apply_defaults()
-
-            n_diff = 0
-            for name in names:
-                default_val = sig.parameters[name].default
-                set_val = ba.arguments[name]
-                if default_val is None:
-                    if set_val is not None:
-                        n_diff += 1
-                else:
-                    if set_val != default_val:
-                        n_diff += 1
-
-            if n_diff != n:
-                raise ValueError(
-                    f'For the function "{func.__name__}", the '
-                    f'number of parameters, among {tuple(names)}, '
-                    f'being set as a value different from the default, '
-                    f'must be {n}.')
-
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
-
-
-def get_deco_arg_choices(mapping):
-    """Args:
-        mapping: {'argname': (valid_value1, valid_value2, ...), ...}
-    """
-
-    def decorator(func):
-        sig = inspect.signature(func)
-        if not set(mapping.keys()).issubset(sig.parameters.keys()):
-            raise Exception(
-                f'The names of parameters given to '
-                f'"get_deco_check_arg_choices" function '
-                f'is not included in the parameter names of '
-                f'the function "{func.__name__}".')
-
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            ba = sig.bind(*args, **kwargs)
-            ba.apply_defaults()
-            for key, val in mapping.items():
-                if ba.arguments[key] not in val:
-                    raise ValueError(
-                        f'For the function "{func.__name__}", '
-                        f'the parameter "{key}" must be one of these values: '
-                        f'{tuple(val)}.')
-
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
-
-# other decorators
-def get_deco_timestamp(msg, logger):
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            logger.info(f'BEGINNING {msg}')
-            result = func(*args, **kwargs)
-            logger.info(f'FINISHED {msg}')
-            return result
-        return wrapper
-
-    return decorator
-
-
-###################################################
-
-
-def repr_base(obj, keylist, comma_sep_int=False):
-    string_list = list()
-    for key in keylist:
-        val = getattr(obj, key)
-        if isinstance(val, int) and comma_sep_int:
-            string_list.append(f'{key}={val:,}')
-        else:
-            string_list.append(f'{key}={repr(val)}')
-
-    return ', '.join(string_list)
 
 
 ###################################################
@@ -514,11 +307,11 @@ AVAILABLE_REFVERS = tuple(DEFAULT_FASTA_PATHS.keys())
 AVAILABLE_REFVERS_PLUSNONE = AVAILABLE_REFVERS + (None,)
 
 
-###################################################
+####################################################
 
 
 class ChromDict(collections.OrderedDict):
-    @get_deco_num_set_differently(
+    @deco.get_deco_num_set_differently(
         ('fasta_path', 'fasta', 'bam_path', 'bam', 
          'vcfheader', 'bamheader', 'custom', 'refver'), 1)
     def __init__(self, fasta_path=None, fasta=None, bam_path=None, bam=None, 
@@ -564,6 +357,13 @@ class ChromDict(collections.OrderedDict):
         self.contigs = list(self.keys())
         self.lengths = list(self.values())
 
+    def get_cumpos0(self, chrom, pos0):
+        chromidx = self.contigs.index(chrom)
+        if chromidx == 0:
+            return pos0
+        else:
+            return pos0 + sum(self.lengths[:chromidx])
+
     @functools.cached_property
     def is_chr_prefixed(self):
         relevant_chroms = [
@@ -600,15 +400,22 @@ class ChromDict(collections.OrderedDict):
     def assembled_chroms(self):
         return [x for x in self.contigs if RE_PATS['assembled_chromosome'].fullmatch(x) is not None]
 
-    def to_gr(self, assembled_only=False):
-        result = pr.PyRanges(
-            chromosomes=self.contigs,
-            starts=([0] * len(self.contigs)),
-            ends=self.lengths
-        )
+    def to_gr(self, assembled_only=False, as_gr=True):
+        result = pd.DataFrame({
+            'Chromosome': self.contigs,
+            'Start': 0,
+            'End': self.lengths,
+        })
         if assembled_only:
-            result = result[result.Chromosome.isin(self.assembled_chroms)]
-        return result
+            selector = result['Chromosome'].apply(
+                lambda x: RE_PATS['assembled_chromosome'].fullmatch(x) is not None
+            )
+            result = result.loc[selector, :]
+
+        if as_gr:
+            return pr.PyRanges(result)
+        else:
+            return result
 
     def to_interval_list(self):
         intvlist = IntervalList()
@@ -625,173 +432,6 @@ DEFAULT_CHROMDICTS = RefverDict({
 })
 
 
-
-#class Vcfspec:
-#    # constructors #
-#    def __init__(self, chrom=None, pos=None, ref=None, alts=None, 
-#                 somaticindex=1, germlineindexes=(0, 0)):
-#        if alts is not None:
-#            if not isinstance(alts, (tuple, list)):
-#                raise Exception(f'"alts" argument must be a tuple or a list.')
-#
-#        self.chrom = chrom
-#        self.pos = pos
-#        self.ref = ref
-#        if alts is not None:
-#            self.alts = tuple(alts)
-#        self.somaticindex = somaticindex
-#        self.germlineindexes = sorted(germlineindexes)
-#
-#    @classmethod
-#    def from_vr(cls, vr):
-#        return cls(chrom=vr.contig, pos=vr.pos, ref=vr.ref, alts=vr.alts)
-#    ################
-#
-#    def __repr__(self):
-#        if len(self.alts) == 1:
-#            altstring = str(self.alts[0])
-#        else:
-#            altstring = str(list(self.alts))
-#        return (f'<Vcfspec ({self.chrom}:{self.pos} '
-#                f'{self.ref}>{altstring})>')
-#
-#    def __hash__(self):
-#        return hash(self.get_tuple())
-#
-#    def __eq__(self, other):
-#        return all(getattr(self, key) == getattr(other, key)
-#                   for key in ('chrom', 'pos', 'ref', 'alts'))
-#
-#    @property
-#    def pos0(self):
-#        return self.pos - 1
-#
-#    @property
-#    def end0(self):
-#        return self.pos0 + len(self.ref)
-#
-#    @property
-#    def alleles(self):
-#        return (self.ref,) + self.alts
-#
-#    @property
-#    def germline(self):
-#        alleles = self.alleles
-#        return tuple(alleles[x] for x in self.germlineindexes)
-#
-#    @property
-#    def somatic(self):
-#        return self.alleles[self.somaticindex]
-#
-#    def get_id(self):
-#        return '_'.join([self.chrom, 
-#                         str(self.pos), 
-#                         self.ref, 
-#                         '|'.join(self.alts)])
-#
-#    def get_mutation_type(self, alt_index=0):
-#        return get_mttype(self.ref, self.alts[alt_index])
-#
-#    def get_mttype_firstalt(self):
-#        return self.get_mutation_type(0)
-#
-#    def get_tuple(self):
-#        return (self.chrom, self.pos, self.ref, self.alts)
-#
-#    ### ranges
-#    @property
-#    def REF_range0(self):
-#        return range(self.pos0, self.end0)
-#
-#    @functools.cache
-#    def get_preflank_range0(self, idx=0, flanklen=1):
-#        assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
-#
-#        if self.alts[idx][0] == self.ref[0]:
-#            flanklen = flanklen - 1
-#        return range(self.pos0 - flanklen, self.pos0)
-#
-#    @functools.cache
-#    def get_postflank_range0(self, flanklen=1):
-#        assert flanklen >= 1, f'"flanklen" argument must be at least 1.'
-#
-#        return range(self.pos0 + len(self.ref),
-#                     self.pos0 + len(self.ref) + flanklen)
-#
-#    # misc
-#    def apply_to_vr(self, vr):
-#        vr.contig = self.chrom
-#        vr.pos = self.pos
-#        vr.ref = self.ref
-#        vr.alts = self.alts
-#
-#    def iter_monoalts(self):
-#        for alt in self.alts:
-#            new_vcfspec = self.__class__(self.chrom, self.pos, self.ref, (alt,))
-#            yield new_vcfspec
-#
-#    def get_monoalt(self, alt_index=0):
-#        return self.__class__(
-#            self.chrom, self.pos, self.ref, (self.alts[alt_index],)
-#        )
-#
-#    def check_without_N(self):
-#        return (
-#            without_N(self.ref) and
-#            all(without_N(x) for x in self.alts)
-#        )
-#
-#    def to_hgvsg(self, alt_index=0):
-#        chrom = self.chrom
-#        pos = self.pos
-#        ref = self.ref
-#        alt = self.alts[alt_index]
-#        mttype = self.get_mutation_type(alt_index)
-#
-#        if mttype == 'snv':
-#            result = f'{chrom}:g.{pos}{ref}>{alt}'
-#        elif mttype == 'mnv':
-#            pos2 = pos + (len(ref) - 1)
-#            result = f'{chrom}:g.{pos}_{pos2}delins{alt}'
-#        elif mttype == 'ins':
-#            inserted_seq = alt[1:]
-#            result = f'{chrom}:g.{pos}_{pos+1}ins{inserted_seq}'
-#        elif mttype == 'del':
-#            pos1 = pos + 1
-#            pos2 = pos + (len(ref) - 1)
-#            if pos1 == pos2:
-#                result = f'{chrom}:g.{pos1}del'
-#            else:
-#                result = f'{chrom}:g.{pos1}_{pos2}del'
-#        elif mttype == 'delins':
-#            pos1 = pos
-#            pos2 = pos + (len(ref) - 1)
-#            if pos1 == pos2:
-#                result = f'{chrom}:g.{pos1}delins{alt}'
-#            else:
-#                result = f'{chrom}:g.{pos1}_{pos2}delins{alt}'
-#
-#        return result
-#
-#    def to_gr(self):
-#        ref_range0 = self.REF_range0
-#        return pr.from_dict(
-#            {
-#                'Chromosome': [self.chrom], 
-#                'Start': [ref_range0.start], 
-#                'End': [ref_range0.stop],
-#            }
-#        )
-#
-#
-#def check_vcfspec_monoalt(vcfspec):
-#    if len(vcfspec.alts) != 1:
-#        raise Exception('The input vcfspec must be with single ALT.')
-#
-## alias
-#check_vcfspec_monoallele = check_vcfspec_monoalt
-
-
 class Interval:
     """
     Attributes:
@@ -804,7 +444,9 @@ class Interval:
         length
     """
 
-    def __init__(self, chrom, *, start1=None, end1=None, start0=None, end0=None, is_reverse=False):
+    def __init__(
+        self, chrom, *, start1=None, end1=None, start0=None, end0=None, is_reverse=False,
+    ):
         """Args:
             'chrom' is mandatory.
             ('start1' and 'end1') or ('start0' and 'end0') must 
@@ -890,6 +532,33 @@ class IntervalList(list):
         return cls.from_gr(cls, vcfspec.to_gr())
 
     @classmethod
+    def from_margin(cls, refver, chrom_left, start0_left, chrom_right, end0_right):
+        chromdict = DEFAULT_CHROMDICTS[refver]
+        cumpos0_left = chromdict.get_cumpos0(chrom_left, start0_left)
+        cumpos0_right = chromdict.get_cumpos0(chrom_right, end0_right)
+        if cumpos0_left >= cumpos0_right:
+            raise Exception(f'"left position" comes later than "right_position"')
+
+        result = cls()
+        if chrom_left == chrom_right:
+            result.append(Interval(chrom=chrom_left, start0=start0_left, end0=end0_right))
+        else:
+            chrom_left_idx = chromdict.contigs.index(chrom_left)
+            chrom_right_idx = chromdict.contigs.index(chrom_right)
+            result.append(
+                Interval(chrom=chrom_left, start0=start0_left, end0=chromdict[chrom_left])
+            )
+            for chrom in chromdict.contigs[(chrom_left_idx + 1):chrom_right_idx]:
+                result.append(
+                    Interval(chrom=chrom, start0=0, end0=chromdict[chrom])
+                )
+            result.append(
+                Interval(chrom=chrom_right, start0=0, end0=end0_right)
+            )
+
+        return result
+
+    @classmethod
     def get_depth_bins(cls, refver, width=100_000):
         result = cls()
         chromdict = ChromDict(refver=refver)
@@ -919,8 +588,7 @@ class IntervalList(list):
     # properties
     @functools.cached_property
     def lengths_cumsum(self):
-        return list(itertools.accumulate(intv.length 
-                                         for intv in self))
+        return list(itertools.accumulate(intv.length for intv in self))
     @property
     def length(self):
         return sum(intv.length for intv in self)
@@ -960,7 +628,7 @@ class IntervalList(list):
     def merge(self):
         return self.__class__.from_gr(self.to_gr().merge())
 
-    @get_deco_num_set(('b', 'l', 'r'), 1)
+    @deco.get_deco_num_set(('b', 'l', 'r'), 1)
     def slop(self, chromdict, b=None, l=None, r=None):
         def start_handler(start0, width):
             new_start0 = max(0, start0 - width)
@@ -987,8 +655,8 @@ class IntervalList(list):
 
         return result
 
-    @get_deco_num_set(('num', 'width'), 1)
-    def split(self, num=None, width=None):
+    @deco.get_deco_num_set(('num', 'width'), 1)
+    def split(self, *, num=None, width=None):
         #self.sort_intervals(chromdict)
 
         # get result_lengths_cumsum
@@ -1102,6 +770,51 @@ class IntervalList(list):
         return chrom, new_pos0, self_idx
 
 
+
+
+###################################################
+
+# logger
+def make_funclogger(level, name):
+    level = getattr(logging, level.upper())
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    logger.propagate = False
+    
+    formatter = logging.Formatter(
+        fmt='[%(asctime)s %(levelname)s] %(module)s.%(funcName): %(message)s', 
+        datefmt='%Z %Y-%m-%d %H:%M:%S',
+    )
+
+    sh = logging.StreamHandler()
+    sh.setLevel(level)
+    sh.setFormatter(formatter)
+    logger.addHandler(sh)
+
+    return logger
+
+
+FUNCLOGGER_DEBUG = make_funclogger(level='debug', name='FUNCLOGGER_DEBUG')
+FUNCLOGGER_INFO = make_funclogger(level='info', name='FUNCLOGGER_INFO')
+
+
+
+###################################################
+
+
+def repr_base(obj, keylist, comma_sep_int=False):
+    string_list = list()
+    for key in keylist:
+        val = getattr(obj, key)
+        if isinstance(val, int) and comma_sep_int:
+            string_list.append(f'{key}={val:,}')
+        else:
+            string_list.append(f'{key}={repr(val)}')
+
+    return ', '.join(string_list)
+
+
+
 ###################################################
 
 def without_N(seq):
@@ -1149,11 +862,22 @@ def get_interval_lengths_num(total_length, num):
     interval_width_2 = q
     interval_num_2 = interval_num - r
 
-    result = list(itertools.chain(
-        itertools.repeat(interval_width_1, interval_num_1),
-        itertools.repeat(interval_width_2, interval_num_2)))
+    result = list(
+        itertools.chain(
+            itertools.repeat(interval_width_1, interval_num_1),
+            itertools.repeat(interval_width_2, interval_num_2),
+        )
+    )
 
     return result
+
+
+def get_split_nums(total_length, num):
+    arrsp = np.array_split(np.zeros(total_length), num)
+    return np.fromiter(
+        (x.shape[0] for x in arrsp if x.shape[0] != 0), 
+        dtype=int,
+    )
 
 
 def get_interval_lengths_width(total_length, width):
@@ -1402,7 +1126,7 @@ def printwidth(df, margin = 2, target = 'out'):
 
 ###################################################
 
-@get_deco_num_set(('chromdict', 'vcfheader', 'bamheader'), 1)
+@deco.get_deco_num_set(('chromdict', 'vcfheader', 'bamheader'), 1)
 def infer_refver(chromdict=None, vcfheader=None, bamheader=None):
     if chromdict is not None:
         return infer_refver_chromdict(chromdict)
@@ -1532,7 +1256,7 @@ def unzip(src, dest, rm_src=False):
         os.remove(src)
 
 
-@get_deco_arg_choices({'mode': ('r', 'w')})
+@deco.get_deco_arg_choices({'mode': ('r', 'w')})
 def openfile(fname, mode='r'):
     if mode == 'r':
         mode = 'rt'
@@ -1843,8 +1567,11 @@ def get_indexes_of_array(values, ordered_keys):
 
 
 def nanaverage(values, weights):
-    assert isinstance(values, np.ndarray)
-    assert isinstance(weights, np.ndarray)
+    #assert isinstance(values, np.ndarray)
+    #assert isinstance(weights, np.ndarray)
+
+    values = np.array(values)
+    weights = np.array(weights)
 
     selector = ~np.isnan(values)
     new_values = values[selector]
@@ -1886,8 +1613,77 @@ def get_ranks(arr):
     return ranks / len(ranks)
 
 
-def arg_to_list(arg):
+def arg_into_list(arg):
     if not isinstance(arg, (tuple, list)):
         arg = [arg]
     return arg
+
+arg_to_list = arg_into_list
         
+
+def arg_into_df(arg):
+    if arg is None:
+        return None
+    elif isinstance(arg, pd.DataFrame):
+        check_having_coord_cols(arg)
+        return arg
+    elif isinstance(arg, pr.PyRanges):
+        return arg.df
+    else:
+        raise Exception(f'Argument must be either None, pd.DataFrame, or pr.PyRanges')
+
+
+def arg_into_gr(arg):
+    if arg is None:
+        return None
+    elif isinstance(arg, pd.DataFrame):
+        check_having_coord_cols(arg)
+        return pr.PyRanges(arg)
+    elif isinstance(arg, pr.PyRanges):
+        return arg
+    else:
+        raise Exception(f'Argument must be either None, pd.DataFrame, or pr.PyRanges')
+
+
+def check_having_coord_cols(arg):
+    if not (
+        {'Chromosome', 'Start', 'End'}.issubset(arg.columns)
+        or arg.index.names == ['Chromosome', 'Start', 'End']
+    ):
+        raise Exception(f'Input dataframe must have columns "Chromosome", "Start", and "End".')
+
+
+def get_mode(data, xs=np.arange(0, 0.51, 0.01)):
+    kernel = scipy.stats.gaussian_kde(data)
+    ys = kernel(xs)
+    return xs[np.argmax(ys)]
+
+
+def prefix_chr(s):
+    if s.startswith('chr'):
+        return s
+    else:
+        return 'chr' + s
+
+
+def shorten_int(numlist):
+    mapping = {0: '', 1: 'K', 2: 'M', 3: 'G'}
+
+    log = np.log10(numlist)
+    assert (log < 12).all(), f'Numbers greater than or equal to 10^12 are not allowed.'
+
+    qs = [int(y) for y in (log / 3)]
+
+    suffixes = [mapping[x] for x in qs]
+    new_numlist = numlist / (10 ** (np.array(qs) * 3))
+    result = [
+        (f'{int(x)}' if y == '' else f'{x:.2f} {y}')
+        for x, y in zip(new_numlist, suffixes)
+    ]
+    return result
+    
+
+
+
+
+    

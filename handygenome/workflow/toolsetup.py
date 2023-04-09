@@ -5,15 +5,21 @@ import textwrap
 import stat
 import string
 
+import pysam
+import pyranges as pr
+
 import handygenome.common as common
 import handygenome.workflow as workflow
+import handygenome.vcfeditor.misc as vcfmisc
+import handygenome.ucscdata as ucscdata
+import handygenome.blacklist as blacklist
 
 
 SPLIT_INFILE_PAT = re.compile(r'([0-9]+)([A-Za-z]*)(\.vcf\.gz)')
 LETTERS = sorted(string.ascii_letters)
 
 
-def make_next_infile(fname):
+def make_next_split_vcf_path(fname):
     """Examples:
         012.vcf.gz => 012A.vcf.gz => 012B.vcf.gz => ...
         0114Z.vcf.gz => 0114a.vcf.gz => 0114b.vcf.gz => ...
@@ -36,6 +42,8 @@ def make_next_infile(fname):
 
     next_bname = mat.group(1) + next_chars + mat.group(3)
     return os.path.join(dname, next_bname)
+
+make_next_infile = make_next_split_vcf_path
 
 
 def setup_logger(args, logger_name=None, tmpdir_root=None, 
@@ -220,4 +228,42 @@ def get_script_log_paths(script_dir, log_dir, num_split):
 
     return script_path_list, log_path_list
 
+
+def make_infile_copy(infile_path, tmpdir_root, logger):
+    infile_link_path = os.path.join(tmpdir_root, 'infile_link.vcf.gz')
+    is_vcf, comp, is_bgzf = vcfmisc.get_vcf_format(infile_path)
+    if is_bgzf:
+        os.symlink(infile_path, infile_link_path)
+        indexfile_path = vcfmisc.get_indexfile_path(infile_path)
+        if indexfile_path is None:
+            logger.info(
+                f'Making index of input VCF (which will be saved in the temporary directory)'
+            )
+            infile_link_index_path = vcfmisc.make_index(infile_link_path)
+        else:
+            infile_link_index_path = f'{infile_link_path}.csi'
+            os.symlink(indexfile_path, infile_link_index_path)
+    else:
+        logger.info(f'Making bgzipped copy of input VCF')
+        in_vcf = pysam.VariantFile(infile_path)
+        out_vcf = pysam.VariantFile(infile_link_path, mode='wz', header=in_vcf.header.copy())
+        for vr in in_vcf.fetch():
+            out_vcf.write(vr)
+
+        out_vcf.close()
+        in_vcf.close()
+
+        logger.info(f'Making index of the copied VCF')
+        infile_link_index_path = vcfmisc.make_index(infile_link_path)
+
+    return infile_link_path, infile_link_index_path
+            
+        
+def get_blacklist_gr(refver):
+    cytoband_gr = ucscdata.get_cytoband_gr(refver=refver, rename_hg19=True)
+    centromere_gr = cytoband_gr[cytoband_gr.Stain == 'acen']
+    blacklist_gr = pr.concat([centromere_gr, blacklist.HIGHDEPTH_BLACKLIST_GR])
+    blacklist_gr = blacklist_gr.sort().merge()
+
+    return blacklist_gr
 

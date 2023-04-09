@@ -39,9 +39,13 @@ import handygenome.vcfeditor.indexing as indexing
 import handygenome.cnv.misc as cnvmisc
 from handygenome.variant.filter import FilterResultInfo, FilterResultFormat
 import handygenome.variant.ponbams as libponbams
+import handygenome.vcfeditor.misc as vcfmisc
 
 
 #READCOUNT_FORMAT_KEY = "allele_readcounts"
+
+LOGGER_INFO = workflow.get_debugging_logger(verbose=False)
+LOGGER_DEBUG = workflow.get_debugging_logger(verbose=True)
 
 
 class VariantPlusInitParams(dict):
@@ -1051,9 +1055,9 @@ class VariantPlusList(list):
         vp_init_params=dict(),
 
         prop=None,
-        fetch_chrom=None,
-        fetch_start0=None,
-        fetch_end0=None,
+        chrom=None,
+        start0=None,
+        end0=None,
     ):
         """Args:
             prop: probability for random selection. If None, all entries are selected.
@@ -1070,9 +1074,9 @@ class VariantPlusList(list):
 
         result.load_vps_from_vcf(
             prop=prop,
-            fetch_chrom=fetch_chrom,
-            fetch_start0=fetch_start0,
-            fetch_end0=fetch_end0,
+            chrom=chrom,
+            start0=start0,
+            end0=end0,
         )
 
         return result
@@ -1099,26 +1103,29 @@ class VariantPlusList(list):
         )
         return result
 
-    def _run_vcf_fetch(self, fetch_chrom, fetch_start0, fetch_end0):
+    def _run_vcf_fetch(self, chrom, start0, end0):
         assert isinstance(self.vcf, pysam.VariantFile)
-        assert (fetch_start0 is None) == (fetch_end0 is None)
+        assert (start0 is None) == (end0 is None)
         
-        if fetch_chrom is None:
+        if chrom is None:
             fetcher = self.vcf.fetch()
         else:
-            if ((fetch_start0 is None) or (fetch_end0 is None)):
-                fetcher = self.vcf.fetch(contig=fetch_chrom)
+            if ((start0 is None) or (end0 is None)):
+                fetcher = self.vcf.fetch(contig=chrom)
             else:
                 fetcher = self.vcf.fetch(
-                    contig=fetch_chrom, start=fetch_start0, stop=fetch_end0,
+                    contig=chrom, start=start0, stop=end0,
                 )
 
         return fetcher
 
-    def get_vr_iter_from_vcf(
-        self, fetch_chrom=None, fetch_start0=None, fetch_end0=None, prop=None,
-    ):
-        fetcher = self._run_vcf_fetch(fetch_chrom, fetch_start0, fetch_end0)
+    def _get_intervals(self, n):
+        intvlist = self.chromdict.to_interval_list()
+        split_intvlists = intvlist.split(num=n)
+        return split_intvlists
+
+    def get_vr_iter_from_vcf(self, chrom=None, start0=None, end0=None, prop=None):
+        fetcher = self._run_vcf_fetch(chrom, start0, end0)
 
         if prop is None:
             vr_iterator = fetcher
@@ -1147,13 +1154,13 @@ class VariantPlusList(list):
     def get_vp_iter_from_vcf(
         self, 
         *,
-        fetch_chrom=None, fetch_start0=None, fetch_end0=None, 
+        chrom=None, start0=None, end0=None, 
         prop=None,
         vpfilter=None,
     ):
         # "prop" is treated in VariantRecord iteration step for performance
         vr_iterator = self.get_vr_iter_from_vcf(
-            fetch_chrom, fetch_start0, fetch_end0, prop
+            chrom, start0, end0, prop
         )
         vp_iterator = self._get_vp_iter_from_vr_iter(vr_iterator)
         vp_iterator = filter(vpfilter, vp_iterator)
@@ -1162,16 +1169,16 @@ class VariantPlusList(list):
 
     def get_vp_iter_from_self(
         self, 
-        fetch_chrom=None, fetch_start0=None, fetch_end0=None, 
+        chrom=None, start0=None, end0=None, 
         prop=None,
         vpfilter=None,
     ):
         # filter by coordinates
-        if fetch_chrom is None:
+        if chrom is None:
             vp_iterator = iter(self)
         else:
             # self gets sorted
-            coord_indexes = self.get_coord_indexes(fetch_chrom, fetch_start0, fetch_end0)
+            coord_indexes = self.get_coord_indexes(chrom, start0, end0)
             if coord_indexes is None:
                 vp_iterator = iter(())
             else:
@@ -1189,9 +1196,9 @@ class VariantPlusList(list):
     def load_vps_from_vcf(
         self,
         prop=None,
-        fetch_chrom=None,
-        fetch_start0=None,
-        fetch_end0=None,
+        chrom=None,
+        start0=None,
+        end0=None,
         vpfilter=None,
     ):
         # set other params
@@ -1207,9 +1214,9 @@ class VariantPlusList(list):
 
         # make iterator 
         vp_iterator = self.get_vp_iter_from_vcf(
-            fetch_chrom=fetch_chrom, 
-            fetch_start0=fetch_start0, 
-            fetch_end0=fetch_end0, 
+            chrom=chrom, 
+            start0=start0, 
+            end0=end0, 
             prop=prop,
         )
 
@@ -1424,10 +1431,12 @@ class VariantPlusList(list):
     def fetch_by_coord(self, chrom, start0=None, end0=None):
         coord_indexes = self.get_coord_indexes(chrom, start0, end0)
         if coord_indexes is None:
-            return self.spawn()
+            #return self.spawn()
+            return iter(tuple())
         else:
-            sl = slice(coord_indexes.iloc[0], coord_indexes.iloc[-1] + 1)
-            return self[sl]
+            #sl = slice(coord_indexes.iloc[0], coord_indexes.iloc[-1] + 1)
+            #return self[sl]
+            return itertools.slice(self, coord_indexes.iloc[0], coord_indexes.iloc[-1] + 1)
 
     def sample(self, n=1):
         if len(self) == 0:
@@ -1497,12 +1506,91 @@ class VariantPlusList(list):
 #        else:
 #            return pd.DataFrame.from_dict(data)
 
+#    def get_df(
+#        self, 
+#        alt_index=0,
+#        vaf_sampleid=None, 
+#        as_gr=False, 
+#        #omit_vaf=False, 
+#        lazy=False,
+#        get_vaf_kwargs=dict(),
+#        vcf_iter_kwargs=dict(),
+#    ):
+#        # parameter setups
+#        get_vaf_kwargs['allele_index'] = alt_index + 1
+#
+#        if vaf_sampleid is None:
+#            if lazy:
+#                first_vr = next(self.get_vr_iter_from_vcf(**vcf_iter_kwargs))
+#                sample_ids = list(first_vr.header.samples)
+#            else:
+#                sample_ids = list(self[0].vr.header.samples)
+#
+#            if len(sample_ids) == 0:
+#                vaf_sampleid = None
+#                #omit_vaf = True
+#            else:
+#                vaf_sampleid = sample_ids
+#        else:
+#            if not isinstance(vaf_sampleid, (tuple, list)):
+#                vaf_sampleid = [vaf_sampleid]
+#
+#        # main
+#        chroms = list()
+#        pos1s = list()
+#        starts = list()
+#        ends = list()
+#        refs = list()
+#        alts = list()
+#
+#        if vaf_sampleid is not None:
+#            vafs = [list() for x in vaf_sampleid]
+#
+#        if lazy:
+#            vp_iterator = self.get_vp_iter_from_vcf(**vcf_iter_kwargs)
+#        else:
+#            vp_iterator = iter(self)
+#
+#        for vp in vp_iterator:
+#            chroms.append(vp.vcfspec.chrom)
+#            pos1s.append(vp.vcfspec.pos)
+#            starts.append(vp.vcfspec.pos0)
+#            ends.append(vp.vcfspec.end0)
+#            refs.append(vp.vcfspec.ref)
+#            alts.append(vp.vcfspec.alts[alt_index])
+#
+#            if vaf_sampleid is not None:
+#                for vaf_val, sublist in zip(
+#                    vp.get_vaf(vaf_sampleid, **get_vaf_kwargs),
+#                    vafs,
+#                ):
+#                    sublist.append(vaf_val)
+#
+#        # make data
+#        data = {
+#            'Chromosome': chroms,
+#            'Start': starts,
+#            'End': ends,
+#            'POS': pos1s,
+#            'REF': refs,
+#            'ALT': alts,
+#        }
+#        if vaf_sampleid is not None:
+#            for sid, vaf_sublist in zip(vaf_sampleid, vafs):
+#                data.update({f'vaf_{sid}': vaf_sublist})
+#
+#        # result
+#        if as_gr:
+#            return pr.from_dict(data)
+#        else:
+#            return pd.DataFrame.from_dict(data)
+
     def get_df(
         self, 
+        chrom=None, start0=None, end0=None,
         alt_index=0,
         vaf_sampleid=None, 
         as_gr=False, 
-        #omit_vaf=False, 
         lazy=False,
         get_vaf_kwargs=dict(),
         vcf_iter_kwargs=dict(),
@@ -1515,11 +1603,10 @@ class VariantPlusList(list):
                 first_vr = next(self.get_vr_iter_from_vcf(**vcf_iter_kwargs))
                 sample_ids = list(first_vr.header.samples)
             else:
-                sample_ids = list(first_vp.vr.header.samples)
+                sample_ids = list(self[0].vr.header.samples)
 
             if len(sample_ids) == 0:
                 vaf_sampleid = None
-                #omit_vaf = True
             else:
                 vaf_sampleid = sample_ids
         else:
@@ -1538,9 +1625,12 @@ class VariantPlusList(list):
             vafs = [list() for x in vaf_sampleid]
 
         if lazy:
-            vp_iterator = self.get_vp_iter_from_vcf(**vcf_iter_kwargs)
+            vp_iterator = self.get_vp_iter_from_vcf(
+                chrom=chrom, start0=start0, end0=end0, 
+                **vcf_iter_kwargs,
+            )
         else:
-            vp_iterator = iter(self)
+            vp_iterator = self.fetch_by_coord(chrom, start0, end0)
 
         for vp in vp_iterator:
             chroms.append(vp.vcfspec.chrom)
@@ -1574,7 +1664,9 @@ class VariantPlusList(list):
         if as_gr:
             return pr.from_dict(data)
         else:
-            return pd.DataFrame.from_dict(data)
+            return pd.DataFrame.from_dict(data).astype(
+                {'Start': int, 'End': int, 'POS': int}
+            )
 
     def get_gr(self, vaf_sampleid=None):
         return self.get_df(vaf_sampleid=vaf_sampleid, as_gr=True)
@@ -1730,7 +1822,74 @@ def vplist_get_df_subproc(vp, alt_index, vaf_sampleid, get_vaf_kwargs):
 
 
 def get_vafdf(
+    vcf_path, 
+    sampleid, 
+    nproc=1,
+    alt_index=0, 
+    get_vaf_kwargs=dict(),
+    vcf_iter_kwargs=dict(),
+    verbose=True,
+):
+    # setup params
+    logger = (LOGGER_DEBUG if verbose else LOGGER_INFO)
+    with pysam.VariantFile(vcf_path) as vcf:
+        refver = common.infer_refver_vcfheader(vcf.header)
+
+    logger.info(f'Extracting vcf position information') 
+    all_position_info = vcfmisc.get_vcf_positions(
+        vcf_path, as_iter=False, verbose=False,
+    )
+    split_position_info = [
+        x for x in np.array_split(all_position_info, nproc) if x.shape[0] != 0
+    ]
+
+    # run multiprocess jobs
+    logger.info(f'Running parallel jobs') 
+    args = (
+        (position_info, refver, vcf_path, sampleid, alt_index, get_vaf_kwargs, vcf_iter_kwargs)
+        for position_info in split_position_info
+    )
+    with multiprocessing.Pool(nproc) as pool:
+        mp_result = pool.starmap(_get_vafdf_targetfunc, args)
+        logger.info(f'Concatenating split job dataframes') 
+        result = pd.concat(itertools.chain.from_iterable(mp_result), axis=0)
+
+    result.reset_index(drop=True, inplace=True)
+
+    return result
+
+
+def _get_vafdf_targetfunc(
+    position_info, refver, vcf_path, sampleid, alt_index, get_vaf_kwargs, vcf_iter_kwargs,
+):
+    chrom_left = position_info[0][0]
+    start0_left = position_info[0][1]
+    chrom_right = position_info[-1][0]
+    end0_right = position_info[-1][1] + 1
+    intvlist = common.IntervalList.from_margin(
+        refver, chrom_left, start0_left, chrom_right, end0_right,
+    )
+    dflist = list()
+    for intv in intvlist:
+        #LOGGER_INFO.info(f'Beginning job over {intv}')
+        df = get_vafdf_nonparallel(
+            vcf_path, sampleid, 
+            chrom=intv.chrom, start0=intv.start0, end0=intv.end0,
+            alt_index=alt_index, 
+            as_gr=False, 
+            get_vaf_kwargs=get_vaf_kwargs,
+            vcf_iter_kwargs=vcf_iter_kwargs,
+            logging_lineno=1000, 
+            verbose=False,
+        )
+        dflist.append(df)
+
+    return dflist
+
+
+def get_vafdf_nonparallel(
     vcf_path, sampleid, 
+    chrom=None, start0=None, end0=None,
     alt_index=0, 
     as_gr=False, 
     get_vaf_kwargs=dict(),
@@ -1750,6 +1909,7 @@ def get_vafdf(
         ),
     )
     vafdf = vplist.get_df(
+        chrom=chrom, start0=start0, end0=end0,
         alt_index=alt_index, 
         vaf_sampleid=sampleid,
         as_gr=as_gr,

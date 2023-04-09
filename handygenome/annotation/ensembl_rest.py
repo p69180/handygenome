@@ -1,8 +1,7 @@
 import re
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
+import handygenome.common as common
+import handygenome.deco as deco
 
 
 SPECIES = common.RefverDict({
@@ -228,7 +227,7 @@ def overlap(
     return common.http_get(url, headers=HTTP_HEADERS_GET)
 
 
-@common.get_deco_arg_choices({'mode': ('cdna', 'cds', 'translation')})
+@deco.get_deco_arg_choices({'mode': ('cdna', 'cds', 'translation')})
 def map(ID, start1, end1, mode, refver):
     prefix = PREFIX_MAP[refver]
     url = '/'.join([prefix, mode, ID, f'{start1}..{end1}'])

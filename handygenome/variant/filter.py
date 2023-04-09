@@ -13,6 +13,7 @@ common = importlib.import_module(".".join([top_package_name, "common"]))
 import handygenome.workflow as workflow
 from handygenome.annotation.annotitem import AnnotItemInfoSingle, AnnotItemFormatSingle, AnnotItemFormatSampledict
 import handygenome.variant.ponbams as libponbams
+import handygenome.deco as deco
 
 
 PON_LOGGER_INFO = workflow.get_debugging_logger(title='PONfilter', verbose=False)
@@ -531,8 +532,8 @@ class TotaldepthLTFilter(SamplewiseFilter):
 
 # PON filter
 
-@common.get_deco_arg_choices({'mode': ('wgs', 'panel')})
-@common.get_deco_num_set_differently(('pon_samples', 'pon_cohorts'), 1)
+@deco.get_deco_arg_choices({'mode': ('wgs', 'panel')})
+@deco.get_deco_num_set_differently(('pon_samples', 'pon_cohorts'), 1)
 def get_ponfilter(pon_samples=None, pon_cohorts=None, refver=None, mode='wgs', **kwargs):
     if pon_cohorts is not None:
         pon_samples = libponbams.get_pon_sample_names(pon_cohorts, refver)
@@ -731,7 +732,7 @@ class PonFilterBase(SamplewiseFilter):
 
 
 class PonFilterPanelseqOld(PonFilterBase):
-    @common.get_deco_arg_choices({"mode": ("mean", "max", "median")})
+    @deco.get_deco_arg_choices({"mode": ("mean", "max", "median")})
     def __init__(
         self,
         samples,

@@ -32,12 +32,161 @@ import handygenome.variant.ponbams as libponbams
 import handygenome.bameditor as bameditor
 import handygenome.ucscdata as ucscdata
 import handygenome.blacklist as blacklist
+import handygenome.vcfeditor.misc as vcfmisc
 
 
 LOGGER_NAME = __name__.split('.')[-1]
 
 
 def unit_job(
+    split_outfile_path,
+    fetchregion,
+    infile_copy_path, 
+    bam_path_list, 
+    id_list, 
+    pon_bam_path_list, 
+    pon_id_list, 
+    refver, 
+    no_matesearch, 
+    countonly, 
+    memuse_limit_gb,
+    depth_limits,
+    mq_limits,
+    include_blacklist,
+    monitor_interval=10,
+):
+    # setup manager
+    manager = multiprocessing.Manager()
+    read_vrspecs = manager.list()
+    shareddict = manager.dict()
+    shareddict['finished'] = False
+    shareddict['outfile_path'] = split_outfile_path
+    shareddict['parent_memuse_gb'] = common.get_rss(mode='total', unit='g')
+    common.print_timestamp(f"Memory usage: {shareddict['parent_memuse_gb']} GB")
+
+    # setup paramaters
+    blacklist_gr = toolsetup.get_blacklist_gr(refver)
+
+    # make subprocess arguments
+    subproc_kwargs = {
+        'shareddict': shareddict,
+        'read_vrspecs': read_vrspecs,
+
+        'infile_copy_path': infile_copy_path, 
+        'fetchregion': fetchregion,
+        'bam_path_list': bam_path_list, 
+        'id_list': id_list, 
+        'pon_bam_path_list': pon_bam_path_list, 
+        'pon_id_list': pon_id_list, 
+        'refver': refver, 
+        'no_matesearch': no_matesearch, 
+        'countonly': countonly, 
+        'memuse_limit_gb': memuse_limit_gb,
+        'depth_limits': depth_limits,
+        'mq_limits': mq_limits,
+        'include_blacklist': include_blacklist,
+        'blacklist_gr': blacklist_gr,
+    }
+
+    # main
+    while True:
+        p = multiprocessing.Process(target=unit_job_core, kwargs=subproc_kwargs)
+        p.start()
+        while True:
+            time.sleep(monitor_interval)
+            shareddict['parent_memuse_gb'] = common.get_rss(mode='total', unit='g')
+            common.print_timestamp(f"Memory usage: {shareddict['parent_memuse_gb']} GB")
+            if not p.is_alive():
+                break
+
+        if p.exitcode != 0:
+            raise Exception(f'The subprocess finished with nonzero exit code.')
+        p.close()
+
+        if shareddict['finished']:
+            break
+        else:
+            common.print_timestamp(
+                f"Beginning next cycle with new output file: {shareddict['outfile_path']}"
+            )
+            continue
+
+
+def unit_job_core(
+    shareddict,
+    read_vrspecs,
+    infile_copy_path,
+    fetchregion,
+    bam_path_list,
+    id_list,
+    pon_bam_path_list,
+    pon_id_list,
+    refver,
+    no_matesearch,
+    countonly,
+    memuse_limit_gb,
+    depth_limits,
+    mq_limits,
+    include_blacklist,
+    blacklist_gr,
+):
+    # basic setup
+    bam_dict = {
+        sampleid: pysam.AlignmentFile(bam_path)
+        for sampleid, bam_path in zip(id_list, bam_path_list)
+    }
+    pon_bam_dict = {
+        sampleid: pysam.AlignmentFile(bam_path)
+        for sampleid, bam_path in zip(pon_id_list, pon_bam_path_list)
+    }
+    fasta = common.DEFAULT_FASTAS[refver]
+    chromdict = common.DEFAULT_CHROMDICTS[refver]
+
+    # edit vcf header
+    in_vcf = pysam.VariantFile(infile_copy_path, 'r')
+    new_header = in_vcf.header.copy()
+    added_new_samples = update_header(new_header, id_list, pon_id_list)
+    out_vcf = pysam.VariantFile(shareddict['outfile_path'], 'wz', header=new_header)
+
+    # loop over variant records
+    vr_iterator = itertools.chain.from_iterable(
+        in_vcf.fetch(*fetchregion_single)
+        for fetchregion_single in fetchregion
+    )
+    shareddict['finished'] = True
+    for vr in vr_iterator:
+        vrspec = '\t'.join([vr.contig, str(vr.pos), vr.ref, ','.join(vr.alts)])
+        if vrspec in read_vrspecs:
+            continue
+
+        read_vrspecs.append(vrspec)
+        common.print_timestamp(f'Processing {vrspec}')  # for logging
+
+        if added_new_samples:
+            new_vr = varianthandler.reheader(vr, new_header)
+        else:
+            new_vr = vr
+
+        update_new_vr(
+            new_vr, fasta, chromdict, bam_dict, pon_bam_dict, no_matesearch, countonly,
+            depth_limits, mq_limits, blacklist_gr,
+        )
+        out_vcf.write(new_vr)
+
+        if shareddict['parent_memuse_gb'] > memuse_limit_gb:
+            next_outfile_path = toolsetup.make_next_split_vcf_path(shareddict['outfile_path'])
+            shareddict['outfile_path'] = next_outfile_path
+            shareddict['finished'] = False
+            break
+
+    out_vcf.close()
+    in_vcf.close()
+
+
+##################################
+
+
+def unit_job_old(
     split_infile_path, 
     split_outfiles_dir, 
     bam_path_list, 
@@ -119,7 +268,7 @@ def unit_job(
             continue
 
 
-def unit_job_core(
+def unit_job_core_old(
     split_infile_path, 
     split_outfiles_dir, 
     bam_path_list, 
@@ -464,16 +613,6 @@ def depth_mq_limit_processing(args):
         else:
             region_gr = pr.read_bed(args.target_bed_path)
             region_length = region_gr.merge().length
-#            region_gr = pr.PyRanges(
-#                pd.read_csv(
-#                    args.target_bed_path, 
-#                    sep='\t', 
-#                    names=['Chromosome', 'Start', 'End'], 
-#                    usecols=[0, 1, 2], 
-#                    dtype={'Chromosome': str, 'Start': int, 'End': int}
-#                )
-#            )
-
 
     mq_limits = dict()
     depth_limits = dict()
@@ -485,7 +624,7 @@ def depth_mq_limit_processing(args):
         if args.depth_limits is None:
             with pysam.AlignmentFile(bam_path) as in_bam:
                 upper = (
-                    bameditor.get_average_depth(in_bam, aligned_length=region_length) 
+                    bameditor.get_average_depth(in_bam, aligned_region_length=region_length) 
                     * args.depthlimit_cov_ratio
                 )
                 depth_limits[sampleid] = [0, upper]
@@ -496,6 +635,71 @@ def depth_mq_limit_processing(args):
 
 
 def write_jobscripts(
+    tmpdir_paths, 
+    fetchregion_list,
+    parallel, 
+    infile_copy_path,
+    bam_path_list, 
+    id_list, 
+    pon_bam_path_list, 
+    pon_id_list, 
+    refver, 
+    no_matesearch,
+    countonly,
+    memuse_limit_gb,
+    depth_limits,
+    mq_limits,
+    include_blacklist,
+    jobname_prefix=__name__.split('.')[-1], 
+    nproc=1,
+):
+    jobscript_path_list = list()
+    log_path_list = list()
+    split_outfile_path_list = list()
+    for zidx in common.zrange(parallel):
+        jobscript_path = os.path.join(tmpdir_paths['scripts'], f'{zidx}.sbatch')
+        jobscript_path_list.append(jobscript_path)
+
+        log_path = os.path.join(tmpdir_paths['logs'], os.path.basename(jobscript_path) + '.log')
+        log_path_list.append(log_path)
+
+        split_outfile_path = os.path.join(tmpdir_paths['split_outfiles'], f'{zidx}.vcf.gz')
+        split_outfile_path_list.append(split_outfile_path)
+
+    kwargs_single = {
+        'infile_copy_path': infile_copy_path,
+        'bam_path_list': bam_path_list,
+        'id_list': id_list,
+        'pon_bam_path_list': pon_bam_path_list,
+        'pon_id_list': pon_id_list,
+        'refver': refver,
+        'no_matesearch': no_matesearch,
+        'countonly': countonly,
+        'memuse_limit_gb': memuse_limit_gb,
+        'depth_limits': depth_limits,
+        'mq_limits': mq_limits,
+        'include_blacklist': include_blacklist,
+    }
+    kwargs_multi = {
+        'split_outfile_path': split_outfile_path_list,
+        'fetchregion': fetchregion_list,
+    }
+
+    toolsetup.write_jobscripts(
+        script_path_list=jobscript_path_list,
+        log_path_list=log_path_list,
+        module_name=__name__,
+        unit_job_func_name='unit_job',
+        kwargs_single=kwargs_single,
+        kwargs_multi=kwargs_multi,
+        jobname_prefix=jobname_prefix,
+        nproc=nproc,
+    )
+
+    return jobscript_path_list
+
+
+def write_jobscripts_old(
     tmpdir_paths, 
     split_infile_path_list, 
     bam_path_list, 
@@ -553,6 +757,95 @@ def write_jobscripts(
 
 
 def main(cmdargs):
+    args = argument_parser(cmdargs)
+
+    # postprocess depth and mq limits
+    common.print_timestamp(f'Processing depth and MQ limits (may take a while calculating average depths of bam files)')
+    depth_limits, mq_limits = depth_mq_limit_processing(args)
+    common.print_timestamp(f'Depth limits: {depth_limits}')
+    common.print_timestamp(f'MQ limits: {mq_limits}')
+
+    # make tmpdir tree
+    tmpdir_paths = workflow.get_tmpdir_paths(
+        ['scripts', 'logs', 'split_outfiles'],
+        prefix = (
+            os.path.basename(args.infile_path)
+            + '_'
+            + __name__.split('.')[-1]
+            + '_'
+        ),
+        where=os.path.dirname(args.infile_path),
+    )
+
+    # setup logger
+    logger = toolsetup.setup_logger(args=args,
+                                    tmpdir_root=tmpdir_paths['root'],
+                                    with_genlog=True)
+    logger.info('Beginning')
+
+    # make infile copy
+    infile_copy_path, infile_copy_index_path = toolsetup.make_infile_copy(
+        args.infile_path, tmpdir_paths['root'], logger,
+    )
+
+    # make split fetchregions
+    logger.info(f'Getting split fetch regions of input VCF')
+    fetchregion_list = vcfmisc.get_vcf_fetchregions(
+        infile_copy_path, args.parallel, args.refver, verbose=False,
+    )
+    logger.info(f'Split fetch regions: {fetchregion_list}')
+
+    # make job scripts and run
+    jobscript_path_list = write_jobscripts(
+        tmpdir_paths, 
+        fetchregion_list,
+        args.parallel,
+        infile_copy_path,
+        args.bamlist, 
+        args.idlist, 
+        args.pon_bamlist, 
+        args.pon_idlist, 
+        args.refver, 
+        (not args.do_matesearch),
+        args.countonly,
+        args.memuse_limit_gb,
+        depth_limits,
+        mq_limits,
+        args.include_blacklist,
+    )
+    logger.info('Running annotation jobs for each split file')
+    workflow.run_jobs(
+        jobscript_path_list, 
+        sched=args.sched, 
+        intv_check=args.intv_check, 
+        intv_submit=args.intv_submit, 
+        max_submit=args.max_submit, 
+        logger=logger, 
+        log_dir=tmpdir_paths['logs'],
+        job_status_logpath=os.path.join(tmpdir_paths['root'], 'job_status_log'),
+        raise_on_failure=True,
+    )
+
+    # concatenates split files
+    logger.info('Merging split files')
+    outfile_path_list = common.listdir(tmpdir_paths['split_outfiles'])
+    libconcat.main(
+        infile_path_list=outfile_path_list,
+        outfile_path=args.outfile_path, 
+        mode_pysam=args.mode_pysam,
+        outfile_must_not_exist='no',
+    )
+
+    # rmtmp, index
+    if not args.donot_rm_tmp:
+        shutil.rmtree(tmpdir_paths['root'])
+    if not args.donot_index:
+        indexing.index_vcf(args.outfile_path)
+
+    logger.info('All successfully finished')
+
+
+def main_old(cmdargs):
     args = argument_parser(cmdargs)
 
     # postprocess depth and mq limits

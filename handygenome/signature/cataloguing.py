@@ -2,14 +2,13 @@ import pysam
 import Bio.Seq
 import pandas as pd
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-signature_misc = importlib.import_module('.'.join([top_package_name, 'signature', 'misc']))
+import handygenome.common as common
+import handygenome.signature.misc as signature_misc
+import handygenome.deco as deco
 
 
-@common.get_deco_arg_choices({'refver': common.AVAILABLE_REFVERS_PLUSNONE})
-@common.get_deco_num_set(('fasta', 'refver'), 1)
+@deco.get_deco_arg_choices({'refver': common.AVAILABLE_REFVERS_PLUSNONE})
+@deco.get_deco_num_set(('fasta', 'refver'), 1)
 def get_sbs_context(chrom, pos, fasta=None, refver=None, pre=1, post=1, 
                     to_pyrimidine=False):
     if fasta is None:
@@ -32,7 +31,7 @@ def get_sbs_context(chrom, pos, fasta=None, refver=None, pre=1, post=1,
 #        return base
         
 
-@common.get_deco_arg_choices({'refver': common.AVAILABLE_REFVERS})
+@deco.get_deco_arg_choices({'refver': common.AVAILABLE_REFVERS})
 def get_sbs96_catalogue_vcfspecs(vcfspec_iter, refver):
     """Multialleleic records and non-snv records are ignored."""
 

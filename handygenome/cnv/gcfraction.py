@@ -11,6 +11,7 @@ import pyranges as pr
 
 import handygenome.common as common
 import handygenome.pyranges_helper as pyranges_helper
+import handygenome.deco as deco
 
 
 GCDATA_DIR = os.path.join(common.DATA_DIR, 'gcdata')
@@ -157,16 +158,16 @@ def load_gcvals_with_df(df, refver, binsize, fasta, window=None):
 
 # add gc fraction values to a depth dataframe
 
-@common.get_deco_num_set_differently(('fasta', 'refver'), 1)
+@deco.get_deco_num_set_differently(('fasta', 'refver'), 1)
 def add_gc_calculating(df, *, refver=None, fasta=None, window=None):
     """Args:
         df: pandas.DataFrame or pyranges.PyRanges
         refver, fasta: refver is recommended because with refver, default 
             fasta object with the given refver is loaded and subsequently
             used for "calculate_gcvals" function. Using a fasta object with
-            a fixed id can make use of "cache" functionality.
+            a fixed id can make use of "cache" functionality of "calculate_gcvals".
 
-    Changes in-place
+    Modifies input DataFrame
     """
     if fasta is None:
         fasta = common.DEFAULT_FASTAS[refver]
@@ -184,6 +185,8 @@ def add_gc_calculating(df, *, refver=None, fasta=None, window=None):
         df['GC'] = gcvals
     elif isinstance(df, pr.PyRanges):
         df.GC = gcvals
+
+    return df
 
 
 def add_gc_loading(df, refver, binsize, window=None):

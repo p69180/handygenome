@@ -7,6 +7,7 @@ import pyranges as pr
 
 import handygenome.common as common
 import handygenome.assemblyspec as libassemblyspec
+import handygenome.cnv.misc as cnvmisc
 
 
 URL_BASE = 'https://api.genome.ucsc.edu'
@@ -52,7 +53,7 @@ def list_tracks(refver):
 
 
 @functools.cache
-def get_cytoband_gr(refver, rename_hg19=True):
+def get_cytoband_gr(refver, rename_hg19=True, as_gr=True):
     refver = standardize_refver(refver)
     #if 'cytoBand' not in list_tracks(refver):
     #    raise Exception(f'"cytoBand" is not available for this reference genome.')
@@ -73,11 +74,22 @@ def get_cytoband_gr(refver, rename_hg19=True):
         data = new_data
 
     chroms, starts, ends, names, stains = zip(*data)
-    gr = pr.from_dict(
-        {'Chromosome': chroms, 'Start': starts, 'End': ends, 'Name': names, 'Stain': stains}, 
-        int64=False,
-    )
-    gr.sort()
+    if as_gr:
+        gr = pr.from_dict(
+            {'Chromosome': chroms, 'Start': starts, 'End': ends, 'Name': names, 'Stain': stains}, 
+            int64=False,
+        )
+        gr.sort()
 
-    return gr
+        return gr
+    else:
+        df = pd.DataFrame.from_dict({
+            'Chromosome': chroms,
+            'Start': starts,
+            'End': ends,
+            'Name': names,
+            'Stain': stains,
+        })
+        return cnvmisc.sort_genome_df(df, refver=refver)
         
+

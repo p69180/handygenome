@@ -7,6 +7,7 @@ import multiprocessing
 import operator
 import warnings
 import inspect
+import pickle
 
 import Bio.SeqUtils
 import numpy as np
@@ -18,11 +19,16 @@ import scipy
 #from scipy.stats.mstats import winsorize
 
 import handygenome.common as common
+import handygenome.workflow as workflow
 import handygenome.pyranges_helper as pyranges_helper
 import handygenome.cnv.mosdepth as libmosdepth
 import handygenome.cnv.gcfraction as gcfraction
 import handygenome.assemblyspec as libassemblyspec
+import handygenome.deco as deco
 
+
+LOGGER_DEBUG = workflow.get_debugging_logger(verbose=True)
+LOGGER_INFO = workflow.get_debugging_logger(verbose=False)
 
 MALE_HAPLOID_CHROMS = ('X', 'Y', 'chrX', 'chrY')
 DEFAULT_CNT_WEIGHT = 5
@@ -77,12 +83,37 @@ def arg_into_gr(arg):
 
 
 def genome_df_sanitycheck(df):
-    if df.columns[:3].to_list() != ['Chromosome', 'Start', 'End']:
-        raise Exception(f'First three columns of detph DataFrame must be "Chromosome", "Start", and "End".')
+    if not isinstance(df, pr.PyRanges):
+        if not {'Chromosome', 'Start', 'End'}.issubset(df.columns):
+            raise Exception(f'Genome DataFrame must contain these columns: "Chromosome", "Start", "End".')
 
 
 def get_genome_df_annotcols(df):
-    return [x for x in df.columns if x not in ('Chromosome', 'Start', 'End')]
+    return df.columns.drop(['Chromosome', 'Start', 'End'])
+
+
+def sort_genome_df(df, refver):
+    chromdict = common.DEFAULT_CHROMDICTS[refver]
+    chrom_indexes = df['Chromosome'].apply(lambda x: chromdict.contigs.index(x))
+    sortkey = np.lexsort([df['End'], df['Start'], chrom_indexes])
+    return df.iloc[sortkey, :]
+
+
+def remove_unassembled_contigs(df):
+    selector = df['Chromosome'].apply(
+        lambda x: common.RE_PATS['assembled_chromosome'].fullmatch(x) is not None
+    )
+    return df.loc[selector, :]
+
+
+def group_df_bychrom(df, as_gr=True):
+    gr = arg_into_gr(df).sort()
+    chroms = set(gr.Chromosome)
+    if as_gr:
+        result = {chrom: gr[chrom] for chrom in chroms}
+    else:
+        result = {chrom: gr[chrom].df for chrom in chroms}
+    return result
 
 
 ################
@@ -337,7 +368,7 @@ def get_normal_mean_ploidy(refver, is_female, target_region_gr=None):
         chromdict = common.DEFAULT_CHROMDICTS[refver]
         if target_region_gr is None:
             N_region_gr = libassemblyspec.get_N_region_gr(refver)
-            target_region_gr = chromdict.to_gr().subtract(N_region_gr)
+            target_region_gr = chromdict.to_gr(assembled_only=True, as_gr=True).subtract(N_region_gr)
 
         CNn_gr = get_CNn_gr(refver, is_female)
         target_region_gr = pyranges_helper.join(
@@ -714,9 +745,20 @@ def calc_cp_score(
 
 
 def get_cp_score_dict(
-    segment_df, refver, is_female, target_region_gr, 
-    CNt_weight=DEFAULT_CNT_WEIGHT, nproc=None,
+    segment_df, 
+    refver, 
+    is_female, 
+    target_region_gr=None, 
+    CNt_weight=DEFAULT_CNT_WEIGHT, 
+    normal_ploidy=None,
+    nproc=None,
 ):
+    def get_calculated_tumor_ploidies_wgs(segment_df, scorelist):
+        weights = segment_df['End'] - segment_df['Start']
+        CNt_values = np.array([x['CNt_list'] for x in scorelist])
+        calculated_tumor_ploidies = np.average(CNt_values, axis=1, weights=weights)
+        return calculated_tumor_ploidies
+
     def get_calculated_tumor_ploidies_new(segment_df, scorelist, target_region_gr):
         stripped_segment_df = segment_df.loc[:, ['Chromosome', 'Start', 'End']].copy()
         all_indexes = list(range(stripped_segment_df.shape[0]))  # means index of segments
@@ -757,9 +799,15 @@ def get_cp_score_dict(
             weights=CNt_annotated_targetregion_gr.lengths(),
         )
         return calculated_tumor_ploidies
+   
+    # df arg handling
+    target_region_gr = arg_into_gr(target_region_gr)
+    segment_df = arg_into_df(segment_df)
 
     # get calculated CNt and segment fit cores
-    normal_ploidy = get_normal_mean_ploidy(refver, is_female, target_region_gr)
+    if normal_ploidy is None:
+        normal_ploidy = get_normal_mean_ploidy(refver, is_female, target_region_gr)
+
     c_candidates = np.round(np.arange(0.01, 1.00, 0.01), 2)  # 0 and 1 are excluded
     p_candidates = np.round(np.arange(0.5, 7.1, 0.1), 1)  # 0.5 to 7.0
     cp_pairs = tuple(CPPair(x, y) for (x, y) in itertools.product(c_candidates, p_candidates))
@@ -774,7 +822,12 @@ def get_cp_score_dict(
         )
 
     # get calculated tumor mean ploidy for each cp pair
-    calculated_tumor_ploidies = get_calculated_tumor_ploidies_new(segment_df, scorelist, target_region_gr)
+    if target_region_gr is None:
+        calculated_tumor_ploidies = get_calculated_tumor_ploidies_wgs(segment_df, scorelist)
+    else:
+        calculated_tumor_ploidies = get_calculated_tumor_ploidies_new(
+            segment_df, scorelist, target_region_gr
+        )
 
     # calculate ploidy fitting scores
     for cpppair, calc_ploidy, dic in zip(cp_pairs, calculated_tumor_ploidies, scorelist):
@@ -915,12 +968,17 @@ def add_theoreticals_to_segment(
         else:
             return theoretical_baf(row['CNt'], row['B'], cellularity, row['CNn'])
 
-    theo_depthr_list = segment_df.apply(depthr_getter, axis=1)
-    theo_baf_list = segment_df.apply(baf_getter, axis=1)
+#    theo_depthr_list = segment_df.apply(depthr_getter, axis=1)
+#    theo_baf_list = segment_df.apply(baf_getter, axis=1)
+#
+#    return segment_df.assign(
+#        **{'depthratio_predicted': theo_depthr_list, 'baf_predicted': theo_baf_list}
+#    )
 
-    return segment_df.assign(
-        **{'depthratio_predicted': theo_depthr_list, 'baf_predicted': theo_baf_list}
-    )
+    segment_df['depthratio_predicted'] = segment_df.apply(depthr_getter, axis=1)
+    segment_df['baf_predicted'] = segment_df.apply(baf_getter, axis=1)
+
+    return segment_df
     
 
 ###################################
@@ -1167,11 +1225,26 @@ def get_gcbin_data(depth_df, gc_breaks, make_raw_data=False):
     return gcbin_depth_data, gcbin_average_depths, gcbin_norm_average_depths, cutresult
 
 
-def get_normal_wgs_depth_cutoffs(depth_df):
-    mean = depth_df['mean_depth'].mean()
+#def get_normal_wgs_depth_cutoffs(depth_df):
+#    mean = depth_df['mean_depth'].mean()
+
+def depth_df_gc_addition(depth_df, gc_df=None, refver=None, fasta=None, window=None):
+    if gc_df is None:
+        result = gcfraction.add_gc_calculating(
+            depth_df, refver=refver, fasta=fasta, window=window,
+        )
+    else:
+        gc_df = arg_into_df(gc_df)
+        assert 'GC' in gc_df.columns
+        assert gc_df.index.names == ['Chromosome', 'Start', 'End']
+            # gc_df must have a MultiIndex ['Chromosome', 'Start', 'End']
+
+        result = depth_df.join(gc_df, on=['Chromosome', 'Start', 'End'], how='left')
+
+    return result
 
 
-@common.get_deco_num_set_differently(('fasta', 'refver', 'gc_df'), 1)
+@deco.get_deco_num_set_differently(('fasta', 'refver', 'gc_df'), 1)
 def postprocess_depth_df(
     depth_df, 
     *,
@@ -1186,6 +1259,9 @@ def postprocess_depth_df(
     lower_cutoff=None,
     upper_cutoff=None,
     trim_limits=None,
+
+    add_norm_depth=False,
+    add_gccorr_depth=False,
 
     #nan_lower_cutoff=None,
     #nan_upper_cutoff=None,
@@ -1224,40 +1300,36 @@ def postprocess_depth_df(
     assert 'mean_depth' in depth_df.columns, f'"depth_df" must include a column named "mean_depth"'
     assert preset_cutoffs in ('wgs', 'normal_wgs', 'panel', None)
 
+    # calculate average depth
+    avg_depth = depth_df['mean_depth'].mean()
+
     # set outlier cutoffs
     if preset_cutoffs == 'wgs':
         printlog(f'Running "postprocess_depth_df" function with preset cutoff mode "wgs"')
         lower_cutoff = 0
-        upper_cutoff = 2000
+        upper_cutoff = np.inf
     elif preset_cutoffs == 'panel':
         printlog(f'Running "postprocess_depth_df" function with preset cutoff mode "panel"')
         lower_cutoff = 50
         upper_cutoff = np.inf
+    elif preset_cutoffs == 'normal_wgs':
+        printlog(f'Running "postprocess_depth_df" function with preset cutoff mode "normal_wgs"')
+        lower_cutoff = avg_depth * 0.3
+        upper_cutoff = avg_depth * 1.7
 
     # add GC fractions
     printlog(f'Adding GC fraction values')
-    if gc_df is None:
-        gcfraction.add_gc_calculating(depth_df, refver=refver, fasta=fasta, window=gc_window)
-    else:
-        gc_df = arg_into_df(gc_df)
-        assert 'GC' in gc_df.columns
-        assert gc_df.index.names == ['Chromosome', 'Start', 'End']
-            # gc_df must have a MultiIndex ['Chromosome', 'Start', 'End']
+    depth_df = depth_df_gc_addition(
+        depth_df, gc_df=gc_df, refver=refver, fasta=fasta, window=gc_window,
+    )
 
-        depth_df = depth_df.join(gc_df, on=['Chromosome', 'Start', 'End'], how='left')
-
-    # replace outliers with nan
-    depth_df, selector = handle_outliers(
+    # replace outliers with nan; separately for output and gc data 
+    output_depth_df, selector = handle_outliers(
         depth_df, trim_limits=trim_limits, lower_cutoff=lower_cutoff, upper_cutoff=upper_cutoff
     )
-
-    # norm_mean_depth
-    printlog(f'Getting normalized depths')
-    global_mean_depth = common.nanaverage(
-        depth_df['mean_depth'].to_numpy(), 
-        weights=(depth_df['End'] - depth_df['Start']).to_numpy(),
+    gcdata_depth_df, selector2 = handle_outliers(
+        depth_df, trim_limits=None, lower_cutoff=0, upper_cutoff=(avg_depth * 10),
     )
-    depth_df['norm_mean_depth'] = (depth_df['mean_depth'] / global_mean_depth).array
 
     # get gc depth data
     printlog(f'Getting depth data by gc value ranges')
@@ -1267,30 +1339,40 @@ def postprocess_depth_df(
         gcbin_average_depths, 
         gcbin_norm_average_depths, 
         cutresult 
-    ) = get_gcbin_data(depth_df, gc_breaks, make_raw_data=False)
+    ) = get_gcbin_data(gcdata_depth_df, gc_breaks, make_raw_data=False)
     cutresult_idx = common.get_indexes_of_array(cutresult, gcbin_norm_average_depths.index)
 
+    # norm_mean_depth
+    if add_norm_depth:
+        printlog(f'Getting normalized depths')
+        avg_depth_wo_outliers = common.nanaverage(
+            output_depth_df['mean_depth'].to_numpy(), 
+            weights=(output_depth_df['End'] - output_depth_df['Start']).to_numpy(),
+        )
+        output_depth_df['norm_mean_depth'] = (output_depth_df['mean_depth'] / avg_depth_wo_outliers).array
+
     # gc_corrected_mean_depth
-    printlog(f'Getting GC-corrected depths')
-    gcbin_norm_average_depths_selected = gcbin_norm_average_depths.iloc[cutresult_idx]
-    depth_df['gc_corrected_mean_depth'] = (
-        depth_df['mean_depth'].array / gcbin_norm_average_depths_selected.array
-    )
+    if add_gccorr_depth:
+        printlog(f'Getting GC-corrected depths')
+        gcbin_norm_average_depths_selected = gcbin_norm_average_depths.iloc[cutresult_idx]
+        output_depth_df['gc_corrected_mean_depth'] = (
+            output_depth_df['mean_depth'].array / gcbin_norm_average_depths_selected.array
+        )
 
     # sequenza_style_norm_mean_depth
     printlog(f'Getting GC-corrected normalized depths (sequenza style)')
     gcbin_average_depths_selected = gcbin_average_depths.iloc[cutresult_idx]
-    depth_df['sequenza_style_norm_mean_depth'] = (
-        depth_df['mean_depth'].array / gcbin_average_depths_selected.array
+    output_depth_df['sequenza_style_norm_mean_depth'] = (
+        output_depth_df['mean_depth'].array / gcbin_average_depths_selected.array
     )
 
     # result
     if as_gr:
-        depth_df = pr.PyRanges(depth_df, int64=False)
+        output_depth_df = pr.PyRanges(output_depth_df, int64=False)
 
     printlog(f'Finished')
 
-    return depth_df, gcbin_average_depths
+    return output_depth_df, gcbin_average_depths
 
 
 def get_processed_depth_df(
@@ -1332,24 +1414,47 @@ def get_processed_depth_df(
     return depth_gr, gcbin_average_depths
 
 
-def make_depth_ratio_df(tumor_depth_df, normal_depth_df, as_gr=False):
-    def assign_ratio(result, new_colname, numerator, denominator):
+def make_depth_ratio(
+    tumor_depth_df, normal_depth_df, 
+    make_depthratio_mystyle=False,
+    as_gr=False,
+    #verbose=False,
+):
+    def make_ratio(numerator, denominator):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', category=RuntimeWarning)
-
             arr = numerator / denominator
             arr[np.isinf(arr)] = np.nan
-            result[new_colname] = arr
+            return arr
+
+    def copy_annotations(result, input_df, prefix):
+        annot_cols = get_genome_df_annotcols(input_df).drop('GC')
+        for colname in annot_cols:
+            result[f'{prefix}_{colname}'] = input_df.loc[:, colname].array
 
     # sanity check
     tumor_depth_df = arg_into_df(tumor_depth_df)
     normal_depth_df = arg_into_df(normal_depth_df)
-    required_cols = {'mean_depth', 'GC', 'norm_mean_depth', 'gc_corrected_mean_depth', 'sequenza_style_norm_mean_depth'}
+
+    genome_df_sanitycheck(tumor_depth_df)
+    genome_df_sanitycheck(normal_depth_df)
+
+    required_cols = {
+        #'mean_depth', 
+        #'norm_mean_depth', 
+        #'gc_corrected_mean_depth', 
+        'GC', 
+        'sequenza_style_norm_mean_depth',
+    }
     assert all(
         required_cols.issubset(df.columns)
         for df in (tumor_depth_df, normal_depth_df)
     )
 
+    # set logger
+    #logger = (LOGGER_DEBUG if verbose else LOGGER_INFO)
+
+    # tumor/normal dfs shape check
     compared_columns = ['Chromosome', 'Start', 'End', 'GC']
     tumor_common_cols = tumor_depth_df.loc[:, compared_columns]
     normal_common_cols = normal_depth_df.loc[:, compared_columns]
@@ -1360,27 +1465,21 @@ def make_depth_ratio_df(tumor_depth_df, normal_depth_df, as_gr=False):
 
     # main
     result = tumor_common_cols
-    assign_ratio(
-        result, 
-        'depth_ratio_sequenzastyle', 
-        tumor_depth_df['sequenza_style_norm_mean_depth'].values, 
-        normal_depth_df['sequenza_style_norm_mean_depth'].values,
-    )
-    assign_ratio(
-        result, 
-        'depth_ratio_mystyle', 
-        tumor_depth_df['gc_corrected_mean_depth'].values, 
-        normal_depth_df['gc_corrected_mean_depth'].values,
-    )
 
-    for colname in (
-        'mean_depth', 
-        'norm_mean_depth', 
-        'gc_corrected_mean_depth', 
-        'sequenza_style_norm_mean_depth',
-    ):
-        result[f'tumor_{colname}'] = tumor_depth_df.loc[:, colname].array
-        result[f'normal_{colname}'] = normal_depth_df.loc[:, colname].array
+    # make depth ratios
+    result['depth_ratio_sequenzastyle'] = make_ratio(
+        tumor_depth_df['sequenza_style_norm_mean_depth'].array, 
+        normal_depth_df['sequenza_style_norm_mean_depth'].array,
+    )
+    if make_depthratio_mystyle:
+        result['depth_ratio_mystyle'] = make_ratio(
+            tumor_depth_df['gc_corrected_mean_depth'].array, 
+            normal_depth_df['gc_corrected_mean_depth'].array,
+        )
+
+    # copy annotation columns from input dfs
+    copy_annotations(result, tumor_depth_df, 'tumor')
+    copy_annotations(result, normal_depth_df, 'normal')
 
     if as_gr:
         return pr.PyRanges(result)
@@ -1430,7 +1529,7 @@ def handle_merged_baf_df(merged_baf_df):
     pass
 
 
-@common.get_deco_num_set_differently(('refver', 'chromdict'), 1)
+@deco.get_deco_num_set_differently(('refver', 'chromdict'), 1)
 def upsize_depth_df_bin(depth_df, size, refver=None, chromdict=None, annot_cols=None):
     """Input must be sorted"""
     def get_chrom_df_groupers(chrom_df, chromlen, new_binsize, old_binsize):
@@ -1458,8 +1557,6 @@ def upsize_depth_df_bin(depth_df, size, refver=None, chromdict=None, annot_cols=
             'End': ends,
         })
 
-        if annot_cols is None:
-            annot_cols = get_genome_df_annotcols(chrom_df)
         annot_subdf = chrom_df.groupby(by=groupers, axis=0, sort=False)[annot_cols].mean()
         annot_subdf.reset_index(inplace=True, drop=True)
 
@@ -1487,7 +1584,9 @@ def upsize_depth_df_bin(depth_df, size, refver=None, chromdict=None, annot_cols=
     for chrom, chrom_df in dfs_bychrom.items():
         chromlen = chromdict[chrom]
         groupers, n_newbin = get_chrom_df_groupers(chrom_df, chromlen, new_binsize, old_binsize)
-        newbin_dfs_bychrom[chrom] = upsize_chrom_df(chrom_df, new_binsize, groupers, n_newbin, chromlen, annot_cols)
+        newbin_dfs_bychrom[chrom] = upsize_chrom_df(
+            chrom_df, new_binsize, groupers, n_newbin, chromlen, annot_cols
+        )
 
     # sort and concat
     sorted_chroms = sorted(newbin_dfs_bychrom.keys(), key=(lambda x: chromdict.contigs.index(x)))

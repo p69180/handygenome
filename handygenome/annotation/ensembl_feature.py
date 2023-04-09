@@ -9,31 +9,17 @@ import pysam
 
 import importlib
 
-top_package_name = __name__.split(".")[0]
-common = importlib.import_module(".".join([top_package_name, "common"]))
-
-infoformat = importlib.import_module(
-    ".".join([top_package_name, "variant", "infoformat"])
-)
-varianthandler = importlib.import_module(
-    ".".join([top_package_name, "variant", "varianthandler"])
-)
-
-annotitem = importlib.import_module(
-    ".".join([top_package_name, "annotation", "annotitem"])
-)
-ensembl_parser = importlib.import_module(
-    ".".join([top_package_name, "annotation", "ensembl_parser"])
-)
-ensembl_rest = importlib.import_module(
-    ".".join([top_package_name, "annotation", "ensembl_rest"])
-)
-veplib = importlib.import_module(".".join([top_package_name, "annotation", "veplib"]))
-customfile = importlib.import_module(
-    ".".join([top_package_name, "annotation", "customfile"])
-)
-rnalib = importlib.import_module(".".join([top_package_name, "annotation", "rnalib"]))
-libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
+import handygenome.common as common
+import handygenome.deco as deco
+import handygenome.variant.infoformat as infoformat
+import handygenome.variant.varianthandler as varianthandler
+import handygenome.annotation.annotitem as annotitem
+import handygenome.annotation.ensembl_parser as ensembl_parser
+import handygenome.annotation.ensembl_rest as ensembl_rest
+import handygenome.annotation.veplib as veplib
+import handygenome.annotation.customfile as customfile
+import handygenome.annotation.rnalib as rnalib
+import handygenome.variant.vcfspec as libvcfspec
 
 
 META_ID_PREFIX = {

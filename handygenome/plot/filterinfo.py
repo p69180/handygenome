@@ -4,13 +4,11 @@ import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-
+import handygenome.common as common
+import handygenome.workflow as workflow
 import handygenome.variant.ponbams as libponbams
 import handygenome.variant.filter as libfilter
+import handygenome.deco as deco
 
 
 def show_readcounts(
@@ -201,7 +199,7 @@ def show_readcounts(
     return fig, ax_bar, ax_dot
 
 
-@common.get_deco_num_set_differently(('pon_samples', 'pon_cohorts'), 1)
+@deco.get_deco_num_set_differently(('pon_samples', 'pon_cohorts'), 1)
 def show_pon(
     query_sample, 
     vp, 

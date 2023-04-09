@@ -73,19 +73,19 @@ def check_header_compatibility(bamheader_list):
     )
         
     
-def get_average_depth(bam, readlen=None, aligned_length=None):
+def get_average_depth(bam, readlen=None, aligned_region_length=None):
     if bam.is_cram:
         raise Exception(f'Cannot infer average depth from a cram file.')
     if not bam.has_index():
         raise Exception(f'Bam file must be indexed.')
 
-    if aligned_length is None:
-        aligned_length = sum(bam.lengths)
+    if aligned_region_length is None:
+        aligned_region_length = sum(bam.lengths)
     readcounts = sum(x.mapped for x in bam.get_index_statistics())
     if readlen is None:
         readlen = check_read_length(bam)
         
-    return (readcounts * readlen) / aligned_length
+    return (readcounts * readlen) / aligned_region_length
 
 
 def check_read_length(bam):

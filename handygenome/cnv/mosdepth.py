@@ -8,6 +8,7 @@ import pandas as pd
 
 import handygenome.common as common
 import handygenome.bameditor as bameditor
+import handygenome.cnv.misc as cnvmisc
 
 
 MOSDEPTH_PATH = '/home/users/pjh/tools/miniconda/221104/miniconda3/envs/mosdepth/bin/mosdepth'
@@ -69,21 +70,24 @@ def run_mosdepth(bam_path, t=8, use_median=False, region_bed_path=None, region_g
     ):  
         raise Exception(f'Only one of "region_bed_path" and "region_gr" argument must be set.')
 
+    # handle region_gr argument
+    region_df = cnvmisc.arg_into_df(region_gr)
+    cnvmisc.genome_df_sanitycheck(region_df)
+
     # make tmp directory
     tmpdir = tempfile.mkdtemp(dir=os.getcwd(), prefix='mosdepth_tmpdir_')
 
     # write region bed file
-    if (region_bed_path is None) and (region_gr is None):
+    if (region_bed_path is None) and (region_df is None):
         mosdepth_input_bed_path = None
     else:
-        mosdepth_input_bed_path = os.path.join(tmpdir, 'region.bed')
-        if region_gr is not None:
+        if region_df is not None:
             unedited_input_bed_path = os.path.join(tmpdir, 'unedited_region.bed')
-            #region_gr.to_bed(unedited_input_bed_path)
-            region_gr.df.to_csv(unedited_input_bed_path, sep='\t', header=False, index=False)
+            region_df.to_csv(unedited_input_bed_path, sep='\t', header=False, index=False)
         elif region_bed_path is not None:
             unedited_input_bed_path = region_bed_path
 
+        mosdepth_input_bed_path = os.path.join(tmpdir, 'region.bed')
         with common.openfile(unedited_input_bed_path, 'r') as infile:
             with open(mosdepth_input_bed_path, 'wt') as outfile:
                 for line in infile:

@@ -10,11 +10,9 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import Bio.Seq
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-libsigmisc = importlib.import_module('.'.join([top_package_name, 'signature', 'misc']))
-#sequenza_loader = importlib.import_module('.'.join([top_package_name, 'cnv', 'sequenza_loader']))
+import handygenome.common as common
+import handygenome.signature.misc as libsigmisc
+import handygenome.deco as deco
 
 
 """Issues with pyranges.PyRanges.intersect:
@@ -186,7 +184,7 @@ class SectorList(list):
 
 
 class Circos:
-    @common.get_deco_num_set(('refver', 'chromdict'), 1)
+    @deco.get_deco_num_set(('refver', 'chromdict'), 1)
     def __init__(self, refver=None, chromdict=None, sectorlist=None, ylim=(0, 1), sector_interspace_deg=2, figsize=(10, 10), angle_range_deg=(0, 360), theta_offset_deg=90, theta_direction=-1):
         """Args:
             sector_interspace_deg: A scalar or a sequence type with the same 

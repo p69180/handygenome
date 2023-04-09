@@ -5,9 +5,8 @@ import functools
 import numpy as np
 import pandas as pd
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
+import handygenome.common as common
+import handygenome.deco as deco
 
 
 COLORS_SBS6 = {
@@ -106,8 +105,8 @@ def create_catalogue_keys_sbs96(as_tuple=False):
     return tuple(result)
 
 
-@common.get_deco_arg_choices({'refver': AVAILABLE_REFVERS})
-@common.get_deco_arg_choices({'catalogue_type': AVAILABLE_CAT_TYPES})
+@deco.get_deco_arg_choices({'refver': AVAILABLE_REFVERS})
+@deco.get_deco_arg_choices({'catalogue_type': AVAILABLE_CAT_TYPES})
 def download_signature_data(refver, catalogue_type):
     """Args:
         catalogue_type: Mutation type (e.g. sbs, id, dbs, cn)
@@ -117,8 +116,8 @@ def download_signature_data(refver, catalogue_type):
     common.download(data_url, data_file_path)
     
 
-@common.get_deco_arg_choices({'refver': AVAILABLE_REFVERS})
-@common.get_deco_arg_choices({'catalogue_type': AVAILABLE_CAT_TYPES})
+@deco.get_deco_arg_choices({'refver': AVAILABLE_REFVERS})
+@deco.get_deco_arg_choices({'catalogue_type': AVAILABLE_CAT_TYPES})
 @functools.cache
 def load_signature_data(refver, catalogue_type):
     """num_rows:

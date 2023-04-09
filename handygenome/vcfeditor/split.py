@@ -3,10 +3,10 @@ import itertools
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
+import handygenome.common as common
+import handygenome.workflow as workflow
+import handygenome.vcfeditor.misc as vcfmisc
+import handygenome.deco as deco
 
 
 LOGGER = workflow.get_logger(name=__name__)
@@ -19,21 +19,7 @@ def sanity_check(vcf_path, outdir):
     return vcf_path, outdir
 
 
-def get_lineno_vcf_path(vcf_path):
-    with pysam.VariantFile(vcf_path, 'r') as vcf:
-        lineno = get_lineno_vcf(vcf)
-    return lineno
-
-
-def get_lineno_vcf(vcf):
-    lineno = 0
-    for vr in vcf.fetch():
-        lineno += 1
-
-    return lineno
-
-
-@common.get_deco_num_set_differently(('n_file', 'n_line'), 1)
+@deco.get_deco_num_set_differently(('n_file', 'n_line'), 1)
 def get_output_lineno_list(total_lineno, n_file=None, n_line=None):
     """
     Args:
@@ -78,7 +64,7 @@ def write_split_vcfs(vcf_path, output_lineno_list, split_filenames,
                     out_vcf.write(next(fetch))
 
 
-@common.get_deco_num_set_differently(('n_file', 'n_line'), 1)
+@deco.get_deco_num_set_differently(('n_file', 'n_line'), 1)
 def main(vcf_path, outdir, n_file=None, n_line=None, mode_bcftools='z', 
          mode_pysam=None, prefix='', suffix='.vcf.gz'):
     """
@@ -95,7 +81,7 @@ def main(vcf_path, outdir, n_file=None, n_line=None, mode_bcftools='z',
 
     vcf_path, outdir = sanity_check(vcf_path, outdir)
 
-    total_lineno = get_lineno_vcf_path(vcf_path)
+    total_lineno = vcfmisc.get_vcf_lineno(vcf_path)
     output_lineno_list = get_output_lineno_list(
             total_lineno, n_file = n_file, n_line = n_line,
             )

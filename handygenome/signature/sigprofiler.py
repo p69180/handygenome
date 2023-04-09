@@ -13,13 +13,12 @@ import pysam
 from handygenome.sigprofiler_clone.SigProfilerAssignment.single_sample import add_remove_signatures
 from handygenome.sigprofiler_clone.SigProfilerMatrixGenerator.scripts.SigProfilerMatrixGeneratorFunc import SigProfilerMatrixGeneratorFunc
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-varianthandler = importlib.import_module('.'.join([top_package_name, 'variant', 'varianthandler']))
-initvcf = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'initvcf']))
-signature_misc = importlib.import_module('.'.join([top_package_name, 'signature', 'misc']))
-signatureresult = importlib.import_module('.'.join([top_package_name, 'signature', 'signatureresult']))
+import handygenome.common as common
+import handygenome.variant.varianthandler as varianthandler
+import handygenome.vcfeditor.initvcf as initvcf
+import handygenome.signature.misc as signature_misc
+import handygenome.signature.signatureresult as signatureresult
+import handygenome.deco as deco
 
 
 LOGGER = logging.getLogger(__name__)
@@ -35,7 +34,7 @@ def make_uncompressed_vcf_copy(vcf_path, input_copy_path):
         os.symlink(vcf_path, input_copy_path)
 
 
-@common.get_deco_arg_choices({'refver': signature_misc.AVAILABLE_REFVERS})
+@deco.get_deco_arg_choices({'refver': signature_misc.AVAILABLE_REFVERS})
 def get_catalogues(vcf_path, refver, verbose=True):
     sampleid = 'test'
     with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmpdir:
@@ -71,7 +70,7 @@ def get_catalogues(vcf_path, refver, verbose=True):
     return catalogues
 
 
-@common.get_deco_arg_choices({'refver': signature_misc.AVAILABLE_REFVERS})
+@deco.get_deco_arg_choices({'refver': signature_misc.AVAILABLE_REFVERS})
 def get_catalogues_from_vcfspecs(vcfspec_iter, refver, verbose=True):
     with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmpdir:
         # write a temporary vcf file

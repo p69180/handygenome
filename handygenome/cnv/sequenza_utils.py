@@ -7,9 +7,7 @@ import tempfile
 
 import sequenza.commands
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
+import handygenome.common as common
 
 
 DEFAULT_GCWIG_PATHS = common.RefverDict(

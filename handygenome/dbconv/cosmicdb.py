@@ -7,17 +7,15 @@ import re
 
 import pysam
 
-import importlib
-
-top_package_name = __name__.split(".")[0]
-common = importlib.import_module(".".join([top_package_name, "common"]))
-workflow = importlib.import_module(".".join([top_package_name, "workflow"]))
-hgvs = importlib.import_module(".".join([top_package_name, "hgvs"]))
-varianthandler = importlib.import_module(".".join([top_package_name, "variant", "varianthandler"]))
-infoformat = importlib.import_module(".".join([top_package_name, "variant", "infoformat"]))
-annotitem = importlib.import_module(".".join([top_package_name, "annotation", "annotitem"]))
-libcosmic = importlib.import_module(".".join([top_package_name, "annotation", "cosmic"]))
-indexing = importlib.import_module(".".join([top_package_name, "vcfeditor", "indexing"]))
+import handygenome.common as common
+import handygenome.workflow as workflow
+import handygenome.hgvs as hgvs
+import handygenome.variant.varianthandler as varianthandler
+import handygenome.variant.infoformat as infoformat
+import handygenome.annotation.annotitem as annotitem
+import handygenome.annotation.cosmic as libcosmic
+import handygenome.vcfeditor.indexing as indexing
+import handygenome.deco as deco
 
 
 LOGGER = workflow.get_logger(name='COSMIC converter')
@@ -310,7 +308,7 @@ def modify_vcfspec(cosv_info, fasta, is_hg19):
     cosv_info['vcfspec'] = get_vcfspec(cosv_info, fasta, is_hg19)
 
 
-@common.get_deco_timestamp('SUMMARY MODIFICATION', LOGGER)
+@deco.get_deco_timestamp('SUMMARY MODIFICATION', LOGGER)
 def modify_summary(summary, site_count, fasta, is_hg19, logging_lineno=500_000):
     # summary
     for cosv, cosv_info in common.iter_lineno_logging(summary.items(), LOGGER, logging_lineno):
@@ -335,7 +333,7 @@ def modify_summary(summary, site_count, fasta, is_hg19, logging_lineno=500_000):
 ###############################################
 
 
-@common.get_deco_timestamp('VCFSPEC-TO-COSV MAPPING', LOGGER)
+@deco.get_deco_timestamp('VCFSPEC-TO-COSV MAPPING', LOGGER)
 def get_vcfspec_cosv_map(summary, fasta, is_hg19):
     # main
     vcfspec_cosv_map = dict()
@@ -353,7 +351,7 @@ def get_vcfspec_cosv_map(summary, fasta, is_hg19):
     return dedup_vcfspec_cosv_map
 
 
-@common.get_deco_timestamp('VCFSPEC SORTING', LOGGER)
+@deco.get_deco_timestamp('VCFSPEC SORTING', LOGGER)
 def sort_vcfspecs(vcfspec_cosv_map, chromdict):
     return sorted(vcfspec_cosv_map.keys(), key=common.get_vcfspec_sortkey(chromdict))
 
@@ -397,7 +395,7 @@ def into_CosmicInfo(cosv, cosv_info):
     return cosmicinfolist
 
 
-@common.get_deco_timestamp('WRITING FINAL OUTPUT FILE', LOGGER)
+@deco.get_deco_timestamp('WRITING FINAL OUTPUT FILE', LOGGER)
 def write_outfile(outfile_path, summary, site_count, vcfspec_cosv_map, sorted_vcfspecs, chromdict, refver, cosmic_version, logging_lineno=1_000_000):
     cosmic_metadata = get_cosmic_metadata(site_count, refver, cosmic_version)
     header = get_vcf_header(chromdict, cosmic_metadata)
@@ -419,7 +417,7 @@ def write_outfile(outfile_path, summary, site_count, vcfspec_cosv_map, sorted_vc
 ###############################################
 
 
-@common.get_deco_arg_choices({'refver': ('GRCh37', 'GRCh38')})
+@deco.get_deco_arg_choices({'refver': ('GRCh37', 'GRCh38')})
 def main(infile_path_ncv, infile_path_mutantexport, outfile_path, refver, cosmic_version):
     fasta = pysam.FastaFile(common.DEFAULT_FASTA_PATHS[refver])
     chromdict = common.ChromDict(refver=refver)

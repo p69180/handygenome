@@ -1,5 +1,9 @@
 import re
 import textwrap
+import sys
+import os
+import tempfile
+import contextlib
 
 import pysam
 
@@ -290,4 +294,29 @@ def check_has_mateid(vr_list):
             break
     
     return has_mateid
+
+
+# VariantRecord pickling
+
+def encode_vr(vr):
+    return tuple(vr.samples), str(vr)
+
+
+def decode_vr(vr_data):
+    samples, vr_string = vr_data
+    hdr = pysam.VariantHeader()
+    for sid in samples:
+        hdr.add_sample(sid)
+
+    with tempfile.NamedTemporaryFile(delete=False, mode='wt') as tmpfile:
+        tmpfile.write(str(hdr))
+        tmpfile.write(vr_string)
+
+    with pysam.VariantFile(tmpfile.name) as in_vcf:
+        vr = next(in_vcf)
+
+    os.remove(tmpfile.name)
+
+    return vr
+
 

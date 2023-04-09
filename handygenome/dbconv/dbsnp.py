@@ -8,17 +8,15 @@ import shutil
 
 import pysam
 
-import importlib
-
-top_package_name = __name__.split(".")[0]
-common = importlib.import_module(".".join([top_package_name, "common"]))
-workflow = importlib.import_module(".".join([top_package_name, "workflow"]))
-assemblyspec = importlib.import_module(".".join([top_package_name, "assemblyspec"]))
-initvcf = importlib.import_module(".".join([top_package_name, "vcfeditor", "initvcf"]))
-libpopfreq = importlib.import_module(".".join([top_package_name, "annotation", "popfreq"]))
-varianthandler = importlib.import_module(".".join([top_package_name, "variant", "varianthandler"]))
-indexing = importlib.import_module(".".join([top_package_name, "vcfeditor", "indexing"]))
-libvcfspec = importlib.import_module(".".join([top_package_name, "variant", "vcfspec"]))
+import handygenome.common as common
+import handygenome.workflow as workflow
+import handygenome.assemblyspec as assemblyspec
+import handygenome.vcfeditor.initvcf as initvcf
+import handygenome.annotation.popfreq as libpopfreq
+import handygenome.variant.varianthandler as varianthandler
+import handygenome.vcfeditor.indexing as indexing
+import handygenome.variant.vcfspec as libvcfspec
+import handygenome.deco as deco
 
 
 LOGGER = workflow.get_logger(name='dbSNP converter')
@@ -200,7 +198,7 @@ def write_final_outfile(popnames, chromdict, tmpfile_paths, outfile_path, chroml
 ######################
 
 
-@common.get_deco_arg_choices({'refver': ('GRCh37', 'GRCh38')})
+@deco.get_deco_arg_choices({'refver': ('GRCh37', 'GRCh38')})
 def main(original_vcf_path, outfile_path, refver):
     chromdict = common.ChromDict(refver=refver)
     chrname_converter = get_chrname_converter(refver)
