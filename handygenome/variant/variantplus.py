@@ -531,10 +531,16 @@ class VariantPlus:
         else:
             self.readstats_dict = libreadstats.ReadStatsSampledict.from_vr(self.vr, sampleid_list=sampleid_list)
 
+    @property
+    def readstats(self):
+        """Alias"""
+        return self.readstats_dict
+
     def create_readstats(
         self, bam_dict,
-        rpplist_kwargs={},
-        alleleinfo_kwargs={},
+        rpplist_kwargs=dict(),
+        alleleinfo_kwargs=dict(),
+        **kwargs,
     ):
         """Args:
             bam_dict: keys - sample ID, values - pysam.AlignmentFile
@@ -542,16 +548,26 @@ class VariantPlus:
             keys of "bam_dict" parameter.
         """
 
-        self.readstats_dict = libreadstats.ReadStatsSampledict()
-        for sampleid, bam in bam_dict.items():
-            self.readstats_dict[sampleid] = libreadstats.ReadStats.from_bam(
-                vcfspec=self.vcfspec, 
-                bam=bam, 
-                fasta=self.fasta, 
-                chromdict=self.chromdict,
-                rpplist_kwargs=rpplist_kwargs,
-                alleleinfo_kwargs=alleleinfo_kwargs,
-            )
+        self.readstats_dict = libreadstats.ReadStatsSampledict.from_bam_dict(
+            bam_dict=bam_dict,
+            vcfspec=self.vcfspec, 
+            fasta=self.fasta, 
+            chromdict=self.chromdict,
+            rpplist_kwargs=rpplist_kwargs,
+            alleleinfo_kwargs=alleleinfo_kwargs,
+            **kwargs,
+        )
+
+#        self.readstats_dict = libreadstats.ReadStatsSampledict()
+#        for sampleid, bam in bam_dict.items():
+#            self.readstats_dict[sampleid] = libreadstats.ReadStats.from_bam(
+#                vcfspec=self.vcfspec, 
+#                bam=bam, 
+#                fasta=self.fasta, 
+#                chromdict=self.chromdict,
+#                rpplist_kwargs=rpplist_kwargs,
+#                alleleinfo_kwargs=alleleinfo_kwargs,
+#            )
 
     def update_readstats(
         self, bam_dict, 
@@ -1103,6 +1119,93 @@ class VariantPlusList(list):
         )
         return result
 
+    def load_vps_from_vcf(
+        self,
+        prop=None,
+        chrom=None,
+        start0=None,
+        end0=None,
+        vpfilter=None,
+    ):
+        # set other params
+        if self.vp_init_params['init_popfreq']:
+            popfreq_metadata = libpopfreq.PopfreqMetadata.from_vcfheader(self.vcf.header)
+        else:
+            popfreq_metadata = None
+
+        if self.vp_init_params['init_cosmic']:
+            cosmic_metadata = libcosmic.CosmicMetadata.from_vcfheader(self.vcf.header)
+        else:
+            cosmic_metadata = None
+
+        # make iterator 
+        vp_iterator = self.get_vp_iter_from_vcf(
+            chrom=chrom, 
+            start0=start0, 
+            end0=end0, 
+            prop=prop,
+        )
+
+        # run iterator
+        if vpfilter is None:
+            self.extend(vp_iterator)
+        else:
+            self.extend(filter(vpfilter, vp_iterator))
+
+        # set sorted flag
+        if self.vcf is not None:
+            if self.vcf.index is not None:
+                self.is_sorted = True
+
+#        '''
+#        Following code is a failed attempt to parallelize using multiprocessing.
+#        Many custom classes cannot be pickled.
+#
+#        def vr_iterator(vcf):
+#            for vr in vcf.fetch():
+#                if varianthandler.check_SV(vr):
+#                    vr_svinfo = libbnd.get_vr_svinfo_standard_vr(vr, result.fasta, result.chromdict)
+#                    if vr_svinfo["is_bnd1"]:
+#                        yield vr
+#                else:
+#                    yield vr
+#
+#        refver, fasta, chromdict = result.refver, result.fasta, result.chromdict
+#        with multiprocessing.Pool(ncore) as p:
+#            NR = 0
+#            for vr_subiter in common.grouper(vr_iterator(result.vcf), result.logging_lineno):
+#                vp_sublist = p.starmap(
+#                    _init_helper_make_vp, 
+#                    (
+#                        (
+#                            vr, 
+#                            refver, 
+#                            fasta, 
+#                            chromdict, 
+#                            init_popfreq, 
+#                            init_cosmic,
+#                            popfreq_metadata, 
+#                            cosmic_metadata,
+#                            init_transcript,
+#                            init_regulatory,
+#                            init_motif,
+#                            init_repeat,
+#                            init_readstats,
+#                            init_oncokb,
+#                        )
+#                        for vr in vr_subiter
+#                    )
+#                )
+#                NR += len(vp_sublist)
+#                result.logger.info(f'Processing {NR:,}th line')
+#                result.extend(vp_sublist)
+#
+#        '''
+
+    #######################
+    # initializer helpers #
+    #######################
+
     def _run_vcf_fetch(self, chrom, start0, end0):
         assert isinstance(self.vcf, pysam.VariantFile)
         assert (start0 is None) == (end0 is None)
@@ -1193,88 +1296,6 @@ class VariantPlusList(list):
         vp_iterator = common.iter_lineno_logging(vp_iterator, self.logger, self.logging_lineno)
         return vp_iterator
 
-    def load_vps_from_vcf(
-        self,
-        prop=None,
-        chrom=None,
-        start0=None,
-        end0=None,
-        vpfilter=None,
-    ):
-        # set other params
-        if self.vp_init_params['init_popfreq']:
-            popfreq_metadata = libpopfreq.PopfreqMetadata.from_vcfheader(self.vcf.header)
-        else:
-            popfreq_metadata = None
-
-        if self.vp_init_params['init_cosmic']:
-            cosmic_metadata = libcosmic.CosmicMetadata.from_vcfheader(self.vcf.header)
-        else:
-            cosmic_metadata = None
-
-        # make iterator 
-        vp_iterator = self.get_vp_iter_from_vcf(
-            chrom=chrom, 
-            start0=start0, 
-            end0=end0, 
-            prop=prop,
-        )
-
-        # run iterator
-        if vpfilter is None:
-            self.extend(vp_iterator)
-        else:
-            self.extend(filter(vpfilter, vp_iterator))
-
-        # set sorted flag
-        if self.vcf is not None:
-            if self.vcf.index is not None:
-                self.is_sorted = True
-
-#        '''
-#        Following code is a failed attempt to parallelize using multiprocessing.
-#        Many custom classes cannot be pickled.
-#
-#        def vr_iterator(vcf):
-#            for vr in vcf.fetch():
-#                if varianthandler.check_SV(vr):
-#                    vr_svinfo = libbnd.get_vr_svinfo_standard_vr(vr, result.fasta, result.chromdict)
-#                    if vr_svinfo["is_bnd1"]:
-#                        yield vr
-#                else:
-#                    yield vr
-#
-#        refver, fasta, chromdict = result.refver, result.fasta, result.chromdict
-#        with multiprocessing.Pool(ncore) as p:
-#            NR = 0
-#            for vr_subiter in common.grouper(vr_iterator(result.vcf), result.logging_lineno):
-#                vp_sublist = p.starmap(
-#                    _init_helper_make_vp, 
-#                    (
-#                        (
-#                            vr, 
-#                            refver, 
-#                            fasta, 
-#                            chromdict, 
-#                            init_popfreq, 
-#                            init_cosmic,
-#                            popfreq_metadata, 
-#                            cosmic_metadata,
-#                            init_transcript,
-#                            init_regulatory,
-#                            init_motif,
-#                            init_repeat,
-#                            init_readstats,
-#                            init_oncokb,
-#                        )
-#                        for vr in vr_subiter
-#                    )
-#                )
-#                NR += len(vp_sublist)
-#                result.logger.info(f'Processing {NR:,}th line')
-#                result.extend(vp_sublist)
-#
-#        '''
 
     ########
     # repr #
@@ -1361,6 +1382,8 @@ class VariantPlusList(list):
             ),
             dtype=float,
         )
+
+    get_vafs = get_all_vp_vafs
         
 
     ##########

@@ -521,11 +521,10 @@ def argument_parser(cmdargs):
 
     parser_dict['optional'].add_argument(
         '--depth-limits', dest='depth_limits', required=False,
-        #default=list(libreadstats.DEFAULT_DEPTH_LIMITS),
         default=None,
-        type=float,
+        #type=float,
         metavar='<depth upper limit>',
-        nargs=2,
+        nargs='+',
         help=(
             f'Limits (both inclusive) of valid depth range. '
             f'If depth of certain site is out of this range, ReadStats '
@@ -557,10 +556,12 @@ def argument_parser(cmdargs):
     )
     parser_dict['optional'].add_argument(
         '--mq-limits', dest='mq_limits', required=False,
-        default=list(libreadstats.DEFAULT_MQ_LIMITS),
-        type=float,
+        default=[
+            ','.join(str(x) for x in libreadstats.DEFAULT_MQ_LIMITS)
+        ],
+        #type=float,
         metavar='<depth upper limit>',
-        nargs=2,
+        nargs='+',
         help=(
             f'Limits (both inclusive) of valid mapping quality range. '
             f'If mapping quality of certain site is out of this range, ReadStats '
@@ -605,6 +606,23 @@ def argument_parser(cmdargs):
 
 
 def depth_mq_limit_processing(args):
+    def rawarg_handler(rawarg, nsample):
+        if len(rawarg) not in (1, nsample):
+            raise Exception(f'Invalid "--depth-limits" or "--mq-limits" arguments')
+
+        if len(rawarg) == 1:
+            rawarg = rawarg * nsample
+            
+        result = list()
+        for x in rawarg:
+            x = x.split(',')
+            minval = float(x[0])
+            maxval = (np.inf if x[1] == '-1' else float(x[1]))
+            result.append([minval, maxval])
+
+        return result
+
+    # calculate region length
     if args.depth_limits is None:
         if args.target_bed_path is None:
             sample_bam_path = next(itertools.chain(args.bamlist, args.pon_bamlist))
@@ -614,22 +632,41 @@ def depth_mq_limit_processing(args):
             region_gr = pr.read_bed(args.target_bed_path)
             region_length = region_gr.merge().length
 
-    mq_limits = dict()
-    depth_limits = dict()
-    for sampleid, bam_path in zip(
-        itertools.chain(args.idlist, args.pon_idlist),
-        itertools.chain(args.bamlist, args.pon_bamlist),
-    ):
-        mq_limits[sampleid] = list(args.mq_limits)
-        if args.depth_limits is None:
+    # modify raw argument
+    sampleid_list = list(itertools.chain(args.idlist, args.pon_idlist))
+    bampath_list = list(itertools.chain(args.bamlist, args.pon_bamlist))
+    nsample = len(sampleid_list)
+
+    mq_limits = dict(zip(sampleid_list, rawarg_handler(args.mq_limits, nsample)))
+
+    if args.depth_limits is None:
+        depth_limits = dict()
+        for sampleid, bam_path in zip(sampleid_list, bampath_list):
             with pysam.AlignmentFile(bam_path) as in_bam:
                 upper = (
                     bameditor.get_average_depth(in_bam, aligned_region_length=region_length) 
                     * args.depthlimit_cov_ratio
                 )
-                depth_limits[sampleid] = [0, upper]
-        else:
-            depth_limits[sampleid] = list(args.depth_limits)
+            depth_limits[sampleid] = [0, upper]
+    else:
+        depth_limits = dict(zip(sampleid_list, rawarg_handler(args.depth_limits, nsample)))
+
+#    mq_limits = dict()
+#    depth_limits = dict()
+#    for sampleid, bam_path in zip(
+#        itertools.chain(args.idlist, args.pon_idlist),
+#        itertools.chain(args.bamlist, args.pon_bamlist),
+#    ):
+#        mq_limits[sampleid] = list(args.mq_limits)
+#        if args.depth_limits is None:
+#            with pysam.AlignmentFile(bam_path) as in_bam:
+#                upper = (
+#                    bameditor.get_average_depth(in_bam, aligned_region_length=region_length) 
+#                    * args.depthlimit_cov_ratio
+#                )
+#                depth_limits[sampleid] = [0, upper]
+#        else:
+#            depth_limits[sampleid] = list(args.depth_limits)
 
     return depth_limits, mq_limits
 
@@ -759,12 +796,6 @@ def write_jobscripts_old(
 def main(cmdargs):
     args = argument_parser(cmdargs)
 
-    # postprocess depth and mq limits
-    common.print_timestamp(f'Processing depth and MQ limits (may take a while calculating average depths of bam files)')
-    depth_limits, mq_limits = depth_mq_limit_processing(args)
-    common.print_timestamp(f'Depth limits: {depth_limits}')
-    common.print_timestamp(f'MQ limits: {mq_limits}')
-
     # make tmpdir tree
     tmpdir_paths = workflow.get_tmpdir_paths(
         ['scripts', 'logs', 'split_outfiles'],
@@ -782,6 +813,12 @@ def main(cmdargs):
                                     tmpdir_root=tmpdir_paths['root'],
                                     with_genlog=True)
     logger.info('Beginning')
+
+    # postprocess depth and mq limits
+    logger.info(f'Processing depth and MQ limits (may take a while calculating average depths of bam files)')
+    depth_limits, mq_limits = depth_mq_limit_processing(args)
+    logger.info(f'Depth limits: {depth_limits}')
+    logger.info(f'MQ limits: {mq_limits}')
 
     # make infile copy
     infile_copy_path, infile_copy_index_path = toolsetup.make_infile_copy(

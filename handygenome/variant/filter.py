@@ -35,8 +35,12 @@ def get_preset_filter_germline(
     cutoff_cliplen=20,
     cutoff_altcount=2,
     cutoff_otherratio=1.5,
-    cutoff_totalcount=10,
+
+    cutoffs_totaldepth=(10, 100),
+
     cutoff_unifpval=0.01,
+    cutoff_recurMM=10,
+    cutoffs_vaf=None,
 ):
     # sanity check
     if with_pon:
@@ -60,10 +64,12 @@ def get_preset_filter_germline(
             CliplenFilter(cutoff=cutoff_cliplen),
             ReadcountFilter(cutoff=cutoff_altcount),
             OthercountRatioFilter(cutoff=cutoff_otherratio),
-            TotaldepthGTFilter(cutoff=cutoff_totalcount),
+            TotaldepthFilter(cutoff=cutoffs_totaldepth),
             VarposUniformFilter(cutoff=cutoff_unifpval),
+            RecurrentMMFilter(cutoff=cutoff_recurMM),
         ]
     )
+
     if with_pon:
         result.append(
             get_ponfilter(
@@ -73,6 +79,9 @@ def get_preset_filter_germline(
                 mode='wgs',
             )
         )
+
+    if cutoffs_vaf is not None:
+        result.append(VAFFilter(cutoff=cutoffs_vaf))
 
     return result
 
@@ -224,6 +233,12 @@ class FilterBase:
     """
     def __repr__(self):
         return f"<{self.__class__.__name__} ({self.params})>"
+
+    @staticmethod
+    def check_value_between(value, lower, upper):
+        lower_result = (True if (lower is None) else (value >= lower))
+        upper_result = (True if (upper is None) else (value <= upper))
+        return lower_result and upper_result
 
 
 class SamplewiseFilter(FilterBase):
@@ -526,6 +541,47 @@ class TotaldepthLTFilter(SamplewiseFilter):
         return vp.readstats_dict[sampleid].get_total_rppcount(
             exclude_other=exclude_other,
         ) <= self.params['cutoff']
+
+
+class TotaldepthFilter(SamplewiseFilter):
+    def __init__(self, cutoff=(20, 200)):
+        self.params = {
+            "cutoff_lower": cutoff[0],
+            "cutoff_upper": cutoff[1],
+        }
+
+    def check(self, vp, sampleid, allele_index=None, exclude_other=False):
+        depth = vp.readstats_dict[sampleid].get_total_rppcount(exclude_other=exclude_other)
+        return self.check_value_between(
+            depth, self.params["cutoff_lower"], self.params["cutoff_upper"],
+        )
+
+
+class RecurrentMMFilter(SamplewiseFilter):
+    def __init__(self, cutoff=10):
+        self.params = {
+            "cutoff": cutoff,
+        }
+
+    def check(self, vp, sampleid, allele_index=1):
+        return (
+            vp.readstats_dict[sampleid]['recurrent_mNM'][allele_index] 
+            <= self.params['cutoff']
+        )
+
+
+class VAFFilter(SamplewiseFilter):
+    def __init__(self, cutoff=(None, None)):
+        self.params = {
+            "cutoff_lower": cutoff[0],
+            "cutoff_upper": cutoff[1],
+        }
+
+    def check(self, vp, sampleid, allele_index=1, exclude_other=False):
+        vaf = vp.get_vaf(sampleid, allele_index=allele_index, exclude_other=exclude_other)
+        return self.check_value_between(
+            vaf, self.params["cutoff_lower"], self.params["cutoff_upper"],
+        )
 
 
 ############################

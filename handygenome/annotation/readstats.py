@@ -82,6 +82,7 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         countonly=False,
         depth_limits=DEFAULT_DEPTH_LIMITS,
         mq_limits=DEFAULT_MQ_LIMITS,
+        include_mNM_items=False,
     ):
         depth, mqlist = get_position_info(bam, vcfspec.chrom, vcfspec.pos0)
         depth_limits = cls.handle_limits_arg(depth_limits)
@@ -100,6 +101,7 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
                 fasta, 
                 chromdict,
                 countonly=countonly,
+                include_mNM_items=include_mNM_items,
             )
             del readstats_data
         else:
@@ -115,6 +117,7 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         fasta=None, 
         chromdict=None,
         countonly=False,
+        include_mNM_items=False,
     ):
         def allele_means(data):
             return dict(
@@ -169,15 +172,18 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         ):
             summary_without_recurrence = dict()
             summary_only_recurrence = dict()
+            mNMitems_norecur = dict()
+            mNMitems_recur = dict()
             for alleleclass, values in data.items():    
-                if len(values) == 0:
-                    #summary_without_recurrence[alleleclass] = np.nan
-                    summary_without_recurrence[alleleclass] = 0
-                    summary_only_recurrence[alleleclass] = 0
-                else:
+                # set values
+                mNM_count_sum_with_recurrence = 0
+                mNM_count_sum_without_recurrence = 0
+
+                mNMitems_norecur[alleleclass] = list()
+                mNMitems_recur[alleleclass] = list()
+
+                if len(values) > 0:
                     counter = collections.Counter(values)
-                    mNM_count_sum_with_recurrence = 0
-                    mNM_count_sum_without_recurrence = 0
                     for key, val in counter.items():
                         refpos0 = key[0]
                         relevant_rppcount = sum(
@@ -194,15 +200,21 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
                             relevant_rppcount >= recurrence_cutoff_denominator
                         ):  # This means a recurrent MM
                             mNM_count_sum_with_recurrence += 1
+                            mNMitems_recur[alleleclass].append(key)
                         else:
                             mNM_count_sum_without_recurrence += 1
+                            mNMitems_norecur[alleleclass].append(key)
 
+                # summarize
+                if rppcounts_dict[alleleclass] == 0:
+                    summary_without_recurrence[alleleclass] = np.nan
+                else:
                     summary_without_recurrence[alleleclass] = (
                         mNM_count_sum_without_recurrence / rppcounts_dict[alleleclass]
                     )
-                    summary_only_recurrence[alleleclass] = mNM_count_sum_with_recurrence
+                summary_only_recurrence[alleleclass] = mNM_count_sum_with_recurrence
 
-            return summary_without_recurrence, summary_only_recurrence
+            return summary_without_recurrence, summary_only_recurrence, mNMitems_norecur, mNMitems_recur
 
         # main
         result = cls(is_missing=False)
@@ -231,13 +243,16 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
             result['mean_cliplens'] = allele_means(readstats_data['cliplen'])
             result['median_cliplens'] = allele_medians(readstats_data['cliplen'])
 
-            result['mNM'], result['recurrent_mNM'] = handle_mNM(
+            result['mNM'], result['recurrent_mNM'], mNMitems_norecur, mNMitems_recur = handle_mNM(
                 readstats_data['mNM'], 
                 readstats_data['count'], 
                 readstats_data['rpp_range0'], 
                 recurrence_cutoff_fraction=0.9,
                 recurrence_cutoff_denominator=3,
             )
+            if include_mNM_items:
+                result['mNM_items'] = mNMitems_norecur
+                result['recurrent_mNM_items'] = mNMitems_recur
 
             result['pairorient_pvalues'] = handle_orient(readstats_data['pairorient'], mode='pairorient')
             result['readorient_pvalues'] = handle_orient(readstats_data['readorient'], mode='pairorient')
@@ -305,9 +320,9 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
             allele_indexes = tuple(self[key].keys())
 
         values = np.fromiter((self[key][x] for x in allele_indexes), dtype=float)
-        weights = np.fromiter((self['rppcounts'][x] for x in allele_indexes), dtype=int)
+        weights = np.fromiter((self['rppcounts'][x] for x in allele_indexes), dtype=float)
 
-        nan_indexes = np.isnan(values)
+        nan_indexes = np.logical_or(np.isnan(values), np.isnan(weights))
         values = values[~nan_indexes]
         weights = weights[~nan_indexes]
 
@@ -397,6 +412,7 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         depth_limits=DEFAULT_DEPTH_LIMITS,
         mq_limits=DEFAULT_MQ_LIMITS,
         init_invalid=False,
+        include_mNM_items=False,
     ):
         depth_limits = cls.handle_limits_arg(depth_limits, bam_dict)
         mq_limits = cls.handle_limits_arg(mq_limits, bam_dict)
@@ -414,6 +430,7 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
                     countonly=countonly,
                     depth_limits=depth_limits[sampleid],
                     mq_limits=mq_limits[sampleid],
+                    include_mNM_items=include_mNM_items,
                 )
         return result
 
@@ -445,6 +462,7 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         depth_limits=DEFAULT_DEPTH_LIMITS,
         mq_limits=DEFAULT_MQ_LIMITS,
         init_invalid=False,
+        include_mNM_items=False,
     ):
         if len(self) == 0:
             raise Exception(f'Length of self must be greater than 0')
@@ -466,6 +484,7 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
                     countonly=countonly,
                     depth_limits=depth_limits[sampleid],
                     mq_limits=mq_limits[sampleid],
+                    include_mNM_items=include_mNM_items,
                 )
 
     def write(self, vr, donot_write_missing=True):
