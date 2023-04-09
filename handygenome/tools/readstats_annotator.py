@@ -793,9 +793,10 @@ def main(cmdargs):
     fetchregion_list = vcfmisc.get_vcf_fetchregions(
         infile_copy_path, args.parallel, args.refver, verbose=False,
     )
-    logger.info(f'Split fetch regions: {fetchregion_list}')
+    #logger.info(f'Split fetch regions: {fetchregion_list}')
 
     # make job scripts and run
+    logger.info(f'Creating split job scripts')
     jobscript_path_list = write_jobscripts(
         tmpdir_paths, 
         fetchregion_list,

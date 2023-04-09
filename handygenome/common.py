@@ -537,7 +537,11 @@ class IntervalList(list):
         cumpos0_left = chromdict.get_cumpos0(chrom_left, start0_left)
         cumpos0_right = chromdict.get_cumpos0(chrom_right, end0_right)
         if cumpos0_left >= cumpos0_right:
-            raise Exception(f'"left position" comes later than "right_position"')
+            raise Exception(
+                f'"left position" comes later than "right_position"; '
+                f'chrom_left={chrom_left}, start0_left={start0_left}, '
+                f'chrom_right={chrom_right}, end0_right={end0_right}'
+            )
 
         result = cls()
         if chrom_left == chrom_right:
