@@ -617,7 +617,7 @@ def depth_mq_limit_processing(args):
         for x in rawarg:
             x = x.split(',')
             minval = float(x[0])
-            maxval = (np.inf if x[1] == '-1' else float(x[1]))
+            maxval = float(x[1])
             result.append([minval, maxval])
 
         return result
