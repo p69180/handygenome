@@ -1206,29 +1206,48 @@ class VariantPlusList(list):
     # initializer helpers #
     #######################
 
-    def _run_vcf_fetch(self, chrom, start0, end0):
-        assert isinstance(self.vcf, pysam.VariantFile)
-        assert (start0 is None) == (end0 is None)
-        
-        if chrom is None:
-            fetcher = self.vcf.fetch()
-        else:
-            if ((start0 is None) or (end0 is None)):
-                fetcher = self.vcf.fetch(contig=chrom)
-            else:
-                fetcher = self.vcf.fetch(
-                    contig=chrom, start=start0, stop=end0,
-                )
-
-        return fetcher
-
-    def _get_intervals(self, n):
-        intvlist = self.chromdict.to_interval_list()
-        split_intvlists = intvlist.split(num=n)
-        return split_intvlists
+#    def _run_vcf_fetch(self, chrom, start0, end0, respect_refregion=False):
+#        assert isinstance(self.vcf, pysam.VariantFile)
+#        assert (start0 is None) == (end0 is None)
+#        
+#        if chrom is None:
+#            fetcher = self.vcf.fetch()
+#        else:
+#            if ((start0 is None) or (end0 is None)):
+#                fetcher = self.vcf.fetch(contig=chrom)
+#            else:
+#                fetcher = self.vcf.fetch(contig=chrom, start=start0, stop=end0)
+#
+#        if start0 is None:
+#            def check_vr_inclusion(vr, chrom, start0, end0):
+#                return vr.contig == chrom
+#        else:
+#            if respect_refregion:
+#                def check_vr_inclusion(vr, chrom, start0, end0):
+#                    return (
+#                        (vr.contig == chrom)
+#                        and ((vr.pos - 1) >= start0)
+#                        and (vr.pos <= end0)
+#                    )
+#            else:
+#                def check_vr_inclusion(vr, chrom, start0, end0):
+#                    return (
+#                        (vr.contig == chrom)
+#                        and ((vr.pos - 1) >= start0)
+#                        and (vr.pos <= end0)
+#                    )
+#
+#        for vr in fetcher:
+#            if check_vr_inclusion(vr, chrom, start0, end0):
+#                yield vr
 
     def get_vr_iter_from_vcf(self, chrom=None, start0=None, end0=None, prop=None):
-        fetcher = self._run_vcf_fetch(chrom, start0, end0)
+        assert isinstance(self.vcf, pysam.VariantFile)
+
+        #fetcher = self._run_vcf_fetch(chrom, start0, end0)
+        fetcher = vcfmisc.get_vr_fetcher(
+            self.vcf, self.refver, chrom, start0, end0, respect_refregion=False,
+        )
 
         if prop is None:
             vr_iterator = fetcher
@@ -1408,7 +1427,7 @@ class VariantPlusList(list):
         if not self.is_sorted:
             self.sort()
 
-        gr = self.get_df(vaf_sampleid=None, as_gr=True, omit_vaf=True)
+        gr = self.get_df(vaf_sampleid=None, as_gr=True)
         gr.Vcfspec = self
         gr.Index = list(range(gr.df.shape[0]))
             # In this form of assignment, right-side term must be a list.
@@ -1885,19 +1904,13 @@ def get_vafdf(
 def _get_vafdf_targetfunc(
     position_info, refver, vcf_path, sampleid, alt_index, get_vaf_kwargs, vcf_iter_kwargs,
 ):
-    chrom_left = position_info[0][0]
-    start0_left = position_info[0][1]
-    chrom_right = position_info[-1][0]
-    end0_right = position_info[-1][1] + 1
-    intvlist = common.IntervalList.from_margin(
-        refver, chrom_left, start0_left, chrom_right, end0_right,
-    )
+    fetchargs_list = vcfmisc.get_fetchargs_from_vcf_positions(position_info, refver)
     dflist = list()
-    for intv in intvlist:
+    for fetchargs in fetchargs_list:
         #LOGGER_INFO.info(f'Beginning job over {intv}')
         df = get_vafdf_nonparallel(
             vcf_path, sampleid, 
-            chrom=intv.chrom, start0=intv.start0, end0=intv.end0,
+            chrom=fetchargs[0], start0=fetchargs[1], end0=fetchargs[2],
             alt_index=alt_index, 
             as_gr=False, 
             get_vaf_kwargs=get_vaf_kwargs,

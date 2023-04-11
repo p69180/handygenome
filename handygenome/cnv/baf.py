@@ -13,16 +13,29 @@ import handygenome.common as common
 
 BAFCORRECT_PATH = os.path.join(common.DATA_DIR, f'baf_correction_func.pickle')
 
-def save_bafcorrect_func(func):
+def save_bafcorrect_func_old(func):
     with open(BAFCORRECT_PATH, 'wb') as outfile:
         pickle.dump(func, outfile)
 
-    
-def load_bafcorrect_func():
+
+def load_bafcorrect_func_old():
     with open(BAFCORRECT_PATH, 'rb') as infile:
         result = pickle.load(infile)
 
     return winsorize_pointfive(result)
+
+#
+
+def save_bafcorrect_func(func, x_cutoff):
+    with open(BAFCORRECT_PATH, 'wb') as outfile:
+        pickle.dump((func, x_cutoff), outfile)
+
+    
+def load_bafcorrect_func():
+    with open(BAFCORRECT_PATH, 'rb') as infile:
+        func, x_cutoff = pickle.load(infile)
+
+    return winsorize_pointfive(func, x_cutoff)
 
 
 def get_bafs(vaf_list):
@@ -135,36 +148,79 @@ def make_simulation_data(mean_depth=34, size=50, reps=100, true_bafs=None):
     }
 
 
-def winsorize_pointfive(func):
+def winsorize_pointfive(func, x_cutoff=None):
     def newfunc(x):
         result = func(x)
         result[result > 0.5] = 0.5
+        if x_cutoff is not None:
+            result[x > x_cutoff] = 0.5
         return result
 
     return newfunc
 
 
-def make_bafcorrector_type1(data):
+def get_xs_ratio(data, realdata, size=10000, rep=10000):
+    realdata_means = np.array([np.random.choice(realdata, size).mean() for x in range(rep)])
+    xs_ratio = realdata_means.mean() / data['mean'][0.5].mean()
+    return xs_ratio
+
+
+def get_x_cutoff(realdata, size=100, rep=10000, q=0.05):
+    realdata_means = np.array([np.random.choice(realdata, size).mean() for x in range(rep)])
+    return np.quantile(realdata_means, q)
+
+
+def xs_ratio_correction(xs_ratio, xs, ys):
+    if xs_ratio is None:
+        corrected_xs = None
+        interp = scipy.interpolate.interp1d(xs, ys, fill_value='extrapolate')
+    else:
+        corrected_xs = xs * xs_ratio
+        interp = scipy.interpolate.interp1d(corrected_xs, ys, fill_value='extrapolate')
+
+    return interp, corrected_xs
+
+
+def make_bafcorrector_type1(data, xs_ratio=None):
     xs = list()
     ys = list()
     for true_baf_val, ebaf_vals in data['mean'].items():
         xs.append(ebaf_vals.mean())
         ys.append(true_baf_val)
 
-    interp = scipy.interpolate.interp1d(xs, ys, fill_value='extrapolate')
-    return interp, xs, ys
-    #return winsorize_pointfive(interp), xs, ys
+    xs = np.array(xs)
+    ys = np.array(ys)
+
+    interp, corrected_xs = xs_ratio_correction(xs_ratio, xs, ys)
+    return interp, xs, ys, corrected_xs
 
 
-def make_bafcorrector_type2(data):
+def make_bafcorrector_type2(data, xs_ratio=None):
     xs = list()
     ys = list()
     for true_baf_val, ebaf_vals in data['mean'].items():
         xs.extend(ebaf_vals)
         ys.extend(itertools.repeat(true_baf_val, len(ebaf_vals)))
 
-    interp = scipy.interpolate.interp1d(xs, ys, fill_value='extrapolate')
-    return interp, xs, ys
-    #return winsorize_pointfive(interp), xs, ys
+    xs = np.array(xs)
+    ys = np.array(ys)
 
+    interp, corrected_xs = xs_ratio_correction(xs_ratio, xs, ys)
+
+    return interp, xs, ys, corrected_xs
+
+
+def make_bafcorrector_from_realdata(data, realdata, mode='type1'):
+    xs_ratio = get_xs_ratio(data, realdata, size=10000, rep=10000)
+    x_cutoff = get_x_cutoff(realdata, size=100, rep=10000, q=0.05)
+    if mode == 'type1':
+        interp, xs, ys, corrected_xs = make_bafcorrector_type1(data, xs_ratio=xs_ratio)
+    elif mode == 'type2':
+        interp, xs, ys, corrected_xs = make_bafcorrector_type2(data, xs_ratio=xs_ratio)
+
+    bafcorrector = winsorize_pointfive(interp, x_cutoff)
+
+    return bafcorrector, interp, x_cutoff
+
+        
 

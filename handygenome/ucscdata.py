@@ -18,6 +18,23 @@ CYTOBAND_URLS = common.RefverDict({
     'GRCh38': 'http://hgdownload.cse.ucsc.edu/goldenpath/hg38/database/cytoBand.txt.gz', 
 })
 
+def tohexcode(tup):
+    return '#' + ''.join(hex(x)[2:] for x in tup)
+
+# https://www.wikiwand.com/en/Chromosome_1
+CYTOBAND_COLORMAP = {
+    #'gvar': tohexcode((224, 224, 224)),
+    'gvar': 'tab:pink',
+    'stalk': tohexcode((112, 128, 144)),
+    #'acen': tohexcode((110, 127, 143)),
+    'acen': 'tab:red',
+    'gneg': tohexcode((255, 255, 255)),
+    'gpos25': tohexcode((217, 217, 217)),
+    'gpos50': tohexcode((151, 151, 151)),
+    'gpos75': tohexcode((99, 99, 99)),
+    'gpos100': tohexcode((0, 0, 0)),
+}
+
 
 def get_avaliable_genomes():
     url = f'https://api.genome.ucsc.edu/list/ucscGenomes'
@@ -53,7 +70,7 @@ def list_tracks(refver):
 
 
 @functools.cache
-def get_cytoband_gr(refver, rename_hg19=True, as_gr=True):
+def get_cytoband(refver, rename_hg19=True, as_gr=True):
     refver = standardize_refver(refver)
     #if 'cytoBand' not in list_tracks(refver):
     #    raise Exception(f'"cytoBand" is not available for this reference genome.')
@@ -92,4 +109,4 @@ def get_cytoband_gr(refver, rename_hg19=True, as_gr=True):
         })
         return cnvmisc.sort_genome_df(df, refver=refver)
         
-
+get_cytoband_gr = get_cytoband

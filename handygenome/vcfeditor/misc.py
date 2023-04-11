@@ -57,29 +57,54 @@ def get_vcf_positions(vcf_path, as_iter=False, verbose=False):
     if as_iter:
         return result_iter
     else:
-        return np.fromiter(result_iter, dtype=object)
+        #return list(result_iter)
+        return np.array(
+            list(result_iter), 
+            dtype=[('Chromosome', object), ('Start', int), ('End', int)],
+        )
+
+
+def split_vcf_positions(vcf_positions, n):
+    """Splits such that adjacent sub-positions do not meet each other with
+    identical POS values
+    """
+    diffresult = np.diff(vcf_positions['Start'])
+    nondiff_indexes = np.where(diffresult == 0)[0] + 1
+    spittable_indexes = np.setdiff1d(np.arange(vcf_positions.shape[0]), nondiff_indexes)
+    spittable_indexes_split = [
+        x for x in np.array_split(spittable_indexes, n) 
+        if x.shape[0] != 0
+    ]
+    splitpoints = [x[0] for x in spittable_indexes_split if x[0] != 0]
+    split_positions = np.split(vcf_positions, splitpoints)
+        # this works even when "splitpoints" is an empty list
+
+    return split_positions
+
+
+def get_fetchargs_from_vcf_positions(vcf_positions, refver):
+    chrom_left = vcf_positions[0]['Chromosome']
+    start0_left = vcf_positions[0]['Start']
+    chrom_right = vcf_positions[-1]['Chromosome']
+    end0_right = vcf_positions[-1]['Start'] + 1  
+        # only the 1-base position indicated by POS value is used
+
+    intvlist = common.IntervalList.from_margin(
+        refver, chrom_left, start0_left, chrom_right, end0_right,
+    )
+    fetchargs_list = [
+        (intv.chrom, intv.start0, intv.end0) for intv in intvlist
+    ]
+    return fetchargs_list
 
 
 def get_vcf_fetchregions(vcf_path, n, refver, verbose=False):
     all_position_info = get_vcf_positions(vcf_path, as_iter=False, verbose=verbose)
-    split_position_info = [
-        x for x in np.array_split(all_position_info, n) if x.shape[0] != 0
+    split_position_info = split_vcf_positions(all_position_info, n)
+    result = [
+        get_fetchargs_from_vcf_positions(position_info, refver)
+        for position_info in split_position_info
     ]
-
-    result = list()
-    for position_info in split_position_info:
-        chrom_left = position_info[0][0]
-        start0_left = position_info[0][1]
-        chrom_right = position_info[-1][0]
-        end0_right = position_info[-1][1] + 1
-        intvlist = common.IntervalList.from_margin(
-            refver, chrom_left, start0_left, chrom_right, end0_right,
-        )
-        fetchregion_list = [
-            (intv.chrom, intv.start0, intv.end0)
-            for intv in intvlist
-        ]
-        result.append(fetchregion_list)
 
     return result
 
@@ -91,6 +116,42 @@ def get_vcf_lineno(vcf_path, verbose=False):
         return count_iterator(line_iter)
     else:  # BCF
         return get_vcf_lineno_pysam(vcf_path)
+
+
+def get_vr_fetcher(vcf, refver, chrom=None, start0=None, end0=None, respect_refregion=False):
+    if chrom is None:
+        for vr in vcf.fetch():
+            yield vr
+    else:
+        if start0 is None:
+            start0 = 0
+        if end0 is None:
+            end0 = common.DEFAULT_CHROMDICTS[refver][chrom]
+        
+        fetcher = vcf.fetch(contig=chrom, start=start0, stop=end0)
+
+        if respect_refregion:
+            def check_vr_inclusion(vr, chrom, start0, end0):
+                vr_start0 = vr.pos - 1
+                vr_end0 = vr_start0 + len(vr.ref)
+                return (
+                    (vr.contig == chrom)
+                    and (vr_end0 > start0)
+                    and (vr_start0 < end0)
+                )
+        else:
+            def check_vr_inclusion(vr, chrom, start0, end0):
+                vr_start0 = vr.pos - 1
+                vr_end0 = vr.pos
+                return (
+                    (vr.contig == chrom)
+                    and (vr_end0 > start0)
+                    and (vr_start0 < end0)
+                )
+
+        for vr in fetcher:
+            if check_vr_inclusion(vr, chrom, start0, end0):
+                yield vr
 
 ###
 

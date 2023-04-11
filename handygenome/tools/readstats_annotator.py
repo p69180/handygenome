@@ -150,8 +150,11 @@ def unit_job_core(
 
     # loop over variant records
     vr_iterator = itertools.chain.from_iterable(
-        in_vcf.fetch(*fetchregion_single)
-        for fetchregion_single in fetchregion
+        vcfmisc.get_vr_fetcher(
+            in_vcf, refver, fetchargs[0], fetchargs[1], fetchargs[2],
+            respect_refregion=False,
+        )
+        for fetchargs in fetchregion
     )
     shareddict['finished'] = True
     for vr in vr_iterator:

@@ -41,10 +41,24 @@ def get_mosdepth_args(prefix, bam_path, t, use_median, no_perbase=True, bed_path
 
 def load_mosdepth_output(filename, depth_colname='mean_depth', as_gr=True):
     """Only for *.regions.bed.gz file"""
+
+    with common.openfile(filename) as infile:
+        firstline = next(infile)
+    firstline_sp = firstline.split('\t')
+    if firstline_sp[0] == 'Chromosome':
+        if firstline_sp[-1] != depth_colname:
+            raise Exception(f'Last column must be "{depth_colname}"')
+        header = 0
+        names = None
+    else:
+        header = None
+        names = ['Chromosome', 'Start', 'End', depth_colname]
+        
     df = pd.read_csv(
         filename, 
         sep='\t', 
-        names=['Chromosome', 'Start', 'End', depth_colname], 
+        header=header,
+        names=names, 
         dtype={'Chromosome': str, 'Start': int, 'End': int, depth_colname: float},
     )
     if as_gr:

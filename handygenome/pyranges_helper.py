@@ -9,6 +9,7 @@ import pyranges as pr
 
 import handygenome.common as common
 import handygenome.workflow as workflow
+import handygenome.cnv.misc as cnvmisc
 
 
 LOGGER_INFO = workflow.get_debugging_logger(verbose=False)
@@ -25,14 +26,20 @@ def sort_df_by_coord(df, chromdict):
     return df.iloc[sorted_rows_indexes, :].reset_index(drop=True)
 
 
-def isec_union(gr1, gr2):
+def isec_union(gr1, gr2, as_gr=True):
+    gr1 = cnvmisc.arg_into_gr(gr1)
+    gr2 = cnvmisc.arg_into_gr(gr2)
+
     isec = gr1.intersect(gr2)
     gr1_diff_isec = gr1.subtract(isec)
     gr2_diff_isec = gr2.subtract(isec)
     result = pr.concat([gr1_diff_isec, isec, gr2_diff_isec])
     result = result[[]]  # remove annotation columns
-    result.sort()
-    return result
+    result = result.sort()
+    if as_gr:
+        return result
+    else:
+        return result.df
 
 
 # join #
