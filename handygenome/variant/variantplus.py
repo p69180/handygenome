@@ -96,7 +96,7 @@ class VariantPlus:
     def from_vr(
         cls, vr, 
         refver=None, fasta=None, chromdict=None,
-        init_all_attrs=True,
+        init_all_attrs=False,
         vp_init_params=dict(),
         preset_vp_init_params=None,
         popfreq_metadata=None, 
@@ -129,7 +129,7 @@ class VariantPlus:
     def from_vcfspec(
         cls, vcfspec, 
         chromdict=None, 
-        init_all_attrs=True,
+        init_all_attrs=False,
         vp_init_params=dict(),
         preset_vp_init_params=None,
         popfreq_metadata=None, 
@@ -206,27 +206,52 @@ class VariantPlus:
         self._init_filterresult(init_blank=(not self.vp_init_params['init_filterresult']))
 
     def __repr__(self):
-        if self.transcript is None:
-            gene_string = str(None)
+        alteration_strings = self.get_alteration_strings(one_letter=True)
+        if alteration_strings is None:
+            string = str(None)
         else:
-            gene_string_buffer = {alt_idx: set() for alt_idx in range(len(self.vcfspec.alts))}
+            tmp = list()
+            for alt_idx, tups in alteration_strings.items():
+                gene_alt_concat = ", ".join(
+                    " ".join(x[:2]) for x in tups
+                )
+                tmp.append(f'alt_index {alt_idx}: {gene_alt_concat}')
+            string = '; '.join(tmp)
+
+        return f'<VariantPlus(vcfspec={self.vcfspec}, alteration=({string}))>'
+
+    def get_alteration_strings(self, one_letter=True):
+        if self.transcript is None:
+            return None
+        else:
+            alteration_strings = {alt_idx: set() for alt_idx in range(len(self.vcfspec.alts))}
             for alt_idx, tr_set in enumerate(self.transcript):
                 for tr in tr_set.canon_ovlp.values():
-                    if tr.get_hgvsp_genename(one_letter=True) is None:
-                        if tr.hgvsc_genename is None:
-                            gene_string_buffer[alt_idx].add(str(None))
+                    hgvsp_genename = tr.get_hgvsp_genename(one_letter=one_letter)
+                    if hgvsp_genename is None:
+                        hgvsc_genename = tr.get_hgvsc_genename()
+                        if hgvsc_genename is None:
+                            alteration_strings[alt_idx].add(str(None))
                         else:
-                            gene_string_buffer[alt_idx].add(tr.hgvsc_genename)
+                            alteration_strings[alt_idx].add((hgvsc_genename, 'noncoding'))
                     else:
-                        gene_string_buffer[alt_idx].add(tr.get_hgvsp_genename(one_letter=True))
+                        alteration_strings[alt_idx].add((hgvsp_genename, 'coding'))
 
-                if (len(gene_string_buffer[alt_idx]) > 1) and (str(None) in gene_string_buffer[alt_idx]):
-                    gene_string_buffer[alt_idx].remove(str(None))
+                if (
+                    (len(alteration_strings[alt_idx]) > 1) 
+                    and (str(None) in alteration_strings[alt_idx])
+                ):
+                    alteration_strings[alt_idx].remove(str(None))
+
+            alteration_strings = {
+                key: set(
+                    tuple(x[0].split()) + (x[1],) 
+                    for x in val
+                )
+                for key, val in alteration_strings.items()
+            }
                 
-            gene_string = '; '.join(f'alt_index {key}: {", ".join(val)}' for key, val in gene_string_buffer.items())
-
-        #return f'<VariantPlus(chrom={self.vcfspec.chrom}, pos={self.vcfspec.pos}, ref={self.vcfspec.ref}, alts={self.vcfspec.alts}, gene={gene_string})>'
-        return f'<VariantPlus(vcfspec={self.vcfspec}, gene=({gene_string}))>'
+            return alteration_strings
 
     # BASICS
     @property
@@ -530,6 +555,10 @@ class VariantPlus:
             self.readstats_dict = libreadstats.ReadStatsSampledict.init_missing(self.vr)
         else:
             self.readstats_dict = libreadstats.ReadStatsSampledict.from_vr(self.vr, sampleid_list=sampleid_list)
+            for val in self.readstats_dict.values():
+                val.vcfspec = self.vcfspec
+                val.chromdict = self.chromdict
+                val.fasta = self.fasta
 
     @property
     def readstats(self):
@@ -570,17 +599,14 @@ class VariantPlus:
 #            )
 
     def update_readstats(
-        self, bam_dict, 
-        rpplist_kwargs={},
-        alleleinfo_kwargs={},
-        countonly=False,
+        self, bam_dict, **kwargs, 
     ):
-        self.readstats_dict.update_bams(
-            bam_dict=bam_dict,
-            rpplist_kwargs=rpplist_kwargs,
-            alleleinfo_kwargs=alleleinfo_kwargs,
-            countonly=countonly,
-        )
+        if len(self.readstats_dict) == 0:
+            self.create_readstats(bam_dict, **kwargs)
+        else:
+            self.readstats_dict.update_bams(
+                bam_dict=bam_dict, **kwargs,
+            )
 
     def make_readstats(
         self, 
@@ -725,7 +751,10 @@ class VariantPlus:
     def fetch_cnvinfo(self, segments_df):
         nearest = self.get_gr().nearest(pr.PyRanges(segments_df))
         seg_row = nearest.df.iloc[0, :]
-        return int(seg_row.CNt), int(seg_row.A), int(seg_row.B)
+        CNt = int(seg_row.CNt)
+        A = np.nan if np.isnan(seg_row.A) else int(seg_row.A)
+        B = np.nan if np.isnan(seg_row.B) else int(seg_row.B)
+        return CNt, A, B
 
     def get_ccf_CNm(self, segments_df, is_female, cellularity, sampleid, allele_index=1, likelihood='diff'):
         # set params
@@ -984,7 +1013,7 @@ class VariantPlusList(list):
         preview_lineno=15, 
         verbose=True, 
         logger=None,
-        init_all_attrs=True,
+        init_all_attrs=False,
         vp_init_params=dict(),
     ):
         # vcf_path, vcf
@@ -1067,7 +1096,7 @@ class VariantPlusList(list):
         preview_lineno=15, 
         verbose=True, 
         logger=None,
-        init_all_attrs=True,
+        init_all_attrs=False,
         vp_init_params=dict(),
 
         prop=None,
@@ -1105,7 +1134,7 @@ class VariantPlusList(list):
         preview_lineno=15, 
         verbose=True, 
         logger=None,
-        init_all_attrs=True,
+        init_all_attrs=False,
         vp_init_params=dict(),
     ):
         result = cls(
@@ -1403,7 +1432,22 @@ class VariantPlusList(list):
         )
 
     get_vafs = get_all_vp_vafs
-        
+
+    #################
+    # set operation #
+    #################
+
+    def difference(self, other):
+        left_vcfspecs = set(x.vcfspec for x in self)
+        right_vcfspecs = set(x.vcfspec for x in other)
+        diff = left_vcfspecs.difference(right_vcfspecs)
+
+        result = self.__class__(refver=self.refver)
+        for vp in self:
+            if vp.vcfspec in diff:
+                result.append(vp)
+
+        return result
 
     ##########
     # others #
@@ -1641,16 +1685,17 @@ class VariantPlusList(list):
         get_vaf_kwargs['allele_index'] = alt_index + 1
 
         if vaf_sampleid is None:
-            if lazy:
-                first_vr = next(self.get_vr_iter_from_vcf(**vcf_iter_kwargs))
-                sample_ids = list(first_vr.header.samples)
-            else:
-                sample_ids = list(self[0].vr.header.samples)
-
-            if len(sample_ids) == 0:
-                vaf_sampleid = None
-            else:
-                vaf_sampleid = sample_ids
+            vaf_sampleid = None
+#            if lazy:
+#                first_vr = next(self.get_vr_iter_from_vcf(**vcf_iter_kwargs))
+#                sample_ids = list(first_vr.header.samples)
+#            else:
+#                sample_ids = list(self[0].vr.header.samples)
+#
+#            if len(sample_ids) == 0:
+#                vaf_sampleid = None
+#            else:
+#                vaf_sampleid = sample_ids
         else:
             if not isinstance(vaf_sampleid, (tuple, list)):
                 vaf_sampleid = [vaf_sampleid]
@@ -1672,7 +1717,10 @@ class VariantPlusList(list):
                 **vcf_iter_kwargs,
             )
         else:
-            vp_iterator = self.fetch_by_coord(chrom, start0, end0)
+            if chrom is None:
+                vp_iterator = iter(self)
+            else:
+                vp_iterator = self.fetch_by_coord(chrom, start0, end0)
 
         for vp in vp_iterator:
             chroms.append(vp.vcfspec.chrom)

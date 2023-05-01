@@ -57,6 +57,7 @@ import subprocess
 import signal
 import logging
 import importlib
+import operator
 
 import psutil
 import pysam
@@ -424,6 +425,55 @@ class ChromDict(collections.OrderedDict):
             intvlist.append(interval)
 
         return intvlist
+
+    def get_chrom_indexes(self, chroms):
+        if np.isscalar(chroms):
+            return self.contigs.index(chroms)
+        else:
+            where = np.where(
+                np.array(chroms)[:, np.newaxis] == np.array(self.contigs)
+            )
+            assert len(set(where[0])) == len(chroms), f'Unknown chromosome names are included.'
+            result = [
+                tuple(subiter)[0][1] for key, subiter in itertools.groupby(
+                    zip(where[0], where[1]), key=operator.itemgetter(0)
+                )
+            ]
+            return result
+
+    def get_chrompos_sortkey(self, chroms, start0s=None, end0s=None):
+        assert not ((start0s is None) and (end0s is not None))
+
+        chrom_indexes = self.get_chrom_indexes(chroms)
+        if start0s is None:
+            sortkey = np.lexsort([chrom_indexes])
+        else:
+            if end0s is None:
+                sortkey = np.lexsort([start0s, chrom_indexes])
+            else:
+                sortkey = np.lexsort([end0s, start0s, chrom_indexes])
+
+        return sortkey
+
+    def sort_chrompos(self, chroms, start0s=None, end0s=None):
+        assert not ((start0s is None) and (end0s is not None))
+
+        # arg handling
+        chroms = np.array(chroms)
+        if start0s is not None:
+            start0s = np.array(start0s)
+        if end0s is not None:
+            end0s = np.array(end0s)
+
+        # result
+        sortkey = self.get_chrompos_sortkey(chroms, start0s, end0s)
+        if start0s is None:
+            return chroms[sortkey]
+        else:
+            if end0s is None:
+                return chroms[sortkey], start0s[sortkey]
+            else:
+                return chroms[sortkey], start0s[sortkey], end0s[sortkey]
 
 
 DEFAULT_CHROMDICTS = RefverDict({
@@ -1260,12 +1310,9 @@ def unzip(src, dest, rm_src=False):
         os.remove(src)
 
 
-@deco.get_deco_arg_choices({'mode': ('r', 'w')})
+@deco.get_deco_arg_choices({'mode': ('r', 'w', 'a')})
 def openfile(fname, mode='r'):
-    if mode == 'r':
-        mode = 'rt'
-    elif mode == 'w':
-        mode = 'wt'
+    mode = mode + 't'
 
     if fname.endswith('.gz'):
         return gzip.open(fname, mode)
@@ -1687,7 +1734,13 @@ def shorten_int(numlist):
     return result
     
 
+def mean_mad(values):
+    values = np.array(values)
+    return np.mean(np.abs(values - np.mean(values)))
 
 
-
+def median_mad(values):
+    values = np.array(values)
+    return np.median(np.abs(values - np.median(values)))
     
+

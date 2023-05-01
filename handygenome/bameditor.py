@@ -1,11 +1,11 @@
 import os
 
 import pysam
+import numpy as np
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
+import handygenome.common as common
+import handygenome.workflow as workflow
+import handygenome.analysis.feature as libfeature
 
 
 def create_header(chromdict):
@@ -107,4 +107,22 @@ def check_read_length(bam):
             break
 
     return max(values)
+
+
+def get_region_depths(bam, chrom, start0, end0):
+    arrs = bam.count_coverage(chrom, start0, end0)
+    return np.fromiter(
+        (sum(x) for x in zip(*arrs)), dtype=int,
+    )
+
+
+def get_exon_depths(bam, gene_coords, refver=None):
+    if refver is None:
+        refver = common.infer_refver_bamheader(bam.header)
+
+    result = dict()
+    for rng in gene_coords['exon']:
+        result[rng] = get_region_depths(bam, gene_coords['chrom'], rng.start, rng.stop)
+
+    return result
 

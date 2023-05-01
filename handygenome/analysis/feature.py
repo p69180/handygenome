@@ -48,6 +48,8 @@ def get_gene_coords_gr(gene_names, refver):
 
 
 def get_gene_exon_coords(gene_names, refver):
+    assert isinstance(gene_names, (list, tuple))
+
     result = dict()
     rest_result = ensembl_rest.lookup_symbol_post(gene_names, refver, expand=True)
     for x in rest_result:
@@ -67,7 +69,7 @@ def get_gene_exon_coords(gene_names, refver):
         transcript_info = parse_transcript_info_from_lookup_symbol(x)
         for key, val in transcript_info.items():
             if val['is_canonical']:
-                result[gene_name]['exons'] = val['exons'].copy()
+                result[gene_name]['exon'] = val['exon'].copy()
 
     return result
 
@@ -80,16 +82,59 @@ def parse_transcript_info_from_lookup_symbol(lookup_result):
 
         result[transcript_id]['is_canonical'] = (x['is_canonical'] == 1)
         result[transcript_id]['display_name'] = x['display_name']
-        result[transcript_id]['exons'] = list()
+        result[transcript_id]['exon'] = list()
         for y in x['Exon']:
             start0 = y['start'] - 1
             end0 = y['end']
-            result[transcript_id]['exons'].append(range(start0, end0))
+            result[transcript_id]['exon'].append(range(start0, end0))
 
     return result
 
 
 def get_geneset_gr(refver):
     return pr.read_gff3(annotdata.GENESET_PATH[refver])
+
+
+def get_gene_exon_coords_fromgff(gene_names, geneset_gr, refver=None, rest_result=None):
+    """Returns CDS and UTRs as well as exons"""
+    if rest_result is None:
+        rest_result = ensembl_rest.lookup_symbol_post(gene_names, refver, expand=True)
+
+    result = dict()
+    for gene, rest_data in zip(gene_names, rest_result):
+        subresult = dict()
+        # chrom, gene, is_forward
+        subresult = dict()
+        subresult['chrom'] = rest_data['seq_region_name']
+        subresult['gene'] = range(rest_data['start'] - 1, rest_data['end'])
+        if rest_data['strand'] not in (1, -1):
+            raise Exception(f'"strand" value from REST lookup result is neither 1 nor -1.')
+        subresult['is_forward'] = (rest_data['strand'] == 1)
+        subresult['canonical_transcript'] = rest_data['canonical_transcript'].split('.')[0]
+
+        # exon, CDS, UTR
+        subgr = geneset_gr[subresult['chrom'], subresult['gene'].start:subresult['gene'].stop]
+        subgr = subgr[
+            subgr.Parent == f'transcript:{subresult["canonical_transcript"]}'
+        ]
+        sources = subgr.Source.unique()
+        if len(sources) > 1:
+            source = max(sources, key=(lambda x: subgr[subgr.Source == x].df.shape[0]))
+        else:
+            source = sources[0]
+
+        subgr = subgr[subgr.Source == source]
+        for key, subdf in subgr.df.groupby('Feature'):
+            subresult[key] = list(
+                subdf.loc[:, ['Start', 'End']].apply(lambda x: range(*x), axis=1)
+            )
+
+        result[gene] = subresult
+
+    return result
+
+
+
+        
 
 

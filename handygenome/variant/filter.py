@@ -27,6 +27,7 @@ def get_preset_filter_germline(
     pon_samples=None, 
     pon_cohorts=('BGI', 'PCAWG', 'SNULUNG'),
     refver='hg19',
+
     cutoff_diffbq=-5,
     cutoff_absbq=20,
     cutoff_diffmq=-10,
@@ -35,11 +36,10 @@ def get_preset_filter_germline(
     cutoff_cliplen=20,
     cutoff_altcount=2,
     cutoff_otherratio=1.5,
-
     cutoffs_totaldepth=(10, 100),
-
     cutoff_unifpval=0.01,
     cutoff_recurMM=10,
+
     cutoffs_vaf=None,
 ):
     # sanity check
@@ -61,7 +61,7 @@ def get_preset_filter_germline(
             DiffMeanMQFilter(cutoff=cutoff_diffmq),
             AbsMeanMQFilter(cutoff=cutoff_absmq),
             ClipoverlapFilter(cutoff=cutoff_clipovlp),
-            CliplenFilter(cutoff=cutoff_cliplen),
+            AbsCliplenFilter(cutoff=cutoff_cliplen),
             ReadcountFilter(cutoff=cutoff_altcount),
             OthercountRatioFilter(cutoff=cutoff_otherratio),
             TotaldepthFilter(cutoff=cutoffs_totaldepth),
@@ -91,11 +91,13 @@ def get_preset_filter_somatic(
     pon_samples=None, 
     pon_cohorts=('BGI', 'PCAWG', 'SNULUNG'),
     refver='hg19',
+
     cutoff_diffbq=-5,
     cutoff_absbq=20,
     cutoff_diffmq=-15,
     cutoff_absmq=40,
     cutoff_clipovlp=2.0,
+    cutoff_cliplen=20,
     cutoff_altcount=2,
     cutoff_otherratio=1.5,
     cutoff_totalcount=10,
@@ -120,6 +122,7 @@ def get_preset_filter_somatic(
             DiffMeanMQFilter(cutoff=cutoff_diffmq),
             AbsMeanMQFilter(cutoff=cutoff_absmq),
             ClipoverlapFilter(cutoff=cutoff_clipovlp),
+            AbsCliplenFilter(cutoff=cutoff_cliplen),
             ReadcountFilter(cutoff=cutoff_altcount),
             OthercountRatioFilter(cutoff=cutoff_otherratio),
             TotaldepthGTFilter(cutoff=cutoff_totalcount),
@@ -144,6 +147,21 @@ def get_preset_filter_panelseq(
     pon_samples=None, 
     pon_cohorts=None,
     refver='hg19',
+
+    cutoff_diffbq=-5,
+    cutoff_absbq=20,
+    cutoff_diffmq=-15,
+    cutoff_absmq=40,
+    cutoff_clipovlp=1,
+    cutoff_cliplen=20,
+    cutoff_altcount=2,
+    cutoff_otherratio=1.5,
+    cutoff_totalcount=30,
+    cutoff_unifpval=None,
+
+    popfreq_names=("GnomAD", "1000Genomes", "KOREAN", "Korea1K"),
+
+    ponfilter_kwargs=dict(),
 ):
     # sanity check
     if with_pon:
@@ -155,22 +173,35 @@ def get_preset_filter_panelseq(
 
     result = FilterList(
         [
-            PopfreqFilter(
-                popnames=("GnomAD", "1000Genomes", "KOREAN", "Korea1K"), 
-                cutoff=0.01,
-            ),
-            DiffMeanBQFilter(cutoff=-5),
-            AbsMeanBQFilter(cutoff=20),
-            DiffMeanMQFilter(cutoff=-15),
-            AbsMeanMQFilter(cutoff=40),
-            ClipoverlapFilter(cutoff=1),
-            ReadcountFilter(cutoff=2),
-            OthercountRatioFilter(cutoff=1.5, ref_length_cutoff=4),
+            DiffMeanBQFilter(cutoff=cutoff_diffbq),
+            AbsMeanBQFilter(cutoff=cutoff_absbq),
+            DiffMeanMQFilter(cutoff=cutoff_diffmq),
+            AbsMeanMQFilter(cutoff=cutoff_absmq),
+            ClipoverlapFilter(cutoff=cutoff_clipovlp),
+            AbsCliplenFilter(cutoff=cutoff_cliplen),
+            ReadcountFilter(cutoff=cutoff_altcount),
+            OthercountRatioFilter(cutoff=cutoff_otherratio, ref_length_cutoff=4),
+            TotaldepthGTFilter(cutoff=cutoff_totalcount),
         ]
     )
+
+    if cutoff_unifpval is not None:
+        result.append(VarposUniformFilter(cutoff=cutoff_unifpval))
+
+    if popfreq_names is not None:
+        result.append(
+            PopfreqFilter(popnames=popfreq_names, cutoff=0.01)
+        )
+
     if with_pon:
         result.append(
-            get_ponfilter(pon_samples=pon_samples, pon_cohorts=pon_cohorts, refver=refver, mode='panel')
+            get_ponfilter(
+                pon_samples=pon_samples, 
+                pon_cohorts=pon_cohorts, 
+                refver=refver, 
+                mode='panel_somatic',
+                **ponfilter_kwargs,
+            )
         )
 
     return result
@@ -259,7 +290,7 @@ class SamplewiseFilter(FilterBase):
         print(mask, self, sep=(" " * 4))
 
     def _check_meanvalue_difference(
-        self, readstats_key, vp, sampleid, allele_index, cutoff
+        self, readstats_key, vp, sampleid, allele_index, cutoff, gt,
     ):
         readstats = vp.readstats_dict[sampleid]
         target_value = readstats[readstats_key][allele_index]
@@ -275,16 +306,25 @@ class SamplewiseFilter(FilterBase):
         if np.isnan([target_value, other_value]).any():
             return True
         else:
-            return (target_value - other_value) >= cutoff
+            diff = target_value - other_value
+            if gt:
+                return diff >= cutoff
+            else:
+                return diff < cutoff
 
-    def _check_absvalue(self, readstats_key, vp, sampleid, allele_index, cutoff):
+    def _check_absvalue(
+        self, readstats_key, vp, sampleid, allele_index, cutoff, gt,
+    ):
         readstats = vp.readstats_dict[sampleid]
         target_value = readstats[readstats_key][allele_index]
 
         if np.isnan(target_value):
             return True
         else:
-            return target_value >= cutoff
+            if gt:
+                return target_value >= cutoff
+            else:
+                return target_value < cutoff
 
 
 class NonSamplewiseFilter(FilterBase):
@@ -347,10 +387,16 @@ class PopfreqFilter(NonSamplewiseFilter):
 
     def check(self, vp, allele_index=1):
         assert allele_index > 0
-        return all(
-            vp.popfreq[allele_index - 1].get_freq(popname) <= self.params["cutoff"]
-            for popname in self.params["popnames"]
-        )
+        tmp = list()
+        for popname in self.params["popnames"]:
+            freq = vp.popfreq[allele_index - 1].get_freq(popname)
+            checkresult = (
+                np.isnan(freq)
+                or (freq <= self.params["cutoff"])
+            )
+            tmp.append(checkresult)
+
+        return all(tmp)
 
 
 class DiffMeanBQFilter(SamplewiseFilter):
@@ -366,6 +412,7 @@ class DiffMeanBQFilter(SamplewiseFilter):
             sampleid=sampleid,
             allele_index=allele_index,
             cutoff=self.params["cutoff"],
+            gt=True,
         )
 
 
@@ -382,6 +429,7 @@ class AbsMeanBQFilter(SamplewiseFilter):
             sampleid=sampleid,
             allele_index=allele_index,
             cutoff=self.params["cutoff"],
+            gt=True,
         )
 
 
@@ -398,6 +446,7 @@ class DiffMeanMQFilter(SamplewiseFilter):
             sampleid=sampleid,
             allele_index=allele_index,
             cutoff=self.params["cutoff"],
+            gt=True,
         )
 
 
@@ -414,6 +463,7 @@ class AbsMeanMQFilter(SamplewiseFilter):
             sampleid=sampleid,
             allele_index=allele_index,
             cutoff=self.params["cutoff"],
+            gt=True,
         )
 
 
@@ -435,7 +485,7 @@ class ClipoverlapFilter(SamplewiseFilter):
             return ratio > self.params["cutoff"]
 
 
-class CliplenFilter(SamplewiseFilter):
+class AvgCliplenFilter(SamplewiseFilter):
     def __init__(self, cutoff=20):
         self.params = {
             "cutoff": cutoff,
@@ -447,6 +497,23 @@ class CliplenFilter(SamplewiseFilter):
             key='mean_cliplens', allele_indexes=None,
         )
         return avg_cliplen < self.params['cutoff']
+
+
+class AbsCliplenFilter(SamplewiseFilter):
+    def __init__(self, cutoff=20):
+        self.params = {
+            "cutoff": cutoff,
+        }
+
+    def check(self, vp, sampleid, allele_index=1):
+        return self._check_absvalue(
+            readstats_key="mean_cliplens",
+            vp=vp,
+            sampleid=sampleid,
+            allele_index=allele_index,
+            cutoff=self.params["cutoff"],
+            gt=False,
+        )
 
 
 class VarposUniformFilter(SamplewiseFilter):
@@ -477,6 +544,7 @@ class VarposValueFilter(SamplewiseFilter):
             sampleid=sampleid,
             allele_index=allele_index,
             cutoff=self.params["cutoff"],
+            gt=True,
         )
 
 
@@ -493,6 +561,7 @@ class ReadcountFilter(SamplewiseFilter):
             sampleid=sampleid,
             allele_index=allele_index,
             cutoff=self.params["cutoff"],
+            gt=True,
         )
 
 
@@ -588,7 +657,7 @@ class VAFFilter(SamplewiseFilter):
 
 # PON filter
 
-@deco.get_deco_arg_choices({'mode': ('wgs', 'panel')})
+@deco.get_deco_arg_choices({'mode': ('wgs', 'panel_germline', 'panel_somatic')})
 @deco.get_deco_num_set_differently(('pon_samples', 'pon_cohorts'), 1)
 def get_ponfilter(pon_samples=None, pon_cohorts=None, refver=None, mode='wgs', **kwargs):
     if pon_cohorts is not None:
@@ -596,8 +665,10 @@ def get_ponfilter(pon_samples=None, pon_cohorts=None, refver=None, mode='wgs', *
     else:
         pon_samples = list(pon_samples)
 
-    if mode == 'panel':
-        return PonFilterPanelseq(samples=pon_samples, **kwargs)
+    if mode == 'panel_germline':
+        return PonFilterPanelseqGermline(samples=pon_samples, **kwargs)
+    elif mode == 'panel_somatic':
+        return PonFilterPanelseqSomatic(samples=pon_samples, **kwargs)
     elif mode == 'wgs':
         return PonFilterWGS(samples=pon_samples, **kwargs)
 
@@ -726,7 +797,20 @@ class PonFilterBase(SamplewiseFilter):
         lower_selector = pon_vaf_array <= self.params['bisect_cutoff']
         return pon_vaf_array[lower_selector], pon_vaf_array[~lower_selector]
 
-    def check_greater_than_lower(self, query_vaf, pon_vafs_lower, pon_vaf_array):
+    @staticmethod
+    def get_deviation(values, mode):
+        if mode == 'stdev':
+            return np.std(values)
+        elif mode == 'mean_mad':
+            return common.mean_mad(values)
+        elif mode == 'median_mad':
+            return common.median_mad(values)
+
+    def check_greater_than_lower(
+        self, query_vaf, pon_vafs_lower, pon_vaf_array, mode='mean_mad',
+    ):
+        assert mode in ('stdev', 'mean_mad', 'median_mad')
+
         sample_fraction = len(pon_vafs_lower) / len(pon_vaf_array)
         if sample_fraction <= self.params['lower_sample_fraction']:
             mean = None
@@ -735,7 +819,7 @@ class PonFilterBase(SamplewiseFilter):
             is_different = True
         else:
             mean = np.mean(pon_vafs_lower)
-            stdev = np.std(pon_vafs_lower)
+            stdev = self.get_deviation(pon_vafs_lower, mode)
             cutoff = min(
                 0.4,  # 221231
                 max(
@@ -754,7 +838,11 @@ class PonFilterBase(SamplewiseFilter):
 
         return mean, stdev, cutoff, is_different
 
-    def check_different_to_upper(self, query_vaf, pon_vafs_upper, pon_vaf_array):
+    def check_different_to_upper(
+        self, query_vaf, pon_vafs_upper, pon_vaf_array, mode='mean_mad',
+    ):
+        assert mode in ('stdev', 'mean_mad', 'median_mad')
+
         sample_fraction = len(pon_vafs_upper) / len(pon_vaf_array)
         if sample_fraction <= self.params['upper_sample_fraction']:
             mean = None
@@ -763,7 +851,7 @@ class PonFilterBase(SamplewiseFilter):
             is_different = True
         else:
             mean = np.mean(pon_vafs_upper)
-            stdev = np.std(pon_vafs_upper)
+            stdev = self.get_deviation(pon_vafs_upper, mode)
             cutoff = max(
                 mean + (self.params['upper_stdev_factor'] * stdev),
                 mean * self.params['upper_ratio']
@@ -1148,11 +1236,11 @@ class PonFilterPanelseqGermline(PonFilterBase):
         check_global=True,
 
         bisect_cutoff=0.2,
-        lower_stdev_factor=3,
-        lower_ratio=3,
+        lower_stdev_factor=1.5,
+        lower_ratio=1.5,
         lower_sample_fraction=0.2,
-        upper_stdev_factor=3,
-        upper_ratio=3,
+        upper_stdev_factor=1.2,
+        upper_ratio=1.2,
         upper_sample_fraction=0.2,
 
         #germline_het_range=(0.4, 0.6),
@@ -1254,11 +1342,11 @@ class PonFilterPanelseqSomatic(PonFilterBase):
         check_global=True,
 
         bisect_cutoff=0.2,
-        lower_stdev_factor=3,
-        lower_ratio=3,
+        lower_stdev_factor=1.5,
+        lower_ratio=1.5,
         lower_sample_fraction=0.2,
-        upper_stdev_factor=3,
-        upper_ratio=3,
+        upper_stdev_factor=1.2,
+        upper_ratio=1.2,
         upper_sample_fraction=0.2,
 
         #germline_het_range=(0.4, 0.6),
@@ -1367,218 +1455,47 @@ class PonFilterPanelseqSomatic(PonFilterBase):
 
 
 
-def get_transcript_subtype_filter(key):
-    def vpfilter(vp):
-        return any(
-            feature["transcript_subtype_flags"][key]
-            for feature in vp.annotdb.transcript_canon_ovlp.values()
-        )
-
-    return vpfilter
-
-
-CODING_GENE_INVOLVED = get_transcript_subtype_filter("is_coding")
-
-
-def get_consequence_filter(key):
-    def vpfilter(vp):
-        return any(
-            feature["consequence_flags"][key]
-            for feature in vp.annotdb.transcript_canon_ovlp.values()
-        )
-
-    return vpfilter
-
-
-PROTEIN_ALTERING = get_consequence_filter("is_protein_altering")
-NOT_PROTEIN_ALTERING = get_consequence_filter("is_not_protein_altering")
-
-
-def get_genename_filter(gene_list, canonical_only=True):
-    gene_set = set(gene_list)
-    if canonical_only:
-
-        def vpfilter(vp):
-            vp_genes = set(vp.get_gene_names(canonical_only=True))
-            return not vp_genes.isdisjoint(gene_set)
-
-    else:
-
-        def vpfilter(vp):
-            vp_genes = set(vp.get_gene_names(canonical_only=False))
-            return not vp_genes.isdisjoint(gene_set)
-
-    return vpfilter
-
-
-## function versions of filters
+#def get_transcript_subtype_filter(key):
+#    def vpfilter(vp):
+#        return any(
+#            feature["transcript_subtype_flags"][key]
+#            for feature in vp.annotdb.transcript_canon_ovlp.values()
+#        )
 #
-#def filter_popfreq(
-#    vp, allele_index=1,
-#    popnames=("GnomAD", "1000Genomes", "KOREAN", "Korea1K"), 
-#    cutoff=0.01,
-#):
-#    return all(
-#        vp.popfreq[allele_index - 1].get_freq(popname) <= cutoff
-#        for popname in popnames
-#    )
+#    return vpfilter
 #
 #
-#def filter_diffMeanBQ(
-#    vp, sampleid, allele_index=1,
-#    cutoff=-5,
-#):
-#    return _check_meanvalue_difference(
-#        readstats_key="mean_BQs",
-#        vp=vp,
-#        sampleid=sampleid,
-#        allele_index=allele_index,
-#        cutoff=cutoff,
-#    )
+#CODING_GENE_INVOLVED = get_transcript_subtype_filter("is_coding")
 #
 #
-#def filter_absMeanBQ(
-#    vp, sampleid, allele_index=1,
-#    cutoff=20,
-#):
-#    return _check_absvalue(
-#        readstats_key="mean_BQs",
-#        vp=vp,
-#        sampleid=sampleid,
-#        allele_index=allele_index,
-#        cutoff=cutoff,
-#    )
+#def get_consequence_filter(key):
+#    def vpfilter(vp):
+#        return any(
+#            feature["consequence_flags"][key]
+#            for feature in vp.annotdb.transcript_canon_ovlp.values()
+#        )
+#
+#    return vpfilter
 #
 #
-#def filter_diffMeanMQ(
-#    vp, sampleid, allele_index=1,
-#    cutoff=-15,
-#):
-#    return _check_meanvalue_difference(
-#        readstats_key="mean_MQs",
-#        vp=vp,
-#        sampleid=sampleid,
-#        allele_index=allele_index,
-#        cutoff=cutoff,
-#    )
+#PROTEIN_ALTERING = get_consequence_filter("is_protein_altering")
+#NOT_PROTEIN_ALTERING = get_consequence_filter("is_not_protein_altering")
 #
 #
-#def filter_absMeanMQ(
-#    vp, sampleid, allele_index=1,
-#    cutoff=40,
-#):
-#    return _check_absvalue(
-#        readstats_key="mean_MQs",
-#        vp=vp,
-#        sampleid=sampleid,
-#        allele_index=allele_index,
-#        cutoff=cutoff,
-#    )
+#def get_genename_filter(gene_list, canonical_only=True):
+#    gene_set = set(gene_list)
+#    if canonical_only:
 #
+#        def vpfilter(vp):
+#            vp_genes = set(vp.get_gene_names(canonical_only=True))
+#            return not vp_genes.isdisjoint(gene_set)
 #
-#def filter_clipoverlap(
-#    vp, sampleid, allele_index=1,
-#    cutoff=1,
-#):
-#    readstats = vp.readstats_dict[sampleid]
-#    clipoverlap_count = readstats["rppcounts"]["softclip_overlap"]
-#    target_count = readstats["rppcounts"][allele_index]
-#
-#    if clipoverlap_count == 0:
-#        return True
 #    else:
-#        return (target_count / clipoverlap_count) > cutoff
 #
+#        def vpfilter(vp):
+#            vp_genes = set(vp.get_gene_names(canonical_only=False))
+#            return not vp_genes.isdisjoint(gene_set)
 #
-#def filter_varReadCount(
-#    vp, sampleid, allele_index=1,
-#    cutoff=2,
-#):
-#    return self._check_absvalue(
-#        readstats_key="rppcounts",
-#        vp=vp,
-#        sampleid=sampleid,
-#        allele_index=allele_index,
-#        cutoff=cutoff,
-#    )
-#
-#
-#def filter_otherReadRatio(
-#    vp, sampleid, allele_index=1,
-#    cutoff=1.5,
-#):
-#    readstats = vp.readstats_dict[sampleid]
-#    target_count = readstats["rppcounts"][allele_index]
-#    other_count = readstats["rppcounts"][-1]
-#
-#    if other_count == 0:
-#        return True
-#    else:
-#        return (target_count / other_count) > cutoff
-#
-#
-#def filter_varposUniform(
-#    vp, sampleid, allele_index=1,
-#    cutoff=0.05,
-#):
-#    readstats = vp.readstats_dict[sampleid]
-#    pval = readstats["varpos_uniform_pvalues"][allele_index]
-#    if np.isnan(pval):
-#        return True
-#    else:
-#        return pval >= cutoff
-#
-#
-#def filter_varposValue(
-#    vp, sampleid, allele_index=1,
-#    cutoff=0.3,
-#):
-#    return self._check_absvalue(
-#        readstats_key="mean_varpos_fractions",
-#        vp=vp,
-#        sampleid=sampleid,
-#        allele_index=allele_index,
-#        cutoff=cutoff,
-#    )
-#
-#
-## filter function helpers
-#
-#def _check_meanvalue_difference(readstats_key, vp, sampleid, allele_index, cutoff, how='ge'):
-#    assert how in ('ge', 'le')
-#
-#    readstats = vp.readstats_dict[sampleid]
-#    #other_allele_indexes = vp.get_other_allele_indexes(allele_index)
-#    other_allele_indexes = tuple(sorted(
-#        set(range(len(vp.vr.alleles))).difference({allele_index})
-#    ))
-#
-#    target_value = readstats[readstats_key][allele_index]
-#    other_value = readstats.get_allele_indexes_mean(
-#        readstats_key, other_allele_indexes
-#    )
-#
-#    if np.isnan([target_value, other_value]).any():
-#        return True
-#    else:
-#        if how == 'ge':
-#            return (target_value - other_value) >= cutoff
-#        elif how == 'le':
-#            return (target_value - other_value) <= cutoff
-#
-#
-#def _check_absvalue(readstats_key, vp, sampleid, allele_index, cutoff, how='ge'):
-#    assert how in ('ge', 'le')
-#
-#    readstats = vp.readstats_dict[sampleid]
-#    target_value = readstats[readstats_key][allele_index]
-#
-#    if np.isnan(target_value):
-#        return True
-#    else:
-#        if how == 'ge':
-#            return target_value >= cutoff
-#        elif how == 'le':
-#            return target_value <= cutoff
+#    return vpfilter
 
 

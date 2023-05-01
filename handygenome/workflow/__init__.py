@@ -807,8 +807,10 @@ class Job:
             self.logger = logger
 
     def __repr__(self):
-        infostr = ', '.join(f'{key}: {getattr(self, key)}' 
-                            for key in ('jobid', 'jobstate', 'exitcode'))
+        infostr = ', '.join(
+            f'{key}: {getattr(self, key)}'
+            for key in ('jobid', 'jobstate', 'exitcode')
+        )
         return f'<Job ({infostr})>'
 
     def submit(self):
@@ -963,7 +965,8 @@ class JobList(list):
 
     def write_job_status_log(self, msg):
         if self.job_status_logpath is not None:
-            with open(self.job_status_logpath, 'wt') as f:
+            #with open(self.job_status_logpath, 'wt') as f:
+            with common.openfile(self.job_status_logpath, 'a') as f:
                 f.write(f'[{common.get_timestamp()}] {msg}')
 
     def get_num_pending_running(self):
@@ -992,8 +995,10 @@ class JobList(list):
     def submit_and_wait(self):
         def make_infostring(sublist_key):
             n_jobs = len(self.sublists[sublist_key])
-            details = ', '.join(job.__repr__()
-                                for job in self.sublists[sublist_key])
+            details = ', '.join(
+                job.__repr__()  # 'jobid', 'jobstate', 'exitcode'
+                for job in self.sublists[sublist_key]
+            )
             return f'{n_jobs} ({details})'
 
         def log_status():
@@ -1006,6 +1011,7 @@ class JobList(list):
             info_running = make_infostring('running')
             info_finished = make_infostring('finished')
 
+            # more verbose information
             self.write_job_status_log(
                 textwrap.dedent(
                     f"""\
@@ -1020,6 +1026,8 @@ class JobList(list):
                     """
                 )
             )
+
+            # concise information (to be printed to stderr)
             self.logger.info(
                 textwrap.dedent(
                     f"""\

@@ -476,7 +476,7 @@ def argument_parser(cmdargs):
         nargs='+', 
         type=workflow.arghandler_infile, 
         default=list(),
-        metavar='<Input bam file path>',
+        #metavar='<Input bam file path>',
         help=f'One or more input bam file paths separated by whitespaces.',
     )
     parser_dict['optional'].add_argument(
@@ -485,7 +485,7 @@ def argument_parser(cmdargs):
         required=False,
         nargs='+', 
         default=list(),
-        metavar='<Sample ID>',
+        #metavar='<Sample ID>',
         help=(
             f'Sample IDs of the input bam files, in the same order, '
             f'separated by whitespaces.'
@@ -494,7 +494,7 @@ def argument_parser(cmdargs):
     parser_dict['optional'].add_argument(
         '--bamlist-file', dest='bamlist_file_path', required=False,
         type=workflow.arghandler_infile,
-        metavar='<bam list file path>',
+        #metavar='<bam list file path>',
         help=(
             f'A 2-column tab-separated file which contains sample IDs on '
             f'the first column and bam file paths on the second column.'
@@ -507,7 +507,7 @@ def argument_parser(cmdargs):
     parser_dict['optional'].add_argument(
         '--pon-cohorts', dest='pon_cohorts', required=False,
         nargs='+',
-        metavar='<PON cohort name>',
+        #metavar='<PON cohort name>',
         help=(
             f'One or more known Panel Of Normal cohort names. Allowed values:\n'
             f'{textwrap.indent(pprint.pformat(allowed_pon_cohorts), " " * 4)}'
@@ -518,7 +518,7 @@ def argument_parser(cmdargs):
         '--memlimit', dest='memuse_limit_gb', required=False,
         default=4.0,
         type=float,
-        metavar='<memory limit per job>',
+        #metavar='<memory limit per job>',
         help=f'Maximum memory limit per job in gigabytes.',
     )
 
@@ -526,7 +526,7 @@ def argument_parser(cmdargs):
         '--depth-limits', dest='depth_limits', required=False,
         default=None,
         #type=float,
-        metavar='<depth upper limit>',
+        #metavar='<depth upper limit>',
         nargs='+',
         help=(
             f'Limits (both inclusive) of valid depth range. '
@@ -541,7 +541,7 @@ def argument_parser(cmdargs):
         '--depthlimit-cov-ratio', dest='depthlimit_cov_ratio', required=False,
         default=4,
         type=float,
-        metavar='<bam coverage multiplication factor>',
+        #metavar='<bam coverage multiplication factor>',
         help=(
             f'Upper depth limit is set as (this value) * (average bam depth).'
             f'If "--depth-limits" option is used, this option is ignored.'
@@ -550,7 +550,7 @@ def argument_parser(cmdargs):
     parser_dict['optional'].add_argument(
         '--target-bed', dest='target_bed_path', required=False,
         default=None,
-        metavar='<target region bed file>',
+        #metavar='<target region bed file>',
         help=(
             f'If this option is used, bam file average depth calculation will '
             f'be based on the region length derived from this file. '
@@ -563,7 +563,7 @@ def argument_parser(cmdargs):
             ','.join(str(x) for x in libreadstats.DEFAULT_MQ_LIMITS)
         ],
         #type=float,
-        metavar='<depth upper limit>',
+        #metavar='<MQ limits>',
         nargs='+',
         help=(
             f'Limits (both inclusive) of valid mapping quality range. '
@@ -939,13 +939,14 @@ def main_old(cmdargs):
     )
     logger.info('Running annotation jobs for each split file')
     workflow.run_jobs(
-        jobscript_path_list, sched=args.sched, 
+        jobscript_path_list, 
+        sched=args.sched, 
         intv_check=args.intv_check, 
         intv_submit=args.intv_submit, 
         max_submit=args.max_submit, 
         logger=logger, 
         log_dir=tmpdir_paths['logs'],
-        job_status_logpath=os.path.join(tmpdir_paths['root'], 'job_status_log'),
+        job_status_logpath=os.path.join(tmpdir_paths['root'], 'job_status_log.gz'),
         raise_on_failure=True,
     )
 

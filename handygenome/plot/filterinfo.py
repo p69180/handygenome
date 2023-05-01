@@ -208,10 +208,11 @@ def show_pon(
     exclude_other=False,
     pon_cohorts=None, 
     pon_samples=None, 
-    ponfilter_mode='WGS',
+    ponfilter_mode='wgs',
+    zoom_lower=False,
     **kwargs,
 ):
-    assert ponfilter_mode in ('WGS', 'PanelGermline', 'PanelSomatic')
+    assert ponfilter_mode in ('wgs', 'panel_germline', 'panel_somatic')
     assert (
         (pon_cohorts is None and pon_samples is not None) or 
         (pon_cohorts is not None and pon_samples is None)
@@ -238,11 +239,11 @@ def show_pon(
 
     # main
     # run ponfilter
-    if ponfilter_mode == 'WGS':
+    if ponfilter_mode == 'wgs':
         ponfilter = libfilter.PonFilterWGS(samples=pon_samples, save_cache=True, verbose=False, **kwargs)
-    elif ponfilter_mode == 'PanelGermline':
+    elif ponfilter_mode == 'panel_germline':
         ponfilter = libfilter.PonFilterPanelseqGermline(samples=pon_samples, save_cache=True, verbose=False, **kwargs)
-    elif ponfilter_mode == 'PanelSomatic':
+    elif ponfilter_mode == 'panel_somatic':
         ponfilter = libfilter.PonFilterPanelseqSomatic(samples=pon_samples, save_cache=True, verbose=False, **kwargs)
 
     ponfilter.check(vp, query_sample, allele_index=allele_index, exclude_query=exclude_query)
@@ -377,6 +378,10 @@ def show_pon(
             )
         )
 
+    if zoom_lower:
+        ax_bar.set_ylim(0, ponfilter.params['bisect_cutoff'])
+        ax_dot.set_ylim(0, ponfilter.params['bisect_cutoff'])
+
     return fig
     
     
@@ -392,7 +397,7 @@ def show_readstats_data(readstats_data, alt_index=0, title=None, varpos_key='lef
     
     # title
     if title is not None:
-        fig.suptitle(title)
+        fig.suptitle(title, size=30)
         
     # MQ
     plotter_MQ(ax=axs[0, 0], data=readstats_data['MQ'][alt_index + 1], 

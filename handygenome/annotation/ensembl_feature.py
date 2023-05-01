@@ -568,15 +568,21 @@ class Transcript(EnsemblFeature):
                         )
         return result
 
-    @property
-    def hgvsc_genename(self):
+    def get_hgvsc_genename(self):
         if self['hgvsc'] is None:
             return None
         else:
+            #raw_split = self['hgvsc'].split(':n.')
+            raw_split = re.split(r':.\.', self['hgvsc'])
             if self['gene_name'] is None:
-                return self['hgvsc']
-            else: 
-                return re.sub(r'^(.+)(:.\.)(.+)$', self['gene_name'] + r'\2\3', self['hgvsc'])
+                return ' '.join(raw_split)
+            else:
+                return self['gene_name'] + ' ' + raw_split[1]
+
+            #if self['gene_name'] is None:
+            #    return self['hgvsc']
+            #else: 
+            #    return re.sub(r'^(.+)(:.\.)(.+)$', self['gene_name'] + r'\2\3', self['hgvsc'])
                 #return self['gene_name'] + ':c.' + self['hgvsc'].split(':c.')[1]
 
     def get_hgvsp_genename(self, one_letter=False):
@@ -592,31 +598,6 @@ class Transcript(EnsemblFeature):
                     aachange,
                 )
             return self['gene_name'] + ' ' + aachange
-            #hgvsp_raw = self['hgvsp']
-            #ensembl_id, protein_string = hgvsp_raw.split(':p.')
-#            mat = re.fullmatch(HGVSP_PAT, self['hgvsp'])
-#            if mat is None:
-#                print(self['hgvsp'])
-#            ensembl_id = mat.group(1)
-#            aa3_from = mat.group(2)
-#            aa_position = int(mat.group(3))
-#            aa3_to = mat.group(4)
-#
-#            aa1_from = Bio.SeqUtils.seq1(aa3_from)
-#            aa1_to = Bio.SeqUtils.seq1(aa3_to)
-#            if self['gene_name'] is None:
-#                gene_name = ensembl_id
-#            else:
-#                gene_name = self['gene_name']
-#
-#            if oneletter:
-#                return f'{gene_name} {aa1_from}{aa_position}{aa1_to}'
-#            else:
-#                return f'{gene_name} {aa3_from}{aa_position}{aa3_to}'
-
-            #else:
-                #return re.sub(r'^(.+)(:.\.)(.+)$', self['gene_name'] + r'\2\3', self['hgvsp'])
-                #return self['gene_name'] + ':p.' + self['hgvsp'].split(':p.')[1]
 
 
 class TranscriptSet(EnsemblFeatureSetPlain):
