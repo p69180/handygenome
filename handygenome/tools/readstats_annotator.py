@@ -863,89 +863,6 @@ def main(cmdargs):
         max_submit=args.max_submit, 
         logger=logger, 
         log_dir=tmpdir_paths['logs'],
-        job_status_logpath=os.path.join(tmpdir_paths['root'], 'job_status_log'),
-        raise_on_failure=True,
-    )
-
-    # concatenates split files
-    logger.info('Merging split files')
-    outfile_path_list = common.listdir(tmpdir_paths['split_outfiles'])
-    libconcat.main(
-        infile_path_list=outfile_path_list,
-        outfile_path=args.outfile_path, 
-        mode_pysam=args.mode_pysam,
-        outfile_must_not_exist='no',
-    )
-
-    # rmtmp, index
-    if not args.donot_rm_tmp:
-        shutil.rmtree(tmpdir_paths['root'])
-    if not args.donot_index:
-        indexing.index_vcf(args.outfile_path)
-
-    logger.info('All successfully finished')
-
-
-def main_old(cmdargs):
-    args = argument_parser(cmdargs)
-
-    # postprocess depth and mq limits
-    common.print_timestamp(f'Processing depth and MQ limits (may take a while calculating average depths of bam files)')
-    depth_limits, mq_limits = depth_mq_limit_processing(args)
-    common.print_timestamp(f'Depth limits: {depth_limits}')
-    common.print_timestamp(f'MQ limits: {mq_limits}')
-
-    # make tmpdir tree
-    tmpdir_paths = workflow.get_tmpdir_paths(
-        ['scripts', 'logs', 'split_infiles', 'split_outfiles'],
-        prefix = (
-            os.path.basename(args.infile_path)
-            + '_'
-            + __name__.split('.')[-1]
-            + '_'
-        ),
-        where=os.path.dirname(args.infile_path),
-    )
-
-    # setup logger
-    logger = toolsetup.setup_logger(args=args,
-                                    tmpdir_root=tmpdir_paths['root'],
-                                    with_genlog=True)
-    logger.info('Beginning')
-
-    # split the input file
-    logger.info('Splitting the input file')
-    split_infile_path_list = libsplit.main(vcf_path=args.infile_path, 
-                                        outdir=tmpdir_paths['split_infiles'], 
-                                        n_file=args.parallel, 
-                                        mode_bcftools='z', prefix='', 
-                                        suffix='.vcf.gz')
-
-    # make job scripts and run
-    jobscript_path_list = write_jobscripts(
-        tmpdir_paths, 
-        split_infile_path_list, 
-        args.bamlist, 
-        args.idlist, 
-        args.pon_bamlist, 
-        args.pon_idlist, 
-        args.refver, 
-        (not args.do_matesearch),
-        args.countonly,
-        args.memuse_limit_gb,
-        depth_limits,
-        mq_limits,
-        args.include_blacklist,
-    )
-    logger.info('Running annotation jobs for each split file')
-    workflow.run_jobs(
-        jobscript_path_list, 
-        sched=args.sched, 
-        intv_check=args.intv_check, 
-        intv_submit=args.intv_submit, 
-        max_submit=args.max_submit, 
-        logger=logger, 
-        log_dir=tmpdir_paths['logs'],
         job_status_logpath=os.path.join(tmpdir_paths['root'], 'job_status_log.gz'),
         raise_on_failure=True,
     )
@@ -953,7 +870,6 @@ def main_old(cmdargs):
     # concatenates split files
     logger.info('Merging split files')
     outfile_path_list = common.listdir(tmpdir_paths['split_outfiles'])
-    print(outfile_path_list)
     libconcat.main(
         infile_path_list=outfile_path_list,
         outfile_path=args.outfile_path, 
@@ -968,3 +884,87 @@ def main_old(cmdargs):
         indexing.index_vcf(args.outfile_path)
 
     logger.info('All successfully finished')
+
+
+#def main_old(cmdargs):
+#    args = argument_parser(cmdargs)
+#
+#    # postprocess depth and mq limits
+#    common.print_timestamp(f'Processing depth and MQ limits (may take a while calculating average depths of bam files)')
+#    depth_limits, mq_limits = depth_mq_limit_processing(args)
+#    common.print_timestamp(f'Depth limits: {depth_limits}')
+#    common.print_timestamp(f'MQ limits: {mq_limits}')
+#
+#    # make tmpdir tree
+#    tmpdir_paths = workflow.get_tmpdir_paths(
+#        ['scripts', 'logs', 'split_infiles', 'split_outfiles'],
+#        prefix = (
+#            os.path.basename(args.infile_path)
+#            + '_'
+#            + __name__.split('.')[-1]
+#            + '_'
+#        ),
+#        where=os.path.dirname(args.infile_path),
+#    )
+#
+#    # setup logger
+#    logger = toolsetup.setup_logger(args=args,
+#                                    tmpdir_root=tmpdir_paths['root'],
+#                                    with_genlog=True)
+#    logger.info('Beginning')
+#
+#    # split the input file
+#    logger.info('Splitting the input file')
+#    split_infile_path_list = libsplit.main(vcf_path=args.infile_path, 
+#                                        outdir=tmpdir_paths['split_infiles'], 
+#                                        n_file=args.parallel, 
+#                                        mode_bcftools='z', prefix='', 
+#                                        suffix='.vcf.gz')
+#
+#    # make job scripts and run
+#    jobscript_path_list = write_jobscripts(
+#        tmpdir_paths, 
+#        split_infile_path_list, 
+#        args.bamlist, 
+#        args.idlist, 
+#        args.pon_bamlist, 
+#        args.pon_idlist, 
+#        args.refver, 
+#        (not args.do_matesearch),
+#        args.countonly,
+#        args.memuse_limit_gb,
+#        depth_limits,
+#        mq_limits,
+#        args.include_blacklist,
+#    )
+#    logger.info('Running annotation jobs for each split file')
+#    workflow.run_jobs(
+#        jobscript_path_list, 
+#        sched=args.sched, 
+#        intv_check=args.intv_check, 
+#        intv_submit=args.intv_submit, 
+#        max_submit=args.max_submit, 
+#        logger=logger, 
+#        log_dir=tmpdir_paths['logs'],
+#        job_status_logpath=os.path.join(tmpdir_paths['root'], 'job_status_log.gz'),
+#        raise_on_failure=True,
+#    )
+#
+#    # concatenates split files
+#    logger.info('Merging split files')
+#    outfile_path_list = common.listdir(tmpdir_paths['split_outfiles'])
+#    print(outfile_path_list)
+#    libconcat.main(
+#        infile_path_list=outfile_path_list,
+#        outfile_path=args.outfile_path, 
+#        mode_pysam=args.mode_pysam,
+#        outfile_must_not_exist='no',
+#    )
+#
+#    # rmtmp, index
+#    if not args.donot_rm_tmp:
+#        shutil.rmtree(tmpdir_paths['root'])
+#    if not args.donot_index:
+#        indexing.index_vcf(args.outfile_path)
+#
+#    logger.info('All successfully finished')
