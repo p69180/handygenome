@@ -766,19 +766,25 @@ class Job:
         status
         logger
     """
+    jobstates_pending = [
+        'CONFIGURING', 'PENDING',
+    ]
+    jobstates_running = [
+        'COMPLETING', 'RUNNING', 'RESV_DEL_HOLD', 
+        'REQUEUE_FED', 'REQUEUE_HOLD', 'RESIZING', 
+        'SIGNALING', 'SPECIAL_EXIT', 'STAGE_OUT', 'STOPPED', 
+        'SUSPENDED',
+    ]
+    jobstates_finished = [
+        'CANCELLED', 'COMPLETED', 'BOOT_FAIL', 'DEADLINE', 
+        'FAILED', 'NODE_FAIL', 'OUT_OF_MEMORY', 'PREEMPTED', 
+        'TIMEOUT',
+    ]
+    jobstates_unknown = [
+        'REVOKED',
+    ]
 
-    jobstates_pending = ('CONFIGURING', 'PENDING')
-    jobstates_running = ('COMPLETING', 'RUNNING', 'RESV_DEL_HOLD', 
-                         'REQUEUE_FED', 'REQUEUE_HOLD', 'RESIZING', 
-                         'SIGNALING', 'SPECIAL_EXIT', 'STAGE_OUT', 'STOPPED', 
-                         'SUSPENDED')
-    jobstates_finished = ('CANCELLED', 'COMPLETED', 'BOOT_FAIL', 'DEADLINE', 
-                          'FAILED', 'NODE_FAIL', 'OUT_OF_MEMORY', 'PREEMPTED', 
-                          'TIMEOUT')
-    jobstates_unknown = ('REVOKED',)
-
-    @deco.get_deco_num_set_differently(
-        ('jobscript_path', 'jobscript_string'), 1)
+    @deco.get_deco_num_set_differently(('jobscript_path', 'jobscript_string'), 1)
     def __init__(self, jobscript_path=None, jobscript_string=None, 
                  verbose=True, logger=None):
         self.jobscript_path = jobscript_path
@@ -809,7 +815,7 @@ class Job:
     def __repr__(self):
         infostr = ', '.join(
             f'{key}: {getattr(self, key)}'
-            for key in ('jobid', 'jobstate', 'exitcode')
+            for key in ('jobid', 'jobstate', 'exitcode', 'jobscript_path')
         )
         return f'<Job ({infostr})>'
 
@@ -936,6 +942,7 @@ class JobList(list):
         job_status_logpath=None,
     ):
         # general logger
+        self.verbose = verbose
         if logger is None:
             self.logger = get_logger(
                 formatter=DEFAULT_LOG_FORMATTERS['without_name'], 
@@ -992,90 +999,91 @@ class JobList(list):
         for job in self.sublists['running']:
             job.cancel()
 
+
+    def make_infostring(self, sublist_key):
+        n_jobs = len(self.sublists[sublist_key])
+        details = ', '.join(
+            job.__repr__()  # 'jobid', 'jobstate', 'exitcode'
+            for job in self.sublists[sublist_key]
+        )
+        return f'{n_jobs} ({details})'
+
+    def log_status(self):
+        n_notsubmit = len(self.sublists['notsubmit'])
+        n_pending = len(self.sublists['pending'])
+        n_running = len(self.sublists['running'])
+        n_finished = len(self.sublists['finished'])
+
+        info_pending = self.make_infostring('pending')
+        info_running = self.make_infostring('running')
+        info_finished = self.make_infostring('finished')
+
+        # more verbose information
+        self.write_job_status_log(
+            textwrap.dedent(
+                f"""\
+                Current job status:
+                    Not submitted yet: {n_notsubmit}
+
+                    Pending: {info_pending}
+
+                    Running: {info_running}
+
+                    Finished: {info_finished}
+                """
+            )
+        )
+
+        # concise information (to be printed to stderr)
+        self.logger.info(
+            textwrap.dedent(
+                f"""\
+                Current job status:
+                    Not submitted yet: {n_notsubmit}
+                    Pending: {n_pending}
+                    Running: {n_running}
+                    Finished: {n_finished}"""
+            )
+        )
+
+    def log_epilogue(self):
+        n_success = len(self.sublists['success'])
+        n_failure = len(self.sublists['failure'])
+        n_unknown = len(self.sublists['unknown'])
+
+        info_success = self.make_infostring('success')
+        info_failure = self.make_infostring('failure')
+        info_unknown = self.make_infostring('unknown')
+
+        self.write_job_status_log(
+            textwrap.dedent(
+                f"""\
+                All finished.
+                    Successful jobs: {info_success}
+
+                    Failed jobs: {info_failure}
+
+                    Jobs with unknown exit statuses: {info_unknown}
+                """
+            )
+        )
+        self.logger.info(
+            textwrap.dedent(
+                f"""\
+                All finished.
+                    Successful jobs: {n_success}
+                    Failed jobs: {n_failure}
+                    Jobs with unknown exit statuses: {n_unknown}"""
+            )
+        )
+
     def submit_and_wait(self):
-        def make_infostring(sublist_key):
-            n_jobs = len(self.sublists[sublist_key])
-            details = ', '.join(
-                job.__repr__()  # 'jobid', 'jobstate', 'exitcode'
-                for job in self.sublists[sublist_key]
-            )
-            return f'{n_jobs} ({details})'
-
-        def log_status():
-            n_notsubmit = len(self.sublists['notsubmit'])
-            n_pending = len(self.sublists['pending'])
-            n_running = len(self.sublists['running'])
-            n_finished = len(self.sublists['finished'])
-
-            info_pending = make_infostring('pending')
-            info_running = make_infostring('running')
-            info_finished = make_infostring('finished')
-
-            # more verbose information
-            self.write_job_status_log(
-                textwrap.dedent(
-                    f"""\
-                    Current job status:
-                        Not submitted yet: {n_notsubmit}
-
-                        Pending: {info_pending}
-
-                        Running: {info_running}
-
-                        Finished: {info_finished}
-                    """
-                )
-            )
-
-            # concise information (to be printed to stderr)
-            self.logger.info(
-                textwrap.dedent(
-                    f"""\
-                    Current job status:
-                        Not submitted yet: {n_notsubmit}
-                        Pending: {n_pending}
-                        Running: {n_running}
-                        Finished: {n_finished}"""
-                )
-            )
-
-        def log_epilogue():
-            n_success = len(self.sublists['success'])
-            n_failure = len(self.sublists['failure'])
-            n_unknown = len(self.sublists['unknown'])
-
-            info_success = make_infostring('success')
-            info_failure = make_infostring('failure')
-            info_unknown = make_infostring('unknown')
-
-            self.write_job_status_log(
-                textwrap.dedent(
-                    f"""\
-                    All finished.
-                        Successful jobs: {info_success}
-
-                        Failed jobs: {info_failure}
-
-                        Jobs with unknown exit statuses: {info_unknown}
-                    """
-                )
-            )
-            self.logger.info(
-                textwrap.dedent(
-                    f"""\
-                    All finished.
-                        Successful jobs: {n_success}
-                        Failed jobs: {n_failure}
-                        Jobs with unknown exit statuses: {n_unknown}"""
-                )
-            )
-
         # main
         try:
             while True:
                 self.update()
                 self.submit()
-                log_status()
+                self.log_status()
                 if all(job.status['finished'] for job in self):
                     break
                 else:
@@ -1093,9 +1101,34 @@ class JobList(list):
                 job.cancel()
             raise SystemExit(1)
         else:
-            self.set_sublists_exitcodes()
-            log_epilogue()
+            self.set_sublists()
+            self.log_epilogue()
             self.success = all(job.success for job in self)
+
+    def recover_cancelled_jobs(self):
+        cancelled_jobs = [
+            (idx, job) for (idx, job) in enumerate(self) if job.jobstate == 'CANCELLED'
+        ]
+        for idx, job in cancelled_jobs:
+            del self[idx]
+
+        for idx, job in cancelled_jobs:
+            self.append(
+                Job(
+                    jobscript_path=job.jobscript_path, 
+                    verbose=self.verbose, 
+                    logger=self.logger,
+                )
+            )
+
+    def run(self):
+        while True:
+            self.submit_and_wait()
+            if any((job.jobstate == 'CANCELLED') for job in self):
+                self.recover_cancelled_jobs()
+                continue
+            else:
+                break
 
     def get_exitcodes(self):
         return [job.exitcode for job in self]
@@ -1138,23 +1171,23 @@ class JobList(list):
             if job.success is None:
                 self.sublists['unknown'].append(job)
 
-    def set_sublists_statuses(self):
-        self.sublists['notsubmit'] = [job for job in self 
-                                      if not job.submitted]
-        self.sublists['pending'] = [job for job in self 
-                                    if job.status['pending']]
-        self.sublists['running'] = [job for job in self 
-                                    if job.status['running']]
-        self.sublists['finished'] = [job for job in self 
-                                     if job.status['finished']]
-
-    def set_sublists_exitcodes(self):
-        self.sublists['success'] = [job for job in self 
-                                    if job.success is True]
-        self.sublists['failure'] = [job for job in self 
-                                    if job.success is False]
-        self.sublists['unknown'] = [job for job in self 
-                                    if job.success is None]
+#    def set_sublists_statuses(self):
+#        self.sublists['notsubmit'] = [job for job in self 
+#                                      if not job.submitted]
+#        self.sublists['pending'] = [job for job in self 
+#                                    if job.status['pending']]
+#        self.sublists['running'] = [job for job in self 
+#                                    if job.status['running']]
+#        self.sublists['finished'] = [job for job in self 
+#                                     if job.status['finished']]
+#
+#    def set_sublists_exitcodes(self):
+#        self.sublists['success'] = [job for job in self 
+#                                    if job.success is True]
+#        self.sublists['failure'] = [job for job in self 
+#                                    if job.success is False]
+#        self.sublists['unknown'] = [job for job in self 
+#                                    if job.success is None]
 
 
 def get_scontrol_job_result(jobid):
@@ -1251,7 +1284,7 @@ def run_jobs(
             logger=logger,
             job_status_logpath=job_status_logpath,
         )
-        joblist.submit_and_wait()
+        joblist.run()
 
         success = joblist.success
         exitcode_list = joblist.get_exitcodes()

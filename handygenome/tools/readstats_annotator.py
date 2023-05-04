@@ -695,13 +695,19 @@ def write_jobscripts(
 ):
     jobscript_path_list = list()
     log_path_list = list()
+    slurm_log_pf_list = list()
     split_outfile_path_list = list()
     for zidx in common.zrange(parallel):
         jobscript_path = os.path.join(tmpdir_paths['scripts'], f'{zidx}.sbatch')
         jobscript_path_list.append(jobscript_path)
 
-        log_path = os.path.join(tmpdir_paths['logs'], os.path.basename(jobscript_path) + '.log')
-        log_path_list.append(log_path)
+        bname = os.path.basename(jobscript_path)
+        log_path_list.append(
+            os.path.join(tmpdir_paths['logs'], bname + '.log')
+        )
+        slurm_log_pf_list.append(
+            os.path.join(tmpdir_paths['slurm_logs'], bname)
+        )
 
         split_outfile_path = os.path.join(tmpdir_paths['split_outfiles'], f'{zidx}.vcf.gz')
         split_outfile_path_list.append(split_outfile_path)
@@ -728,6 +734,7 @@ def write_jobscripts(
     toolsetup.write_jobscripts(
         script_path_list=jobscript_path_list,
         log_path_list=log_path_list,
+        slurm_log_pf_list=slurm_log_pf_list,
         module_name=__name__,
         unit_job_func_name='unit_job',
         kwargs_single=kwargs_single,
@@ -739,61 +746,61 @@ def write_jobscripts(
     return jobscript_path_list
 
 
-def write_jobscripts_old(
-    tmpdir_paths, 
-    split_infile_path_list, 
-    bam_path_list, 
-    id_list, 
-    pon_bam_path_list, 
-    pon_id_list, 
-    refver, 
-    no_matesearch,
-    countonly,
-    memuse_limit_gb,
-    depth_limits,
-    mq_limits,
-    include_blacklist,
-    jobname_prefix=__name__.split('.')[-1], 
-    nproc=1,
-):
-    jobscript_path_list = list()
-    log_path_list = list()
-    for zidx in common.zrange(len(split_infile_path_list)):
-        jobscript_path = os.path.join(tmpdir_paths['scripts'], f'{zidx}.sbatch')
-        jobscript_path_list.append(jobscript_path)
-        log_path = os.path.join(tmpdir_paths['logs'], os.path.basename(jobscript_path) + '.log')
-        log_path_list.append(log_path)
-
-    kwargs_single = {
-        'split_outfiles_dir': tmpdir_paths['split_outfiles'],
-        'bam_path_list': bam_path_list,
-        'id_list': id_list,
-        'pon_bam_path_list': pon_bam_path_list,
-        'pon_id_list': pon_id_list,
-        'refver': refver,
-        'no_matesearch': no_matesearch,
-        'countonly': countonly,
-        'memuse_limit_gb': memuse_limit_gb,
-        'depth_limits': depth_limits,
-        'mq_limits': mq_limits,
-        'include_blacklist': include_blacklist,
-    }
-    kwargs_multi = {
-        'split_infile_path': split_infile_path_list,
-    }
-
-    toolsetup.write_jobscripts(
-        script_path_list=jobscript_path_list,
-        log_path_list=log_path_list,
-        module_name=__name__,
-        unit_job_func_name='unit_job',
-        kwargs_single=kwargs_single,
-        kwargs_multi=kwargs_multi,
-        jobname_prefix=jobname_prefix,
-        nproc=nproc,
-    )
-
-    return jobscript_path_list
+#def write_jobscripts_old(
+#    tmpdir_paths, 
+#    split_infile_path_list, 
+#    bam_path_list, 
+#    id_list, 
+#    pon_bam_path_list, 
+#    pon_id_list, 
+#    refver, 
+#    no_matesearch,
+#    countonly,
+#    memuse_limit_gb,
+#    depth_limits,
+#    mq_limits,
+#    include_blacklist,
+#    jobname_prefix=__name__.split('.')[-1], 
+#    nproc=1,
+#):
+#    jobscript_path_list = list()
+#    log_path_list = list()
+#    for zidx in common.zrange(len(split_infile_path_list)):
+#        jobscript_path = os.path.join(tmpdir_paths['scripts'], f'{zidx}.sbatch')
+#        jobscript_path_list.append(jobscript_path)
+#        log_path = os.path.join(tmpdir_paths['logs'], os.path.basename(jobscript_path) + '.log')
+#        log_path_list.append(log_path)
+#
+#    kwargs_single = {
+#        'split_outfiles_dir': tmpdir_paths['split_outfiles'],
+#        'bam_path_list': bam_path_list,
+#        'id_list': id_list,
+#        'pon_bam_path_list': pon_bam_path_list,
+#        'pon_id_list': pon_id_list,
+#        'refver': refver,
+#        'no_matesearch': no_matesearch,
+#        'countonly': countonly,
+#        'memuse_limit_gb': memuse_limit_gb,
+#        'depth_limits': depth_limits,
+#        'mq_limits': mq_limits,
+#        'include_blacklist': include_blacklist,
+#    }
+#    kwargs_multi = {
+#        'split_infile_path': split_infile_path_list,
+#    }
+#
+#    toolsetup.write_jobscripts(
+#        script_path_list=jobscript_path_list,
+#        log_path_list=log_path_list,
+#        module_name=__name__,
+#        unit_job_func_name='unit_job',
+#        kwargs_single=kwargs_single,
+#        kwargs_multi=kwargs_multi,
+#        jobname_prefix=jobname_prefix,
+#        nproc=nproc,
+#    )
+#
+#    return jobscript_path_list
 
 
 def main(cmdargs):
@@ -801,7 +808,7 @@ def main(cmdargs):
 
     # make tmpdir tree
     tmpdir_paths = workflow.get_tmpdir_paths(
-        ['scripts', 'logs', 'split_outfiles'],
+        ['scripts', 'logs', 'slurm_logs', 'split_outfiles'],
         prefix = (
             os.path.basename(args.infile_path)
             + '_'
@@ -812,9 +819,11 @@ def main(cmdargs):
     )
 
     # setup logger
-    logger = toolsetup.setup_logger(args=args,
-                                    tmpdir_root=tmpdir_paths['root'],
-                                    with_genlog=True)
+    logger = toolsetup.setup_logger(
+        args=args,
+        tmpdir_root=tmpdir_paths['root'],
+        with_genlog=True,
+    )
     logger.info('Beginning')
 
     # postprocess depth and mq limits

@@ -1744,3 +1744,7 @@ def median_mad(values):
     return np.median(np.abs(values - np.median(values)))
     
 
+def broadcast_args(*args):
+    return np.broadcast_arrays(*[np.atleast_1d(x) for x in args])
+
+

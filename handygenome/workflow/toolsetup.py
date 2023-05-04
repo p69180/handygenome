@@ -111,6 +111,7 @@ def write_region_files(regionfiles_dir, incl_intvlist_split, incl_intvlist_split
 def write_jobscripts(
     script_path_list,
     log_path_list,
+    slurm_log_pf_list,
     module_name,
     unit_job_func_name,
     kwargs_single,
@@ -138,10 +139,14 @@ def write_jobscripts(
 
     # main
     tab = ' ' * 4
-    for zidx, (script_path, log_path) in common.zenumerate(zip(script_path_list, log_path_list)):
+    for zidx, (script_path, log_path, slurm_log_pf) in common.zenumerate(
+        zip(script_path_list, log_path_list, slurm_log_pf_list)
+    ):
         idx = common.zidx_to_idx(zidx)
         success_log_path = re.sub("\.log$", ".success", log_path)
         failure_log_path = re.sub("\.log$", ".failure", log_path)
+        slurmlog_out_path = slurm_log_pf + '.out'
+        slurmlog_err_path = slurm_log_pf + '.err'
 
         unit_job_func_args = list()
         for key, val in kwargs_single.items():
@@ -159,8 +164,8 @@ def write_jobscripts(
                 #SBATCH -n 1
 
                 #SBATCH -c {nproc}
-                #SBATCH -o {os.devnull}
-                #SBATCH -e {os.devnull}
+                #SBATCH -o {slurmlog_out_path}
+                #SBATCH -e {slurmlog_err_path}
                 #SBATCH -J {jobname_prefix}_{zidx}
 
                 import os

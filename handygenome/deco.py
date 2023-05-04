@@ -1,6 +1,9 @@
 import functools
 import time
 import inspect
+import itertools
+
+import numpy as np
 
 
 def deco_timer(func):
@@ -165,3 +168,22 @@ def get_deco_timestamp(msg, logger):
         return wrapper
 
     return decorator
+
+
+def vectorize(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        keys = list(kwargs.keys())
+        arglist = list(itertools.chain(args, kwargs.values()))
+        arglist = np.broadcast_arrays(*[np.atleast_1d(x) for x in arglist])
+
+        new_args = arglist[:len(args)]
+        new_kwargs = dict(zip(keys, arglist[len(args):]))
+
+        result = func(*new_args, **new_kwargs)
+        if result.shape == (1,):
+            result = result[0]
+
+        return result
+
+    return wrapper

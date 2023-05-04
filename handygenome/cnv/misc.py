@@ -175,7 +175,14 @@ def get_1d_peaks(row, invert=False):
 
         peak_indexes.sort()
 
-    return peak_indexes
+    return np.array(peak_indexes)
+
+
+def get_hist_peaks(data, weights=None, bins=10, invert=False):
+    hist, histbins = np.histogram(data, bins=bins, weights=weights)
+    bin_midpoints = 0.5 * (bins[:-1] + bins[1:])
+    peak_indexes = get_1d_peaks(hist, invert=invert)
+    return peak_indexes, histbins, hist, bin_midpoints
 
 
 def get_df_diagonals(df, upslope=True):
@@ -404,6 +411,8 @@ def get_bafs(vaf_list):
 # theoretical value calculation # 
 #################################
 
+
+#@deco.vectorize
 def theoretical_depth_ratio(
     CNt, cellularity, tumor_mean_ploidy, CNn, normal_mean_ploidy, 
     tumor_avg_depth_ratio=1, normal_avg_depth_ratio=1,
@@ -421,7 +430,8 @@ def theoretical_depth_ratio(
     #normal_norm_depth = normal_avg_depth_ratio * (normal_upper_term / normal_lower_term)
     normal_norm_depth = normal_avg_depth_ratio * (CNn / normal_mean_ploidy)
 
-    return tumor_norm_depth / normal_norm_depth
+    result = tumor_norm_depth / normal_norm_depth
+    return result
 
 
 def inverse_theoretical_depth_ratio(
@@ -432,10 +442,9 @@ def inverse_theoretical_depth_ratio(
         cellularity must be nonzero
     Returns:
         CNt estimate
-
     """
     '''
-    <Induction>
+    <Derivation>
     tumor_upper_term = (CNt * cellularity) + (CNn * (1 - cellularity))
     tumor_lower_term = (tumor_mean_ploidy * cellularity) + (normal_mean_ploidy * (1 - cellularity))
     tumor_norm_depth = tumor_avg_depth_ratio * (tumor_upper_term / tumor_lower_term)
@@ -468,7 +477,7 @@ def delta_depth_ratio(
         Difference of depth ratio caused by 1 CNt change
     """
     '''
-    <Induction>
+    <Derivation>
     tumor_upper_term = (CNt * cellularity) + (CNn * (1 - cellularity))
     tumor_lower_term = (tumor_mean_ploidy * cellularity) + (normal_mean_ploidy * (1 - cellularity))
     tumor_norm_depth = tumor_avg_depth_ratio * (tumor_upper_term / tumor_lower_term)
@@ -500,6 +509,88 @@ def delta_depth_ratio(
     return delta_depth_ratio
 
 
+def get_cp_from_twodata(depthratio1, CNt1, depthratio2, CNt2, normal_mean_ploidy, CNn, tumor_avg_depth_ratio=1, normal_avg_depth_ratio=1):
+    '''
+    <Derivation>
+    tumor_upper_term = (CNt * cellularity) + (CNn * (1 - cellularity))
+    tumor_lower_term = (tumor_mean_ploidy * cellularity) + (normal_mean_ploidy * (1 - cellularity))
+    tumor_norm_depth = tumor_avg_depth_ratio * (tumor_upper_term / tumor_lower_term)
+    normal_norm_depth = normal_avg_depth_ratio * (CNn / normal_mean_ploidy)
+    depthratio = tumor_norm_depth / normal_norm_depth
+    ------------------------------------------
+    cellularity = term1 / (ploidy + term2)
+    '''
+    term1_data1 = get_cp_from_twodata_term1(depthratio1, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
+    term1_data2 = get_cp_from_twodata_term1(depthratio2, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
+
+    term2_data1 = get_cp_from_twodata_term2(depthratio1, CNt1, CNn, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
+    term2_data2 = get_cp_from_twodata_term2(depthratio2, CNt2, CNn, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
+
+    ploidy = (term2_data2 * term1_data1 - term2_data1 * term1_data2) / (term1_data2 - term1_data1)
+    cellularity = term1_data1 / (ploidy + term2_data1)
+
+    return cellularity, ploidy
+
+
+def get_cp_from_twodata_term1(depthratio, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio):
+    return normal_mean_ploidy * (tumor_avg_depth_ratio / (depthratio * normal_avg_depth_ratio) - 1)
+
+
+def get_cp_from_twodata_term2(depthratio, CNt, CNn, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio):
+    return (
+        -1 
+        * normal_mean_ploidy 
+        * (
+            1 
+            + (
+                (tumor_avg_depth_ratio * (CNt - CNn)) 
+                / (CNn * normal_avg_depth_ratio * depthratio)
+            )
+        )
+    )
+
+
+def get_c_from_ddr_p(delta_depth_ratio, tumor_mean_ploidy, normal_mean_ploidy, CNn, tumor_avg_depth_ratio=1, normal_avg_depth_ratio=1):
+    """c: cellularity; ddr: delta depthratio; p: ploidy
+    """
+    '''
+    <Derivation>
+    tumor_lower_term = (tumor_mean_ploidy * cellularity) + (normal_mean_ploidy * (1 - cellularity))
+    normal_norm_depth = normal_avg_depth_ratio * (CNn / normal_mean_ploidy)
+    delta_depth_ratio = (cellularity * tumor_avg_depth_ratio) / (tumor_lower_term * normal_norm_depth)
+
+    delta_depth_ratio * tumor_lower_term = (cellularity * tumor_avg_depth_ratio) / normal_norm_depth
+
+    left term
+        = delta_depth_ratio * ( (tumor_mean_ploidy * cellularity) + (normal_mean_ploidy * (1 - cellularity)) )
+        = cellularity * (delta_depth_ratio * tumor_mean_ploidy) + (1 - cellularity) * (delta_depth_ratio * normal_mean_ploidy)
+        = cellularity * (delta_depth_ratio * tumor_mean_ploidy - delta_depth_ratio * normal_mean_ploidy) + (delta_depth_ratio * normal_mean_ploidy)
+        = cellularity * delta_depth_ratio * (tumor_mean_ploidy - normal_mean_ploidy) + (delta_depth_ratio * normal_mean_ploidy)
+    right term
+        = (cellularity * tumor_avg_depth_ratio) / ( normal_avg_depth_ratio * (CNn / normal_mean_ploidy) )
+        = cellularity * (tumor_avg_depth_ratio / ( normal_avg_depth_ratio * (CNn / normal_mean_ploidy) ) )
+        = cellularity * ((tumor_avg_depth_ratio * normal_mean_ploidy) / (normal_avg_depth_ratio * CNn))
+
+    cellularity * (
+        ((tumor_avg_depth_ratio * normal_mean_ploidy) / (normal_avg_depth_ratio * CNn))
+        - delta_depth_ratio * (tumor_mean_ploidy - normal_mean_ploidy)
+    ) = (delta_depth_ratio * normal_mean_ploidy)
+    ...
+    numer = 1
+    denom = (
+        tumor_avg_depth_ratio / (delta_depth_ratio * normal_avg_depth_ratio * CNn)
+        - (tumor_mean_ploidy / normal_mean_ploidy)
+        + 1
+    )
+    '''
+    denom = (
+        tumor_avg_depth_ratio / (delta_depth_ratio * normal_avg_depth_ratio * CNn)
+        - (tumor_mean_ploidy / normal_mean_ploidy)
+        + 1
+    )
+    return 1 / denom
+
+
 def theoretical_depth_ratio_sequenza(CNt, cellularity, ploidy, CNn=2, normal_ploidy=2, avg_depth_ratio=1):
     """Args:
         CNn, normal_ploidy must be nonzero
@@ -526,7 +617,7 @@ def delta_depth_ratio_sequenza(cellularity, ploidy, CNn=2, normal_ploidy=2, avg_
     return (avg_depth_ratio / ploidy_term) * (cellularity / CNn)
 
 
-def theoretical_baf(CNt, B, cellularity, CNn):
+def theoretical_baf_nonvectorized(CNt, B, cellularity, CNn):
     if CNn <= 1:
         return np.nan
     else:
@@ -535,13 +626,14 @@ def theoretical_baf(CNt, B, cellularity, CNn):
         return numerator / denominator
 
 
-def theoretical_baf_vectorized(CNt, B, cellularity, CNn):
+@deco.vectorize
+def theoretical_baf(CNt, B, cellularity, CNn):
     numerator = (B * cellularity) + (1 - cellularity)
     denominator = (CNt * cellularity) + (CNn * (1 - cellularity))
     notna_values = numerator / denominator
 
-    result = pd.Series(np.repeat(np.nan, len(CNn)))
-    result.where(CNn <= 1, notna_values, inplace=True)
+    result = np.repeat(np.nan, len(CNn))
+    result[CNn > 1] = notna_values
     return result
 
 
@@ -720,26 +812,44 @@ def calc_cp_score(
     segment_df, cellularity, ploidy, is_female, CNt_weight, normal_ploidy,
 ):
     def applied_func(row):
-        if check_haploid(is_female, row.iloc[0]) or np.isnan(row.iloc[4]):
-            CNt, B, segfit_score = get_CN_from_cp_wo_baf(cellularity, ploidy, row.iloc[3], CNt_weight, row.iloc[5], normal_ploidy)
+        #if check_haploid(is_female, row.iloc[0]) or np.isnan(row.iloc[4]):
+            # Male X chromosome PAR should be treated as non-haploid
+        if (row.iloc[5] == 1) or np.isnan(row.iloc[4]):
+            CNt, B, segfit_score = get_CN_from_cp_wo_baf(
+                cellularity, 
+                ploidy, 
+                row.iloc[3], 
+                CNt_weight, 
+                row.iloc[5], 
+                normal_ploidy,
+            )
         else:
-            CNt, B, segfit_score = get_CN_from_cp(cellularity, ploidy, row.iloc[3], row.iloc[4], CNt_weight, row.iloc[5], normal_ploidy)
+            CNt, B, segfit_score = get_CN_from_cp(
+                cellularity, 
+                ploidy, 
+                row.iloc[3], 
+                row.iloc[4], 
+                CNt_weight, 
+                row.iloc[5], 
+                normal_ploidy,
+            )
 
         return CNt, B, segfit_score
 
-    assert {'depthratio_segment_mean', 'baf_segment_mean', 'CNn'}.issubset(segment_df.columns)
+    #assert {'depthratio_segment_mean', 'baf_segment_mean', 'CNn'}.issubset(segment_df.columns)
+    assert {'depthratio_segment_mean', 'corrected_baf_segment_mean', 'CNn'}.issubset(segment_df.columns)
     assert segment_df['depthratio_segment_mean'].notna().all()
 
     # set column order
     segment_df = segment_df.loc[
         :, 
-        ['Chromosome', 'Start', 'End', 'depthratio_segment_mean', 'baf_segment_mean', 'CNn']
+        ['Chromosome', 'Start', 'End', 'depthratio_segment_mean', 'corrected_baf_segment_mean', 'CNn']
     ]
 
     apply_result = segment_df.apply(applied_func, axis=1)
     segfit_score_sum = sum(x[2] for x in apply_result if not np.isnan(x[2]))
-    CNt_list = np.fromiter((x[0] for x in apply_result), dtype=np.float_)
-    B_list = np.fromiter((x[1] for x in apply_result), dtype=np.float_)
+    CNt_list = np.fromiter((x[0] for x in apply_result), dtype=float)
+    B_list = np.fromiter((x[1] for x in apply_result), dtype=float)
 
     return {'segfit_score': segfit_score_sum, 'CNt_list': CNt_list, 'B_list': B_list}
 
@@ -809,7 +919,7 @@ def get_cp_score_dict(
         normal_ploidy = get_normal_mean_ploidy(refver, is_female, target_region_gr)
 
     c_candidates = np.round(np.arange(0.01, 1.00, 0.01), 2)  # 0 and 1 are excluded
-    p_candidates = np.round(np.arange(0.5, 7.1, 0.1), 1)  # 0.5 to 7.0
+    p_candidates = np.round(np.arange(0.1, 7.1, 0.1), 1)  # 0.1 to 7.0
     cp_pairs = tuple(CPPair(x, y) for (x, y) in itertools.product(c_candidates, p_candidates))
 
     with multiprocessing.Pool(nproc) as pool:
@@ -956,17 +1066,17 @@ def add_theoreticals_to_segment(
     assert isinstance(segment_df, pd.DataFrame)
     assert {'CNn', 'CNt', 'B'}.issubset(segment_df.columns)
 
-    def depthr_getter(row):
-        return theoretical_depth_ratio(
-            row['CNt'], cellularity, tumor_ploidy, row['CNn'], normal_ploidy, 
-            tumor_avg_depth_ratio=1, normal_avg_depth_ratio=1,
-        )
+    #def depthr_getter(row):
+    #    return theoretical_depth_ratio(
+    #        row['CNt'], cellularity, tumor_ploidy, row['CNn'], normal_ploidy, 
+    #        tumor_avg_depth_ratio=1, normal_avg_depth_ratio=1,
+    #    )
 
-    def baf_getter(row):
-        if np.isnan(row['B']):
-            return np.nan
-        else:
-            return theoretical_baf(row['CNt'], row['B'], cellularity, row['CNn'])
+    #def baf_getter(row):
+    #    if np.isnan(row['B']):
+    #        return np.nan
+    #    else:
+    #        return theoretical_baf(row['CNt'], row['B'], cellularity, row['CNn'])
 
 #    theo_depthr_list = segment_df.apply(depthr_getter, axis=1)
 #    theo_baf_list = segment_df.apply(baf_getter, axis=1)
@@ -975,8 +1085,24 @@ def add_theoreticals_to_segment(
 #        **{'depthratio_predicted': theo_depthr_list, 'baf_predicted': theo_baf_list}
 #    )
 
-    segment_df['depthratio_predicted'] = segment_df.apply(depthr_getter, axis=1)
-    segment_df['baf_predicted'] = segment_df.apply(baf_getter, axis=1)
+    #segment_df['depthratio_predicted'] = segment_df.apply(depthr_getter, axis=1)
+    segment_df['depthratio_predicted'] = theoretical_depth_ratio(
+        segment_df['CNt'], 
+        cellularity, 
+        tumor_ploidy, 
+        segment_df['CNn'], 
+        normal_ploidy, 
+        tumor_avg_depth_ratio=1, 
+        normal_avg_depth_ratio=1,
+    )
+
+    #segment_df['baf_predicted'] = segment_df.apply(baf_getter, axis=1)
+    segment_df['baf_predicted'] = theoretical_baf(
+        segment_df['CNt'], 
+        segment_df['B'], 
+        cellularity, 
+        segment_df['CNn'],
+    )
 
     return segment_df
     

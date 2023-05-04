@@ -450,7 +450,7 @@ def run_rcopynumber(
 run_rcopynumber_unified = run_rcopynumber
 
 
-def add_CNn_to_targetseq_segment_gr(segment_gr, targetregion_gr, refver, is_female):
+def add_CNn_to_targetseq_segment_gr(segment_gr, targetregion_gr, refver, is_female, as_gr=True):
     """With targeted sequencing analysis, start and end coordinates of 
     "run_rcopynumber*" function output does not match actual target regions.
     To add CNn values to such a segment PyRanges, 1) CNn values are added
@@ -465,17 +465,19 @@ def add_CNn_to_targetseq_segment_gr(segment_gr, targetregion_gr, refver, is_fema
         how='left', merge='first', as_gr=False,
     )
     segment_gr = pyranges_helper.join(
-        segment_gr, targetregion_gr, how='left', merge='longest', as_gr=False,
+        segment_gr, targetregion_gr, how='left', merge='longest', as_gr=as_gr,
+        sort=True, refver=refver,
     )
     return segment_gr
 
 add_CNn_to_targetseq_segment = add_CNn_to_targetseq_segment_gr
 
 
-def add_CNn_to_wgs_segment_gr(segment_gr, refver, is_female):
+def add_CNn_to_wgs_segment_gr(segment_gr, refver, is_female, as_gr=True):
     return pyranges_helper.join(
         segment_gr, cnvmisc.get_CNn_gr(refver, is_female), 
-        how='left', merge='longest', as_gr=False,
+        how='left', merge='longest', as_gr=as_gr,
+        sort=True, refver=refver,
     )
 
 add_CNn_to_wgs_segment = add_CNn_to_wgs_segment_gr
