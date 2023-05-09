@@ -1270,6 +1270,8 @@ def http_post(url, data, params=None, headers=None, text=False, retry_count=10, 
 
 
 def http_send_request(req, text, retry_count, retry_interval):
+    print_timestamp(f'Trying to send http request to {req.full_url}')
+
     n_try = 0
     while True:
         n_try += 1

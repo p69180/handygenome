@@ -19,6 +19,7 @@ CYTOBAND_URLS = common.RefverDict({
 })
 
 CYTOBAND_DIR = os.path.join(common.DATA_DIR, 'cytoband')
+os.makedirs(CYTOBAND_DIR, exist_ok=True)
 
 
 def tohexcode(tup):
