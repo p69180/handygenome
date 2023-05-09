@@ -331,7 +331,7 @@ def run_rcopynumber(
     merged_df_wona=None,
 
     as_gr=True, 
-    winsorize=True, 
+    winsorize=False, 
     compact=False,
     verbose=False, 
     remove_unassembled_contigs=True,

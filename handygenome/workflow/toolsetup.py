@@ -265,7 +265,7 @@ def make_infile_copy(infile_path, tmpdir_root, logger):
             
         
 def get_blacklist_gr(refver):
-    cytoband_gr = ucscdata.get_cytoband_gr(refver=refver, rename_hg19=True)
+    cytoband_gr = ucscdata.get_cytoband(refver=refver, as_gr=True)
     centromere_gr = cytoband_gr[cytoband_gr.Stain == 'acen']
     blacklist_gr = pr.concat([centromere_gr, blacklist.HIGHDEPTH_BLACKLIST_GR])
     blacklist_gr = blacklist_gr.sort().merge()

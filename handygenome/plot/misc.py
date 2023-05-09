@@ -14,3 +14,4 @@ def lightness_spectrum(color, n, l_start=0.3, l_end=0.7):
         for x in np.linspace(l_start, l_end, n + 2, endpoint=True)[1:-1]
     ]
 
+    

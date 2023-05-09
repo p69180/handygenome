@@ -1,3 +1,4 @@
+import os
 import functools
 import re
 import itertools
@@ -12,11 +13,13 @@ import handygenome.cnv.misc as cnvmisc
 
 URL_BASE = 'https://api.genome.ucsc.edu'
 
-
 CYTOBAND_URLS = common.RefverDict({
     'GRCh37': 'http://hgdownload.cse.ucsc.edu/goldenpath/hg19/database/cytoBand.txt.gz', 
     'GRCh38': 'http://hgdownload.cse.ucsc.edu/goldenpath/hg38/database/cytoBand.txt.gz', 
 })
+
+CYTOBAND_DIR = os.path.join(common.DATA_DIR, 'cytoband')
+
 
 def tohexcode(tup):
     return '#' + ''.join(hex(x)[2:] for x in tup)
@@ -37,11 +40,12 @@ CYTOBAND_COLORMAP = {
 
 
 def get_avaliable_genomes():
-    url = f'https://api.genome.ucsc.edu/list/ucscGenomes'
+    url = f'{URL_BASE}/list/ucscGenomes'
     raw = common.http_get(url)
     return raw['ucscGenomes']
 
 
+@functools.cache
 def get_refver_aliases():
     result = dict()
     genome_data = get_avaliable_genomes()
@@ -53,11 +57,8 @@ def get_refver_aliases():
     return result
 
 
-REFVER_ALIASES = get_refver_aliases()
-
-
 def standardize_refver(refver):
-    for standard, aliases in REFVER_ALIASES.items():
+    for standard, aliases in get_refver_aliases().items():
         if refver in aliases:
             return standard
     raise Exception(f'Unknown reference version.')
@@ -65,48 +66,87 @@ def standardize_refver(refver):
 
 def list_tracks(refver):
     refver = standardize_refver(refver)
-    raw = common.http_get(f'https://api.genome.ucsc.edu/list/tracks?genome={refver}')
+    raw = common.http_get(f'{URL_BASE}/list/tracks?genome={refver}')
     return sorted(raw[refver].keys())
 
 
-@functools.cache
-def get_cytoband(refver, rename_hg19=True, as_gr=True):
+def rename_hg19_cytoband(cytoband_df):
+    result = cytoband_df.copy()
+    assemblyspec = libassemblyspec.SPECS['hg19']
+    new_chroms = result['Chromosome'].apply(
+        lambda x: assemblyspec.convert(x, 'nochr_plus_genbank')
+    )
+    result['Chromosome'] = new_chroms
+    result = result.loc[result['Chromosome'].notna(), :]
+
+    return result
+
+
+def get_cytoband_from_ucsc_api(refver, rename_hg19=True, as_gr=True):
     refver = standardize_refver(refver)
-    #if 'cytoBand' not in list_tracks(refver):
-    #    raise Exception(f'"cytoBand" is not available for this reference genome.')
-    raw = common.http_get(f'https://api.genome.ucsc.edu/getData/track?genome={refver};track=cytoBand')
+    if 'cytoBand' not in list_tracks(refver):
+        raise Exception(f'"cytoBand" is not available for this reference genome.')
+
+    raw = common.http_get(
+        f'{URL_BASE}/getData/track?genome={refver};track=cytoBand'
+    )
     data = list()
     for dic in itertools.chain.from_iterable(raw['cytoBand'].values()):
         data.append(
             (dic['chrom'], dic['chromStart'], dic['chromEnd'], dic['name'], dic['gieStain'])
         )
 
-    if (refver == 'hg19') and rename_hg19:
-        new_data = list()
-        assemblyspec = libassemblyspec.SPECS['hg19']
-        for item in data:
-            new_chrom = assemblyspec.convert(item[0], 'nochr_plus_genbank')
-            if new_chrom is not None:
-                new_data.append((new_chrom,) + item[1:])
-        data = new_data
-
     chroms, starts, ends, names, stains = zip(*data)
-    if as_gr:
-        gr = pr.from_dict(
-            {'Chromosome': chroms, 'Start': starts, 'End': ends, 'Name': names, 'Stain': stains}, 
-            int64=False,
-        )
-        gr.sort()
-
-        return gr
-    else:
-        df = pd.DataFrame.from_dict({
+    result = pd.DataFrame.from_dict(
+        {
             'Chromosome': chroms,
             'Start': starts,
             'End': ends,
             'Name': names,
             'Stain': stains,
-        })
-        return cnvmisc.sort_genome_df(df, refver=refver)
+        }
+    )
+    if (refver == 'hg19') and rename_hg19:
+        result = rename_hg19_cytoband(result)
+
+    result = cnvmisc.sort_genome_df(result, refver=refver)
+    if as_gr:
+        result = pr.PyRanges(result)
+
+    return result
+
+
+def get_cytoband_path(refver):
+    return os.path.join(CYTOBAND_DIR, f'{refver}.tsv.gz')
+
+
+def write_cytoband(cytoband_df, refver):
+    cytoband_df.to_csv(
+        get_cytoband_path(refver),
+        sep='\t',
+        header=True,
+        index=False,
+    )
+
+
+def get_cytoband(refver, as_gr=True):
+    cytoband_path = get_cytoband_path(refver)
+    if not os.path.exists(cytoband_path):
+        cytoband_df = get_cytoband_from_ucsc_api(refver, rename_hg19=True, as_gr=False)
+        write_cytoband(cytoband_df, refver)
+    else:
+        cytoband_df = pd.read_csv(
+            cytoband_path,
+            sep='\t',
+            header=0,
+            dtype={'Chromosome': str, 'Start': int, 'End': int, 'Name': str, 'Stain': str},
+        )
+
+    result = cytoband_df
+    if as_gr:
+        result = pr.PyRanges(result)
+
+    return result
         
+
 get_cytoband_gr = get_cytoband

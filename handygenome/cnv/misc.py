@@ -96,7 +96,9 @@ def sort_genome_df(df, refver):
     chromdict = common.DEFAULT_CHROMDICTS[refver]
     chrom_indexes = df['Chromosome'].apply(lambda x: chromdict.contigs.index(x))
     sortkey = np.lexsort([df['End'], df['Start'], chrom_indexes])
-    return df.iloc[sortkey, :]
+    result = df.iloc[sortkey, :]
+    result.reset_index(drop=True, inplace=True)
+    return result
 
 
 def remove_unassembled_contigs(df):
@@ -178,10 +180,13 @@ def get_1d_peaks(row, invert=False):
     return np.array(peak_indexes)
 
 
-def get_hist_peaks(data, weights=None, bins=10, invert=False):
-    hist, histbins = np.histogram(data, bins=bins, weights=weights)
+def get_hist_peaks(data, weights=None, bins=10, threshold=None):
+    hist, histbins = np.histogram(data, bins=bins, weights=weights, density=True)
     bin_midpoints = 0.5 * (bins[:-1] + bins[1:])
-    peak_indexes = get_1d_peaks(hist, invert=invert)
+    peak_indexes = get_1d_peaks(hist, invert=False)
+    if threshold is not None:
+        peak_indexes = peak_indexes[hist[peak_indexes] > threshold]
+        
     return peak_indexes, histbins, hist, bin_midpoints
 
 
@@ -529,7 +534,68 @@ def get_cp_from_twodata(depthratio1, CNt1, depthratio2, CNt2, normal_mean_ploidy
     ploidy = (term2_data2 * term1_data1 - term2_data1 * term1_data2) / (term1_data2 - term1_data1)
     cellularity = term1_data1 / (ploidy + term2_data1)
 
+    if not (
+        (cellularity > 0)
+        and (cellularity < 1)
+        and (ploidy > 0)
+    ):
+        valid_CNt_pairs = get_valid_CNts_from_depthratios(
+            depthratio1, 
+            depthratio2, 
+            normal_mean_ploidy, 
+            CNn, 
+            tumor_avg_depth_ratio=tumor_avg_depth_ratio, 
+            normal_avg_depth_ratio=normal_avg_depth_ratio, 
+            CNt1_range=range(0, 6), 
+            CNt2_maxdiff=6,
+        )
+        raise Exception(
+            f'Input depthratio and CNt values resulted in invalid cellularity/ploidy values:\n'
+            f'cellularity={cellularity}, ploidy={ploidy}\n'
+            f'Valid (CNt1, CNt2) pairs for given depthratio values are:\n{valid_CNt_pairs}'
+        )
+
     return cellularity, ploidy
+
+
+def get_valid_CNts_from_depthratios(depthratio1, depthratio2, normal_mean_ploidy, CNn, tumor_avg_depth_ratio=1, normal_avg_depth_ratio=1, CNt1_range=range(0, 6), CNt2_maxdiff=6):
+    '''Args:
+        depthratio1: lesser one
+        depthratio2: greater one
+
+    <Sanity condition>
+    For cellularity to be between 0 and 1, following conditions are required:
+        (depthratio1 designates the smaller one of two depthratio values)
+        1) term2_data1 > term2_data2
+        2) term2_data1 - term2_data2 > term1_data1 - term1_data2
+
+        #1) (depthratio2 / depthratio1) < (CNt2 / CNt1)
+        #2) (depthratio2 / depthratio1) < ((CNt2 - CNn) / (CNt1 - CNn))
+    For ploidy to be greater than 0, following condition is required:
+        term2_data1 * term1_data2 > term2_data2 * term1_data1
+    '''
+    if depthratio2 <= depthratio1:
+        raise Exception(f'"depthratio2" must be greater than "depthratio1"')
+
+    drr = depthratio2 / depthratio1
+    result = list()
+    for CNt1 in CNt1_range:
+        for CNt2 in range(CNt1 + 1, CNt1 + CNt2_maxdiff + 1):
+
+            term1_data1 = get_cp_from_twodata_term1(depthratio1, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
+            term1_data2 = get_cp_from_twodata_term1(depthratio2, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
+
+            term2_data1 = get_cp_from_twodata_term2(depthratio1, CNt1, CNn, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
+            term2_data2 = get_cp_from_twodata_term2(depthratio2, CNt2, CNn, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
+
+            if (
+                (term2_data1 > term2_data2)
+                and (term2_data1 - term2_data2 > term1_data1 - term1_data2)
+                and (term2_data1 * term1_data2 > term2_data2 * term1_data1)
+            ):
+                result.append((CNt1, CNt2))
+
+    return result
 
 
 def get_cp_from_twodata_term1(depthratio, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio):
@@ -664,6 +730,7 @@ def inverse_theoretical_baf(baf, cellularity, CNt, CNn):
 
 
 def get_B(CNt, cellularity, baf, CNn):
+    max_B = int(CNt / 2)
     B_estimate = inverse_theoretical_baf(baf, cellularity, CNt, CNn)
     if B_estimate <= 0:
         B = 0
@@ -677,8 +744,16 @@ def get_B(CNt, cellularity, baf, CNn):
         B_candidate_upper = int(np.ceil(B_estimate))
         B_candidate_lower = int(np.floor(B_estimate))
 
-        theo_baf_upper = theoretical_baf(CNt, B_candidate_upper, cellularity, CNn)
-        theo_baf_lower = theoretical_baf(CNt, B_candidate_lower, cellularity, CNn)
+        theo_baf_upper = (
+            theoretical_baf(CNt, B_candidate_upper, cellularity, CNn)
+            if B_candidate_upper <= max_B else
+            np.nan
+        )
+        theo_baf_lower = (
+            theoretical_baf(CNt, B_candidate_lower, cellularity, CNn)
+            if B_candidate_lower <= max_B else
+            np.nan
+        )
 
         if np.isnan(theo_baf_upper) and np.isnan(theo_baf_lower):
             B = np.nan
@@ -806,6 +881,14 @@ def get_CN_from_cp_wo_baf(cellularity, ploidy, depth_ratio, CNt_weight, CNn, nor
 #########################
 # find optimal cp value #
 #########################
+
+def get_depthratio_peaks(depthratio_segment_means, lengths, limits=(0, 2), step=0.01, peak_cutoff=1e8):
+    bins = np.arange(limits[0], limits[1], step)
+    peak_indexes, histbins, hist, bin_midpoints = get_hist_peaks(depthratio_segment_means, weights=lengths, bins=bins)
+    peak_indexes = peak_indexes[hist[peak_indexes] > peak_cutoff]
+    peak_xs = bin_midpoints[peak_indexes]
+
+    return peak_xs
 
 
 def calc_cp_score(
@@ -940,10 +1023,18 @@ def get_cp_score_dict(
         )
 
     # calculate ploidy fitting scores
-    for cpppair, calc_ploidy, dic in zip(cp_pairs, calculated_tumor_ploidies, scorelist):
+    for cppair, calc_ploidy, dic in zip(cp_pairs, calculated_tumor_ploidies, scorelist):
         dic['calculated_tumor_ploidy'] = calc_ploidy
-        dic['ploidy_diff'] = calc_ploidy - cpppair.ploidy
-        dic['ploidy_diff_ratio'] = dic['ploidy_diff'] / cpppair.ploidy
+        dic['ploidy_diff'] = calc_ploidy - cppair.ploidy
+        dic['ploidy_diff_ratio'] = dic['ploidy_diff'] / cppair.ploidy
+        dic['delta_depth_ratio'] = delta_depth_ratio(
+            cellularity=cppair.cellularity, 
+            tumor_mean_ploidy=cppair.ploidy, 
+            CNn=2, 
+            normal_mean_ploidy=normal_ploidy, 
+            tumor_avg_depth_ratio=1, 
+            normal_avg_depth_ratio=1,
+        )
 
     cp_scores = dict(zip(cp_pairs, scorelist))
     return cp_scores
@@ -1246,14 +1337,36 @@ def get_gc_breaks(n_bin):
     return breaks, intervals
 
 
-def handle_outliers(depth_df, trim_limits=None, lower_cutoff=None, upper_cutoff=None):
+def handle_outliers_with_preset_region(depth_df, outlier_region):
+    outlier_region = arg_into_gr(outlier_region)
+    depth_gr = arg_into_gr(depth_df)
+
+    output_depth_df = depth_gr.count_overlaps(outlier_region, overlap_col='NumberOverlaps').df
+    output_depth_df['excluded'] = output_depth_df['NumberOverlaps'] > 0
+    output_depth_df.drop('NumberOverlaps', axis=1, inplace=True)
+
+    return output_depth_df
+
+
+def handle_outliers_with_preset_included_region(depth_df, included_region):
+    included_region = arg_into_gr(included_region)
+    depth_gr = arg_into_gr(depth_df)
+
+    output_depth_df = depth_gr.count_overlaps(included_region, overlap_col='NumberOverlaps').df
+    output_depth_df['excluded'] = output_depth_df['NumberOverlaps'] == 0
+    output_depth_df.drop('NumberOverlaps', axis=1, inplace=True)
+
+    return output_depth_df
+
+
+def handle_outliers(depth_df, trim_limits=None, lower_cutoff=None, upper_cutoff=None, exclude_y=False):
     """Args:
         trim_limits: Tuple with length 2 (lower proportion, upper proportion).
             Used as an argument to "scipy.stats.mstats.trim".
             Example: (0.05, 0.05)
     Returns:
         Tuple (depth_df, selector)
-            depth_df: The input dataframe, with outlier depth values replaced with np.nan
+            depth_df: The input dataframe, with a new column "excluded" added
             selector: boolean array indicating non-outlier rows
         Outlier handling processes:
             1) Removes/masks oringinal nan values
@@ -1264,6 +1377,13 @@ def handle_outliers(depth_df, trim_limits=None, lower_cutoff=None, upper_cutoff=
 
     # remove nan
     selector = depth_df['mean_depth'].notna()
+
+    # remove y
+    if exclude_y:
+        selector = np.logical_and(
+            selector, 
+            ~depth_df['Chromosome'].isin(['Y', 'chrY']),
+        )
 
     # trim by proportion
     if trim_limits is not None:
@@ -1280,7 +1400,8 @@ def handle_outliers(depth_df, trim_limits=None, lower_cutoff=None, upper_cutoff=
 
     # result
     selector = selector.to_numpy()
-    depth_df.loc[~selector, 'mean_depth'] = np.nan
+    #depth_df.loc[~selector, 'mean_depth'] = np.nan
+    depth_df['excluded'] = ~selector
 
     return depth_df, selector
 
@@ -1324,10 +1445,15 @@ def get_gcbin_data(depth_df, gc_breaks, make_raw_data=False):
     """This does not apply weights when calculating averages. Suitable for even-sized bins"""
     # cut by gc bins
     cutresult = pd.cut(depth_df['GC'], bins=gc_breaks, include_lowest=False)
+    all_intervals = list(cutresult.dtype.categories)
+
+    cutresult_filtered = cutresult.loc[~depth_df['excluded']]
+    depth_df_filtered = depth_df.loc[~depth_df['excluded'], :]
+
     # make results
     if make_raw_data:
-        gcbin_depth_data = {intv: list() for intv in cutresult.dtype.categories}
-        for intv, depth in zip(cutresult, depth_df['mean_depth']):
+        gcbin_depth_data = {intv: list() for intv in all_intervals}
+        for intv, depth in zip(cutresult_filtered, depth_df_filtered['mean_depth']):
             gcbin_depth_data[intv].append(depth)
 
         gcbin_average_depths = {
@@ -1340,9 +1466,9 @@ def get_gcbin_data(depth_df, gc_breaks, make_raw_data=False):
             warnings.simplefilter('ignore', category=RuntimeWarning)
 
             gcbin_average_depths = dict()
-            for intv in cutresult.dtype.categories:
-                gcbin_average_depths[intv] = np.nanmean(
-                    depth_df['mean_depth'].loc[(cutresult == intv).array]
+            for intv in all_intervals:
+                gcbin_average_depths[intv] = np.mean(
+                    depth_df_filtered['mean_depth'].loc[(cutresult_filtered == intv).array]
                 )
 
     gcbin_average_depths = pd.Series(gcbin_average_depths)
@@ -1371,6 +1497,7 @@ def depth_df_gc_addition(depth_df, gc_df=None, refver=None, fasta=None, window=N
 
 
 @deco.get_deco_num_set_differently(('fasta', 'refver', 'gc_df'), 1)
+@deco.get_deco_num_set_differently(('outlier_region', 'included_region'), 1)
 def postprocess_depth_df(
     depth_df, 
     *,
@@ -1380,11 +1507,13 @@ def postprocess_depth_df(
 
     gc_window=None,
 
+    outlier_region=None,
+    included_region=None,
     preset_cutoffs=None,
-
     lower_cutoff=None,
     upper_cutoff=None,
     trim_limits=None,
+    exclude_y=False,
 
     add_norm_depth=False,
     add_gccorr_depth=False,
@@ -1440,8 +1569,8 @@ def postprocess_depth_df(
         upper_cutoff = np.inf
     elif preset_cutoffs == 'normal_wgs':
         printlog(f'Running "postprocess_depth_df" function with preset cutoff mode "normal_wgs"')
-        lower_cutoff = avg_depth * 0.3
-        upper_cutoff = avg_depth * 1.7
+        lower_cutoff = avg_depth * 0.7
+        upper_cutoff = avg_depth * 1.3
 
     # add GC fractions
     printlog(f'Adding GC fraction values')
@@ -1449,13 +1578,23 @@ def postprocess_depth_df(
         depth_df, gc_df=gc_df, refver=refver, fasta=fasta, window=gc_window,
     )
 
-    # replace outliers with nan; separately for output and gc data 
-    output_depth_df, selector = handle_outliers(
-        depth_df, trim_limits=trim_limits, lower_cutoff=lower_cutoff, upper_cutoff=upper_cutoff
-    )
-    gcdata_depth_df, selector2 = handle_outliers(
-        depth_df, trim_limits=None, lower_cutoff=0, upper_cutoff=(avg_depth * 10),
-    )
+    ## replace outliers with nan; separately for output and gc data 
+    # mark outlier positions with 'excluded' column
+    if outlier_region is not None:
+        output_depth_df = handle_outliers_with_preset_region(depth_df, outlier_region)
+    elif included_region is not None:
+        output_depth_df = handle_outliers_with_preset_included_region(depth_df, included_region)
+    else:
+        output_depth_df, selector = handle_outliers(
+            depth_df, 
+            trim_limits=trim_limits, 
+            lower_cutoff=lower_cutoff, 
+            upper_cutoff=upper_cutoff,
+            exclude_y=exclude_y,
+        )
+    #gcdata_depth_df, selector2 = handle_outliers(
+    #    depth_df, trim_limits=None, lower_cutoff=0, upper_cutoff=(avg_depth * 10),
+    #)
 
     # get gc depth data
     printlog(f'Getting depth data by gc value ranges')
@@ -1465,31 +1604,37 @@ def postprocess_depth_df(
         gcbin_average_depths, 
         gcbin_norm_average_depths, 
         cutresult 
-    ) = get_gcbin_data(gcdata_depth_df, gc_breaks, make_raw_data=False)
+    #) = get_gcbin_data(gcdata_depth_df, gc_breaks, make_raw_data=False)
+    ) = get_gcbin_data(
+        output_depth_df, 
+        gc_breaks, 
+        make_raw_data=False,
+    )
     cutresult_idx = common.get_indexes_of_array(cutresult, gcbin_norm_average_depths.index)
 
     # norm_mean_depth
     if add_norm_depth:
         printlog(f'Getting normalized depths')
+        filterd_depth_df = output_depth_df.loc[~output_depth_df['excluded'], :]
         avg_depth_wo_outliers = common.nanaverage(
-            output_depth_df['mean_depth'].to_numpy(), 
-            weights=(output_depth_df['End'] - output_depth_df['Start']).to_numpy(),
+            filterd_depth_df['mean_depth'].to_numpy(), 
+            weights=(filterd_depth_df['End'] - filterd_depth_df['Start']).to_numpy(),
         )
         output_depth_df['norm_mean_depth'] = (output_depth_df['mean_depth'] / avg_depth_wo_outliers).array
 
     # gc_corrected_mean_depth
     if add_gccorr_depth:
         printlog(f'Getting GC-corrected depths')
-        gcbin_norm_average_depths_selected = gcbin_norm_average_depths.iloc[cutresult_idx]
         output_depth_df['gc_corrected_mean_depth'] = (
-            output_depth_df['mean_depth'].array / gcbin_norm_average_depths_selected.array
+            output_depth_df['mean_depth'].array 
+            / gcbin_norm_average_depths.iloc[cutresult_idx].array
         )
 
     # sequenza_style_norm_mean_depth
     printlog(f'Getting GC-corrected normalized depths (sequenza style)')
-    gcbin_average_depths_selected = gcbin_average_depths.iloc[cutresult_idx]
     output_depth_df['sequenza_style_norm_mean_depth'] = (
-        output_depth_df['mean_depth'].array / gcbin_average_depths_selected.array
+        output_depth_df['mean_depth'].array 
+        / gcbin_average_depths.iloc[cutresult_idx].array
     )
 
     # result
@@ -1554,7 +1699,7 @@ def make_depth_ratio(
             return arr
 
     def copy_annotations(result, input_df, prefix):
-        annot_cols = get_genome_df_annotcols(input_df).drop('GC')
+        annot_cols = get_genome_df_annotcols(input_df).drop(['GC', 'excluded'])
         for colname in annot_cols:
             result[f'{prefix}_{colname}'] = input_df.loc[:, colname].array
 
@@ -1566,7 +1711,7 @@ def make_depth_ratio(
     genome_df_sanitycheck(normal_depth_df)
 
     required_cols = {
-        #'mean_depth', 
+        'mean_depth', 
         #'norm_mean_depth', 
         #'gc_corrected_mean_depth', 
         'GC', 
@@ -1581,7 +1726,7 @@ def make_depth_ratio(
     #logger = (LOGGER_DEBUG if verbose else LOGGER_INFO)
 
     # tumor/normal dfs shape check
-    compared_columns = ['Chromosome', 'Start', 'End', 'GC']
+    compared_columns = ['Chromosome', 'Start', 'End', 'GC', 'excluded']
     tumor_common_cols = tumor_depth_df.loc[:, compared_columns]
     normal_common_cols = normal_depth_df.loc[:, compared_columns]
     if not (normal_common_cols == tumor_common_cols).all(axis=None):
@@ -1687,11 +1832,25 @@ def upsize_depth_df_bin(depth_df, size, refver=None, chromdict=None, annot_cols=
         annot_subdf.reset_index(inplace=True, drop=True)
 
         result = pd.concat([nonannot_subdf, annot_subdf], axis=1)
+
+        if 'excluded' in chrom_df:
+            merged_exclude = pd.Series(chrom_df['excluded']).groupby(
+                by=groupers, sort=False,
+            ).any()
+            result['excluded'] = merged_exclude.to_numpy()
+
         return result
 
     # arg handling
     if annot_cols is None:
-        annot_cols = get_genome_df_annotcols(depth_df)
+        #annot_cols = get_genome_df_annotcols(depth_df)
+        annot_cols = [
+            k for (k, v) in depth_df.dtypes.to_dict().items()
+            if (
+                (str(v) != 'bool')
+                and (k not in ['Chromosome', 'Start', 'End'])
+            )
+        ]
     if chromdict is None:
         chromdict = common.DEFAULT_CHROMDICTS[refver]
 

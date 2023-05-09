@@ -36,39 +36,46 @@ def get_preset_filter_germline(
     cutoff_cliplen=20,
     cutoff_altcount=2,
     cutoff_otherratio=1.5,
-    cutoffs_totaldepth=(10, 100),
+    #cutoffs_totaldepth=(10, 100),
+    cutoffs_totaldepth=None,
     cutoff_unifpval=0.01,
     cutoff_recurMM=10,
-
     cutoffs_vaf=None,
 ):
     # sanity check
     if with_pon:
-        if sum([
-            pon_samples is not None,
-            pon_cohorts is not None,
-        ]) != 1:
-            raise Exception(f'If "with_pon" is True, exactly 1 of "pon_samples" and "pon_cohorts" must be set.')
+        if (pon_samples is not None) + (pon_cohorts is not None) != 1:
+            raise Exception(
+                f'If "with_pon" is True, '
+                f'exactly 1 of "pon_samples" and "pon_cohorts" must be set.'
+            )
 
-    result = FilterList(
-        [
-#            PopfreqFilter(
-#                popnames=("GnomAD", "1000Genomes", "KOREAN", "Korea1K"), 
-#                cutoff=0.01,
-#            ),
-            DiffMeanBQFilter(cutoff=cutoff_diffbq),
-            AbsMeanBQFilter(cutoff=cutoff_absbq),
-            DiffMeanMQFilter(cutoff=cutoff_diffmq),
-            AbsMeanMQFilter(cutoff=cutoff_absmq),
-            ClipoverlapFilter(cutoff=cutoff_clipovlp),
-            AbsCliplenFilter(cutoff=cutoff_cliplen),
-            ReadcountFilter(cutoff=cutoff_altcount),
-            OthercountRatioFilter(cutoff=cutoff_otherratio),
-            TotaldepthFilter(cutoff=cutoffs_totaldepth),
-            VarposUniformFilter(cutoff=cutoff_unifpval),
-            RecurrentMMFilter(cutoff=cutoff_recurMM),
-        ]
-    )
+    # main
+    result = FilterList()
+    if cutoff_diffbq is not None: 
+        result.append(DiffMeanBQFilter(cutoff=cutoff_diffbq))
+    if cutoff_absbq is not None: 
+        result.append(AbsMeanBQFilter(cutoff=cutoff_absbq))
+    if cutoff_diffmq is not None: 
+        result.append(DiffMeanMQFilter(cutoff=cutoff_diffmq))
+    if cutoff_absmq is not None: 
+        result.append(AbsMeanMQFilter(cutoff=cutoff_absmq))
+    if cutoff_clipovlp is not None: 
+        result.append(ClipoverlapFilter(cutoff=cutoff_clipovlp))
+    if cutoff_cliplen is not None: 
+        result.append(AbsCliplenFilter(cutoff=cutoff_cliplen))
+    if cutoff_altcount is not None: 
+        result.append(ReadcountFilter(cutoff=cutoff_altcount))
+    if cutoff_otherratio is not None: 
+        result.append(OthercountRatioFilter(cutoff=cutoff_otherratio))
+    if cutoffs_totaldepth is not None: 
+        result.append(TotaldepthFilter(cutoff=cutoffs_totaldepth))
+    if cutoff_unifpval is not None: 
+        result.append(VarposUniformFilter(cutoff=cutoff_unifpval))
+    if cutoff_recurMM is not None: 
+        result.append(RecurrentMMFilter(cutoff=cutoff_recurMM))
+    if cutoffs_vaf is not None:
+        result.append(VAFFilter(cutoff=cutoffs_vaf))
 
     if with_pon:
         result.append(
@@ -79,9 +86,6 @@ def get_preset_filter_germline(
                 mode='wgs',
             )
         )
-
-    if cutoffs_vaf is not None:
-        result.append(VAFFilter(cutoff=cutoffs_vaf))
 
     return result
 

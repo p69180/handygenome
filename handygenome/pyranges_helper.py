@@ -27,14 +27,13 @@ def sort_df_by_coord(df, chromdict):
 
 
 def isec_union(gr1, gr2, as_gr=True):
-    gr1 = cnvmisc.arg_into_gr(gr1)
-    gr2 = cnvmisc.arg_into_gr(gr2)
+    gr1 = cnvmisc.arg_into_gr(gr1).drop()
+    gr2 = cnvmisc.arg_into_gr(gr2).drop()
 
     isec = gr1.intersect(gr2)
     gr1_diff_isec = gr1.subtract(isec)
     gr2_diff_isec = gr2.subtract(isec)
     result = pr.concat([gr1_diff_isec, isec, gr2_diff_isec])
-    result = result[[]]  # remove annotation columns
     result = result.sort()
     if as_gr:
         return result
