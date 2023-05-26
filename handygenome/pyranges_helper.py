@@ -456,7 +456,7 @@ def join_preprocess_df(df):
     return df.reset_index(drop=True, inplace=False)
 
 
-def join_df_sanitycheck(left_df, right_df, index_col):
+def join_df_sanitycheck(left_df, right_df, index_col, add_std):
     common_cols = ["Chromosome", "Start", "End"]
 
     for df in (left_df, right_df):
@@ -467,8 +467,12 @@ def join_df_sanitycheck(left_df, right_df, index_col):
 
     left_annot_cols = left_df.columns.drop(common_cols)
     right_annot_cols = right_df.columns.drop(common_cols)
-
     assert not set(left_annot_cols).intersection(set(right_annot_cols)), f'Input DataFrames has overlapping annotation columns'
+
+    if add_std:
+        std_colnames = set(x + '_std' for x in right_annot_cols)
+        assert not set(left_annot_cols).intersection(std_colnames)
+        assert not set(right_annot_cols).intersection(std_colnames)
 
 
 def check_intv_invtlist_overlap(intv_start0, intv_end0, intvlist_start0s, intvlist_end0s):
@@ -546,71 +550,74 @@ def fetch_nearest(joined_df, right_df, left_rowidxs, annot_columns):
     return joined_df
 
 
-def join_singlechrom_dfs_new(
-    left_df, right_df, how, keep_right_coords, find_nearest, annot_columns, merge, logger,
-):
-    logger.debug(f'Sorting dataframes')
-    left_df.sort_values(['Start', 'End'], inplace=True)
-    right_df.sort_values(['Start', 'End'], inplace=True)
+#def join_singlechrom_dfs_new(
+#    left_df, right_df, how, keep_right_coords, find_nearest, annot_columns, merge, logger,
+#):
+#    logger.debug(f'Sorting dataframes')
+#    left_df.sort_values(['Start', 'End'], inplace=True)
+#    right_df.sort_values(['Start', 'End'], inplace=True)
+#
+#    logger.debug(f'Comparing coordinates')
+#    compare_result = compare_coords(left_df, right_df)
+#    left_rowidxs, right_rowidxs = np.where(compare_result)
+#
+#    logger.debug(f'Subsetting right df')
+#    if keep_right_coords:
+#        left_subdf = left_df.iloc[left_rowidxs, :]
+#        right_subdf = right_df.iloc[right_rowidxs, 3:]
+#        right_subdf['overlap_length'] = calc_overlap_lengths(
+#            left_subdf['Start'].to_numpy(), 
+#            left_subdf['End'].to_numpy(), 
+#            right_subdf['Start'].to_numpy(), 
+#            right_subdf['End'].to_numpy(),
+#        )
+#    else:
+#        right_subdf = right_df.iloc[right_rowidxs, 3:]
+#    right_subdf.index = left_rowidxs
+#    
+#    # do merge
+#    logger.debug(f'Doing merge')
+#    merged_right_subdf = merge_right_subdf(right_subdf, merge, annot_columns)
+#
+#    # join with left_df
+#    logger.debug(f'Joining with left df')
+#    joined_df = left_df.join(merged_right_subdf, how=how)
+#
+#    # fetch nearest
+#    if (how == 'left') and find_nearest:
+#        logger.debug(f'Doing fetch nearest')
+#        joined_df = fetch_nearest(joined_df, right_df, left_rowidxs, annot_columns)
+#
+#    return joined_df
 
-    logger.debug(f'Comparing coordinates')
-    compare_result = compare_coords(left_df, right_df)
-    left_rowidxs, right_rowidxs = np.where(compare_result)
 
-    logger.debug(f'Subsetting right df')
-    if keep_right_coords:
-        left_subdf = left_df.iloc[left_rowidxs, :]
-        right_subdf = right_df.iloc[right_rowidxs, 3:]
-        right_subdf['overlap_length'] = calc_overlap_lengths(
-            left_subdf['Start'].to_numpy(), 
-            left_subdf['End'].to_numpy(), 
-            right_subdf['Start'].to_numpy(), 
-            right_subdf['End'].to_numpy(),
-        )
-    else:
-        right_subdf = right_df.iloc[right_rowidxs, 3:]
-    right_subdf.index = left_rowidxs
-    
-    # do merge
-    logger.debug(f'Doing merge')
-    merged_right_subdf = merge_right_subdf(right_subdf, merge, annot_columns)
-
-    # join with left_df
-    logger.debug(f'Joining with left df')
-    joined_df = left_df.join(merged_right_subdf, how=how)
-
-    # fetch nearest
-    if (how == 'left') and find_nearest:
-        logger.debug(f'Doing fetch nearest')
-        joined_df = fetch_nearest(joined_df, right_df, left_rowidxs, annot_columns)
-
-    return joined_df
-
-
-def join_singlechrom_dfs(left_df, right_df, how, keep_right_coords, find_nearest, annot_columns, merge, logger):
+def join_singlechrom_dfs(left_df, right_df, how, keep_right_coords, find_nearest, annot_columns, merge, logger, add_std, ddof):
     current_chrom = left_df.Chromosome[0]
     logger.debug(f'Beginning chromosome {current_chrom}')
+
+#    logger.debug(f'Sorting dataframes')
+#    left_df.sort_values(['Start', 'End'], inplace=True)
+#    right_df.sort_values(['Start', 'End'], inplace=True)
 
     #logger.debug(f'Comparing coordinates')
     compare_result = compare_coords(left_df, right_df)
     left_rowidxs, right_rowidxs = np.where(compare_result)
 
     #logger.debug(f'Subsetting right df')
+    right_subdf = right_df.iloc[right_rowidxs, 3:]
     if keep_right_coords:
-        right_subdf = right_df.iloc[right_rowidxs, 3:]
         right_subdf['overlap_length'] = calc_overlap_lengths(
             left_df['Start'].iloc[left_rowidxs].to_numpy(), 
             left_df['End'].iloc[left_rowidxs].to_numpy(), 
             right_df['Start'].iloc[right_rowidxs].to_numpy(), 
             right_df['End'].iloc[right_rowidxs].to_numpy(),
         )
-    else:
-        right_subdf = right_df.iloc[right_rowidxs, 3:]
+
     right_subdf.index = left_rowidxs
     
     # do merge
     #logger.debug(f'Doing merge')
-    right_subdf_merged = merge_right_subdf(right_subdf, merge, annot_columns)
+    right_subdf_merged = merge_right_subdf(right_subdf, merge, annot_columns, add_std, ddof)
 
     # join with left_df
     #logger.debug(f'Joining with left df')
@@ -639,7 +646,7 @@ def dedup_by_index(df, index_col, keep):
     return result
 
 
-def merge_right_subdf(right_subdf, merge, annot_columns):
+def merge_right_subdf_old(right_subdf, merge, annot_columns):
     if merge is None:
         return right_subdf
     elif merge == 'first':
@@ -675,6 +682,61 @@ def merge_right_subdf(right_subdf, merge, annot_columns):
                 for key, subdf in right_subdf.groupby(by=indexes, axis=0, sort=False)
             )
             right_subdf_merged = pd.DataFrame.from_records(data_gen)
+
+        return right_subdf_merged
+
+
+def merge_right_subdf(right_subdf, merge, annot_columns, add_std, ddof):
+    if merge is None:
+        return right_subdf
+    elif merge == 'first':
+        return right_subdf.groupby(right_subdf.index.to_numpy()).first()
+    elif merge == 'last':
+        return right_subdf.groupby(right_subdf.index.to_numpy()).last()
+    else:
+        #left_rowidxs = right_subdf.index.to_numpy()
+
+        if merge in ('mean',):
+            groupby = right_subdf.groupby(by=right_subdf.index.to_numpy(), axis=0, sort=False)
+            means = groupby.mean()
+            if add_std:
+                stds = groupby.std(ddof=ddof).rename(columns=(lambda x: x + '_std'))
+                right_subdf_merged = pd.concat([means, stds], axis=1)
+            else:
+                right_subdf_merged = means
+
+        elif merge in ('weighted_mean',):
+            initial_columns = right_subdf.columns.to_list()
+            colname_map = {x: x + '*length' for x in initial_columns}
+            for colname in initial_columns:
+                right_subdf[colname_map[colname]] = right_subdf[colname] * right_subdf['overlap_length']
+
+            groupby = right_subdf.groupby(by=right_subdf.index.to_numpy(), axis=0, sort=False)
+            merged = groupby[['overlap_length'] + list(colname_map.values())].sum()
+
+            df_data = dict()
+            for key, val in colname_map.items():
+                df_data[key] = merged[val] / merged['overlap_length']
+            right_subdf_merged = pd.DataFrame(df_data, index=merged.index)
+
+        elif merge in ('longest', 'shortest'):
+            # keep away current index
+            assert 'left_rowidxs' not in right_subdf.columns
+            right_subdf.reset_index(names='left_rowidxs', inplace=True)
+            groupby = right_subdf.groupby(
+                by=right_subdf['left_rowidxs'].to_numpy(), axis=0, sort=False,
+            )
+
+            # do reduction
+            if merge == 'longest':
+                selected_row_indexes = groupby['overlap_length'].idxmax(axis=0)
+            elif merge == 'shortest':
+                selected_row_indexes = groupby['overlap_length'].idxmin(axis=0)
+            right_subdf_merged = right_subdf.iloc[selected_row_indexes, :]
+
+            # revert index
+            right_subdf_merged.set_index('left_rowidxs')
+            right_subdf_merged.index.name = None
 
         return right_subdf_merged
 
@@ -752,55 +814,9 @@ def concat_dfs_bychrom(how, sort, common_chroms, leftonly_chroms, chromdict, joi
     return result
 
 
-#def join_main_newest_nonmulti(
-#    left_df, right_df, how, merge, find_nearest, index_col, sort, chromdict, logger,
-#    nproc,
-#):
-#    ###
-#    annot_columns = right_df.columns[3:].to_list()
-#
-#    ###
-#    logger.debug(f'Grouping dataframes by chromosome')
-#    left_bychrom = group_df_bychrom(left_df)
-#    right_bychrom = group_df_bychrom(right_df)
-#
-#    left_chroms = set(left_bychrom.keys())
-#    right_chroms = set(right_bychrom.keys())
-#    common_chroms = left_chroms.intersection(right_chroms)
-#    leftonly_chroms = left_chroms.difference(right_chroms)
-#    #rightonly_chroms = right_chroms.difference(left_chroms)
-#
-#    ###
-#    logger.debug(f'Doing join by chromosome')
-#    keep_right_coords = (merge in ('weighted_mean', 'longest'))
-#    joined_bychrom = dict()
-#    for chrom in common_chroms:
-#        logger.debug(f'chrom {chrom}')
-#        joined_df = join_singlechrom_dfs(
-#            left_bychrom[chrom], 
-#            right_bychrom[chrom], 
-#            how, 
-#            keep_right_coords,
-#            find_nearest,
-#            annot_columns,
-#            merge,
-#            logger,
-#        )
-#        joined_bychrom[chrom] = joined_df
-#
-#    ###
-#    logger.debug(f'Concatenating dataframes of all chromosomes')
-#    result = concat_dfs_bychrom(how, sort, common_chroms, leftonly_chroms, chromdict, joined_bychrom, left_bychrom)
-#    result.reset_index(inplace=True, drop=True)
-#    if keep_right_coords:
-#        result.drop(columns=['Start_right', 'End_right'], inplace=True)
-#
-#    return result
-
-
 def join_main_newest(
     left_df, right_df, how, merge, find_nearest, index_col, sort, chromdict, logger,
-    nproc,
+    nproc, add_std, ddof,
 ):
     ###
     annot_columns = right_df.columns[3:].to_list()
@@ -830,6 +846,8 @@ def join_main_newest(
                 annot_columns,
                 merge,
                 logger,
+                add_std,
+                ddof,
             )
             for chrom in common_chroms
         )
@@ -848,6 +866,7 @@ def join_main_newest(
 
 def join_newest(
     left_df, right_df, how='inner', find_nearest=False, merge=None, as_gr=False,
+    add_std=False, ddof=0,
     nproc=1,
     sort=False, chromdict=None, refver=None,
     verbose=False,
@@ -863,7 +882,7 @@ def join_newest(
     assert how in ('left', 'inner')
     if sort and ((chromdict is None) and (refver is None)):
         raise Exception(f'If "sort" is True, "chromdict" or "refver" must be given')
-    join_df_sanitycheck(left_df, right_df, index_col)
+    join_df_sanitycheck(left_df, right_df, index_col, add_std)
 
     # set logger
     logger = (LOGGER_DEBUG if verbose else LOGGER_INFO)
@@ -875,7 +894,7 @@ def join_newest(
         chromdict = common.DEFAULT_CHROMDICTS[refver]
 
     # join
-    result = join_main_newest(left_df, right_df, how, merge, find_nearest, index_col, sort, chromdict, logger, nproc)
+    result = join_main_newest(left_df, right_df, how, merge, find_nearest, index_col, sort, chromdict, logger, nproc, add_std, ddof)
 
     # result
     if as_gr:

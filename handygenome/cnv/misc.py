@@ -92,6 +92,16 @@ def get_genome_df_annotcols(df):
     return df.columns.drop(['Chromosome', 'Start', 'End'])
 
 
+def genome_df_groupkey(df, refver):
+    chromdict = common.DEFAULT_CHROMDICTS[refver]
+    chrom_indexes = df['Chromosome'].apply(chromdict.contigs.index)
+    coord_arr = np.stack(
+        [chrom_indexes.to_numpy(), df['Start'].to_numpy(), df['End'].to_numpy()], 
+        axis=1,
+    )
+    return common.array_grouper(coord_arr, omit_values=True)[2]
+
+
 def sort_genome_df(df, refver):
     chromdict = common.DEFAULT_CHROMDICTS[refver]
     chrom_indexes = df['Chromosome'].apply(lambda x: chromdict.contigs.index(x))
@@ -182,12 +192,38 @@ def get_1d_peaks(row, invert=False):
 
 def get_hist_peaks(data, weights=None, bins=10, threshold=None):
     hist, histbins = np.histogram(data, bins=bins, weights=weights, density=True)
-    bin_midpoints = 0.5 * (bins[:-1] + bins[1:])
+    bin_midpoints = 0.5 * (histbins[:-1] + histbins[1:])
+
     peak_indexes = get_1d_peaks(hist, invert=False)
     if threshold is not None:
         peak_indexes = peak_indexes[hist[peak_indexes] > threshold]
-        
-    return peak_indexes, histbins, hist, bin_midpoints
+
+    peak_values = bin_midpoints[peak_indexes]
+
+    result = {
+        'peak_indexes': peak_indexes,
+        'histbins': histbins,
+        'hist': hist,
+        'bin_midpoints': bin_midpoints,
+        'peak_values': peak_values,
+    }
+    return result
+
+
+def get_density_peaks(data, weights=None, xs=None, threshold=None, bw_method=None, invert=False):
+    density = scipy.stats.gaussian_kde(data, weights=weights, bw_method=bw_method)
+    if xs is None:
+        xs = np.linspace(data.min(), data.max(), 100)
+    ys = density(xs)
+
+    peak_indexes = get_1d_peaks(ys, invert=invert)
+    if threshold is not None:
+        peak_indexes = peak_indexes[ys[peak_indexes] > threshold]
+
+    peak_values = xs[peak_indexes]
+    peak_densities = ys[peak_indexes]
+
+    return peak_values, peak_densities, density
 
 
 def get_df_diagonals(df, upslope=True):
@@ -412,36 +448,219 @@ def get_bafs(vaf_list):
     return bafs
 
 
+def flip_gt_half(array):
+    gt_half_indexes = array > 0.5
+    array[gt_half_indexes] = 1 - array[gt_half_indexes]
+    return array
+
+
+def get_nearest_integers(x):
+    x = np.atleast_1d(x)
+
+    lower = np.floor(x)
+    upper = np.ceil(x)
+    same_ind = (upper == lower)
+    upper[upper == lower] += 1
+
+    #lower = np.squeeze(lower)
+    #upper = np.squeeze(upper)
+
+    return upper, lower
+
+
+##################################################
+# theoretical value calculation helper functions # 
+##################################################
+
+def baf_function_wrapper(func):
+    sig = inspect.signature(func)
+    params = sig.parameters
+    assert 'CNn' in params, f'There must be an argument named "CNn"'
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs): 
+        # setup
+        ba = sig.bind(*args, **kwargs)
+        ba.apply_defaults()
+        #keys = list(ba.arguments.keys())
+        #vals = [np.atleast_1d(x) for x in ba.arguments.values()]
+        #argdict = dict(zip(keys, vals))
+
+        ## get mask for invalid CNn values
+        #mask = (argdict['CNn'] < 2)
+
+        # replace invalid CNn values with nan
+        argdict = ba.arguments
+        argdict['CNn'] = np.where(argdict['CNn'] < 2, np.nan, argdict['CNn'])
+
+        # main
+        result = func(**argdict)
+
+        return result
+
+    return wrapper
+
+
+def baf_function_wrapper_old(func):
+    sig = inspect.signature(func)
+    params = sig.parameters
+    assert 'CNn' in params, f'There must be an argument named "CNn"'
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs): 
+        ba = sig.bind(*args, **kwargs)
+        ba.apply_defaults()
+        keys = list(ba.arguments.keys())
+        vals = common.broadcast_args(list(ba.arguments.values()))
+        argdict = dict(zip(keys, vals))
+
+        CNn = argdict['CNn']
+        result = np.full(CNn.shape, np.nan)
+        valid_CNn_indexes = CNn[(0,) * (CNn.ndim - 1) + (slice(None, None),)] >= 2
+        valid_argdict = {
+            key: val[..., valid_CNn_indexes]
+            for key, val in argdict.items()
+        }
+
+        # main
+        result[..., valid_CNn_indexes] = func(**valid_argdict)
+
+        # reduce dimension
+        if isinstance(result, (list, tuple)):
+            result = tuple(
+                x[0] if x.shape == (1,) else x
+                for x in result
+            )
+        else:
+            if result.shape == (1,):
+                result = result[0]
+
+        return result
+
+    return wrapper
+
+
+def get_normal_norm_depth(normal_avg_depth, CNn, normal_ploidy):
+    return normal_avg_depth * (CNn / normal_ploidy)
+
+
+def depthratio_tumor_numerator(cellularity, CNt, CNn):
+    '''
+    <Derivation>
+    tumor_upper_term = (CNt * cellularity) + (CNn * (1 - cellularity))
+    tumor_upper_term = cellularity * (CNt - CNn) + CNn
+    '''
+    return cellularity * (CNt - CNn) + CNn
+
+
+def depthratio_tumor_denominator(cellularity, tumor_ploidy, normal_ploidy):
+    '''
+    <Derivation>
+    tumor_lower_term = (tumor_ploidy * cellularity) + (normal_ploidy * (1 - cellularity))
+    tumor_lower_term = cellularity * (tumor_ploidy - normal_ploidy) + normal_ploidy
+    '''
+    return cellularity * (tumor_ploidy - normal_ploidy) + normal_ploidy
+
+
+def depthratio_tumor_numerator_subclone(cellularity, ccf, clonal_CNt, subclonal_CNt, CNn):
+    '''
+    <Derivation>
+    tumor_upper_term = (
+        (clonal_CNt * cellularity * (1 - ccf)) 
+        + (subclonal_CNt * cellularity * ccf) 
+        + (CNn * (1 - cellularity))
+    ) 
+    tumor_upper_term = (
+        ccf * (subclonal_CNt * cellularity - clonal_CNt * cellularity)
+        + clonal_CNt * cellularity
+        + (CNn * (1 - cellularity))
+    )
+    tumor_upper_term = (
+        ccf * cellularity * (subclonal_CNt - clonal_CNt)
+        + clonal_CNt * cellularity
+        + (CNn - cellularity * CNn)
+    )
+    tumor_upper_term = (
+        cellularity * (
+            ccf * (subclonal_CNt - clonal_CNt)
+            + clonal_CNt
+            - CNn
+        )
+        + CNn
+    )
+    '''
+    return (
+        cellularity * (
+            ccf * (subclonal_CNt - clonal_CNt)
+            + (clonal_CNt - CNn)
+        )
+        + CNn
+    )
+
+
+def baf_numerator_subclone(cellularity, ccf, clonal_B, subclonal_B, Bn=1):
+    '''
+    <Derivation>
+    numerator = (
+        (clonal_B * cellularity * (1 - ccf))
+        + (subclonal_B * cellularity * ccf)
+        + Bn * (1 - cellularity)
+    )
+    numerator = (
+        ccf * (subclonal_B * cellularity - clonal_B * cellularity)
+        + clonal_B * cellularity
+        + Bn * (1 - cellularity)
+    )
+    numerator = (
+        ccf * cellularity * (subclonal_B - clonal_B)
+        + cellularity * (clonal_B - Bn)
+        + Bn
+    )
+    numerator = (
+        cellularity * (
+            ccf * (subclonal_B - clonal_B)
+            + (clonal_B - Bn)
+        )
+        + Bn
+    )
+    '''
+    return (
+        cellularity * (
+            ccf * (subclonal_B - clonal_B)
+            + (clonal_B - Bn)
+        )
+        + Bn
+    )
+
+
 #################################
 # theoretical value calculation # 
 #################################
 
-
-#@deco.vectorize
+@deco.get_deco_asarray(['CNt', 'CNn'])
 def theoretical_depth_ratio(
-    CNt, cellularity, tumor_mean_ploidy, CNn, normal_mean_ploidy, 
-    tumor_avg_depth_ratio=1, normal_avg_depth_ratio=1,
+    CNt, cellularity, tumor_ploidy, CNn, normal_ploidy, 
+    tumor_avg_depth=1, 
+    normal_avg_depth=1,
 ):
     """Args:
         CNn, normal_ploidy must be nonzero
     Can be vectorized
     """
-    tumor_upper_term = (CNt * cellularity) + (CNn * (1 - cellularity))
-    tumor_lower_term = (tumor_mean_ploidy * cellularity) + (normal_mean_ploidy * (1 - cellularity))
-    tumor_norm_depth = tumor_avg_depth_ratio * (tumor_upper_term / tumor_lower_term)
+    tumor_norm_depth = tumor_avg_depth * (
+        depthratio_tumor_numerator(cellularity, CNt, CNn)
+        / depthratio_tumor_denominator(cellularity, tumor_ploidy, normal_ploidy)
+    )
+    normal_norm_depth = normal_avg_depth * (CNn / normal_ploidy)
 
-    #normal_upper_term = CNn
-    #normal_lower_term = normal_mean_ploidy
-    #normal_norm_depth = normal_avg_depth_ratio * (normal_upper_term / normal_lower_term)
-    normal_norm_depth = normal_avg_depth_ratio * (CNn / normal_mean_ploidy)
-
-    result = tumor_norm_depth / normal_norm_depth
-    return result
+    return tumor_norm_depth / normal_norm_depth
 
 
+@deco.get_deco_broadcast(['depth_ratio', 'CNn'])
 def inverse_theoretical_depth_ratio(
-    depth_ratio, cellularity, tumor_mean_ploidy, CNn, normal_mean_ploidy, 
-    tumor_avg_depth_ratio=1, normal_avg_depth_ratio=1,
+    depth_ratio, cellularity, tumor_ploidy, CNn, normal_ploidy, 
+    tumor_avg_depth=1, 
+    normal_avg_depth=1,
 ):
     """Args:
         cellularity must be nonzero
@@ -451,32 +670,125 @@ def inverse_theoretical_depth_ratio(
     '''
     <Derivation>
     tumor_upper_term = (CNt * cellularity) + (CNn * (1 - cellularity))
-    tumor_lower_term = (tumor_mean_ploidy * cellularity) + (normal_mean_ploidy * (1 - cellularity))
-    tumor_norm_depth = tumor_avg_depth_ratio * (tumor_upper_term / tumor_lower_term)
-    normal_norm_depth = normal_avg_depth_ratio * (CNn / normal_mean_ploidy)
+    tumor_lower_term = (tumor_ploidy * cellularity) + (normal_ploidy * (1 - cellularity))
+    tumor_norm_depth = tumor_avg_depth * (tumor_upper_term / tumor_lower_term)
+    normal_norm_depth = normal_avg_depth * (CNn / normal_ploidy)
     depth_ratio = tumor_norm_depth / normal_norm_depth
     ---------------------------------
     tumor_norm_depth = depth_ratio * normal_norm_depth
-    tumor_avg_depth_ratio * (tumor_upper_term / tumor_lower_term) = depth_ratio * normal_norm_depth
-    tumor_upper_term = (depth_ratio * normal_norm_depth * tumor_lower_term) / tumor_avg_depth_ratio
-    (CNt * cellularity) + (CNn * (1 - cellularity)) = (depth_ratio * normal_norm_depth * tumor_lower_term) / tumor_avg_depth_ratio
-    CNt * cellularity = ((depth_ratio * normal_norm_depth * tumor_lower_term) / tumor_avg_depth_ratio) - (CNn * (1 - cellularity))
+    tumor_avg_depth * (tumor_upper_term / tumor_lower_term) = depth_ratio * normal_norm_depth
+    tumor_upper_term = (depth_ratio * normal_norm_depth * tumor_lower_term) / tumor_avg_depth
+    (CNt * cellularity) + (CNn * (1 - cellularity)) = (depth_ratio * normal_norm_depth * tumor_lower_term) / tumor_avg_depth
+    CNt * cellularity = ((depth_ratio * normal_norm_depth * tumor_lower_term) / tumor_avg_depth) - (CNn * (1 - cellularity))
     CNt = (
-        ((depth_ratio * normal_norm_depth * tumor_lower_term) / tumor_avg_depth_ratio) - (CNn * (1 - cellularity))
+        ((depth_ratio * normal_norm_depth * tumor_lower_term) / tumor_avg_depth) 
+        - (CNn * (1 - cellularity))
     ) / cellularity
+    CNt = (
+        (depth_ratio * ((normal_norm_depth * tumor_lower_term) / tumor_avg_depth)) 
+        - (CNn * (1 - cellularity))
+    ) / cellularity
+    CNt = (
+        depth_ratio * (
+            (normal_norm_depth * tumor_lower_term) 
+            / (tumor_avg_depth * cellularity)
+        )
+        - (CNn * (1 / cellularity - 1))
+    )
+    CNt = (
+        depth_ratio * (
+            (normal_avg_depth * (CNn / normal_ploidy) * tumor_lower_term) 
+            / (tumor_avg_depth * cellularity)
+        )
+        - (CNn * (1 / cellularity - 1))
+    )
+    CNt = (
+        depth_ratio * (
+            (normal_avg_depth * CNn * tumor_lower_term) 
+            / (tumor_avg_depth * cellularity * normal_ploidy)
+        )
+        - (CNn * (1 / cellularity - 1))
+    )
+    CNt = CNn * (
+        depth_ratio * (
+            (normal_avg_depth * tumor_lower_term) 
+            / (tumor_avg_depth * cellularity * normal_ploidy)
+        )
+        - (1 / cellularity - 1)
+    )
+    CNt = CNn * (
+        depth_ratio * (
+            (
+                normal_avg_depth * (
+                    (tumor_ploidy * cellularity) + (normal_ploidy * (1 - cellularity))
+                )
+            )
+            / (tumor_avg_depth * cellularity * normal_ploidy)
+        )
+        - (1 / cellularity - 1)
+    )
+    CNt = CNn * (
+        depth_ratio * (
+            (
+                normal_avg_depth * (
+                    tumor_ploidy + (normal_ploidy * (1 / cellularity - 1))
+                )
+            )
+            / (tumor_avg_depth * normal_ploidy)
+        )
+        - (1 / cellularity - 1)
+    )
+    CNt = depth_ratio * (
+        CNn * (
+            (
+                normal_avg_depth * (
+                    tumor_ploidy + (normal_ploidy * (1 / cellularity - 1))
+                )
+            )
+            / (tumor_avg_depth * normal_ploidy)
+        )
+    ) - CNn * (1 / cellularity - 1)
+    CNt = depth_ratio * (
+        (
+            CNn 
+            * normal_avg_depth 
+            * (tumor_ploidy + (normal_ploidy * (1 / cellularity - 1)))
+        )
+        / (
+            tumor_avg_depth * normal_ploidy
+        )
+    ) - CNn * (1 / cellularity - 1)
+    CNt = CNn * (
+        depth_ratio * (
+            (
+                normal_avg_depth 
+                * (tumor_ploidy + (normal_ploidy * (1 / cellularity - 1)))
+            )
+            / (
+                tumor_avg_depth * normal_ploidy
+            )
+        ) - (1 / cellularity - 1)
+    )
     '''
-    normal_norm_depth = normal_avg_depth_ratio * (CNn / normal_mean_ploidy)
-    tumor_lower_term = (tumor_mean_ploidy * cellularity) + (normal_mean_ploidy * (1 - cellularity))
-    CNt = (
-        ((depth_ratio * normal_norm_depth * tumor_lower_term) / tumor_avg_depth_ratio) - (CNn * (1 - cellularity))
-    ) / cellularity
+    K = (1 / cellularity - 1)
+    CNt = CNn * (
+        depth_ratio * (
+            (
+                normal_avg_depth 
+                * (tumor_ploidy + (normal_ploidy * K))
+            )
+            / (
+                tumor_avg_depth * normal_ploidy
+            )
+        ) - K
+    )
+
     return CNt
 
 
-@functools.cache
 def delta_depth_ratio(
-    cellularity, tumor_mean_ploidy, CNn, normal_mean_ploidy, 
-    tumor_avg_depth_ratio=1, normal_avg_depth_ratio=1,
+    cellularity, tumor_ploidy, CNn, normal_ploidy, 
+    tumor_avg_depth=1, normal_avg_depth=1,
 ):
     """Returns:
         Difference of depth ratio caused by 1 CNt change
@@ -484,81 +796,85 @@ def delta_depth_ratio(
     '''
     <Derivation>
     tumor_upper_term = (CNt * cellularity) + (CNn * (1 - cellularity))
-    tumor_lower_term = (tumor_mean_ploidy * cellularity) + (normal_mean_ploidy * (1 - cellularity))
-    tumor_norm_depth = tumor_avg_depth_ratio * (tumor_upper_term / tumor_lower_term)
-    normal_norm_depth = normal_avg_depth_ratio * (CNn / normal_mean_ploidy)
+    tumor_lower_term = (tumor_ploidy * cellularity) + (normal_ploidy * (1 - cellularity))
+    tumor_norm_depth = tumor_avg_depth * (tumor_upper_term / tumor_lower_term)
+    normal_norm_depth = normal_avg_depth * (CNn / normal_ploidy)
     depth_ratio = tumor_norm_depth / normal_norm_depth
     ------------------------------------------
-    depth_ratio = (tumor_avg_depth_ratio * (tumor_upper_term / tumor_lower_term)) / normal_norm_depth
-    depth_ratio = tumor_upper_term * (tumor_avg_depth_ratio / (tumor_lower_term * normal_norm_depth))
+    depth_ratio = (tumor_avg_depth * (tumor_upper_term / tumor_lower_term)) / normal_norm_depth
+    depth_ratio = tumor_upper_term * (tumor_avg_depth / (tumor_lower_term * normal_norm_depth))
     depth_ratio = (
         ((CNt * cellularity) + (CNn * (1 - cellularity))) 
         * 
-        (tumor_avg_depth_ratio / (tumor_lower_term * normal_norm_depth))
+        (tumor_avg_depth / (tumor_lower_term * normal_norm_depth))
     )
     delta_depth_ratio = (
         ((CNt_1 * cellularity) - (CNt_2 * cellularity)) 
         * 
-        (tumor_avg_depth_ratio / (tumor_lower_term * normal_norm_depth))
+        (tumor_avg_depth / (tumor_lower_term * normal_norm_depth))
     )
     delta_depth_ratio = (
         cellularity
         * 
-        (tumor_avg_depth_ratio / (tumor_lower_term * normal_norm_depth))
+        (tumor_avg_depth / (tumor_lower_term * normal_norm_depth))
     )
-    delta_depth_ratio = (cellularity * tumor_avg_depth_ratio) / (tumor_lower_term * normal_norm_depth)
+    delta_depth_ratio = (cellularity * tumor_avg_depth) / (tumor_lower_term * normal_norm_depth)
     '''
-    tumor_lower_term = (tumor_mean_ploidy * cellularity) + (normal_mean_ploidy * (1 - cellularity))
-    normal_norm_depth = normal_avg_depth_ratio * (CNn / normal_mean_ploidy)
-    delta_depth_ratio = (cellularity * tumor_avg_depth_ratio) / (tumor_lower_term * normal_norm_depth)
+    tumor_lower_term = depthratio_tumor_denominator(cellularity, tumor_ploidy, normal_ploidy)
+    normal_norm_depth = normal_avg_depth * (CNn / normal_ploidy)
+    delta_depth_ratio = (
+        (cellularity * tumor_avg_depth) 
+        / (tumor_lower_term * normal_norm_depth)
+    )
+
     return delta_depth_ratio
 
 
-def get_cp_from_twodata(depthratio1, CNt1, depthratio2, CNt2, normal_mean_ploidy, CNn, tumor_avg_depth_ratio=1, normal_avg_depth_ratio=1):
+def get_cp_from_twodata(depthratio1, CNt1, depthratio2, CNt2, normal_ploidy, CNn, tumor_avg_depth=1, normal_avg_depth=1):
     '''
     <Derivation>
     tumor_upper_term = (CNt * cellularity) + (CNn * (1 - cellularity))
-    tumor_lower_term = (tumor_mean_ploidy * cellularity) + (normal_mean_ploidy * (1 - cellularity))
-    tumor_norm_depth = tumor_avg_depth_ratio * (tumor_upper_term / tumor_lower_term)
-    normal_norm_depth = normal_avg_depth_ratio * (CNn / normal_mean_ploidy)
+    tumor_lower_term = (tumor_ploidy * cellularity) + (normal_ploidy * (1 - cellularity))
+    tumor_norm_depth = tumor_avg_depth * (tumor_upper_term / tumor_lower_term)
+    normal_norm_depth = normal_avg_depth * (CNn / normal_ploidy)
     depthratio = tumor_norm_depth / normal_norm_depth
     ------------------------------------------
-    cellularity = term1 / (ploidy + term2)
+    cellularity = term1 / (tumor_ploidy + term2)
     '''
-    term1_data1 = get_cp_from_twodata_term1(depthratio1, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
-    term1_data2 = get_cp_from_twodata_term1(depthratio2, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
+    term1_data1 = get_cp_from_twodata_term1(depthratio1, normal_ploidy, tumor_avg_depth, normal_avg_depth)
+    term1_data2 = get_cp_from_twodata_term1(depthratio2, normal_ploidy, tumor_avg_depth, normal_avg_depth)
 
-    term2_data1 = get_cp_from_twodata_term2(depthratio1, CNt1, CNn, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
-    term2_data2 = get_cp_from_twodata_term2(depthratio2, CNt2, CNn, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
+    term2_data1 = get_cp_from_twodata_term2(depthratio1, CNt1, CNn, normal_ploidy, tumor_avg_depth, normal_avg_depth)
+    term2_data2 = get_cp_from_twodata_term2(depthratio2, CNt2, CNn, normal_ploidy, tumor_avg_depth, normal_avg_depth)
 
-    ploidy = (term2_data2 * term1_data1 - term2_data1 * term1_data2) / (term1_data2 - term1_data1)
-    cellularity = term1_data1 / (ploidy + term2_data1)
+    tumor_ploidy = (term2_data2 * term1_data1 - term2_data1 * term1_data2) / (term1_data2 - term1_data1)
+    cellularity = term1_data1 / (tumor_ploidy + term2_data1)
 
     if not (
         (cellularity > 0)
         and (cellularity < 1)
-        and (ploidy > 0)
+        and (tumor_ploidy > 0)
     ):
         valid_CNt_pairs = get_valid_CNts_from_depthratios(
             depthratio1, 
             depthratio2, 
-            normal_mean_ploidy, 
+            normal_ploidy, 
             CNn, 
-            tumor_avg_depth_ratio=tumor_avg_depth_ratio, 
-            normal_avg_depth_ratio=normal_avg_depth_ratio, 
+            tumor_avg_depth=tumor_avg_depth, 
+            normal_avg_depth=normal_avg_depth, 
             CNt1_range=range(0, 6), 
             CNt2_maxdiff=6,
         )
         raise Exception(
             f'Input depthratio and CNt values resulted in invalid cellularity/ploidy values:\n'
-            f'cellularity={cellularity}, ploidy={ploidy}\n'
+            f'cellularity={cellularity}, ploidy={tumor_ploidy}\n'
             f'Valid (CNt1, CNt2) pairs for given depthratio values are:\n{valid_CNt_pairs}'
         )
 
-    return cellularity, ploidy
+    return cellularity, tumor_ploidy
 
 
-def get_valid_CNts_from_depthratios(depthratio1, depthratio2, normal_mean_ploidy, CNn, tumor_avg_depth_ratio=1, normal_avg_depth_ratio=1, CNt1_range=range(0, 6), CNt2_maxdiff=6):
+def get_valid_CNts_from_depthratios(depthratio1, depthratio2, normal_ploidy, CNn, tumor_avg_depth=1, normal_avg_depth=1, CNt1_range=range(0, 6), CNt2_maxdiff=6):
     '''Args:
         depthratio1: lesser one
         depthratio2: greater one
@@ -582,11 +898,11 @@ def get_valid_CNts_from_depthratios(depthratio1, depthratio2, normal_mean_ploidy
     for CNt1 in CNt1_range:
         for CNt2 in range(CNt1 + 1, CNt1 + CNt2_maxdiff + 1):
 
-            term1_data1 = get_cp_from_twodata_term1(depthratio1, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
-            term1_data2 = get_cp_from_twodata_term1(depthratio2, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
+            term1_data1 = get_cp_from_twodata_term1(depthratio1, normal_ploidy, tumor_avg_depth, normal_avg_depth)
+            term1_data2 = get_cp_from_twodata_term1(depthratio2, normal_ploidy, tumor_avg_depth, normal_avg_depth)
 
-            term2_data1 = get_cp_from_twodata_term2(depthratio1, CNt1, CNn, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
-            term2_data2 = get_cp_from_twodata_term2(depthratio2, CNt2, CNn, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio)
+            term2_data1 = get_cp_from_twodata_term2(depthratio1, CNt1, CNn, normal_ploidy, tumor_avg_depth, normal_avg_depth)
+            term2_data2 = get_cp_from_twodata_term2(depthratio2, CNt2, CNn, normal_ploidy, tumor_avg_depth, normal_avg_depth)
 
             if (
                 (term2_data1 > term2_data2)
@@ -598,136 +914,146 @@ def get_valid_CNts_from_depthratios(depthratio1, depthratio2, normal_mean_ploidy
     return result
 
 
-def get_cp_from_twodata_term1(depthratio, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio):
-    return normal_mean_ploidy * (tumor_avg_depth_ratio / (depthratio * normal_avg_depth_ratio) - 1)
+def get_cp_from_twodata_term1(depthratio, normal_ploidy, tumor_avg_depth, normal_avg_depth):
+    return normal_ploidy * (tumor_avg_depth / (depthratio * normal_avg_depth) - 1)
 
 
-def get_cp_from_twodata_term2(depthratio, CNt, CNn, normal_mean_ploidy, tumor_avg_depth_ratio, normal_avg_depth_ratio):
+def get_cp_from_twodata_term2(depthratio, CNt, CNn, normal_ploidy, tumor_avg_depth, normal_avg_depth):
     return (
         -1 
-        * normal_mean_ploidy 
+        * normal_ploidy 
         * (
             1 
             + (
-                (tumor_avg_depth_ratio * (CNt - CNn)) 
-                / (CNn * normal_avg_depth_ratio * depthratio)
+                (tumor_avg_depth * (CNt - CNn)) 
+                / (CNn * normal_avg_depth * depthratio)
             )
         )
     )
 
 
-def get_c_from_ddr_p(delta_depth_ratio, tumor_mean_ploidy, normal_mean_ploidy, CNn, tumor_avg_depth_ratio=1, normal_avg_depth_ratio=1):
+def get_c_from_ddr_p(delta_depth_ratio, tumor_ploidy, normal_ploidy, CNn, tumor_avg_depth=1, normal_avg_depth=1):
     """c: cellularity; ddr: delta depthratio; p: ploidy
     """
     '''
     <Derivation>
-    tumor_lower_term = (tumor_mean_ploidy * cellularity) + (normal_mean_ploidy * (1 - cellularity))
-    normal_norm_depth = normal_avg_depth_ratio * (CNn / normal_mean_ploidy)
-    delta_depth_ratio = (cellularity * tumor_avg_depth_ratio) / (tumor_lower_term * normal_norm_depth)
+    tumor_lower_term = (tumor_ploidy * cellularity) + (normal_ploidy * (1 - cellularity))
+    normal_norm_depth = normal_avg_depth * (CNn / normal_ploidy)
+    delta_depth_ratio = (cellularity * tumor_avg_depth) / (tumor_lower_term * normal_norm_depth)
 
-    delta_depth_ratio * tumor_lower_term = (cellularity * tumor_avg_depth_ratio) / normal_norm_depth
+    delta_depth_ratio * tumor_lower_term = (cellularity * tumor_avg_depth) / normal_norm_depth
 
     left term
-        = delta_depth_ratio * ( (tumor_mean_ploidy * cellularity) + (normal_mean_ploidy * (1 - cellularity)) )
-        = cellularity * (delta_depth_ratio * tumor_mean_ploidy) + (1 - cellularity) * (delta_depth_ratio * normal_mean_ploidy)
-        = cellularity * (delta_depth_ratio * tumor_mean_ploidy - delta_depth_ratio * normal_mean_ploidy) + (delta_depth_ratio * normal_mean_ploidy)
-        = cellularity * delta_depth_ratio * (tumor_mean_ploidy - normal_mean_ploidy) + (delta_depth_ratio * normal_mean_ploidy)
+        = delta_depth_ratio * ( (tumor_ploidy * cellularity) + (normal_ploidy * (1 - cellularity)) )
+        = cellularity * (delta_depth_ratio * tumor_ploidy) + (1 - cellularity) * (delta_depth_ratio * normal_ploidy)
+        = cellularity * (delta_depth_ratio * tumor_ploidy - delta_depth_ratio * normal_ploidy) + (delta_depth_ratio * normal_ploidy)
+        = cellularity * delta_depth_ratio * (tumor_ploidy - normal_ploidy) + (delta_depth_ratio * normal_ploidy)
     right term
-        = (cellularity * tumor_avg_depth_ratio) / ( normal_avg_depth_ratio * (CNn / normal_mean_ploidy) )
-        = cellularity * (tumor_avg_depth_ratio / ( normal_avg_depth_ratio * (CNn / normal_mean_ploidy) ) )
-        = cellularity * ((tumor_avg_depth_ratio * normal_mean_ploidy) / (normal_avg_depth_ratio * CNn))
+        = (cellularity * tumor_avg_depth) / ( normal_avg_depth * (CNn / normal_ploidy) )
+        = cellularity * (tumor_avg_depth / ( normal_avg_depth * (CNn / normal_ploidy) ) )
+        = cellularity * ((tumor_avg_depth * normal_ploidy) / (normal_avg_depth * CNn))
 
     cellularity * (
-        ((tumor_avg_depth_ratio * normal_mean_ploidy) / (normal_avg_depth_ratio * CNn))
-        - delta_depth_ratio * (tumor_mean_ploidy - normal_mean_ploidy)
-    ) = (delta_depth_ratio * normal_mean_ploidy)
+        ((tumor_avg_depth * normal_ploidy) / (normal_avg_depth * CNn))
+        - delta_depth_ratio * (tumor_ploidy - normal_ploidy)
+    ) = (delta_depth_ratio * normal_ploidy)
     ...
     numer = 1
     denom = (
-        tumor_avg_depth_ratio / (delta_depth_ratio * normal_avg_depth_ratio * CNn)
-        - (tumor_mean_ploidy / normal_mean_ploidy)
+        tumor_avg_depth / (delta_depth_ratio * normal_avg_depth * CNn)
+        - (tumor_ploidy / normal_ploidy)
         + 1
     )
     '''
     denom = (
-        tumor_avg_depth_ratio / (delta_depth_ratio * normal_avg_depth_ratio * CNn)
-        - (tumor_mean_ploidy / normal_mean_ploidy)
+        tumor_avg_depth / (delta_depth_ratio * normal_avg_depth * CNn)
+        - (tumor_ploidy / normal_ploidy)
         + 1
     )
     return 1 / denom
 
 
-def theoretical_depth_ratio_sequenza(CNt, cellularity, ploidy, CNn=2, normal_ploidy=2, avg_depth_ratio=1):
+def theoretical_depth_ratio_sequenza(CNt, cellularity, tumor_ploidy, CNn=2, normal_ploidy=2, avg_depth_ratio=1):
     """Args:
         CNn, normal_ploidy must be nonzero
     """
     cellularity_term = ((CNt / CNn) * cellularity) + (1 - cellularity)
-    ploidy_term = ((ploidy / normal_ploidy) * cellularity) + (1 - cellularity)
+    ploidy_term = ((tumor_ploidy / normal_ploidy) * cellularity) + (1 - cellularity)
     return avg_depth_ratio * (cellularity_term / ploidy_term)
 
 
-def inverse_theoretical_depth_ratio_sequenza(depth_ratio, cellularity, ploidy, CNn=2, normal_ploidy=2, avg_depth_ratio=1):
+def inverse_theoretical_depth_ratio_sequenza(depth_ratio, cellularity, tumor_ploidy, CNn=2, normal_ploidy=2, avg_depth_ratio=1):
     """Args:
         cellularity must be nonzero
     Returns:
         CNt estimate
     """
-    ploidy_term = ((ploidy / normal_ploidy) * cellularity) + (1 - cellularity)
+    ploidy_term = ((tumor_ploidy / normal_ploidy) * cellularity) + (1 - cellularity)
     # depth_ratio * ploidy_term == avg_depth_ratio * cellularity_term
     return (((depth_ratio * ploidy_term) / avg_depth_ratio) - (1 - cellularity)) * (CNn / cellularity)
 
 
-@functools.cache
-def delta_depth_ratio_sequenza(cellularity, ploidy, CNn=2, normal_ploidy=2, avg_depth_ratio=1):
-    ploidy_term = ((ploidy / normal_ploidy) * cellularity) + (1 - cellularity)
+def delta_depth_ratio_sequenza(cellularity, tumor_ploidy, CNn=2, normal_ploidy=2, avg_depth_ratio=1):
+    ploidy_term = ((tumor_ploidy / normal_ploidy) * cellularity) + (1 - cellularity)
     return (avg_depth_ratio / ploidy_term) * (cellularity / CNn)
 
 
-def theoretical_baf_nonvectorized(CNt, B, cellularity, CNn):
-    if CNn <= 1:
-        return np.nan
-    else:
-        numerator = (B * cellularity) + (1 - cellularity)
-        denominator = (CNt * cellularity) + (CNn * (1 - cellularity))
-        return numerator / denominator
+@baf_function_wrapper
+def theoretical_baf(CNt, B, cellularity, CNn, Bn):
+    '''
+    <Derivation>
+    numerator = (B * cellularity) + Bn * (1 - cellularity)
+    numerator = cellularity * (B - Bn) + Bn
 
-
-@deco.vectorize
-def theoretical_baf(CNt, B, cellularity, CNn):
-    numerator = (B * cellularity) + (1 - cellularity)
     denominator = (CNt * cellularity) + (CNn * (1 - cellularity))
-    notna_values = numerator / denominator
+    denominator = cellularity * (CNt - CNn) + CNn
+    '''
+    return (
+        (cellularity * (B - Bn) + Bn)
+        / (cellularity * (CNt - CNn) + CNn)
+    )
 
-    result = np.repeat(np.nan, len(CNn))
-    result[CNn > 1] = notna_values
-    return result
 
-
-def inverse_theoretical_baf(baf, cellularity, CNt, CNn):
+@baf_function_wrapper
+def inverse_theoretical_baf(baf, cellularity, CNt, CNn, Bn):
     """Args:
         cellularity must be nonzero
     Returns:
         B estimate
     """
     '''
-    numerator = (B * cellularity) + (1 - cellularity)
+    numerator = (B * cellularity) + Bn * (1 - cellularity)
     denominator = (CNt * cellularity) + (CNn * (1 - cellularity))
     baf = numerator / denominator
 
-    baf = ((B * cellularity) + (1 - cellularity)) / denominator
-    (B * cellularity) + (1 - cellularity) = baf * denominator
-    B * cellularity = (baf * denominator) - (1 - cellularity)
-    B = ((baf * denominator) - (1 - cellularity)) / cellularity
+    ###
+    baf = ((B * cellularity) + Bn * (1 - cellularity)) / denominator
+    (B * cellularity) + Bn * (1 - cellularity) = baf * denominator
+    B * cellularity = (baf * denominator) - Bn * (1 - cellularity)
+    B = ((baf * denominator) - Bn * (1 - cellularity)) / cellularity
+    B = (
+        (baf * denominator) - Bn * (1 - cellularity)
+    ) / cellularity
+    B = (
+        (baf * ((CNt * cellularity) + (CNn * (1 - cellularity)))) - Bn * (1 - cellularity)
+    ) / cellularity
+    B = (
+        (baf * CNt * cellularity + baf * CNn * (1 - cellularity)) - Bn * (1 - cellularity)
+    ) / cellularity
+    B = (
+        baf * CNt * cellularity + baf * CNn * (1 - cellularity) - Bn * (1 - cellularity)
+    ) / cellularity
+    B = (
+        baf * CNt * cellularity + (1 - cellularity) * (baf * CNn - Bn)
+    ) / cellularity
+    B = baf * CNt + (1 / cellularity - 1) * (baf * CNn - Bn)
     '''
-    denominator = (CNt * cellularity) + (CNn * (1 - cellularity))
-    B = ((baf * denominator) - (1 - cellularity)) / cellularity
-    return B
+    return baf * CNt + (1 / cellularity - 1) * (baf * CNn - Bn)
 
 
 #############################################
 # find an optimal copy number from cp value # 
 #############################################
-
 
 def get_B(CNt, cellularity, baf, CNn):
     max_B = int(CNt / 2)
@@ -777,7 +1103,7 @@ def get_B(CNt, cellularity, baf, CNn):
     return B, diff
 
 
-def get_CN_from_cp(cellularity, ploidy, depth_ratio, baf, CNt_weight, CNn, normal_ploidy):
+def get_CN_from_cp(cellularity, tumor_ploidy, depth_ratio, baf, CNt_weight, CNn, normal_ploidy):
     def save_cache(CNt_candidate, B_cache, segfit_score_cache, baf_diff_cache):
         B, baf_diff = get_B(CNt_candidate, cellularity, baf, CNn)
         if np.isnan(B):
@@ -785,7 +1111,7 @@ def get_CN_from_cp(cellularity, ploidy, depth_ratio, baf, CNt_weight, CNn, norma
             return
 
         ratio_diff = abs(
-            theoretical_depth_ratio(CNt_candidate, cellularity, ploidy, CNn, normal_ploidy) 
+            theoretical_depth_ratio(CNt_candidate, cellularity, tumor_ploidy, CNn, normal_ploidy) 
             - depth_ratio
         )
         B_cache[CNt_candidate] = B
@@ -794,7 +1120,7 @@ def get_CN_from_cp(cellularity, ploidy, depth_ratio, baf, CNt_weight, CNn, norma
 
     # get initial CNt candidates
     CNt_estimate = inverse_theoretical_depth_ratio(
-        depth_ratio, cellularity, ploidy, CNn, normal_ploidy,
+        depth_ratio, cellularity, tumor_ploidy, CNn, normal_ploidy,
     )
     if CNt_estimate <= 0:
         initial_candidate_upper = 0
@@ -808,7 +1134,7 @@ def get_CN_from_cp(cellularity, ploidy, depth_ratio, baf, CNt_weight, CNn, norma
     segfit_score_cache = dict()
     baf_diff_cache = dict()
 
-    delta_ratio = delta_depth_ratio(cellularity, ploidy, CNn, normal_ploidy) * CNt_weight
+    delta_ratio = delta_depth_ratio(cellularity, tumor_ploidy, CNn, normal_ploidy) * CNt_weight
 
     # upper
     save_cache(initial_candidate_upper, B_cache, segfit_score_cache, baf_diff_cache)
@@ -824,7 +1150,7 @@ def get_CN_from_cp(cellularity, ploidy, depth_ratio, baf, CNt_weight, CNn, norma
             try:
                 n_further_candidates = int(baf_diff_cache[initial_candidate_lower] / delta_ratio)
             except:
-                print(cellularity, ploidy, depth_ratio, baf)
+                print(cellularity, tumor_ploidy, depth_ratio, baf)
                 print(baf, baf_diff_cache[initial_candidate_lower], initial_candidate_lower, delta_ratio)
                 raise
 
@@ -845,14 +1171,14 @@ def get_CN_from_cp(cellularity, ploidy, depth_ratio, baf, CNt_weight, CNn, norma
         return CNt, B, segfit_score
 
 
-def get_CN_from_cp_wo_baf(cellularity, ploidy, depth_ratio, CNt_weight, CNn, normal_ploidy):
+def get_CN_from_cp_wo_baf(cellularity, tumor_ploidy, depth_ratio, CNt_weight, CNn, normal_ploidy):
     CNt_estimate = inverse_theoretical_depth_ratio(
-        depth_ratio, cellularity, ploidy, CNn, normal_ploidy,
+        depth_ratio, cellularity, tumor_ploidy, CNn, normal_ploidy,
     )
     if CNt_estimate <= 0:
         CNt = 0
         diff = abs(
-            theoretical_depth_ratio(CNt, cellularity, ploidy, CNn, normal_ploidy) 
+            theoretical_depth_ratio(CNt, cellularity, tumor_ploidy, CNn, normal_ploidy) 
             - depth_ratio
         )
         segfit_score = diff * CNt_weight
@@ -861,11 +1187,11 @@ def get_CN_from_cp_wo_baf(cellularity, ploidy, depth_ratio, CNt_weight, CNn, nor
         lower_candidate = int(np.floor(CNt_estimate))
 
         upper_diff = abs(
-            theoretical_depth_ratio(upper_candidate, cellularity, ploidy, CNn, normal_ploidy) 
+            theoretical_depth_ratio(upper_candidate, cellularity, tumor_ploidy, CNn, normal_ploidy) 
             - depth_ratio
         )
         lower_diff = abs(
-            theoretical_depth_ratio(lower_candidate, cellularity, ploidy, CNn, normal_ploidy) 
+            theoretical_depth_ratio(lower_candidate, cellularity, tumor_ploidy, CNn, normal_ploidy) 
             - depth_ratio
         )
         if upper_diff <= lower_diff:
@@ -878,21 +1204,1697 @@ def get_CN_from_cp_wo_baf(cellularity, ploidy, depth_ratio, CNt_weight, CNn, nor
     return CNt, np.nan, segfit_score 
 
 
+#def calc_clonal_CNt(
+#    depth_ratio, 
+#    CNn, 
+#    cellularity, 
+#    tumor_ploidy, 
+#    normal_ploidy,
+#):
+#    estimated_CNts = inverse_theoretical_depth_ratio(
+#        depth_ratio, cellularity, tumor_ploidy, CNn, normal_ploidy, 
+#        tumor_avg_depth=1, normal_avg_depth=1,
+#    )
+#    return estimated_CNts
+#    #return np.rint(estimated_CNts).astype(int)
+
+
+@deco.get_deco_broadcast(['depth_ratio', 'baf', 'CNn', 'Bn'])
+def find_clonal_solution(
+    depth_ratio,
+    baf,
+    CNn,
+    cellularity,
+    tumor_ploidy,
+    normal_ploidy,
+    Bn=1,
+    average_CNt=None,
+):
+    # get CNt
+    if average_CNt is None:
+        average_CNt = inverse_theoretical_depth_ratio(
+            depth_ratio=depth_ratio, 
+            cellularity=cellularity, 
+            tumor_ploidy=tumor_ploidy, 
+            CNn=CNn, 
+            normal_ploidy=normal_ploidy, 
+            tumor_avg_depth=1, 
+            normal_avg_depth=1,
+        )
+    else:
+        average_CNt = np.asarray(average_CNt)
+        assert average_CNt.shape == depth_ratio.shape
+
+    CNts = np.clip(np.rint(average_CNt), 0, None)
+
+    ## mask invalid CNt positions
+    #CNt_mask = (CNts < 0)
+    #CNts[CNt_mask] = np.nan
+
+    # get B
+    estimated_Bs = inverse_theoretical_baf(
+        baf=baf,
+        cellularity=cellularity, 
+        CNt=CNts, 
+        CNn=CNn, 
+        Bn=Bn,
+    )
+    Bs = np.clip(
+        np.rint(estimated_Bs), 
+        0, 
+        np.floor(0.5 * CNts),
+    )
+
+#    half_CNts = 0.5 * CNts
+#    assert (estimated_Bs <= half_CNts).all()
+#    Bs = np.rint(estimated_Bs)
+#    Bs = np.minimum(Bs, np.floor(half_CNts))  # forces B to be less than A
+#
+#    B_mask = (Bs < 0)  # CNn < 2 positions are not included
+#    Bs[B_mask] = np.nan
+
+    # get theoretical values
+    expected_depthratio = theoretical_depth_ratio(
+        CNt=CNts, 
+        cellularity=cellularity, 
+        tumor_ploidy=tumor_ploidy, 
+        CNn=CNn, 
+        normal_ploidy=normal_ploidy, 
+        tumor_avg_depth=1, 
+        normal_avg_depth=1,
+    )
+    expected_baf = theoretical_baf(
+        CNt=CNts, 
+        B=Bs, 
+        cellularity=cellularity, 
+        CNn=CNn, 
+        Bn=Bn,
+    )
+
+    # result
+    result = dict()
+    result['CNt'] = CNts
+    result['B'] = Bs
+    #result['invalid_CNt_flag'] = CNt_mask
+        # where resulting CNt is less than 0
+    #result['invalid_B_flag'] = B_mask
+        # where resulting B is less than 0
+        # invalid CNt and (CNn < 2) are not included
+    result['theoretical_depth_ratio'] = expected_depthratio
+    result['theoretical_baf'] = expected_baf
+    result['depth_ratio_diff'] = expected_depthratio - depth_ratio
+    result['baf_diff'] = expected_baf - baf
+
+    return result
+
+
+#####################################
+# subclonal copy number calculation #
+#####################################
+
+def theoretical_depth_ratio_subclone(
+    clonal_CNt, 
+    subclonal_CNt,
+    ccf,
+    cellularity, 
+    tumor_ploidy, 
+    CNn, 
+    normal_ploidy, 
+    tumor_avg_depth=1, 
+    normal_avg_depth=1,
+    rescue_nan_ccf=False,
+):
+    """Can be vectorized
+    """
+    # argument modification
+    if rescue_nan_ccf:
+        ccf_isnan = np.isnan(ccf)
+        ccf = np.where(ccf_isnan, 0, ccf)
+        subclonal_CNt = np.where(ccf_isnan, 0, subclonal_CNt)
+            # without this, subclonal_CNt values remain as nan
+
+    # main
+    tumor_upper_term = depthratio_tumor_numerator_subclone(
+        cellularity, ccf, clonal_CNt, subclonal_CNt, CNn,
+    )
+    tumor_lower_term = depthratio_tumor_denominator(cellularity, tumor_ploidy, normal_ploidy)
+    tumor_norm_depth = tumor_avg_depth * (tumor_upper_term / tumor_lower_term)
+
+    normal_norm_depth = get_normal_norm_depth(normal_avg_depth, CNn, normal_ploidy)
+
+    return tumor_norm_depth / normal_norm_depth
+
+
+def get_ccf_from_depthratio(
+    depth_ratio,
+    cellularity,
+    tumor_ploidy,
+    normal_ploidy,
+    clonal_CNt,
+    subclonal_CNt,
+    CNn,
+    tumor_avg_depth=1,
+    normal_avg_depth=1,
+):
+    """
+    calculate ccf from copy number, cellularity, ploidy, etc.
+    """
+
+    '''
+    <Derivation>
+    depth_ratio = tumor_norm_depth / normal_norm_depth
+    depth_ratio = (
+        tumor_avg_depth * (tumor_upper_term / tumor_lower_term) 
+        / normal_norm_depth
+    )
+    depth_ratio = (tumor_avg_depth * tumor_upper_term) / (tumor_lower_term * normal_norm_depth)
+    tumor_upper_term = (depth_ratio * tumor_lower_term * normal_norm_depth) / tumor_avg_depth
+
+    ###
+
+    tumor_upper_term = (
+        ccf * cellularity * (subclonal_CNt - clonal_CNt)
+        + clonal_CNt * cellularity
+        + (CNn - cellularity * CNn)
+    )
+    tumor_upper_term = (
+        ccf * cellularity * (subclonal_CNt - clonal_CNt)
+        + cellularity * (clonal_CNt - CNn)
+        + CNn
+    )
+
+    ###
+
+    (
+        ccf * cellularity * (subclonal_CNt - clonal_CNt)
+        + cellularity * (clonal_CNt - CNn)
+        + CNn
+    ) = (depth_ratio * tumor_lower_term * normal_norm_depth) / tumor_avg_depth
+    ccf * cellularity * (subclonal_CNt - clonal_CNt) = (
+        (depth_ratio * tumor_lower_term * normal_norm_depth) / tumor_avg_depth
+        - cellularity * (clonal_CNt - CNn)
+        - CNn
+    )
+    ccf = (
+        (depth_ratio * tumor_lower_term * normal_norm_depth) / tumor_avg_depth
+        - cellularity * (clonal_CNt - CNn)
+        - CNn
+    ) / (
+        cellularity * (subclonal_CNt - clonal_CNt)
+    )
+    ccf = (
+        (depth_ratio * tumor_lower_term * normal_norm_depth) / tumor_avg_depth
+        - cellularity * (clonal_CNt - CNn)
+        - CNn
+    ) / (
+        cellularity * delta_CNt
+    )  (delta_CNt == subclonal_CNt - clonal_CNt)
+    '''
+    tumor_lower_term = depthratio_tumor_denominator(cellularity, tumor_ploidy, normal_ploidy)
+    normal_norm_depth = get_normal_norm_depth(normal_avg_depth, CNn, normal_ploidy)
+    delta_CNt = subclonal_CNt - clonal_CNt
+    ccf = (
+        (depth_ratio * tumor_lower_term * normal_norm_depth) / tumor_avg_depth
+        - cellularity * (clonal_CNt - CNn)
+        - CNn
+    ) / (
+        cellularity * delta_CNt
+    )
+    return ccf
+
+
+def get_ccf_from_baf(
+    baf,
+    cellularity,
+    clonal_CNt,
+    subclonal_CNt,
+    clonal_B,
+    subclonal_B,
+    CNn,
+    Bn,
+):
+    '''
+    <Derivation>
+    numerator = (
+        (clonal_B * cellularity * (1 - ccf))
+        + (subclonal_B * cellularity * ccf)
+        + Bn * (1 - cellularity)
+    )
+    denominator = (
+        (clonal_CNt * cellularity * (1 - ccf)) 
+        + (subclonal_CNt * cellularity * ccf) 
+        + (CNn * (1 - cellularity))
+    )
+    baf = numerator / denominator
+
+    ###
+
+    numerator 
+        = ccf * (
+            subclonal_B * cellularity
+            - clonal_B * cellularity
+        ) + (
+            clonal_B * cellularity
+            + Bn * (1 - cellularity)
+        )
+        = ccf * cellularity * (subclonal_B - clonal_B)
+        + (
+            cellularity * (clonal_B - Bn) + Bn
+        )
+
+    ###
+
+    denominator
+        = ccf * (
+            subclonal_CNt * cellularity
+            - clonal_CNt * cellularity
+        ) + (
+            clonal_CNt * cellularity
+            + (CNn * (1 - cellularity))
+        )
+        = ccf * cellularity * (subclonal_CNt - clonal_CNt)
+        + (
+            cellularity * (clonal_CNt - CNn) + CNn
+        )
+
+    ###
+
+    baf * denominator = numerator
+
+    (
+        baf * ccf * cellularity * (subclonal_CNt - clonal_CNt)
+        + baf * (
+            cellularity * (clonal_CNt - CNn) + CNn
+        )
+    ) = (
+        ccf * cellularity * (subclonal_B - clonal_B)
+        + (
+            cellularity * (clonal_B - Bn) + Bn
+        )
+    )
+
+    (
+        baf * ccf * cellularity * (subclonal_CNt - clonal_CNt)
+        - ccf * cellularity * (subclonal_B - clonal_B)
+    ) = (
+        (cellularity * (clonal_B - Bn) + Bn)
+        - baf * (cellularity * (clonal_CNt - CNn) + CNn)
+    ) 
+
+    ccf * cellularity * (
+        baf * (subclonal_CNt - clonal_CNt)
+        - (subclonal_B - clonal_B)
+    ) = (
+        (cellularity * (clonal_B - Bn) + Bn)
+        - baf * (cellularity * (clonal_CNt - CNn) + CNn)
+    )
+
+    ccf = (
+        (cellularity * (clonal_B - Bn) + Bn)
+        - baf * (cellularity * (clonal_CNt - CNn) + CNn)
+    ) / (
+        cellularity * (
+            baf * (subclonal_CNt - clonal_CNt)
+            - (subclonal_B - clonal_B)
+        )
+    )
+
+    ccf = (
+        ((clonal_B - Bn) + Bn / cellularity)
+        - baf * ((clonal_CNt - CNn) + CNn / cellularity)
+    ) / (
+        baf * (subclonal_CNt - clonal_CNt)
+        - (subclonal_B - clonal_B)
+    )
+    
+    '''
+    return (
+        ((clonal_B - Bn) + Bn / cellularity)
+        - baf * ((clonal_CNt - CNn) + CNn / cellularity)
+    ) / (
+        baf * (subclonal_CNt - clonal_CNt)
+        - (subclonal_B - clonal_B)
+    )
+
+
+@baf_function_wrapper
+def theoretical_baf_subclone(
+    clonal_CNt, 
+    clonal_B, 
+    subclonal_CNt, 
+    subclonal_B, 
+    ccf,
+    cellularity, 
+    CNn,
+    Bn,
+    rescue_nan_ccf=False,
+):
+    # arg modification
+    if rescue_nan_ccf:
+        ccf_isnan = np.isnan(ccf)
+        ccf = np.where(ccf_isnan, 0, ccf)
+        subclonal_CNt = np.where(ccf_isnan, 0, subclonal_CNt)
+        subclonal_B = np.where(ccf_isnan, 0, subclonal_B)
+            # without this, subclonal_CNt values remain as nan
+
+    # main
+    numerator = baf_numerator_subclone(cellularity, ccf, clonal_B, subclonal_B, Bn=Bn)
+    denominator = depthratio_tumor_numerator_subclone(
+        cellularity, ccf, clonal_CNt, subclonal_CNt, CNn,
+    )
+    result = numerator / denominator
+
+    return result
+
+
+@deco.args_into_array
+def calc_subclonal_CNt(
+    depth_ratio, 
+    clonal_CNt,
+    CNn, 
+
+    cellularity, 
+    tumor_ploidy, 
+    normal_ploidy,
+    tumor_avg_depth=1,
+    normal_avg_depth=1,
+    max_CNt_change=5,
+    only_max_ccf=True,
+):
+    # get delta-CNt (subclonal CNt - clonal CNt) values
+    clonal_onecp_ddr = delta_depth_ratio(cellularity, tumor_ploidy, CNn, normal_ploidy)
+    baseline_depthratio = theoretical_depth_ratio(
+        clonal_CNt, cellularity, tumor_ploidy, CNn, normal_ploidy, 
+    )
+    ddr_ratios = np.atleast_1d(
+        (depth_ratio - baseline_depthratio) / clonal_onecp_ddr
+    )
+    initial_deltaCNts = np.ceil(np.abs(ddr_ratios)).astype(int)
+    initial_deltaCNts[initial_deltaCNts == 0] = 1
+
+    if only_max_ccf:
+        delta_CNt = initial_deltaCNts
+    else:
+        delta_CNt = initial_deltaCNts[np.newaxis, :] + np.arange(max_CNt_change)[:, np.newaxis]
+
+    delta_CNt = np.copysign(delta_CNt, ddr_ratios)
+
+    # get ccf from delta_CNt
+    ccf = get_ccf_from_depthratio(
+        depth_ratio=depth_ratio,
+        cellularity=cellularity,
+        tumor_ploidy=tumor_ploidy,
+        normal_ploidy=normal_ploidy,
+        clonal_CNt=clonal_CNt,
+        delta_CNt=delta_CNt,
+        CNn=CNn,
+        tumor_avg_depth=tumor_avg_depth,
+        normal_avg_depth=normal_avg_depth,
+    )
+    subclonal_CNt = clonal_CNt + delta_CNt
+
+    return subclonal_CNt, ccf
+
+
+def calc_subclonal_B(
+    cellularity, 
+    ccf, 
+    clonal_CNt, 
+    subclonal_CNt, 
+    CNn,
+    baf,
+    clonal_B,
+    Bn,
+):
+    '''
+    <Derivation>
+    baf = baf_numerator_subclone / depthratio_tumor_numerator_subclone
+    baf_numerator_subclone = baf * depthratio_tumor_numerator_subclone
+
+    baf_numerator_subclone = (
+        (clonal_B * cellularity * (1 - ccf))
+        + (subclonal_B * cellularity * ccf)
+        + Bn * (1 - cellularity)
+    )
+    (subclonal_B * cellularity * ccf) = (
+        (baf * depthratio_tumor_numerator_subclone)
+        - (clonal_B * cellularity * (1 - ccf))
+        - Bn * (1 - cellularity)
+    )
+    (subclonal_B * cellularity * ccf) = (
+        (baf * depthratio_tumor_numerator_subclone)
+        - (cellularity * (clonal_B * (1 - ccf) - Bn))
+        - Bn
+    )
+    subclonal_B = (
+        (baf * depthratio_tumor_numerator_subclone)
+        - (cellularity * (clonal_B * (1 - ccf) - Bn))
+        - Bn
+    ) / (cellularity * ccf)
+    '''
+    dtns = depthratio_tumor_numerator_subclone(
+        cellularity, ccf, clonal_CNt, subclonal_CNt, CNn,
+    )
+    return (
+        (baf * dtns)
+        - (cellularity * (clonal_B * (1 - ccf) - Bn))
+        - Bn
+    ) / (cellularity * ccf)
+
+
+#def get_subclonal_B(
+#    cellularity, 
+#    ccf, 
+#    clonal_CNt, 
+#    subclonal_CNt, 
+#    CNn,
+#    baf,
+#    clonal_B,
+#):
+#    baf_gthalf = 1 - baf
+#    subclonal_B_lthalf = calc_subclonal_B(
+#        cellularity=cellularity, 
+#        ccf=ccf, 
+#        clonal_CNt=clonal_CNt, 
+#        subclonal_CNt=subclonal_CNt, 
+#        CNn=CNn,
+#        baf=baf,
+#        clonal_B=clonal_B,
+#    )
+#    subclonal_B_gthalf = calc_subclonal_B(
+#        cellularity=cellularity, 
+#        ccf=ccf, 
+#        clonal_CNt=clonal_CNt, 
+#        subclonal_CNt=subclonal_CNt, 
+#        CNn=CNn,
+#        baf=baf_gthalf,
+#        clonal_B=clonal_B,
+#    )
+#
+#    return subclonal_B_lthalf, subclonal_B_gthalf
+
+
+def get_average_B(baf, average_CNt, CNn, Bn, cellularity):
+    '''
+    baf numerator 
+        = (
+            (clonal_B * cellularity * (1 - ccf))
+            + (subclonal_B * cellularity * ccf)
+            + Bn * (1 - cellularity)
+        )
+        = (
+            cellularity * average_B
+            + Bn * (1 - cellularity)
+        )
+    baf denominator 
+        = (
+            (clonal_CNt * cellularity * (1 - ccf)) 
+            + (subclonal_CNt * cellularity * ccf) 
+            + (CNn * (1 - cellularity))
+        ) 
+        = (
+            cellularity * average_CNt
+            + (CNn * (1 - cellularity))
+        )
+        = cellularity * (average_CNt - CNn) + CNn
+
+    baf numerator = baf * baf denominator
+    (
+        cellularity * average_B 
+        + Bn * (1 - cellularity)
+    ) = baf * (cellularity * (average_CNt - CNn) + CNn)
+    cellularity * average_B = (
+        baf * (cellularity * (average_CNt - CNn) + CNn)
+        - Bn * (1 - cellularity)
+    )
+    average_B = (
+        baf * (cellularity * (average_CNt - CNn) + CNn)
+        - Bn * (1 - cellularity)
+    ) / cellularity
+    '''
+    return (
+        baf * (cellularity * (average_CNt - CNn) + CNn)
+        - Bn * (1 - cellularity)
+    ) / cellularity
+
+
+def get_CNt_candidates(average_CNt, min_N_CNt_candidates, N_CNt_candidates_fraction):
+    average_CNt = np.squeeze(average_CNt)
+    assert average_CNt.ndim == 1
+
+    # make lower_CNts, upper_CNts
+    upperCNt_border, lowerCNt_border = get_nearest_integers(average_CNt)
+    num_CNt_candidate = np.maximum(
+        min_N_CNt_candidates, 
+        np.rint(average_CNt * N_CNt_candidates_fraction),
+    )
+    max_dimsize = np.nanmax(num_CNt_candidate, axis=None)
+    CNt_shifts = np.arange(max_dimsize)
+    lower_CNts = lowerCNt_border[:, np.newaxis] - CNt_shifts
+    upper_CNts = upperCNt_border[:, np.newaxis] + CNt_shifts
+
+    # masking irrelevant values
+    upper_mask = np.stack(
+        [
+            (
+                np.repeat(True, max_dimsize)
+                if np.isnan(x) else
+                np.repeat([False, True], (x, max_dimsize - x)) 
+            )
+            for x in num_CNt_candidate
+        ], 
+        axis=0,
+    )
+    lower_mask = np.logical_or(upper_mask, lower_CNts < 0)
+
+    lower_CNts = np.where(lower_mask, np.nan, lower_CNts)
+    upper_CNts = np.where(upper_mask, np.nan, upper_CNts)
+
+    return lower_CNts, upper_CNts
+
+
+def get_min_diff_args(diffs, global_mask=None):
+    """raveled argmin is 0 for global_masked positions"""
+    if global_mask is None:
+        global_mask = np.full(diffs.shape[0], False)
+
+    diffs_nomask = diffs[~global_mask]
+    minargs = np.zeros(diffs.shape[0], dtype=int)
+    minargs[~global_mask] = np.nanargmin(
+        diffs_nomask.reshape(diffs_nomask.shape[0], -1), 
+        axis=1,
+    )
+    minargs_unraveled = (
+        (np.arange(diffs.shape[0]),)
+        + np.unravel_index(minargs, shape=diffs.shape[1:])
+    )
+    return minargs_unraveled
+
+
+def get_min_diff_args_debug(diffs, global_mask):
+    """raveled argmin is 0 for global_masked positions"""
+    all_nan_indexes = np.isnan(diffs).reshape(diffs.shape[0], -1).all(axis=1)
+    nonglobal_all_nan_indexes = np.logical_and(all_nan_indexes, ~global_mask)
+
+    diffs_nomask = diffs[~all_nan_indexes]
+    minargs = np.zeros(diffs.shape[0], dtype=int)
+    minargs[~all_nan_indexes] = np.nanargmin(
+        diffs_nomask.reshape(diffs_nomask.shape[0], -1), 
+        axis=1,
+    )
+    minargs_unraveled = (
+        (np.arange(diffs.shape[0]),)
+        + np.unravel_index(minargs, shape=diffs.shape[1:])
+    )
+    return minargs_unraveled, nonglobal_all_nan_indexes
+
+
+def average_CNt_arghandler(
+    average_CNt, depth_ratio, CNn, cellularity, tumor_ploidy, normal_ploidy,
+):
+    if average_CNt is None:
+        average_CNt = inverse_theoretical_depth_ratio(
+            depth_ratio=depth_ratio, 
+            CNn=CNn, 
+            cellularity=cellularity, 
+            tumor_ploidy=tumor_ploidy, 
+            normal_ploidy=normal_ploidy,
+        )
+    else:
+        average_CNt = np.asarray(average_CNt)
+        assert average_CNt.shape == depth_ratio.shape
+
+    return average_CNt
+
+
+@deco.get_deco_broadcast(['depth_ratio', 'CNn'])
+def find_subclonal_solution_without_B(
+    depth_ratio,
+    CNn,
+    cellularity,
+    tumor_ploidy,
+    normal_ploidy,
+    ccf_candidates,
+    average_CNt=None,
+    min_N_CNt_candidates=5,
+    N_CNt_candidates_fraction=0.5,
+):
+    """For positions where B-allele frequency doesn't make sense because CNn < 2
+    """
+    # modify args
+    ccf_candidates = np.asarray(ccf_candidates)
+
+    # get average CNt
+    average_CNt = average_CNt_arghandler(
+        average_CNt, depth_ratio, CNn, cellularity, tumor_ploidy, normal_ploidy,
+    )
+
+    # find (average_CNt < 0) regions and treat differently
+    lt0_CNts = (average_CNt < 0)  # lt0: less than 0
+    valid_CNts = np.logical_not(lt0_CNts)
+
+    # make valid position subsets of input data
+    average_CNt_valid = average_CNt[valid_CNts]
+    depth_ratio_valid = depth_ratio[valid_CNts]
+    CNn_valid = CNn[valid_CNts]
+
+    # make lower_CNts, upper_CNts
+    lower_CNt_cand, upper_CNt_cand = get_CNt_candidates(
+        average_CNt=average_CNt_valid, 
+        min_N_CNt_candidates=min_N_CNt_candidates, 
+        N_CNt_candidates_fraction=N_CNt_candidates_fraction,
+    )
+        # ndim == 2
+
+    # make ccfs
+    calculated_ccf = get_ccf_from_depthratio(
+        depth_ratio=np.expand_dims(depth_ratio_valid, axis=(1, 2)),
+        cellularity=cellularity,
+        tumor_ploidy=tumor_ploidy,
+        normal_ploidy=normal_ploidy,
+        clonal_CNt=np.expand_dims(lower_CNt_cand, axis=2),
+        subclonal_CNt=np.expand_dims(upper_CNt_cand, axis=1),
+        CNn=np.expand_dims(CNn_valid, axis=(1, 2)),
+    )
+        # ndim == 3 
+
+    # pick a minimal difference ccf candidate for each position
+    ccfs_invertpair = np.stack((calculated_ccf, 1 - calculated_ccf), axis=3)  # ndim == 4
+    ccf_diffs = np.abs(np.expand_dims(ccfs_invertpair, axis=4) - ccf_candidates)  # ndim == 5
+    minargs = get_min_diff_args(ccf_diffs)
+        # axis 0: positions
+        # axis 1: lower CNt
+        # axis 2: upper CNt
+        # axis 3: original ccf, inverted ccf
+        # axis 4: ccf candidates
+
+    # check whether original or inverted ccf was chosen
+    ccf_inverted = (minargs[3] == 1)
+
+    # make result CNts
+    chosen_lower_CNt = lower_CNt_cand[(minargs[0], minargs[1])]
+    chosen_upper_CNt = upper_CNt_cand[(minargs[0], minargs[2])]
+
+    result_clonal_CNt = np.zeros(ccf_diffs.shape[0], dtype=float)
+    result_clonal_CNt[ccf_inverted] = chosen_upper_CNt[ccf_inverted]
+    result_clonal_CNt[~ccf_inverted] = chosen_lower_CNt[~ccf_inverted]
+
+    result_subclonal_CNt = np.zeros(ccf_diffs.shape[0], dtype=float)
+    result_subclonal_CNt[ccf_inverted] = chosen_lower_CNt[ccf_inverted]
+    result_subclonal_CNt[~ccf_inverted] = chosen_upper_CNt[~ccf_inverted]
+
+    # final result
+    result = dict()
+    result['average_CNt'] = average_CNt
+
+    result['clonal_CNt'] = result_clonal_CNt
+    result['subclonal_CNt'] = result_subclonal_CNt
+    result['ccf_chosen'] = ccf_candidates[minargs[4:]]
+    result['ccf_calculated'] = ccfs_invertpair[minargs[:4]]
+    result['ccf_diffs'] = ccf_diffs
+    result['ccf_inverted'] = ccf_inverted
+
+    return result
+
+
+@deco.get_deco_broadcast(['depth_ratio', 'baf', 'CNn', 'Bn'])
+def find_subclonal_solution_B_only(
+    depth_ratio,
+    baf,
+    CNn,
+    cellularity,
+    tumor_ploidy,
+    normal_ploidy,
+    ccf_candidates,
+    Bn=1,
+    average_CNt=None,
+):
+    # modify args
+    ccf_candidates = np.asarray(ccf_candidates)
+
+    # average CNt
+    average_CNt = average_CNt_arghandler(
+        average_CNt, depth_ratio, CNn, cellularity, tumor_ploidy, normal_ploidy,
+    )
+
+    # determine CNt solutions (do not test over clonal/subclonal CNt combinations)
+    average_CNt_rint = np.clip(np.rint(average_CNt), 0, None)
+    clonal_CNt = average_CNt_rint.copy()  # ndim == 1
+    subclonal_CNt = average_CNt_rint.copy()  # ndim == 1
+
+    # get B candidates
+    max_CNt = clonal_CNt.max(axis=None)
+    clonal_B_cand = np.expand_dims(clonal_CNt, axis=1) - np.arange(max_CNt + 1)
+    clonal_B_cand[clonal_B_cand < 0] = np.nan  # ndim == 2
+    subclonal_B_cand = clonal_B_cand.copy()  # ndim == 2
+
+    # calculated ccf
+    with warnings.catch_warnings(): 
+        warnings.simplefilter('ignore', category=RuntimeWarning)
+            # divide by zero occurs when clonal_B == subclonal_B
+        calculated_ccf = get_ccf_from_baf(
+            baf=np.expand_dims(baf, axis=(1, 2)),
+            cellularity=cellularity,
+            clonal_CNt=np.expand_dims(clonal_CNt, axis=(1, 2)),
+            subclonal_CNt=np.expand_dims(subclonal_CNt, axis=(1, 2)),
+            clonal_B=np.expand_dims(clonal_B_cand, axis=2),
+            subclonal_B=np.expand_dims(subclonal_B_cand, axis=1),
+            CNn=np.expand_dims(CNn, axis=(1, 2)),
+            Bn=np.expand_dims(Bn, axis=(1, 2)),
+        )
+        # ndim == 3 
+        # axis 0: positions & CNts, axis 1: clonal B, axis 2: subclonal B
+    #calculated_ccf = np.clip(calculated_ccf, 0, 1)
+
+    # pick a minimal difference ccf candidate for each position
+    ccf_diffs = np.abs(np.expand_dims(calculated_ccf, axis=3) - ccf_candidates) 
+        # ndim == 4
+        # axis 0: positions, axis 1: clonal B, axis 2: subclonal B, axis 3: ccf candidates
+    minargs = get_min_diff_args(ccf_diffs)
+
+    # result
+    result = dict()
+    result['clonal_CNt'] = clonal_CNt
+    result['subclonal_CNt'] = subclonal_CNt
+    result['clonal_B'] = clonal_B_cand[(minargs[0], minargs[1])]
+    result['subclonal_B'] = subclonal_B_cand[(minargs[0], minargs[2])]
+    result['ccf_chosen'] = ccf_candidates[minargs[3:]]
+
+    return result
+
+
+@deco.get_deco_broadcast(['depth_ratio', 'baf', 'CNn', 'Bn'])
+def find_subclonal_solution_freeccf(
+    depth_ratio,
+    baf,
+    CNn,
+    cellularity,
+    tumor_ploidy,
+    normal_ploidy,
+    Bn=1,
+    average_CNt=None,
+    min_N_CNt_candidates=5,
+    N_CNt_candidates_fraction=0.5,
+):
+    # average_CNt = clonal_CNt * (1 - ccf) + subclonal_CNt * ccf
+    average_CNt = average_CNt_arghandler(
+        average_CNt, depth_ratio, CNn, cellularity, tumor_ploidy, normal_ploidy,
+    )
+
+    # find (average_CNt < 0) regions and treat differently
+    lt0_CNts = (average_CNt < 0)  # lt0: less than 0
+    valid_CNts = np.logical_not(lt0_CNts)
+
+    # make valid position subsets of input data
+    average_CNt_valid = average_CNt[valid_CNts]
+    depth_ratio_valid = depth_ratio[valid_CNts]
+    baf_valid = baf[valid_CNts]
+    CNn_valid = CNn[valid_CNts]
+    Bn_valid = Bn[valid_CNts]
+
+    # make lower_CNts, upper_CNts
+    lower_CNt_cand, upper_CNt_cand = get_CNt_candidates(
+        average_CNt=average_CNt_valid, 
+        min_N_CNt_candidates=min_N_CNt_candidates, 
+        N_CNt_candidates_fraction=N_CNt_candidates_fraction,
+    )
+        # ndim == 2 for lower_CNt and upper_CNt
+        # *_cand: candidate
+
+    # make ccfs
+    ccf_cand = get_ccf_from_depthratio(
+        depth_ratio=np.expand_dims(depth_ratio_valid, axis=(1, 2)),
+        cellularity=cellularity,
+        tumor_ploidy=tumor_ploidy,
+        normal_ploidy=normal_ploidy,
+        clonal_CNt=np.expand_dims(lower_CNt_cand, axis=2),
+        subclonal_CNt=np.expand_dims(upper_CNt_cand, axis=1),
+        CNn=np.expand_dims(CNn_valid, axis=(1, 2)),
+    )
+        # ndim == 3 
+
+    # make B
+    lower_B_cand = (
+        np.expand_dims(lower_CNt_cand, axis=2) 
+        - np.arange(np.nanmax(lower_CNt_cand, axis=None) + 1)
+    )
+        # ndim == 3 (axis 0: positions, axis 1: lower CNt, axis 2: lower B)
+    lower_B_cand[lower_B_cand < 0] = np.nan
+
+    upper_B_cand = calc_subclonal_B(
+        cellularity=cellularity,
+        ccf=np.expand_dims(ccf_cand, axis=3),
+        clonal_CNt=np.expand_dims(lower_CNt_cand, axis=(2, 3)),
+        subclonal_CNt=np.expand_dims(upper_CNt_cand, axis=(1, 3)),
+        CNn=np.expand_dims(CNn_valid, axis=(1, 2, 3)),
+        baf=np.expand_dims(baf_valid, axis=(1, 2, 3)),
+        clonal_B=np.expand_dims(lower_B_cand, axis=2),
+        Bn=np.expand_dims(Bn_valid, axis=(1, 2, 3)),
+    )
+        # ndim == 4 
+        # (axis 0: positions, axis 1: lower CNt, axis 2: upper CNt, axis 3: upper & lower B)
+        # dtype float
+    upper_B_cand = np.clip(
+        np.rint(upper_B_cand), 
+        0, 
+        np.expand_dims(upper_CNt_cand, axis=(1, 3)),
+    )
+
+    # make upper B mask
+#    upper_B_mask = np.logical_or(
+#        upper_B_rint > np.expand_dims(upper_CNt, axis=(1, 3)),
+#        upper_B_rint < 0,
+#    )
+#    upper_B_rint[upper_B_mask] = np.nan
+
+    # pick optimal solutions
+    #B_diffs = np.abs(upper_B - upper_B_rint)
+    expected_bafs = theoretical_baf_subclone(
+        clonal_CNt=np.expand_dims(lower_CNt_cand, axis=(2, 3)), 
+        clonal_B=np.expand_dims(lower_B_cand, axis=2), 
+        subclonal_CNt=np.expand_dims(upper_CNt_cand, axis=(1, 3)), 
+        subclonal_B=upper_B_cand, 
+        ccf=np.expand_dims(ccf_cand, axis=3),
+        cellularity=cellularity, 
+        CNn=np.expand_dims(CNn_valid, axis=(1, 2, 3)),
+        Bn=np.expand_dims(Bn_valid, axis=(1, 2, 3)),
+        rescue_nan_ccf=False,
+    )
+    baf_diffs = np.abs(expected_bafs - np.expand_dims(baf_valid, axis=(1, 2, 3)))
+    minargs = get_min_diff_args(baf_diffs)
+        # axis 0: positions
+        # axis 1: lower CNt
+        # axis 2: upper CNt
+        # axis 3: lower B (& upper B)
+
+    # result
+        # setup
+    result = dict()
+    result['average_CNt'] = average_CNt
+    result['lt0_CNt_flag'] = lt0_CNts
+    result['valid_CNt_flag'] = valid_CNts
+
+    result['lower_CNt'] = np.empty(len(average_CNt), dtype=float)
+    result['upper_CNt'] = np.empty(len(average_CNt), dtype=float)
+    result['lower_B'] = np.empty(len(average_CNt), dtype=float)
+    result['upper_B'] = np.empty(len(average_CNt), dtype=float)
+    result['ccf'] = np.empty(len(average_CNt), dtype=float)
+
+        # set values for lt0_CNts position
+    result['lower_CNt'][lt0_CNts] = 0
+    result['upper_CNt'][lt0_CNts] = 0
+    result['ccf'][lt0_CNts] = 0
+    result['lower_B'][lt0_CNts] = 0
+    result['upper_B'][lt0_CNts] = 0
+
+        # set values for valid CNts position
+    result['lower_CNt'][valid_CNts] = lower_CNt_cand[(minargs[0], minargs[1])]
+    result['upper_CNt'][valid_CNts] = upper_CNt_cand[(minargs[0], minargs[2])]
+    result['ccf'][valid_CNts] = ccf_cand[(minargs[0], minargs[1], minargs[2])]
+    result['lower_B'][valid_CNts] = lower_B_cand[(minargs[0], minargs[1], minargs[3])]
+    result['upper_B'][valid_CNts] = upper_B_cand[minargs]
+
+    return result
+
+
+def upper_from_lower_CNt(average_CNt, lower_CNt, ccf):
+    '''
+    <Derivation>
+    lower_CNt * (1 - ccf) + upper_CNt * ccf = average_CNt
+    upper_CNt * ccf = average_CNt - lower_CNt * (1 - ccf)
+    upper_CNt = (average_CNt - lower_CNt * (1 - ccf)) / ccf
+    upper_CNt = (average_CNt - lower_CNt + lower_CNt * ccf) / ccf
+    upper_CNt = (average_CNt - lower_CNt) / ccf + lower_CNt
+    '''
+    return (average_CNt - lower_CNt) / ccf + lower_CNt
+
+
+@deco.get_deco_broadcast(['depth_ratio', 'baf', 'CNn', 'Bn'])
+def find_subclonal_solution_fixedccf(
+    depth_ratio,
+    baf,
+    CNn,
+    cellularity,
+    tumor_ploidy,
+    normal_ploidy,
+    fixed_ccfs,
+    depthratio_diff_factor,
+    baf_diff_factor,
+
+    Bn=1,
+    average_CNt=None,
+    min_N_CNt_candidates=5,
+    N_CNt_candidates_fraction=0.5,
+):
+    # modify args
+    fixed_ccfs = np.asarray(fixed_ccfs)
+
+    # average_CNt = clonal_CNt * (1 - ccf) + subclonal_CNt * ccf
+    average_CNt = average_CNt_arghandler(
+        average_CNt, depth_ratio, CNn, cellularity, tumor_ploidy, normal_ploidy,
+    )
+
+    # find (average_CNt < 0) regions and treat differently
+    lt0_CNts = (average_CNt < 0)  # lt0: less than 0
+    valid_CNts = np.logical_not(lt0_CNts)
+
+    # make valid position subsets of input data
+    average_CNt_valid = average_CNt[valid_CNts]
+    depth_ratio_valid = depth_ratio[valid_CNts]
+    baf_valid = baf[valid_CNts]
+    CNn_valid = CNn[valid_CNts]
+    Bn_valid = Bn[valid_CNts]
+
+    # expand dims
+        # axis 0: positions, axis 1: lower & upper CNt, axis 2: lower & upper B, axis 3: ccfs
+    average_CNt_valid = np.expand_dims(average_CNt_valid, axis=(1, 2, 3))
+    depth_ratio_valid = np.expand_dims(depth_ratio_valid, axis=(1, 2, 3))
+    baf_valid = np.expand_dims(baf_valid, axis=(1, 2, 3))
+    CNn_valid = np.expand_dims(CNn_valid, axis=(1, 2, 3))
+    Bn_valid = np.expand_dims(Bn_valid, axis=(1, 2, 3))
+    fixed_ccfs = np.expand_dims(fixed_ccfs, axis=(0, 1, 2))
+
+    # make clonal CNts
+    lower_CNt_cand, upper_CNt_cand = get_CNt_candidates(
+        average_CNt=average_CNt_valid, 
+        min_N_CNt_candidates=min_N_CNt_candidates, 
+        N_CNt_candidates_fraction=N_CNt_candidates_fraction,
+    )
+    clonal_CNt_cand = np.concatenate([lower_CNt_cand, upper_CNt_cand], axis=1)
+    clonal_CNt_cand = np.expand_dims(clonal_CNt_cand, axis=(2, 3))
+
+    # calculate upper CNts using fixed ccfs
+    subclonal_CNt_cand = upper_from_lower_CNt(
+        average_CNt=average_CNt_valid,
+        lower_CNt=clonal_CNt_cand,
+        ccf=fixed_ccfs,
+    )
+    subclonal_CNt_cand = np.rint(subclonal_CNt_cand)
+
+    # make B
+    clonal_B_cand = (
+        clonal_CNt_cand 
+        - np.expand_dims(
+            np.arange(np.nanmax(clonal_CNt_cand, axis=None) + 1),
+            axis=(0, 1, 3),
+        )
+    )
+    clonal_B_cand[clonal_B_cand < 0] = np.nan
+
+    subclonal_B_cand = calc_subclonal_B(
+        cellularity=cellularity,
+        ccf=fixed_ccfs,
+        clonal_CNt=clonal_CNt_cand,
+        subclonal_CNt=subclonal_CNt_cand,
+        CNn=CNn_valid,
+        baf=baf_valid,
+        clonal_B=clonal_B_cand,
+        Bn=Bn_valid,
+    )
+    subclonal_B_cand = np.clip(np.rint(subclonal_B_cand), 0, subclonal_CNt_cand)
+
+    # pick optimal solutions
+    expected_depthratios = theoretical_depth_ratio_subclone(
+        clonal_CNt=clonal_CNt_cand, 
+        subclonal_CNt=subclonal_CNt_cand,
+        ccf=fixed_ccfs,
+        cellularity=cellularity, 
+        tumor_ploidy=tumor_ploidy, 
+        CNn=CNn_valid, 
+        normal_ploidy=normal_ploidy, 
+        tumor_avg_depth=1, 
+        normal_avg_depth=1,
+        rescue_nan_ccf=False,
+    )
+    depthratio_diffs = np.abs(expected_depthratios - depth_ratio_valid)
+
+    expected_bafs = theoretical_baf_subclone(
+        clonal_CNt=clonal_CNt_cand,
+        clonal_B=clonal_B_cand,
+        subclonal_CNt=subclonal_CNt_cand,
+        subclonal_B=subclonal_B_cand, 
+        ccf=fixed_ccfs,
+        cellularity=cellularity, 
+        CNn=CNn_valid,
+        Bn=Bn_valid,
+        rescue_nan_ccf=False,
+    )
+    baf_diffs = np.abs(expected_bafs - baf_valid)
+    #minargs = get_min_diff_args(baf_diffs)
+
+    normalized_depthratio_diff_factor = depthratio_diff_factor / (CNn_valid / 2)
+    diffsum = (
+        depthratio_diffs / normalized_depthratio_diff_factor
+        + baf_diffs / baf_diff_factor 
+    )
+    minargs = get_min_diff_args(diffsum)
+
+    # result
+        # setup
+    result = dict()
+    result['average_CNt'] = average_CNt
+    result['clonal_CNt'] = np.empty_like(average_CNt, dtype=float)
+    result['subclonal_CNt'] = np.empty_like(average_CNt, dtype=float)
+    result['clonal_B'] = np.empty_like(average_CNt, dtype=float)
+    result['subclonal_B'] = np.empty_like(average_CNt, dtype=float)
+    result['ccf'] = np.empty_like(average_CNt, dtype=float)
+
+        # set values for lt0_CNts position
+    result['clonal_CNt'][lt0_CNts] = 0
+    result['subclonal_CNt'][lt0_CNts] = 0
+    result['ccf'][lt0_CNts] = 0
+    result['clonal_B'][lt0_CNts] = 0
+    result['subclonal_B'][lt0_CNts] = 0
+
+        # set values for valid CNts position
+    result['clonal_CNt'][valid_CNts] = clonal_CNt_cand[minargs[0], minargs[1], 0, 0]
+    result['subclonal_CNt'][valid_CNts] = subclonal_CNt_cand[minargs[0], minargs[1], 0, 0]
+    result['ccf'][valid_CNts] = fixed_ccfs[0, 0, 0, minargs[3]]
+    result['clonal_B'][valid_CNts] = clonal_B_cand[minargs[0], minargs[1], minargs[2], 0]
+    result['subclonal_B'][valid_CNts] = subclonal_B_cand[minargs]
+
+    return result
+
+
+#@deco.get_deco_broadcast(['depth_ratio', 'baf', 'CNn', 'Bn'])
+#def find_solution_freeccf(
+#    depth_ratio,
+#    baf,
+#    CNn,
+#    cellularity,
+#    tumor_ploidy,
+#    normal_ploidy,
+#    Bn=1,
+#    depth_ratio_diff=0.05,
+#    baf_diff=0.01,
+#    min_N_CNt_candidates=5,
+#    N_CNt_candidates_fraction=0.5,
+#):
+#    # average CNt
+#    average_CNt = inverse_theoretical_depth_ratio(
+#        depth_ratio=depth_ratio, 
+#        cellularity=cellularity, 
+#        tumor_ploidy=tumor_ploidy, 
+#        CNn=CNn, 
+#        normal_ploidy=normal_ploidy, 
+#        tumor_avg_depth=1, 
+#        normal_avg_depth=1,
+#    )
+#
+#    # clonal solution
+#    clonal_solution = find_clonal_solution(
+#        depth_ratio=depth_ratio,
+#        baf=baf,
+#        CNn=CNn,
+#        cellularity=cellularity,
+#        tumor_ploidy=tumor_ploidy,
+#        normal_ploidy=normal_ploidy,
+#        Bn=Bn,
+#        average_CNt=average_CNt,
+#    )
+#
+#    # get positions to find subclonal solution
+#    monoploid_flag = (CNn < 2)
+#    depthratio_fit_flag = (np.abs(clonal_solution['depth_ratio_diff']) < depth_ratio_diff)
+#    baf_fit_flag = (np.abs(clonal_solution['baf_diff']) < baf_diff)
+#    depth_baf_fit_flag = np.logical_and(depthratio_fit_flag, baf_fit_flag)
+#
+#    monoploid_fit_flag = np.logical_and(monoploid_flag, depthratio_fit_flag)
+#    monoploid_unfit_flag = np.logical_and(monoploid_flag, ~depthratio_fit_flag)
+#    polyploid_fit_flag = np.logical_and(~monoploid_flag, depth_baf_fit_flag)
+#    #polyploid_unfit_flag = np.logical_and(~monoploid_flag, ~depth_baf_fit_flag)
+#
+#    polyploid_unfit_flag = np.logical_and(~monoploid_flag, ~depthratio_fit_flag)
+#    polyploid_unfit_bafonly_flag = functools.reduce(
+#        np.logical_and,
+#        (
+#            ~monoploid_flag,
+#            depthratio_fit_flag,
+#            ~baf_fit_flag,
+#        ),
+#    )
+#    
+#    fit_flag = np.logical_or(monoploid_fit_flag, polyploid_fit_flag)
+#
+#    # get subclonal solution with B
+#    subclonal_solution_withB = find_subclonal_solution_freeccf(
+#        depth_ratio=depth_ratio[polyploid_unfit_flag],
+#        baf=baf[polyploid_unfit_flag],
+#        CNn=CNn[polyploid_unfit_flag],
+#        cellularity=cellularity,
+#        tumor_ploidy=tumor_ploidy,
+#        normal_ploidy=normal_ploidy,
+#        Bn=Bn[polyploid_unfit_flag],
+#        average_CNt=average_CNt[polyploid_unfit_flag],
+#        min_N_CNt_candidates=min_N_CNt_candidates,
+#        N_CNt_candidates_fraction=N_CNt_candidates_fraction,
+#    )
+#
+#    # make clonal/subclonal results
+#    clonal_CNt = np.full(len(depth_ratio), np.nan)
+#    clonal_CNt[fit_flag] = clonal_solution['CNt'][fit_flag]
+#    #clonal_CNt[monoploid_unfit_flag] = subclonal_solution_woB['clonal_CNt']
+#    #clonal_CNt[polyploid_unfit_bafonly_flag] = subclonal_solution_Bonly['clonal_CNt']
+#    clonal_CNt[polyploid_unfit_flag] = subclonal_solution_withB['lower_CNt']
+#
+#    subclonal_CNt = np.full(len(depth_ratio), np.nan)
+#    subclonal_CNt[fit_flag] = np.nan
+#    #subclonal_CNt[monoploid_unfit_flag] = subclonal_solution_woB['subclonal_CNt']
+#    #subclonal_CNt[polyploid_unfit_bafonly_flag] = subclonal_solution_Bonly['subclonal_CNt']
+#    subclonal_CNt[polyploid_unfit_flag] = subclonal_solution_withB['upper_CNt']
+#
+#    clonal_B = np.full(len(depth_ratio), np.nan)
+#    clonal_B[monoploid_flag] = np.nan
+#    clonal_B[polyploid_fit_flag] = clonal_solution['B'][polyploid_fit_flag]
+#    #clonal_B[polyploid_unfit_bafonly_flag] = subclonal_solution_Bonly['clonal_B']
+#    clonal_B[polyploid_unfit_flag] = subclonal_solution_withB['lower_B']
+#
+#    subclonal_B = np.full(len(depth_ratio), np.nan)
+#    subclonal_B[np.logical_or(monoploid_flag, polyploid_fit_flag)] = np.nan
+#    #subclonal_B[polyploid_unfit_bafonly_flag] = subclonal_solution_Bonly['subclonal_B']
+#    subclonal_B[polyploid_unfit_flag] = subclonal_solution_withB['upper_B']
+#
+#    ccf = np.full(len(depth_ratio), np.nan)
+#    ccf[fit_flag] = np.nan
+#    #ccf[monoploid_unfit_flag] = subclonal_solution_woB['ccf_chosen']
+#    #ccf[polyploid_unfit_bafonly_flag] = subclonal_solution_Bonly['ccf_chosen']
+#    ccf[polyploid_unfit_flag] = subclonal_solution_withB['ccf']
+#
+#    # make theoretical values and diffs
+#    calculated_depth_ratio = theoretical_depth_ratio_subclone(
+#        clonal_CNt=clonal_CNt, 
+#        subclonal_CNt=subclonal_CNt,
+#        ccf=ccf,
+#        cellularity=cellularity, 
+#        tumor_ploidy=tumor_ploidy, 
+#        CNn=CNn, 
+#        normal_ploidy=normal_ploidy, 
+#        tumor_avg_depth=1, 
+#        normal_avg_depth=1,
+#        rescue_nan_ccf=True,
+#    )
+#    calculated_baf = theoretical_baf_subclone(
+#        clonal_CNt=clonal_CNt, 
+#        clonal_B=clonal_B, 
+#        subclonal_CNt=subclonal_CNt, 
+#        subclonal_B=subclonal_B, 
+#        ccf=ccf,
+#        cellularity=cellularity, 
+#        CNn=CNn,
+#        Bn=Bn,
+#        rescue_nan_ccf=True,
+#    )
+#
+#    # result
+#    result = dict()
+#    result['average_CNt'] = average_CNt
+#    result['clonal_CNt'] = clonal_CNt
+#    result['subclonal_CNt'] = subclonal_CNt
+#    result['clonal_B'] = clonal_B
+#    result['subclonal_B'] = subclonal_B
+#    result['ccf'] = ccf
+#
+#    result['clonal_theoretical_depth_ratio'] = clonal_solution['theoretical_depth_ratio']
+#    result['clonal_theoretical_baf'] = clonal_solution['theoretical_baf']
+#    result['clonal_depth_ratio_diff'] = clonal_solution['depth_ratio_diff']
+#    result['clonal_baf_diff'] = clonal_solution['baf_diff']
+#
+#    result['theoretical_depth_ratio'] = calculated_depth_ratio
+#    result['theoretical_baf'] = calculated_baf
+#    result['flag'] = {
+#        'monoploid': monoploid_flag,
+#        'depthratio_fit': depthratio_fit_flag,
+#        'baf_fit': baf_fit_flag,
+#        'depth_baf_fit': depth_baf_fit_flag,
+#
+#        'monoploid_fit': monoploid_fit_flag,
+#        'monoploid_unfit': monoploid_unfit_flag,
+#        'polyploid_fit': polyploid_fit_flag,
+#        'polyploid_unfit': polyploid_unfit_flag,
+#
+#        'fit': fit_flag,
+#    }
+#
+#    return result
+
+
+def choose_ccfs(peak_ccfs, peak_densities):
+    lehalf_index = peak_ccfs <= 0.5  # lehalf: less than or equal to half
+    peak_ccfs_lthalf = peak_ccfs[lehalf_index]
+    peak_densities_lthalf = peak_densities[lehalf_index]
+
+    # sort by density
+    peak_ccfs_lthalf = peak_ccfs_lthalf[np.argsort(peak_densities_lthalf)[::-1]]
+
+    # choose as many values with which cumsum becomes less than 1
+    chosen_ccfs = peak_ccfs_lthalf[np.cumsum(peak_ccfs_lthalf) < 1]
+
+    return chosen_ccfs
+
+
+def select_fixed_ccfs(ccfs, lengths, bandwidth=0.1):
+    dup_ccfs = np.concatenate([ccfs, 1 - ccfs])
+    dup_lengths = np.tile(lengths, 2)
+
+    peak_values, peak_densities, density = get_density_peaks(
+        dup_ccfs, 
+        weights=dup_lengths, 
+        xs=np.arange(0, 1, 0.01), 
+        threshold=None,
+        bw_method=bandwidth,
+    )
+
+    fixed_ccfs = choose_ccfs(peak_values, peak_densities)
+    ccf_plotdata = {
+        'ccfs': dup_ccfs,
+        'lengths': dup_lengths,
+        'density': density,
+        'peak_values': peak_values,
+    }
+
+    return fixed_ccfs, ccf_plotdata
+
+
+def get_default_depth_ratio_diff(cellularity, tumor_ploidy, normal_ploidy, CNn):
+    assert CNn.ndim == 1
+
+    ddr = delta_depth_ratio(
+        cellularity=cellularity, 
+        tumor_ploidy=tumor_ploidy, 
+        CNn=CNn, 
+        normal_ploidy=normal_ploidy, 
+        tumor_avg_depth=1, 
+        normal_avg_depth=1,
+    )
+    return 0.1 * ddr
+
+
+@deco.get_deco_broadcast(['depth_ratio', 'baf', 'CNn', 'Bn', 'lengths'])
+def find_solution_before_ccfs(
+    depth_ratio,
+    baf,
+    CNn,
+    lengths,
+    cellularity,
+    tumor_ploidy,
+    normal_ploidy,
+    depth_ratio_diff,
+    baf_diff,
+    average_CNt=None,
+    Bn=1,
+    min_N_CNt_candidates=5,
+    N_CNt_candidates_fraction=0.5,
+    ccf_bw=0.1,
+):
+    # average CNt
+    average_CNt = average_CNt_arghandler(
+        average_CNt, depth_ratio, CNn, cellularity, tumor_ploidy, normal_ploidy,
+    )
+
+    # clonal solution
+    clonal_solution = find_clonal_solution(
+        depth_ratio=depth_ratio,
+        baf=baf,
+        CNn=CNn,
+        cellularity=cellularity,
+        tumor_ploidy=tumor_ploidy,
+        normal_ploidy=normal_ploidy,
+        Bn=Bn,
+        average_CNt=average_CNt,
+    )
+
+    # get positions to find subclonal solution
+    monoploid_flag = (CNn < 2)
+    depthratio_fit_flag = (np.abs(clonal_solution['depth_ratio_diff']) < depth_ratio_diff)
+    baf_fit_flag = (np.abs(clonal_solution['baf_diff']) < baf_diff)
+    depth_baf_fit_flag = np.logical_and(depthratio_fit_flag, baf_fit_flag)
+
+    monoploid_fit_flag = np.logical_and(monoploid_flag, depthratio_fit_flag)
+    monoploid_unfit_flag = np.logical_and(monoploid_flag, ~depthratio_fit_flag)
+    polyploid_fit_flag = np.logical_and(~monoploid_flag, depth_baf_fit_flag)
+    polyploid_unfit_flag = np.logical_and(~monoploid_flag, ~depthratio_fit_flag)
+    polyploid_unfit_bafonly_flag = functools.reduce(
+        np.logical_and,
+        (
+            ~monoploid_flag,
+            depthratio_fit_flag,
+            ~baf_fit_flag,
+        ),
+    )
+    
+    fit_flag = np.logical_or(monoploid_fit_flag, polyploid_fit_flag)
+
+    # determine ccf peaks from polyploid depth-baf-unfit regions
+    #subclonal_solution_withB = find_subclonal_solution_freeccf(
+    freeccf_solution = find_subclonal_solution_freeccf(
+        depth_ratio=depth_ratio[polyploid_unfit_flag],
+        baf=baf[polyploid_unfit_flag],
+        CNn=CNn[polyploid_unfit_flag],
+        cellularity=cellularity,
+        tumor_ploidy=tumor_ploidy,
+        normal_ploidy=normal_ploidy,
+        Bn=Bn[polyploid_unfit_flag],
+        average_CNt=average_CNt[polyploid_unfit_flag],
+        min_N_CNt_candidates=min_N_CNt_candidates,
+        N_CNt_candidates_fraction=N_CNt_candidates_fraction,
+    )
+    valid_CNt_indexes = freeccf_solution['valid_CNt_flag'].nonzero()
+    fixed_ccfs, ccf_plotdata = select_fixed_ccfs(
+        ccfs=freeccf_solution['ccf'][valid_CNt_indexes], 
+        lengths=lengths[polyploid_unfit_flag][valid_CNt_indexes],
+        bandwidth=ccf_bw,
+    )
+
+    flags = {
+        'monoploid': monoploid_flag,
+        'depthratio_fit': depthratio_fit_flag,
+        'baf_fit': baf_fit_flag,
+        'depth_baf_fit': depth_baf_fit_flag,
+        'monoploid_fit': monoploid_fit_flag,
+        'monoploid_unfit': monoploid_unfit_flag,
+        'polyploid_fit': polyploid_fit_flag,
+        'polyploid_unfit': polyploid_unfit_flag,
+        'polyploid_unfit_bafonly': polyploid_unfit_bafonly_flag,
+        'fit': fit_flag,
+    }
+
+    # make theoretical values and diffs
+    calculated_depth_ratio = theoretical_depth_ratio_subclone(
+        clonal_CNt=freeccf_solution['lower_CNt'], 
+        subclonal_CNt=freeccf_solution['upper_CNt'],
+        ccf=freeccf_solution['ccf'],
+        cellularity=cellularity, 
+        tumor_ploidy=tumor_ploidy, 
+        CNn=CNn[polyploid_unfit_flag], 
+        normal_ploidy=normal_ploidy, 
+        tumor_avg_depth=1, 
+        normal_avg_depth=1,
+        rescue_nan_ccf=True,
+    )
+    calculated_baf = theoretical_baf_subclone(
+        clonal_CNt=freeccf_solution['lower_CNt'], 
+        clonal_B=freeccf_solution['lower_B'], 
+        subclonal_CNt=freeccf_solution['upper_CNt'], 
+        subclonal_B=freeccf_solution['upper_B'], 
+        ccf=freeccf_solution['ccf'],
+        cellularity=cellularity, 
+        CNn=CNn[polyploid_unfit_flag],
+        Bn=Bn[polyploid_unfit_flag],
+        rescue_nan_ccf=True,
+    )
+
+    return fixed_ccfs, ccf_plotdata, clonal_solution, flags, freeccf_solution, calculated_depth_ratio, calculated_baf
+
+
+@deco.get_deco_broadcast(['depth_ratio', 'baf', 'CNn', 'Bn', 'lengths', 'average_CNt'])
+def find_solution_after_ccfs(
+    depth_ratio,
+    baf,
+    CNn,
+    lengths,
+    cellularity,
+    tumor_ploidy,
+    normal_ploidy,
+    average_CNt,
+
+    fixed_ccfs, clonal_solution, flags,
+
+    Bn=1,
+    min_N_CNt_candidates=5,
+    N_CNt_candidates_fraction=0.5,
+):
+    # make diff factors
+    baf_selector = ~flags['monoploid']
+    depth_selector = (CNn == 2)
+    depthratio_diff_factor = common.get_diffmean(
+        depth_ratio[depth_selector], 
+        lengths[depth_selector],
+    )  # based on CNn == 2 regions
+    baf_diff_factor = common.get_diffmean(
+        baf[baf_selector], 
+        lengths[baf_selector],
+    )
+
+    # main
+    if flags['polyploid_unfit'].any():
+        subclonal_solution_both = find_subclonal_solution_fixedccf(
+            depth_ratio=depth_ratio[flags['polyploid_unfit']],
+            baf=baf[flags['polyploid_unfit']],
+            CNn=CNn[flags['polyploid_unfit']],
+            cellularity=cellularity,
+            tumor_ploidy=tumor_ploidy,
+            normal_ploidy=normal_ploidy,
+            fixed_ccfs=fixed_ccfs,
+            depthratio_diff_factor=depthratio_diff_factor,
+            baf_diff_factor=baf_diff_factor,
+            Bn=Bn[flags['polyploid_unfit']],
+            average_CNt=average_CNt[flags['polyploid_unfit']],
+            min_N_CNt_candidates=min_N_CNt_candidates,
+            N_CNt_candidates_fraction=N_CNt_candidates_fraction,
+        )
+
+    # get subclonal solution without B
+    if flags['monoploid_unfit'].any():
+        subclonal_solution_woB = find_subclonal_solution_without_B(
+            depth_ratio=depth_ratio[flags['monoploid_unfit']],
+            CNn=CNn[flags['monoploid_unfit']],
+            cellularity=cellularity,
+            tumor_ploidy=tumor_ploidy,
+            normal_ploidy=normal_ploidy,
+            ccf_candidates=fixed_ccfs,
+            average_CNt=average_CNt[flags['monoploid_unfit']],
+            min_N_CNt_candidates=min_N_CNt_candidates,
+            N_CNt_candidates_fraction=N_CNt_candidates_fraction,
+        )
+
+    # get subclonal solution B-only
+    if flags['polyploid_unfit_bafonly'].any():
+        subclonal_solution_Bonly = find_subclonal_solution_B_only(
+            depth_ratio=depth_ratio[flags['polyploid_unfit_bafonly']],
+            baf=baf[flags['polyploid_unfit_bafonly']],
+            CNn=CNn[flags['polyploid_unfit_bafonly']],
+            cellularity=cellularity,
+            tumor_ploidy=tumor_ploidy,
+            normal_ploidy=normal_ploidy,
+            ccf_candidates=fixed_ccfs,
+            Bn=Bn[flags['polyploid_unfit_bafonly']],
+            average_CNt=average_CNt[flags['polyploid_unfit_bafonly']],
+        )
+
+    # make clonal/subclonal results
+    N_position = depth_ratio.shape[0]
+
+    clonal_CNt = np.full(N_position, np.nan)
+    subclonal_CNt = np.full(N_position, np.nan)
+    clonal_B = np.full(N_position, np.nan)
+    subclonal_B = np.full(N_position, np.nan)
+    ccf = np.full(N_position, np.nan)
+
+    if flags['fit'].any():
+        clonal_CNt[flags['fit']] = clonal_solution['CNt'][flags['fit']]
+        subclonal_CNt[flags['fit']] = np.nan
+        ccf[flags['fit']] = np.nan
+
+    if flags['monoploid_unfit'].any():
+        clonal_CNt[flags['monoploid_unfit']] = subclonal_solution_woB['clonal_CNt']
+        subclonal_CNt[flags['monoploid_unfit']] = subclonal_solution_woB['subclonal_CNt']
+        ccf[flags['monoploid_unfit']] = subclonal_solution_woB['ccf_chosen']
+
+    if flags['polyploid_unfit_bafonly'].any():
+        clonal_CNt[flags['polyploid_unfit_bafonly']] = subclonal_solution_Bonly['clonal_CNt']
+        subclonal_CNt[flags['polyploid_unfit_bafonly']] = subclonal_solution_Bonly['subclonal_CNt']
+        clonal_B[flags['polyploid_unfit_bafonly']] = subclonal_solution_Bonly['clonal_B']
+        subclonal_B[flags['polyploid_unfit_bafonly']] = subclonal_solution_Bonly['subclonal_B']
+        ccf[flags['polyploid_unfit_bafonly']] = subclonal_solution_Bonly['ccf_chosen']
+
+    if flags['polyploid_unfit'].any():
+        clonal_CNt[flags['polyploid_unfit']] = subclonal_solution_both['clonal_CNt']
+        subclonal_CNt[flags['polyploid_unfit']] = subclonal_solution_both['subclonal_CNt']
+        clonal_B[flags['polyploid_unfit']] = subclonal_solution_both['clonal_B']
+        subclonal_B[flags['polyploid_unfit']] = subclonal_solution_both['subclonal_B']
+        ccf[flags['polyploid_unfit']] = subclonal_solution_both['ccf']
+
+    if flags['monoploid'].any():
+        clonal_B[flags['monoploid']] = np.nan
+        subclonal_B[np.logical_or(flags['monoploid'], flags['polyploid_fit'])] = np.nan
+
+    if flags['polyploid_fit'].any():
+        clonal_B[flags['polyploid_fit']] = clonal_solution['B'][flags['polyploid_fit']]
+        subclonal_B[np.logical_or(flags['monoploid'], flags['polyploid_fit'])] = np.nan
+
+    subclonal_B[np.logical_or(flags['monoploid'], flags['polyploid_fit'])] = np.nan
+
+    #clonal_CNt = np.full(N_position, np.nan)
+    #clonal_CNt[flags['fit']] = clonal_solution['CNt'][flags['fit']]
+    #clonal_CNt[flags['monoploid_unfit']] = subclonal_solution_woB['clonal_CNt']
+    #clonal_CNt[flags['polyploid_unfit_bafonly']] = subclonal_solution_Bonly['clonal_CNt']
+    #clonal_CNt[flags['polyploid_unfit']] = subclonal_solution_both['lower_CNt']
+
+    #subclonal_CNt = np.full(N_position, np.nan)
+    #subclonal_CNt[flags['fit']] = np.nan
+    #subclonal_CNt[flags['monoploid_unfit']] = subclonal_solution_woB['subclonal_CNt']
+    #subclonal_CNt[flags['polyploid_unfit_bafonly']] = subclonal_solution_Bonly['subclonal_CNt']
+    #subclonal_CNt[flags['polyploid_unfit']] = subclonal_solution_both['upper_CNt']
+
+    #clonal_B = np.full(N_position, np.nan)
+    #clonal_B[flags['monoploid']] = np.nan
+    #clonal_B[flags['polyploid_fit']] = clonal_solution['B'][flags['polyploid_fit']]
+    #clonal_B[flags['polyploid_unfit_bafonly']] = subclonal_solution_Bonly['clonal_B']
+    #clonal_B[flags['polyploid_unfit']] = subclonal_solution_both['lower_B']
+
+    #subclonal_B = np.full(N_position, np.nan)
+    #subclonal_B[np.logical_or(flags['monoploid'], flags['polyploid_fit'])] = np.nan
+    #subclonal_B[flags['polyploid_unfit_bafonly']] = subclonal_solution_Bonly['subclonal_B']
+    #subclonal_B[flags['polyploid_unfit']] = subclonal_solution_both['upper_B']
+
+    #ccf = np.full(N_position, np.nan)
+    #ccf[flags['fit']] = np.nan
+    #ccf[flags['monoploid_unfit']] = subclonal_solution_woB['ccf_chosen']
+    #ccf[flags['polyploid_unfit_bafonly']] = subclonal_solution_Bonly['ccf_chosen']
+    #ccf[flags['polyploid_unfit']] = subclonal_solution_both['ccf']
+
+    # make theoretical values and diffs
+    calculated_depth_ratio = theoretical_depth_ratio_subclone(
+        clonal_CNt=clonal_CNt, 
+        subclonal_CNt=subclonal_CNt,
+        ccf=ccf,
+        cellularity=cellularity, 
+        tumor_ploidy=tumor_ploidy, 
+        CNn=CNn, 
+        normal_ploidy=normal_ploidy, 
+        tumor_avg_depth=1, 
+        normal_avg_depth=1,
+        rescue_nan_ccf=True,
+    )
+    calculated_baf = theoretical_baf_subclone(
+        clonal_CNt=clonal_CNt, 
+        clonal_B=clonal_B, 
+        subclonal_CNt=subclonal_CNt, 
+        subclonal_B=subclonal_B, 
+        ccf=ccf,
+        cellularity=cellularity, 
+        CNn=CNn,
+        Bn=Bn,
+        rescue_nan_ccf=True,
+    )
+
+    # result
+    result = dict()
+    result['average_CNt'] = average_CNt
+    result['clonal_CNt'] = clonal_CNt
+    result['subclonal_CNt'] = subclonal_CNt
+    result['clonal_B'] = clonal_B
+    result['subclonal_B'] = subclonal_B
+    result['ccf'] = ccf
+
+    result['clonal_theoretical_depth_ratio'] = clonal_solution['theoretical_depth_ratio']
+    result['clonal_theoretical_baf'] = clonal_solution['theoretical_baf']
+    result['clonal_depth_ratio_diff'] = clonal_solution['depth_ratio_diff']
+    result['clonal_baf_diff'] = clonal_solution['baf_diff']
+
+    result['theoretical_depth_ratio'] = calculated_depth_ratio
+    result['theoretical_baf'] = calculated_baf
+    result['flag'] = flags
+
+    result['fixed_ccfs'] = fixed_ccfs
+    result['clonal_solution'] = clonal_solution
+
+    return result
+
+
+@deco.get_deco_broadcast(['depth_ratio', 'baf', 'CNn', 'Bn', 'lengths'])
+def find_solution(
+    depth_ratio,
+    baf,
+    CNn,
+    lengths,
+    cellularity,
+    tumor_ploidy,
+    normal_ploidy,
+    depth_ratio_diff=None,
+    baf_diff=0.05,
+    Bn=1,
+    min_N_CNt_candidates=5,
+    N_CNt_candidates_fraction=0.5,
+):
+    # arg handling
+    if depth_ratio_diff is None:
+        depth_ratio_diff = get_default_depth_ratio_diff(
+            cellularity, tumor_ploidy, normal_ploidy, CNn,
+        )
+
+    # average CNt
+    average_CNt = inverse_theoretical_depth_ratio(
+        depth_ratio=depth_ratio, 
+        CNn=CNn, 
+        cellularity=cellularity, 
+        tumor_ploidy=tumor_ploidy, 
+        normal_ploidy=normal_ploidy,
+    )
+
+    # determine ccf peaks from polyploid depth-baf-unfit regions
+    (
+        fixed_ccfs, 
+        ccf_plotdata, 
+        clonal_solution, 
+        flags, 
+        freeccf_solution,
+        calculated_depth_ratio, 
+        calculated_baf,
+    ) = find_solution_before_ccfs(
+        depth_ratio=depth_ratio,
+        baf=baf,
+        CNn=CNn,
+        lengths=lengths,
+        cellularity=cellularity,
+        tumor_ploidy=tumor_ploidy,
+        normal_ploidy=normal_ploidy,
+        depth_ratio_diff=depth_ratio_diff,
+        baf_diff=baf_diff,
+        average_CNt=average_CNt,
+        Bn=Bn,
+        min_N_CNt_candidates=min_N_CNt_candidates,
+        N_CNt_candidates_fraction=N_CNt_candidates_fraction,
+    )
+
+    # make final solution with fixed ccfs
+    solution = find_solution_after_ccfs(
+        depth_ratio=depth_ratio,
+        baf=baf,
+        CNn=CNn,
+        lengths=lengths,
+        cellularity=cellularity,
+        tumor_ploidy=tumor_ploidy,
+        normal_ploidy=normal_ploidy,
+        average_CNt=average_CNt,
+
+        fixed_ccfs=fixed_ccfs, 
+        clonal_solution=clonal_solution, 
+        flags=flags,
+
+        Bn=Bn,
+        min_N_CNt_candidates=min_N_CNt_candidates,
+        N_CNt_candidates_fraction=N_CNt_candidates_fraction,
+    )
+
+    return solution, ccf_plotdata
+
+
 #########################
 # find optimal cp value #
 #########################
 
-def get_depthratio_peaks(depthratio_segment_means, lengths, limits=(0, 2), step=0.01, peak_cutoff=1e8):
-    bins = np.arange(limits[0], limits[1], step)
-    peak_indexes, histbins, hist, bin_midpoints = get_hist_peaks(depthratio_segment_means, weights=lengths, bins=bins)
-    peak_indexes = peak_indexes[hist[peak_indexes] > peak_cutoff]
-    peak_xs = bin_midpoints[peak_indexes]
-
-    return peak_xs
+#def get_depthratio_peaks(depthratio_segment_means, lengths, limits=(0, 2), step=0.01, peak_cutoff=1e8):
+#    bins = np.arange(limits[0], limits[1], step)
+#    peak_indexes, histbins, hist, bin_midpoints = get_hist_peaks(depthratio_segment_means, weights=lengths, bins=bins)
+#    peak_indexes = peak_indexes[hist[peak_indexes] > peak_cutoff]
+#    peak_xs = bin_midpoints[peak_indexes]
+#
+#    return peak_xs
 
 
 def calc_cp_score(
-    segment_df, cellularity, ploidy, is_female, CNt_weight, normal_ploidy,
+    segment_df, cellularity, tumor_ploidy, is_female, CNt_weight, normal_ploidy,
 ):
     def applied_func(row):
         #if check_haploid(is_female, row.iloc[0]) or np.isnan(row.iloc[4]):
@@ -900,7 +2902,7 @@ def calc_cp_score(
         if (row.iloc[5] == 1) or np.isnan(row.iloc[4]):
             CNt, B, segfit_score = get_CN_from_cp_wo_baf(
                 cellularity, 
-                ploidy, 
+                tumor_ploidy, 
                 row.iloc[3], 
                 CNt_weight, 
                 row.iloc[5], 
@@ -909,7 +2911,7 @@ def calc_cp_score(
         else:
             CNt, B, segfit_score = get_CN_from_cp(
                 cellularity, 
-                ploidy, 
+                tumor_ploidy, 
                 row.iloc[3], 
                 row.iloc[4], 
                 CNt_weight, 
@@ -1029,11 +3031,11 @@ def get_cp_score_dict(
         dic['ploidy_diff_ratio'] = dic['ploidy_diff'] / cppair.ploidy
         dic['delta_depth_ratio'] = delta_depth_ratio(
             cellularity=cppair.cellularity, 
-            tumor_mean_ploidy=cppair.ploidy, 
+            tumor_ploidy=cppair.ploidy, 
             CNn=2, 
-            normal_mean_ploidy=normal_ploidy, 
-            tumor_avg_depth_ratio=1, 
-            normal_avg_depth_ratio=1,
+            normal_ploidy=normal_ploidy, 
+            tumor_avg_depth=1, 
+            normal_avg_depth=1,
         )
 
     cp_scores = dict(zip(cp_pairs, scorelist))
@@ -1160,7 +3162,7 @@ def add_theoreticals_to_segment(
     #def depthr_getter(row):
     #    return theoretical_depth_ratio(
     #        row['CNt'], cellularity, tumor_ploidy, row['CNn'], normal_ploidy, 
-    #        tumor_avg_depth_ratio=1, normal_avg_depth_ratio=1,
+    #        tumor_avg_depth=1, normal_avg_depth=1,
     #    )
 
     #def baf_getter(row):
@@ -1183,8 +3185,8 @@ def add_theoreticals_to_segment(
         tumor_ploidy, 
         segment_df['CNn'], 
         normal_ploidy, 
-        tumor_avg_depth_ratio=1, 
-        normal_avg_depth_ratio=1,
+        tumor_avg_depth=1, 
+        normal_avg_depth=1,
     )
 
     #segment_df['baf_predicted'] = segment_df.apply(baf_getter, axis=1)
@@ -1348,15 +3350,33 @@ def handle_outliers_with_preset_region(depth_df, outlier_region):
     return output_depth_df
 
 
-def handle_outliers_with_preset_included_region(depth_df, included_region):
+# 28.75 sec
+def handle_outliers_with_preset_included_region_old(depth_df, included_region):
     included_region = arg_into_gr(included_region)
     depth_gr = arg_into_gr(depth_df)
 
     output_depth_df = depth_gr.count_overlaps(included_region, overlap_col='NumberOverlaps').df
-    output_depth_df['excluded'] = output_depth_df['NumberOverlaps'] == 0
+    output_depth_df['excluded'] = (output_depth_df['NumberOverlaps'] == 0)
     output_depth_df.drop('NumberOverlaps', axis=1, inplace=True)
 
     return output_depth_df
+
+
+# 18.85 sec
+def handle_outliers_with_preset_included_region(depth_df, included_region):
+    assert isinstance(depth_df, pd.DataFrame)
+
+    depth_df['_index'] = range(depth_df.shape[0])
+
+    included_region = arg_into_gr(included_region)
+    depth_gr = pr.PyRanges(depth_df)
+
+    overlap = depth_gr.overlap(included_region)
+
+    depth_df['excluded'] = True
+    depth_df.iloc[overlap._index, depth_df.columns.get_loc('excluded')] = False
+
+    return depth_df
 
 
 def handle_outliers(depth_df, trim_limits=None, lower_cutoff=None, upper_cutoff=None, exclude_y=False):
@@ -1481,6 +3501,9 @@ def get_gcbin_data(depth_df, gc_breaks, make_raw_data=False):
 #    mean = depth_df['mean_depth'].mean()
 
 def depth_df_gc_addition(depth_df, gc_df=None, refver=None, fasta=None, window=None):
+    if 'GC' in depth_df:
+        depth_df = depth_df.drop('GC', axis=1)
+
     if gc_df is None:
         result = gcfraction.add_gc_calculating(
             depth_df, refver=refver, fasta=fasta, window=window,
@@ -1580,6 +3603,7 @@ def postprocess_depth_df(
 
     ## replace outliers with nan; separately for output and gc data 
     # mark outlier positions with 'excluded' column
+    printlog(f'Marking outlier positions')
     if outlier_region is not None:
         output_depth_df = handle_outliers_with_preset_region(depth_df, outlier_region)
     elif included_region is not None:
@@ -1597,7 +3621,7 @@ def postprocess_depth_df(
     #)
 
     # get gc depth data
-    printlog(f'Getting depth data by gc value ranges')
+    printlog(f'Getting depth statistics stratified by gc ranges')
     gc_breaks, gc_intervals = get_gc_breaks(n_gcbin)
     (
         gcbin_depth_data, 

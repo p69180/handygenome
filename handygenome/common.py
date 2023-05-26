@@ -1657,8 +1657,10 @@ def array_grouper(arr, omit_values=False):
     counts = np.empty(indexes.shape, dtype=int)
     counts[:-1] = np.diff(indexes)
     counts[-1] = arr.shape[0] - indexes[-1]
+
+    groupkey = np.repeat(np.arange(len(counts)), counts)
         
-    return values, counts
+    return values, counts, groupkey
                 
 
 def get_ranks(arr):
@@ -1744,9 +1746,24 @@ def mean_mad(values):
 def median_mad(values):
     values = np.array(values)
     return np.median(np.abs(values - np.median(values)))
+
+
+def get_diffmean(values, weights=None):
+    assert values.ndim == 1
+
+    if weights is None:
+        weights = np.ones_like(values)
+    else:
+        assert weights.shape == values.shape
+
+    indexes = np.triu_indices(values.shape[0], k=1)
+    diffs = values[indexes[0]] - values[indexes[1]]
+    diff_weights = weights[indexes[0]] + weights[indexes[1]]
+
+    return np.average(np.abs(diffs), weights=diff_weights)
     
 
-def broadcast_args(*args):
-    return np.broadcast_arrays(*[np.atleast_1d(x) for x in args])
+#def broadcast_args(args):
+#    return np.broadcast_arrays(*[np.atleast_1d(x) for x in args])
 
 

@@ -9,29 +9,30 @@ import scipy.interpolate
 import sklearn.mixture
 
 import handygenome.common as common
+import handygenome.cnv.misc as cnvmisc
 
 
 BAFCORRECT_PATH = os.path.join(common.DATA_DIR, f'baf_correction_func.pickle')
 
-def save_bafcorrect_func_old(func):
+def save_bafcorrect_func(func):
     with open(BAFCORRECT_PATH, 'wb') as outfile:
         pickle.dump(func, outfile)
 
 
-def load_bafcorrect_func_old():
+def load_bafcorrect_func(x_cutoff=None):
     with open(BAFCORRECT_PATH, 'rb') as infile:
-        result = pickle.load(infile)
+        func = pickle.load(infile)
 
-    return winsorize_pointfive(result)
+    return winsorize_pointfive(func, x_cutoff=x_cutoff)
 
 #
 
-def save_bafcorrect_func(func, x_cutoff):
+def save_bafcorrect_func_xcutoff(func, x_cutoff):
     with open(BAFCORRECT_PATH, 'wb') as outfile:
         pickle.dump((func, x_cutoff), outfile)
 
     
-def load_bafcorrect_func():
+def load_bafcorrect_func_xcutoff():
     with open(BAFCORRECT_PATH, 'rb') as infile:
         func, x_cutoff = pickle.load(infile)
 
@@ -223,4 +224,109 @@ def make_bafcorrector_from_realdata(data, realdata, mode='type1'):
     return bafcorrector, interp, x_cutoff
 
         
+# baf simulation v2 (230525)
+
+def make_simulated_total_depths(mean_depth, N):
+    result = list()
+    n = N
+    while True:
+        arr = scipy.stats.poisson.rvs(mean_depth, size=n)
+        arr = arr[arr > 0]
+        result.extend(arr)
+        if len(result) == N:
+            break
+        else:
+            n = N - len(result)
+            continue
+    return np.asarray(result)
+
+
+def make_simulated_het_bafs(vaf, mean_depth, N):
+    td = make_simulated_total_depths(mean_depth, N)
+    ad = scipy.stats.binom.rvs(n=td, p=vaf)
+    vafs = ad / td
+    bafs = np.where(vafs > 0.5, 1 - vafs, vafs)
+    return bafs
+
+
+def make_simulated_hom_bafs(p_error, mean_depth, N):
+    td = make_simulated_total_depths(mean_depth, N)
+    ad = scipy.stats.binom.rvs(n=td, p=p_error)
+    vafs = ad / td
+    bafs = np.where(vafs > 0.5, 1 - vafs, vafs)
+    return bafs
+
+
+def make_simulated_germline_call_bafs(mean_depth, vaf, N, p_error, hom_portion):
+    N_hom = int(N * hom_portion)
+    N_het = N - N_hom
+    return np.concatenate([
+        make_simulated_het_bafs(vaf, mean_depth, N_het),
+        make_simulated_hom_bafs(p_error, mean_depth, N_hom),
+    ])
+
+
+def infer_baf_density(bafs, bw, rmzero=True):
+    if rmzero:
+        bafs = bafs[bafs > 0]
+    peak_values, peak_densities, density = cnvmisc.get_density_peaks(bafs, bw_method=bw)
+    #return np.average(peak_values, weights=peak_densities)
+    return max(peak_values)
+
+
+def infer_baf_mean(bafs):
+    bafs = bafs[bafs > 0]
+    return bafs.mean()
+
+
+def make_simulated_baf_dataset(mean_depth=30, N=10000, p_error=0.001, reps=10, hom_portion=0.6, verbose=False):
+    true_bafs = np.arange(0, 0.51, 0.01)
+    simbaf_data = list()
+    for bafval in true_bafs:
+        if verbose:
+            print(f'baf value {bafval}')
+        subdata = list()
+        for _ in range(reps):
+            #print(f'repetition {_}')
+            simulated_bafs = make_simulated_germline_call_bafs(
+                mean_depth, bafval, N, p_error, hom_portion,
+            )
+            subdata.append(simulated_bafs)
+        simbaf_data.append(np.array(subdata))
+
+    simbaf_data = np.stack(simbaf_data, axis=0)
+
+    return simbaf_data
+
+
+def make_inferred_baf_dataset(simbaf_data, bw=1, verbose=False, infer_method='density'):
+    inferred_baf_data = list()
+    for truebaf_group in simbaf_data:
+        subdata = list()
+        for bafvals in truebaf_group:
+            if infer_method == 'density':
+                inferred_baf = infer_baf_density(bafvals, bw=bw)
+            elif infer_method == 'mean':
+                inferred_baf = infer_baf_mean(bafvals)
+            subdata.append(inferred_baf)
+        inferred_baf_data.append(np.array(subdata))
+    return np.stack(inferred_baf_data, axis=0)
+
+
+def find_best_bandwidth(mean_depth):
+    true_bafs = np.arange(0, 0.51, 0.01)
+    simbaf_data = make_simulated_baf_dataset(
+        mean_depth=mean_depth, N=1000, p_error=0.001, reps=10, hom_portion=0.6, verbose=False
+    )
+    def target(bw):
+        inferred_baf_data = make_inferred_baf_dataset(simbaf_data, bw=bw, verbose=False, infer_method='density')
+        stdsum = np.std(inferred_baf_data, axis=1).sum()
+        means = np.mean(inferred_baf_data, axis=1)
+        devsum = np.sqrt(np.sum((true_bafs - means) ** 2))
+        return stdsum + devsum
+
+    bwlist = np.arange(0.5, 1, 0.05)
+    targetvals = [target(x) for x in bwlist]
+    return bwlist[np.argmin(targetvals)]
+
 
