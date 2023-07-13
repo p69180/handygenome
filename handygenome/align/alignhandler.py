@@ -2,13 +2,35 @@ import re
 import collections
 import itertools
 
-import Bio
+import Bio.Align
 import numpy as np
 
-import importlib
-top_package_name = __name__.split(".")[0]
-common = importlib.import_module(".".join([top_package_name, "common"]))
-libvcfspec = importlib.import_module(".".join([top_package_name, "variant", "vcfspec"]))
+import handygenome.common as common
+import handygenome.variant.vcfspec as libvcfspec
+
+
+##########################
+# preset aligner objects #
+##########################
+
+ALIGNER_BLASTN = Bio.Align.PairwiseAligner(
+    match_score=2,
+    mismatch_score=-3,
+    query_internal_open_gap_score=-7,
+    query_internal_extend_gap_score=-2,
+    target_internal_open_gap_score=-7,
+    target_internal_extend_gap_score=-2,
+)
+
+ALIGNER_EQUAL_MM_GAP = Bio.Align.PairwiseAligner(
+    mode='global',
+    match_score=3,
+    mismatch_score=-3,
+    query_internal_open_gap_score=-3,
+    query_internal_extend_gap_score=0,
+    target_internal_open_gap_score=-3,
+    target_internal_extend_gap_score=0,
+)
 
 
 ######################
@@ -165,11 +187,44 @@ def get_target_length(cigartuples):
 
 # walk cigar #
 
-class Walk(collections.namedtuple('Walk', ('target', 'query'))):
+class WalkBase:
+    def check_targetonly(self):
+        return (len(self.target) != 0) and (len(self.query) == 0)
+
+    def check_queryonly(self):
+        return (len(self.query) != 0) and (len(self.target) == 0)
+
+    def check_both(self):
+        return (len(self.query) != 0) and (len(self.target) != 0)
+
+    def get_target_slice(self):
+        return slice(self.target.start, self.target.stop)
+
+    def get_query_slice(self):
+        return slice(self.query.start, self.query.stop)
+
+    @property
+    def range0(self):
+        if self.check_targetonly():
+            return self.target
+        else:
+            return self.query
+
+    def __len__(self):
+        return len(self.range0)
+
+
+class Walk(
+    WalkBase,
+    collections.namedtuple('Walk', ('target', 'query')), 
+):
     pass
 
 
-class CigarWalk(collections.namedtuple('CigarWalk', ('cigartup', 'target', 'query'))):
+class CigarWalk(
+    WalkBase,
+    collections.namedtuple('CigarWalk', ('cigartup', 'target', 'query')),
+):
     pass
 
 
@@ -546,8 +601,6 @@ def _split_cigars_helper(cigartuples, reference_start0, reference_end0, split_ra
 # Bio.Align.Alignment-related ones #
 ############################################
 
-
-
 def alignment_to_cigartuples(
     alignment, 
     match_as_78=False, del_as_skip=False, 
@@ -662,17 +715,13 @@ def path_to_walks(alignpath):
 def coordinates_to_walks(coordinates):
     """Args:
         coordinates: 'coordinates' attribute of Bio.Align.Alignment object
+            example: array([[ 0, 59, 72],
+                            [ 0, 59, 59]])
     """
-    prev_target_idx = coordinates[0, 0]
-    prev_query_idx = coordinates[1, 0]
-    for idx in range(1, coordinates.shape[1]):
-        target_range0 = range(prev_target_idx, coordinates[0, idx])
-        query_range0 = range(prev_query_idx, coordinates[1, idx])
-
-        yield target_range0, query_range0
-
-        prev_target_idx = target_range0.stop
-        prev_query_idx = query_range0.stop
+    for col_idx in range(coordinates.shape[1] - 1):
+        target_range0 = range(coordinates[0, col_idx], coordinates[0, col_idx + 1])
+        query_range0 = range(coordinates[1, col_idx], coordinates[1, col_idx + 1])
+        yield Walk(target_range0, query_range0)
 
 
 def set_walks(alignment):
@@ -1054,6 +1103,7 @@ class AlignmentTieError(Exception):
 
 
 def tiebreaker_scorer_leftmost_gaps(alignment):
+    """Those with least "sum of gap start coordinates" are favored"""
     score = 0
     for target_range0, query_range0 in get_walks(alignment, copy=False):
         if len(target_range0) == 0 or len(query_range0) == 0:
@@ -1089,11 +1139,27 @@ def tiebreaker_scorer_gap_ordering(alignment):
 
 def tiebreakers_merged_main(alignments):
     # alignment with the highest score is selected
-    selected_alns = common.multi_max(alignments, key=tiebreaker_scorer_gap_length_sum, with_target_val=False)
+
+    # step 1
+    selected_alns = common.multi_max(
+        alignments, 
+        key=tiebreaker_scorer_gap_length_sum, 
+        with_target_val=False,
+    )
     if len(selected_alns) != 1:
-        selected_alns = common.multi_max(selected_alns, key=tiebreaker_scorer_leftmost_gaps, with_target_val=False)
+        # step 2
+        selected_alns = common.multi_max(
+            selected_alns, 
+            key=tiebreaker_scorer_leftmost_gaps, 
+            with_target_val=False,
+        )
         if len(selected_alns) != 1:
-            selected_alns = common.multi_max(selected_alns, key=tiebreaker_scorer_gap_ordering, with_target_val=False)
+            # step 3
+            selected_alns = common.multi_max(
+                selected_alns, 
+                key=tiebreaker_scorer_gap_ordering, 
+                with_target_val=False,
+            )
 
     return selected_alns
 

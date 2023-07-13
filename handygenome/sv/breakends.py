@@ -4,12 +4,10 @@ import functools
 
 import Bio.Seq
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-structvars = importlib.import_module('.'.join([top_package_name, 'sv', 'structvars']))
-libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
+import handygenome.common as common
+import handygenome.workflow as workflow
+import handygenome.sv.structvars as structvars
+import handygenome.variant.vcfspec as libvcfspec
 
 
 LOGGER = workflow.get_logger(

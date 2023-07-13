@@ -9,6 +9,7 @@ import pandas as pd
 import pyranges as pr
 
 import handygenome.common as common
+import handygenome.publicdb.ncbi as libncbi
 
 
 ##################################
@@ -19,14 +20,16 @@ ASSEMBLYFILE_DIR = os.path.join(common.DATA_DIR, 'assembly_reports')
 if not os.path.exists(ASSEMBLYFILE_DIR):
     os.mkdir(ASSEMBLYFILE_DIR)
 
-ASSEMBLYFILE_URLS = common.RefverDict({
-    'NCBI36': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Homo_sapiens/all_assembly_versions/GCF_000001405.12_NCBI36/GCF_000001405.12_NCBI36_assembly_report.txt',
-    'GRCh37': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Homo_sapiens/all_assembly_versions/GCF_000001405.25_GRCh37.p13/GCF_000001405.25_GRCh37.p13_assembly_report.txt',
-    'GRCh38': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Homo_sapiens/all_assembly_versions/GCF_000001405.39_GRCh38.p13/GCF_000001405.39_GRCh38.p13_assembly_report.txt',
+ASSEMBLYFILE_URLS = common.RefverDict(libncbi.collect_assemblyfile_urls())
 
-    'GRCm38': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Mus_musculus/all_assembly_versions/GCF_000001635.26_GRCm38.p6/GCF_000001635.26_GRCm38.p6_assembly_report.txt',
-    'GRCm39': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Mus_musculus/all_assembly_versions/GCF_000001635.27_GRCm39/GCF_000001635.27_GRCm39_assembly_report.txt',
-})
+#ASSEMBLYFILE_URLS = common.RefverDict({
+#    'NCBI36': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Homo_sapiens/all_assembly_versions/GCF_000001405.12_NCBI36/GCF_000001405.12_NCBI36_assembly_report.txt',
+#    'GRCh37': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Homo_sapiens/all_assembly_versions/GCF_000001405.25_GRCh37.p13/GCF_000001405.25_GRCh37.p13_assembly_report.txt',
+#    'GRCh38': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Homo_sapiens/all_assembly_versions/GCF_000001405.39_GRCh38.p13/GCF_000001405.39_GRCh38.p13_assembly_report.txt',
+#
+#    'GRCm38': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Mus_musculus/all_assembly_versions/GCF_000001635.26_GRCm38.p6/GCF_000001635.26_GRCm38.p6_assembly_report.txt',
+#    'GRCm39': 'https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/Mus_musculus/all_assembly_versions/GCF_000001635.27_GRCm39/GCF_000001635.27_GRCm39_assembly_report.txt',
+#})
 
 ASSEMBLYFILE_PATHS = {
     key: os.path.join(ASSEMBLYFILE_DIR, os.path.basename(val))
@@ -187,7 +190,6 @@ def get_assemblyspec_data(refver):
         common.download(assemblyfile_url, assembly_report_path)
 
     return parse_assembly_report(assembly_report_path)
-    
 
 
 SPECS = common.RefverDict(

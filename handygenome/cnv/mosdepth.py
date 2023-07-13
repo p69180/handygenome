@@ -67,7 +67,17 @@ def load_mosdepth_output(filename, depth_colname='mean_depth', as_gr=True):
         return df
 
 
-def run_mosdepth(bam_path, t=8, use_median=False, region_bed_path=None, region_gr=None, window_size=None, donot_subset_bam=False, as_gr=True, load_perbase=False):
+def run_mosdepth(
+    bam_path, 
+    t=8, 
+    use_median=False, 
+    region_bed_path=None, 
+    region_gr=None, 
+    window_size=None, 
+    donot_subset_bam=False, 
+    as_gr=True, 
+    load_perbase=False,
+):
     # sanity check
     if (
         (window_size is not None)
@@ -86,7 +96,8 @@ def run_mosdepth(bam_path, t=8, use_median=False, region_bed_path=None, region_g
 
     # handle region_gr argument
     region_df = cnvmisc.arg_into_df(region_gr)
-    cnvmisc.genome_df_sanitycheck(region_df)
+    if region_df is not None:
+        cnvmisc.genome_df_sanitycheck(region_df)
 
     # make tmp directory
     tmpdir = tempfile.mkdtemp(dir=os.getcwd(), prefix='mosdepth_tmpdir_')
@@ -190,6 +201,10 @@ def run_mosdepth(bam_path, t=8, use_median=False, region_bed_path=None, region_g
     # remove tmpdir
     shutil.rmtree(tmpdir)
 
-    return result, result_perbase
+    # return
+    if result_perbase is None:
+        return result
+    else:
+        return result, result_perbase
 
 

@@ -58,6 +58,7 @@ import signal
 import logging
 import importlib
 import operator
+import ftplib
 
 import psutil
 import pysam
@@ -217,34 +218,73 @@ class RefverDict_withAllKeys(collections.UserDict):
 
 
 class RefverDict(collections.UserDict):
-    standards = ('MGSCv37', 'GRCm38', 'GRCm39', 'NCBI36', 'GRCh37', 'GRCh38', 'banana')
+    standards_byspecies = {
+        'Mus_musculus': (
+            'MGSCv3', 
+            'MGSCv34', 
+            'MGSCv35', 
+            'MGSCv36', 
+            'MGSCv37', 
+            'GRCm38', 
+            'GRCm39',
+        ),
+        'Homo_sapiens': (
+            'NCBI33', 
+            'NCBI34', 
+            'NCBI35', 
+            'NCBI36', 
+            'GRCh37', 
+            'GRCh37_hs37d5', 
+            'GRCh38', 
+            'T2T-CHM13v2',
+        ),
+        'Musa_acuminata': (
+            'ASM31385v1',
+            'ASM31385v2',
+        ),
+    }
+    standards = tuple(itertools.chain.from_iterable(standards_byspecies.values()))
+#    (
+#        # mouse
+#        'MGSCv3', 'MGSCv34', 'MGSCv35', 'MGSCv36', 'MGSCv37', 'GRCm38', 'GRCm39', 
+#        # human
+#        'NCBI33', 'NCBI34', 'NCBI35', 'NCBI36', 'GRCh37', 'GRCh37_hs37d5', 'GRCh38', 'T2T-CHM13v2',
+#        # others
+#        'banana',
+#    )
     aliases = {
         'NCBI36': ('hg18', 'ncbi36'),
         'GRCh37': ('hg19', 'grch37'),
-        'GRCh37_hs37d5': tuple(),
         'GRCh38': ('hg38', 'grch38'),
+
         'MGSCv37': ('mm9',),
         'GRCm38': ('mm10', 'grcm38'),
         'GRCm39': ('mm39', 'grcm39'),
-        'banana': tuple(),
+
+        'ASM31385v2': ('banana',),
     }
-    known_refvers = tuple(aliases.keys()) + tuple(itertools.chain.from_iterable(aliases.values()))
+    assert set(aliases.keys()).issubset(standards)
+    known_refvers = (
+        tuple(standards)
+        + tuple(itertools.chain.from_iterable(aliases.values()))
+    )
 
     @classmethod
     def standardize(cls, refver):
-        for standard, aliases in cls.aliases.items():
-            if refver == standard:
-                return standard
-            elif refver in aliases:
-                return standard
-        raise Exception(f'Input reference version string ({refver}) is unknown one.')
+        if refver in cls.standards:
+            return refver
+        else:
+            for standard, alias_list in cls.aliases.items():
+                if refver in alias_list:
+                    return standard
+            raise Exception(f'Input reference version string ({refver}) is unknown one.')
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        if not set(self.keys()).issubset(self.__class__.aliases.keys()):
+        if not set(self.keys()).issubset(self.__class__.standards):
             raise Exception(
                 f'RefverDict construction keys must be restricted to: '
-                f'{tuple(self.__class__.aliases.keys())}'
+                f'{self.__class__.standards}'
             )
 
     def __getitem__(self, key):
@@ -264,7 +304,8 @@ class RefverDict(collections.UserDict):
         result = list()
         for key in self.keys():
             result.append(key)
-            result.extend(self.__class__.aliases[key])
+            if key in self.__class__.aliases.keys():
+                result.extend(self.__class__.aliases[key])
         return result
 
 
@@ -276,7 +317,7 @@ CHR1_LENGTHS = RefverDict({
     'NCBI36': 247_249_719,
     'GRCh37': 249_250_621,
     'GRCh38': 248_956_422,
-    'banana': 41_765_374,
+    'ASM31385v2': 41_765_374,
 })
 CHR1_LENGTHS_REV = {val: key for key, val in CHR1_LENGTHS.items()}
 
@@ -298,7 +339,7 @@ DEFAULT_FASTA_PATHS = RefverDict({
     'GRCm38': '/home/users/pjh/References/reference_genome/GRCm38/ucsc/custom_files/mm10.fa',
     'GRCm39': '/home/users/pjh/References/reference_genome/GRCm39/ucsc/custom_files/mm39.fa',
 
-    'banana': '/home/users/yeonjin/practice/banana/reference/Musa_acuminata_pahang_v4_cp.fasta',
+    #'banana': '/home/users/yeonjin/practice/banana/reference/Musa_acuminata_pahang_v4_cp.fasta',
     })
 
 DEFAULT_FASTAS = RefverDict({refver: pysam.FastaFile(path) for refver, path in DEFAULT_FASTA_PATHS.items()})
@@ -401,7 +442,7 @@ class ChromDict(collections.OrderedDict):
     def assembled_chroms(self):
         return [x for x in self.contigs if RE_PATS['assembled_chromosome'].fullmatch(x) is not None]
 
-    def to_gr(self, assembled_only=False, as_gr=True):
+    def to_gr(self, assembled_only=True, as_gr=True):
         result = pd.DataFrame({
             'Chromosome': self.contigs,
             'Start': 0,
@@ -1239,6 +1280,99 @@ def infer_refver_base(contigs, lengths):
 
 ###################################################
 
+# network functionalities
+
+def retry_or_raise(n_try, retry_count, exc, retry_interval):
+    if n_try > retry_count:
+        print(exc.read().decode('utf-8'))
+        raise Exception(f'Exceeded maximum retry count({retry_count}).') from exc
+    else:
+        if isinstance(exc, TimeoutError):
+            print_timestamp(f'Retrying due to TimeoutError (Exception: {exc}); n_try={n_try}')
+        else:
+            print_timestamp(f'Retrying; n_try={n_try}')
+        time.sleep(retry_interval)
+
+
+# ftp
+
+def ftp_login(url, retry_count=10, retry_interval=1, timeout=5):
+    n_try = 0
+    while True:
+        n_try += 1
+        try:
+            with contextlib.redirect_stdout('/dev/null'):
+                ftp = ftplib.FTP(url, timeout=timeout)
+                ftp.login()
+        except TimeoutError as exc:
+            retry_or_raise(n_try, retry_count, exc, retry_interval)
+            continue
+        except OSError as exc:
+            if (str(exc) == '[Errno 101] Network is unreachable'):
+                retry_or_raise(n_try, retry_count, exc, retry_interval)
+                continue
+            else:
+                raise
+        else:
+            break
+
+    return ftp
+
+
+def trim_path(path):
+    path = re.sub('/+$', '', path)
+    path = re.sub('/{2,}', '/', path)
+    return path
+
+
+def ftp_listdir(ftp, path):
+    path = trim_path(path)
+    fname_list = list()
+    ftp.cwd(path)
+    ftp.retrlines('NLST', callback=(lambda x: fname_list.append(path + '/' + x)))
+    return fname_list
+
+
+# http
+
+def http_run_urlopen(url_or_req, retry_count=10, retry_interval=1, urlopen_timeout=5):
+    url_string = (
+        url_or_req
+        if isinstance(url_or_req, str) else
+        url_or_req.full_url
+    )
+    print_timestamp(f'Trying to open url {repr(url_string)}')
+
+    n_try = 0
+    while True:
+        n_try += 1
+        try:
+            response = urllib.request.urlopen(url_or_req, timeout=urlopen_timeout)
+        except urllib.error.URLError as exc:
+            if isinstance(exc, urllib.error.HTTPError):
+                if exc.code == 500:  # internal server error
+                    retry_or_raise(n_try, retry_count, exc, retry_interval)
+                    continue
+                else:
+                    print(exc.read().decode('utf-8'))
+                    raise
+            else: 
+                if str(exc) == '<urlopen error [Errno 101] Network is unreachable>':
+                    retry_or_raise(n_try, retry_count, exc, retry_interval)
+                    continue
+                else:
+                    print(exc.read().decode('utf-8'))
+                    raise
+        except TimeoutError as exc:
+            retry_or_raise(n_try, retry_count, exc, retry_interval)
+            continue
+        else:
+            break
+
+    print_timestamp(f'Succeeded to open url {repr(url_string)}')
+
+    return response
+
 
 def http_get(url, params=None, headers=None, text=False, retry_count=10, retry_interval=1):
     # set params
@@ -1269,39 +1403,43 @@ def http_post(url, data, params=None, headers=None, text=False, retry_count=10, 
     return http_send_request(req, text, retry_count, retry_interval)
 
 
-def http_send_request(req, text, retry_count, retry_interval):
-    print_timestamp(f'Trying to send http request to {req.full_url}')
-
-    n_try = 0
-    while True:
-        n_try += 1
-        try:
-            with urllib.request.urlopen(req) as response:
-                if text:
-                    result = response.read().decode('utf-8')
-                else:
-                    result = json.loads(response.read())
-        except urllib.error.HTTPError as exc:
-            if exc.code == 500:  # internal server error
-                if n_try > retry_count:
-                    print(exc.read().decode('utf-8'))
-                    raise Exception(f'Exceeded maximum retry count.') from exc
-                else:
-                    time.sleep(retry_interval)
-                    continue
-            else:
-                print(exc.read().decode('utf-8'))
-                raise
+def http_send_request(req, text, retry_count=10, retry_interval=1, urlopen_timeout=5):
+    with http_run_urlopen(
+        req, 
+        retry_count=retry_count, 
+        retry_interval=retry_interval, 
+        urlopen_timeout=urlopen_timeout,
+    ) as response:
+        if text:
+            result = response.read().decode('utf-8')
         else:
-            break
+            result = json.loads(response.read())
 
     return result
 
 
-def download(url, path):
-    with urllib.request.urlopen(url) as response:
-        with open(path, 'wb') as outfile:
-            shutil.copyfileobj(response, outfile)
+def download(url, path, retry_count=10, retry_interval=1, urlopen_timeout=5):
+    while True:
+        try:
+            with http_run_urlopen(
+                url, 
+                retry_count=retry_count, 
+                retry_interval=retry_interval, 
+                urlopen_timeout=urlopen_timeout,
+            ) as response:
+                with open(path, 'wb') as outfile:
+                    shutil.copyfileobj(response, outfile)
+        except TimeoutError as exc:
+            print_timestamp(f'Retrying due to TimeoutError (Exception: {exc})')
+            continue
+        else:
+            break
+
+
+def download_wget(url, path):
+    subprocess.run(
+        ['wget', '-O', path, url],
+    )
 
 
 def unzip(src, dest, rm_src=False):
@@ -1721,18 +1859,25 @@ def prefix_chr(s):
         return 'chr' + s
 
 
-def shorten_int(numlist):
+def shorten_int(numlist, n_after_dot=3):
     mapping = {0: '', 1: 'K', 2: 'M', 3: 'G'}
 
     log = np.log10(numlist)
     assert (log < 12).all(), f'Numbers greater than or equal to 10^12 are not allowed.'
 
-    qs = [int(y) for y in (log / 3)]
+    #qs = [int(y) for y in (log / 3)]
+    qs = np.floor(log / 3)
 
     suffixes = [mapping[x] for x in qs]
-    new_numlist = numlist / (10 ** (np.array(qs) * 3))
+    #new_numlist = numlist / (10 ** (np.array(qs) * 3))
+    new_numlist = numlist / (10 ** (qs * 3))
+    formatter = f'.{n_after_dot}f'
     result = [
-        (f'{int(x)}' if y == '' else f'{x:.2f} {y}')
+        (
+            f'{int(x)}' 
+            if y == '' else 
+            f'{{x:{formatter}}} {{y}}'.format(x=x, y=y)
+        )
         for x, y in zip(new_numlist, suffixes)
     ]
     return result
@@ -1766,4 +1911,11 @@ def get_diffmean(values, weights=None):
 #def broadcast_args(args):
 #    return np.broadcast_arrays(*[np.atleast_1d(x) for x in args])
 
+
+def get_groupby_keys(array):
+    array = np.asarray(array)
+    rolled = np.roll(array, 1)
+    diffs = (arr != rolled)
+    diffs[0] = True
+    return np.cumsum(diffs)
 

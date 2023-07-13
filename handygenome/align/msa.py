@@ -6,19 +6,185 @@ import subprocess
 import gzip
 import collections
 import re
+import itertools
 
+import Bio.Seq
 import Bio.SeqIO
 import Bio.SeqRecord
 import Bio.AlignIO
+import Bio.Align
+import Bio.Align.AlignInfo
 import numpy as np
+import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
+import handygenome.common as common
+import handygenome.align.alignhandler as alignhandler
 
 
+GAP_CHAR = '-'
 MUSCLE_PATH = '/home/users/pjh/tools/miniconda/210821/miniconda3/envs/genome_v5/bin/muscle'
 PAT_ALIGN = re.compile('^([^-]+)((-+)(([^-])(.*))?)?$')
+
+
+#################################################################################
+# custom-made msa (targeted for softclip segments with identical anchor points) #
+#################################################################################
+
+def msa_with_target(target, alignments, target_seqrec=None, query_seqrecs=None):
+    # arg handling
+    assert (target_seqrec is None) == (query_seqrecs is None)
+    seqrec_given = (target_seqrec is not None)
+
+    # make target gaps
+    target_gaps = summarize_target_gaps(alignments)
+
+    # make msa
+    if seqrec_given:
+        input_seqrecs = list()
+        input_seqrecs.append(
+            add_gaps_to_target(target_seqrec, target_gaps)
+        )
+        for aln, query_rec in zip(alignments, query_seqrecs):
+            input_seqrecs.append(
+                add_gaps_to_query(aln, target_gaps, query_seqrec=query_rec)
+            )
+    else:
+        padded_seqs = list()
+        padded_seqs.append(
+            add_gaps_to_target(target, target_gaps)
+        )
+        for aln in alignments:
+            padded_seqs.append(
+                add_gaps_to_query(aln, target_gaps)
+            )
+        input_seqrecs = [Bio.SeqRecord.SeqRecord(x) for x in padded_seqs]
+
+    msa = Bio.Align.MultipleSeqAlignment(input_seqrecs)
+
+    # make consensus
+    consensus = str(Bio.Align.AlignInfo.SummaryInfo(msa).dumb_consensus())
+
+    return msa, consensus
+
+
+def summarize_target_gaps(aln_list):
+    """Make a summary of target gaps in each alignment
+    Returns: dict 
+        keys: pos0 of the base on the right side of the gap. May include a value equal to "target length"
+        values: gap length
+    """
+    target_gaps = dict()
+    for aln in aln_list:
+        walks = alignhandler.get_walks(aln)
+        for walk in walks:
+            if walk.check_queryonly():
+                gap_right_border = walk.target.stop
+                gap_length = len(walk.query)
+                target_gaps.setdefault(gap_right_border, 0)
+                target_gaps[gap_right_border] = max(target_gaps[gap_right_border], gap_length)
+
+    return target_gaps
+
+
+def add_gaps_to_target(target, target_gaps, gap_char=GAP_CHAR):
+    if isinstance(target, str):
+        return add_gaps_to_target_string(target, target_gaps, gap_char=gap_char)
+    elif isinstance(target, Bio.SeqRecord.SeqRecord):
+        padded_target = add_gaps_to_target_string(str(target.seq), target_gaps, gap_char=gap_char)
+        target.seq = Bio.Seq.Seq(padded_target)
+        #new_seqrec = Bio.SeqRecord.SeqRecord(
+        #    padded_target, 
+        #    annotations=target.annotations,
+        #)
+        return target
+    else:
+        raise Exception(f'"target" argument must be either str or Bio.SeqRecord.SeqRecord')
+
+
+def add_gaps_to_target_string(target, target_gaps, gap_char=GAP_CHAR):
+    """Makes a modified target sequence with gap added as '-'"""
+    target_list = list(target)
+    target_end_idx = len(target)
+
+    for gap_end, gap_len in target_gaps.items():
+        if gap_end == target_end_idx:
+            target_list.append(gap_char * gap_len)
+        else:
+            target_list[gap_end] = (gap_char * gap_len) + target_list[gap_end]
+
+    return ''.join(target_list)
+
+
+def add_gaps_to_query(alignment, target_gaps, query_seqrec=None, overlapping_gap_to_right=True, gap_char=GAP_CHAR):
+    if query_seqrec is None:
+        return add_gaps_to_query_string(alignment, target_gaps, overlapping_gap_to_right=overlapping_gap_to_right, gap_char=gap_char)
+    else:
+        padded_query = add_gaps_to_query_string(alignment, target_gaps, overlapping_gap_to_right=overlapping_gap_to_right, gap_char=gap_char)
+        query_seqrec.seq = Bio.Seq.Seq(padded_query)
+        #new_seqrec = Bio.SeqRecord.SeqRecord(padded_query, annotations=query_seqrec.annotations)
+        return query_seqrec
+
+
+def add_gaps_to_query_string(alignment, target_gaps, overlapping_gap_to_right=True, gap_char=GAP_CHAR):
+    """Given an alignment between target and query, returns a modified query sequence with gap added as '-'"""
+    target_indices = alignment.indices[0]
+    target_indices_list = list(target_indices)
+
+    original_gap_info = list()
+    for is_gap, subiter in itertools.groupby(
+        enumerate(target_indices), key=(lambda x: x[1] == -1)
+    ):
+        if is_gap:
+            subiter = list(subiter)
+            original_gapend_alnidx = subiter[-1][0] + 1
+            original_gaplen = len(subiter)
+            original_gap_info.append((original_gapend_alnidx, original_gaplen))
+
+    raw_query_list = list(alignment[1])
+    raw_query_list.append('')
+    for (new_gapend_idx, new_gaplen) in target_gaps.items():
+        if new_gapend_idx == len(alignment.target):
+            new_gapend_alnidx = len(target_indices)
+        else:
+            new_gapend_alnidx = target_indices_list.index(new_gapend_idx)
+
+        ovlp_original_gaps = [
+            (original_gapend_alnidx, original_gaplen) 
+            for (original_gapend_alnidx, original_gaplen) in original_gap_info 
+            if (new_gapend_alnidx == original_gapend_alnidx)
+        ]
+        assert len(ovlp_original_gaps) <= 1
+
+        if len(ovlp_original_gaps) == 0:
+            query_insertion_idx = new_gapend_alnidx
+            added_gaplen = new_gaplen
+        else:
+            original_gapend_alnidx, original_gaplen = ovlp_original_gaps[0]
+
+            if overlapping_gap_to_right:
+                query_insertion_idx = new_gapend_alnidx
+            else:
+                query_insertion_idx = new_gapend_alnidx - original_gaplen
+
+            added_gaplen = new_gaplen - original_gaplen
+            assert added_gaplen >= 0    
+
+        raw_query_list[query_insertion_idx] = (gap_char * added_gaplen) + raw_query_list[query_insertion_idx]
+
+    return ''.join(raw_query_list)
+
+##########################################################
+
+
+
+
+############################################################
+############################################################
+############################################################
+############################################################
+############################################################
+
+# old ones #
 
     
 class MultipleSequenceAlignment:

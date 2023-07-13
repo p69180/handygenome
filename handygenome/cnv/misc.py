@@ -23,6 +23,7 @@ import handygenome.workflow as workflow
 import handygenome.pyranges_helper as pyranges_helper
 import handygenome.cnv.mosdepth as libmosdepth
 import handygenome.cnv.gcfraction as gcfraction
+import handygenome.cnv.rcopynumber as rcopynumber
 import handygenome.assemblyspec as libassemblyspec
 import handygenome.deco as deco
 
@@ -786,7 +787,7 @@ def inverse_theoretical_depth_ratio(
     return CNt
 
 
-def delta_depth_ratio(
+def get_delta_depth_ratio(
     cellularity, tumor_ploidy, CNn, normal_ploidy, 
     tumor_avg_depth=1, normal_avg_depth=1,
 ):
@@ -1139,7 +1140,7 @@ def get_CN_from_cp(cellularity, tumor_ploidy, depth_ratio, baf, CNt_weight, CNn,
     segfit_score_cache = dict()
     baf_diff_cache = dict()
 
-    delta_ratio = delta_depth_ratio(cellularity, tumor_ploidy, CNn, normal_ploidy) * CNt_weight
+    delta_ratio = get_delta_depth_ratio(cellularity, tumor_ploidy, CNn, normal_ploidy) * CNt_weight
 
     # upper
     save_cache(initial_candidate_upper, B_cache, segfit_score_cache, baf_diff_cache)
@@ -1587,7 +1588,7 @@ def calc_subclonal_CNt(
     only_max_ccf=True,
 ):
     # get delta-CNt (subclonal CNt - clonal CNt) values
-    clonal_onecp_ddr = delta_depth_ratio(cellularity, tumor_ploidy, CNn, normal_ploidy)
+    clonal_onecp_ddr = get_delta_depth_ratio(cellularity, tumor_ploidy, CNn, normal_ploidy)
     baseline_depthratio = theoretical_depth_ratio(
         clonal_CNt, cellularity, tumor_ploidy, CNn, normal_ploidy, 
     )
@@ -2007,14 +2008,15 @@ def average_CNt_arghandler(
     return average_CNt
 
 
-def make_depthratio_diff_factor(
+def make_depthratio_diff_normalizer(
     cellularity,
     tumor_ploidy,
     CNn,
     normal_ploidy,
     depth_ratio,
+    factor=1,
 ):
-    ddrs = delta_depth_ratio(
+    delta_depthratio_onecopy = get_delta_depth_ratio(
         cellularity=cellularity, 
         tumor_ploidy=tumor_ploidy, 
         CNn=CNn, 
@@ -2022,15 +2024,16 @@ def make_depthratio_diff_factor(
         tumor_avg_depth=1, 
         normal_avg_depth=1,
     )
-    return ddrs * depth_ratio
+    return factor * delta_depthratio_onecopy * depth_ratio
 
 
-def make_baf_diff_factor(cellularity, average_CNt, CNn):
-    return get_delta_baf(
+def make_baf_diff_divisor(cellularity, average_CNt, CNn, factor=1):
+    delta_baf_onecopy = get_delta_baf(
         cellularity=cellularity, 
         CNt=average_CNt,
         CNn=CNn,
     )
+    return factor * delta_baf_onecopy
 
 
 def make_penalties(CNt_diffs, other_diffs, factor=0.1):
@@ -2148,12 +2151,13 @@ def find_subclonal_solution_without_B(
 
     # make penalties
     if depthratio_diff_factor is None:
-        depthratio_diff_factor = make_depthratio_diff_factor(
+        depthratio_diff_factor = make_depthratio_diff_normalizer(
             cellularity=cellularity,
             tumor_ploidy=tumor_ploidy,
             CNn=CNn_valid,
             normal_ploidy=normal_ploidy,
             depth_ratio=depth_ratio_valid,
+            factor=1,
         )
     diffsum = depthratio_diffs / depthratio_diff_factor
 
@@ -2803,18 +2807,20 @@ def find_subclonal_solution_fixedccf(
     #normalized_depthratio_diff_factor = depthratio_diff_factor / (CNn_valid / 2)
 
     if depthratio_diff_factor is None:
-        depthratio_diff_factor = make_depthratio_diff_factor(
+        depthratio_diff_factor = make_depthratio_diff_normalizer(
             cellularity=cellularity,
             tumor_ploidy=tumor_ploidy,
             CNn=CNn_valid,
             normal_ploidy=normal_ploidy,
             depth_ratio=depth_ratio_valid,
+            factor=1,
         )
     if baf_diff_factor is None:
-        baf_diff_factor = make_baf_diff_factor(
+        baf_diff_factor = make_baf_diff_divisor(
             cellularity=cellularity, 
             average_CNt=average_CNt_valid, 
             CNn=CNn_valid,
+            factor=1,
         )
 
     diffsum = (
@@ -2927,7 +2933,7 @@ def select_fixed_ccfs(freeccf_solution, lengths, flags, bandwidth=0.1):
 def get_default_depth_ratio_diff(cellularity, tumor_ploidy, normal_ploidy, CNn):
     assert CNn.ndim == 1
 
-    ddr = delta_depth_ratio(
+    ddr = get_delta_depth_ratio(
         cellularity=cellularity, 
         tumor_ploidy=tumor_ploidy, 
         CNn=CNn, 
@@ -2954,6 +2960,9 @@ def find_solution_before_ccfs(
     min_N_CNt_candidates=5,
     N_CNt_candidates_fraction=0.5,
 
+    depthratio_cutoff_factor=0.2,
+    baf_cutoff_factor=0.2,
+
     limited_clonal=True,
 ):
     # average CNt
@@ -2975,20 +2984,22 @@ def find_solution_before_ccfs(
 
     # make diff cutoffs
     if depth_ratio_diff is None:
-        depth_ratio_diff = 0.2 * make_depthratio_diff_factor(
+        depth_ratio_diff = make_depthratio_diff_normalizer(
             cellularity=cellularity,
             tumor_ploidy=tumor_ploidy,
             CNn=CNn,
             normal_ploidy=normal_ploidy,
             depth_ratio=depth_ratio,
+            factor=depthratio_cutoff_factor,
         )
  
     if baf_diff is None:
-        baf_diff = 0.2 * make_baf_diff_factor(
+        baf_diff = make_baf_diff_divisor(
             cellularity=cellularity, 
             average_CNt=clonal_solution['CNt'],  
                 # this is the result of np.clip with average_CNt
             CNn=CNn,
+            factor=baf_cutoff_factor,
         )
 
     # get positions to find subclonal solution
@@ -3252,93 +3263,219 @@ def find_solution_after_ccfs(
     return result
 
 
-def calculate_tumor_mean_ploidy(subclonal_solution):
-    """Input must be an output of 'find_solution_after_ccfs' function"""
-    pass 
+#@deco.get_deco_broadcast(['depth_ratio', 'baf', 'CNn', 'Bn', 'lengths'])
+#def find_solution(
+#    depth_ratio,
+#    baf,
+#    CNn,
+#    lengths,
+#    cellularity,
+#    tumor_ploidy,
+#    normal_ploidy,
+#    depth_ratio_diff=None,
+#    baf_diff=0.05,
+#    Bn=1,
+#    min_N_CNt_candidates=5,
+#    N_CNt_candidates_fraction=0.5,
+#    ccf_bw=0.1,
+#):
+#    # arg handling
+#    if depth_ratio_diff is None:
+#        depth_ratio_diff = get_default_depth_ratio_diff(
+#            cellularity, tumor_ploidy, normal_ploidy, CNn,
+#        )
+#
+#    # average CNt
+#    average_CNt = inverse_theoretical_depth_ratio(
+#        depth_ratio=depth_ratio, 
+#        CNn=CNn, 
+#        cellularity=cellularity, 
+#        tumor_ploidy=tumor_ploidy, 
+#        normal_ploidy=normal_ploidy,
+#    )
+#
+#    # determine ccf peaks from polyploid depth-baf-unfit regions
+#    (
+#        clonal_solution, 
+#        flags, 
+#        freeccf_solution,
+#        calculated_depth_ratio, 
+#        calculated_baf,
+#        average_CNt,
+#    ) = find_solution_before_ccfs(
+#        depth_ratio=depth_ratio,
+#        baf=baf,
+#        CNn=CNn,
+#        lengths=lengths,
+#        cellularity=cellularity,
+#        tumor_ploidy=tumor_ploidy,
+#        normal_ploidy=normal_ploidy,
+#        depth_ratio_diff=depth_ratio_diff,
+#        baf_diff=baf_diff,
+#        average_CNt=average_CNt,
+#        Bn=Bn,
+#        min_N_CNt_candidates=min_N_CNt_candidates,
+#        N_CNt_candidates_fraction=N_CNt_candidates_fraction,
+#    )
+#
+#    fixed_ccfs, ccf_plotdata = select_fixed_ccfs(
+#        ccfs=freeccf_solution['ccf'][freeccf_solution['valid_CNt_flag']], 
+#        lengths=lengths[flags['polyploid_unfit']][freeccf_solution['valid_CNt_flag']],
+#        bandwidth=ccf_bw,
+#    )
+#
+#    # make final solution with fixed ccfs
+#    solution = find_solution_after_ccfs(
+#        depth_ratio=depth_ratio,
+#        baf=baf,
+#        CNn=CNn,
+#        lengths=lengths,
+#        cellularity=cellularity,
+#        tumor_ploidy=tumor_ploidy,
+#        normal_ploidy=normal_ploidy,
+#        average_CNt=average_CNt,
+#
+#        fixed_ccfs=fixed_ccfs, 
+#        clonal_solution=clonal_solution, 
+#        flags=flags,
+#
+#        Bn=Bn,
+#        min_N_CNt_candidates=min_N_CNt_candidates,
+#        N_CNt_candidates_fraction=N_CNt_candidates_fraction,
+#    )
+#
+#    return solution, ccf_plotdata
 
 
-@deco.get_deco_broadcast(['depth_ratio', 'baf', 'CNn', 'Bn', 'lengths'])
-def find_solution(
-    depth_ratio,
-    baf,
-    CNn,
-    lengths,
-    cellularity,
-    tumor_ploidy,
-    normal_ploidy,
-    depth_ratio_diff=None,
-    baf_diff=0.05,
-    Bn=1,
-    min_N_CNt_candidates=5,
-    N_CNt_candidates_fraction=0.5,
-    ccf_bw=0.1,
+##################################################
+# calculation of tumor mean ploidy from solution #
+##################################################
+
+def add_freeccf_solution_to_segment(
+    segment_df, 
+    clonal_solution,
+    freeccf_subclonal_solution, 
+    flags, 
 ):
-    # arg handling
-    if depth_ratio_diff is None:
-        depth_ratio_diff = get_default_depth_ratio_diff(
-            cellularity, tumor_ploidy, normal_ploidy, CNn,
+    """Args:
+        clonal_solution, freeccf_subclonal_solution, flags: 
+            Outputs of 'find_solution_before_ccfs' function
+    """
+    segment_df['clonal_CNt'] = clonal_solution['CNt']
+    segment_df['clonal_B'] = clonal_solution['B']
+    segment_df['subclonal_CNt'] = np.nan
+    segment_df['subclonal_B'] = np.nan
+    segment_df['ccf'] = np.nan
+    segment_df['depthratio_predicted_clonal'] = clonal_solution['theoretical_depth_ratio']
+    segment_df['baf_predicted_clonal'] = clonal_solution['theoretical_baf']
+
+    segment_df.loc[flags['polyploid_unfit'], 'clonal_CNt'] = freeccf_subclonal_solution['clonal_CNt']
+    segment_df.loc[flags['polyploid_unfit'], 'subclonal_CNt'] = freeccf_subclonal_solution['subclonal_CNt']
+    segment_df.loc[flags['polyploid_unfit'], 'clonal_B'] = freeccf_subclonal_solution['clonal_B']
+    segment_df.loc[flags['polyploid_unfit'], 'subclonal_B'] = freeccf_subclonal_solution['subclonal_B']
+    segment_df.loc[flags['polyploid_unfit'], 'ccf'] = freeccf_subclonal_solution['ccf']
+
+    segment_df['depthratio_fit'] = flags['depthratio_fit']
+    segment_df['baf_fit'] = flags['baf_fit']
+    segment_df['polyploid_unfit'] = flags['polyploid_unfit']
+    segment_df['monoploid_unfit'] = flags['monoploid_unfit']
+    segment_df['polyploid_unfit_bafonly'] = flags['polyploid_unfit_bafonly']
+
+    add_A_to_segment(segment_df)
+
+    #segment_df['depthratio_predicted'] = clonal_solution['theoretical_depth_ratio']
+    #segment_df['baf_predicted'] = clonal_solution['theoretical_baf']
+    #segment_df.loc[flags['polyploid_unfit'], 'depthratio_predicted'] = subclonal_theoretical_depthratio
+    #segment_df.loc[flags['polyploid_unfit'], 'baf_predicted'] = subclonal_theoretical_baf
+
+
+def add_A_to_segment(segment_df):
+    segment_df['clonal_A'] = segment_df['clonal_CNt'] - segment_df['clonal_B']
+    segment_df['subclonal_A'] = segment_df['subclonal_CNt'] - segment_df['subclonal_B']
+
+
+def add_fixedccf_solution_to_segment(segment_df, fixedccf_solution):
+    segment_df['clonal_CNt'] = fixedccf_solution['clonal_CNt']
+    segment_df['subclonal_CNt'] = fixedccf_solution['subclonal_CNt']
+    segment_df['clonal_B'] = fixedccf_solution['clonal_B']
+    segment_df['subclonal_B'] = fixedccf_solution['subclonal_B']
+    segment_df['ccf'] = fixedccf_solution['ccf']
+
+    segment_df['depthratio_predicted'] = fixedccf_solution['theoretical_depth_ratio']
+    segment_df['baf_predicted'] = fixedccf_solution['theoretical_baf']
+    segment_df['depthratio_predicted_clonal'] = fixedccf_solution['clonal_theoretical_depth_ratio']
+    segment_df['baf_predicted_clonal'] = fixedccf_solution['clonal_theoretical_baf']
+
+    segment_df['depthratio_fit'] = fixedccf_solution['flag']['depthratio_fit']
+    segment_df['baf_fit'] = fixedccf_solution['flag']['baf_fit']
+    segment_df['polyploid_unfit'] = fixedccf_solution['flag']['polyploid_unfit']
+    segment_df['monoploid_unfit'] = fixedccf_solution['flag']['monoploid_unfit']
+    segment_df['polyploid_unfit_bafonly'] = fixedccf_solution['flag']['polyploid_unfit_bafonly']
+
+    add_A_to_segment(segment_df)
+
+
+def calculate_tumor_mean_ploidy_main(clonal_CNts, subclonal_CNts, ccfs, lengths):
+    # sanity check
+    ccfs_isnan = np.isnan(ccfs)
+    subCNt_isnan = np.isnan(subclonal_CNts)
+    assert (ccfs_isnan == subCNt_isnan).all()
+
+    assert not np.isnan(clonal_CNts).any()
+
+    # main
+    ccfs_edit = np.where(ccfs_isnan, 0, ccfs)
+    subclonal_CNts_edit = np.where(ccfs_isnan, 0, subclonal_CNts)
+
+    return np.average(
+        clonal_CNts * (1 - ccfs_edit) + subclonal_CNts_edit * ccfs_edit,
+        weights=lengths,
+    )
+
+
+def calculate_tumor_mean_ploidy(annotated_segment_df, target_region):
+    assert isinstance(annotated_segment_df, pd.DataFrame)
+
+    required_cols = [
+        'clonal_CNt',
+        'subclonal_CNt',
+        'ccf',
+    ]
+    assert all(x in annotated_segment_df.columns for x in required_cols)
+
+    # make targetregion-fit segment
+    segment_gr = pr.PyRanges(
+        annotated_segment_df.loc[
+            :, 
+            ['Chromosome', 'Start', 'End'] + required_cols,
+        ]
+    )
+    targetregion_gr = arg_into_gr(target_region).merge()
+
+    seg_isec_target = segment_gr.intersect(targetregion_gr)
+    target_diff_seg = targetregion_gr.subtract(segment_gr)
+    if target_diff_seg.empty:
+        target_fit_seggr = seg_isec_target
+    else:
+        target_diff_seg_annot = pyranges_helper.join(
+            target_diff_seg,
+            segment_gr,
+            how='left',
+            merge=None,
+            find_nearest=True,
+            sort=False,
+            as_gr=True,
         )
+        target_fit_seggr = pr.concat([seg_isec_target, target_diff_seg_annot])
 
-    # average CNt
-    average_CNt = inverse_theoretical_depth_ratio(
-        depth_ratio=depth_ratio, 
-        CNn=CNn, 
-        cellularity=cellularity, 
-        tumor_ploidy=tumor_ploidy, 
-        normal_ploidy=normal_ploidy,
+    # main
+    result_ploidy = calculate_tumor_mean_ploidy_main(
+        clonal_CNts=target_fit_seggr.clonal_CNt, 
+        subclonal_CNts=target_fit_seggr.subclonal_CNt, 
+        ccfs=target_fit_seggr.ccf, 
+        lengths=target_fit_seggr.lengths(),
     )
-
-    # determine ccf peaks from polyploid depth-baf-unfit regions
-    (
-        clonal_solution, 
-        flags, 
-        freeccf_solution,
-        calculated_depth_ratio, 
-        calculated_baf,
-        average_CNt,
-    ) = find_solution_before_ccfs(
-        depth_ratio=depth_ratio,
-        baf=baf,
-        CNn=CNn,
-        lengths=lengths,
-        cellularity=cellularity,
-        tumor_ploidy=tumor_ploidy,
-        normal_ploidy=normal_ploidy,
-        depth_ratio_diff=depth_ratio_diff,
-        baf_diff=baf_diff,
-        average_CNt=average_CNt,
-        Bn=Bn,
-        min_N_CNt_candidates=min_N_CNt_candidates,
-        N_CNt_candidates_fraction=N_CNt_candidates_fraction,
-    )
-
-    fixed_ccfs, ccf_plotdata = select_fixed_ccfs(
-        ccfs=freeccf_solution['ccf'][freeccf_solution['valid_CNt_flag']], 
-        lengths=lengths[flags['polyploid_unfit']][freeccf_solution['valid_CNt_flag']],
-        bandwidth=ccf_bw,
-    )
-
-    # make final solution with fixed ccfs
-    solution = find_solution_after_ccfs(
-        depth_ratio=depth_ratio,
-        baf=baf,
-        CNn=CNn,
-        lengths=lengths,
-        cellularity=cellularity,
-        tumor_ploidy=tumor_ploidy,
-        normal_ploidy=normal_ploidy,
-        average_CNt=average_CNt,
-
-        fixed_ccfs=fixed_ccfs, 
-        clonal_solution=clonal_solution, 
-        flags=flags,
-
-        Bn=Bn,
-        min_N_CNt_candidates=min_N_CNt_candidates,
-        N_CNt_candidates_fraction=N_CNt_candidates_fraction,
-    )
-
-    return solution, ccf_plotdata
+    return result_ploidy, target_fit_seggr
 
 
 #########################
@@ -3490,7 +3627,7 @@ def get_cp_score_dict(
         dic['calculated_tumor_ploidy'] = calc_ploidy
         dic['ploidy_diff'] = calc_ploidy - cppair.ploidy
         dic['ploidy_diff_ratio'] = dic['ploidy_diff'] / cppair.ploidy
-        dic['delta_depth_ratio'] = delta_depth_ratio(
+        dic['delta_depth_ratio'] = get_delta_depth_ratio(
             cellularity=cppair.cellularity, 
             tumor_ploidy=cppair.ploidy, 
             CNn=2, 
@@ -3980,15 +4117,14 @@ def depth_df_gc_addition(depth_df, gc_df=None, refver=None, fasta=None, window=N
     return result
 
 
-@deco.get_deco_num_set_differently(('fasta', 'refver', 'gc_df'), 1)
 @deco.get_deco_num_set_differently(('outlier_region', 'included_region'), 1)
 def postprocess_depth_df(
     depth_df, 
     *,
     refver=None,
     fasta=None, 
-    gc_df=None,
 
+    gc_df=None,
     gc_window=None,
 
     outlier_region=None,
@@ -4038,6 +4174,12 @@ def postprocess_depth_df(
     depth_df = arg_into_df(depth_df)
     assert 'mean_depth' in depth_df.columns, f'"depth_df" must include a column named "mean_depth"'
     assert preset_cutoffs in ('wgs', 'normal_wgs', 'panel', None)
+    gcadd_by_df = (gc_df is not None)
+    gcadd_by_calc = ((refver is not None) or (fasta is not None))
+    assert gcadd_by_df ^ gcadd_by_calc
+
+    # make a copy of input df
+    depth_df = depth_df.copy()
 
     # calculate average depth
     avg_depth = depth_df['mean_depth'].mean()
@@ -4059,10 +4201,13 @@ def postprocess_depth_df(
     # add GC fractions
     printlog(f'Adding GC fraction values')
     depth_df = depth_df_gc_addition(
-        depth_df, gc_df=gc_df, refver=refver, fasta=fasta, window=gc_window,
+        depth_df, 
+        gc_df=gc_df, 
+        refver=refver, 
+        fasta=fasta, 
+        window=gc_window,
     )
 
-    ## replace outliers with nan; separately for output and gc data 
     # mark outlier positions with 'excluded' column
     printlog(f'Marking outlier positions')
     if outlier_region is not None:
@@ -4103,9 +4248,15 @@ def postprocess_depth_df(
         filterd_depth_df = output_depth_df.loc[~output_depth_df['excluded'], :]
         avg_depth_wo_outliers = common.nanaverage(
             filterd_depth_df['mean_depth'].to_numpy(), 
-            weights=(filterd_depth_df['End'] - filterd_depth_df['Start']).to_numpy(),
+            weights=(
+                filterd_depth_df['End'] 
+                - filterd_depth_df['Start']
+            ).to_numpy(),
         )
-        output_depth_df['norm_mean_depth'] = (output_depth_df['mean_depth'] / avg_depth_wo_outliers).array
+        output_depth_df['norm_mean_depth'] = (
+            output_depth_df['mean_depth'] 
+            / avg_depth_wo_outliers
+        ).array
 
     # gc_corrected_mean_depth
     if add_gccorr_depth:
@@ -4173,6 +4324,7 @@ def get_processed_depth_df(
 def make_depth_ratio(
     tumor_depth_df, normal_depth_df, 
     make_depthratio_mystyle=False,
+    make_depthratio_plain=False,
     as_gr=False,
     #verbose=False,
 ):
@@ -4231,6 +4383,11 @@ def make_depth_ratio(
         result['depth_ratio_mystyle'] = make_ratio(
             tumor_depth_df['gc_corrected_mean_depth'].array, 
             normal_depth_df['gc_corrected_mean_depth'].array,
+        )
+    if make_depthratio_plain:
+        result['depth_ratio_plain'] = make_ratio(
+            tumor_depth_df['norm_mean_depth'].array, 
+            normal_depth_df['norm_mean_depth'].array,
         )
 
     # copy annotation columns from input dfs
@@ -4558,5 +4715,92 @@ def plot_gc_distribution(
         fig_heatmap = make_heatmap(gcbin_depth_data, ylims=heatmap_ylims, vmax=heatmap_vmax)
 
     return fig_avg_scatter, fig_heatmap
+
+
+#################################
+
+# germline sample CN calling
+
+def make_normalsample_segment(
+    postprocessed_depth_df,
+    refver,
+    winsorize=False,
+    verbose=False,
+    gamma=None,
+    kmin=None,
+):
+    """Input must be WGS depth dataframe
+    """
+    assert 'norm_mean_depth' in postprocessed_depth_df.columns
+
+    # run segmentation
+    input_df = postprocessed_depth_df.rename(
+        columns={'norm_mean_depth': 'depth_raw'},
+        inplace=False,
+    )
+    segment_df, _ = rcopynumber.run_rcopynumber_unified(
+        depth_df=input_df,
+        refver=refver,
+
+        as_gr=False, 
+        winsorize=winsorize,
+        compact=False,
+        verbose=verbose,
+        gamma=gamma,
+        kmin=kmin,
+        remove_unassembled_contigs=True,
+    )
+
+    return segment_df
+    
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

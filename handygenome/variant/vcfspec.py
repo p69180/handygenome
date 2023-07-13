@@ -408,6 +408,20 @@ class Vcfspec:
     def get_alleleclasses(self):
         return (None,) + tuple(range(-1, len(self.alts) + 1))
 
+    def iter_annotation_forms(self):
+        for alt_index in self.iter_alt_indexes():
+            component_index = alt_index + 1
+            if component_index in self.components:
+                component_vcfspecs = self.components[component_index]
+                if len(component_vcfspecs) == 0:
+                    yield self.spawn(alts=(self.alts[alt_index],))
+                elif len(component_vcfspecs) == 1:
+                    yield component_vcfspecs[0]
+                else:
+                    yield concat_list(component_vcfspecs, distance_le=None)[0]
+            else:
+                yield self.spawn(alts=(self.alts[alt_index],))
+
     def iter_monoalts(self):
         for alt_index in self.iter_alt_indexes():
             yield self.get_monoalt(alt_index=alt_index)

@@ -269,9 +269,13 @@ def make_simulated_germline_call_bafs(mean_depth, vaf, N, p_error, hom_portion):
 def infer_baf_density(bafs, bw, rmzero=True):
     if rmzero:
         bafs = bafs[bafs > 0]
-    peak_values, peak_densities, density = cnvmisc.get_density_peaks(bafs, bw_method=bw)
-    #return np.average(peak_values, weights=peak_densities)
-    return max(peak_values)
+    assert len(bafs) > 0
+    if len(bafs) == 1:
+        return bafs[0]
+    else:
+        peak_values, peak_densities, density = cnvmisc.get_density_peaks(bafs, bw_method=bw)
+        #return np.average(peak_values, weights=peak_densities)
+        return max(peak_values)
 
 
 def infer_baf_mean(bafs):

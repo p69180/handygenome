@@ -6,8 +6,8 @@ import re
 import textwrap
 import shutil
 
-PYTHON = '/home/users/pjh/tools/miniconda/221104/miniconda3/envs/genome_v7/bin/python'
-PROJECT_PATH = os.path.dirname(os.path.abspath(sys.argv[0]))
+PYTHON = sys.executable
+PROJECT_PATH = os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[0])))
 PACKAGE_PATH = os.path.join(PROJECT_PATH, 'handygenome')
 TARGETDIR = os.path.join(PROJECT_PATH, 'bin')
 

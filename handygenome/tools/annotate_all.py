@@ -106,10 +106,11 @@ def setup_vep(
 def make_vepinput(split_infile_path, vepinput_path, fasta, chromdict):
     def modify_outvr_nonsv(vr, out_vcf_header, out_vr_list):
         vcfspec = libvcfspec.Vcfspec.from_vr(vr)
-        for sub_vcfspec in vcfspec.iter_monoalts():
+        #for sub_vcfspec in vcfspec.iter_monoalts():
+        for monoalt_vcfspec in vcfspec.iter_annotation_forms():
             new_vr = out_vcf_header.new_record()
-            sub_vcfspec.apply_to_vr(new_vr)
-            new_vr.id = sub_vcfspec.get_id()
+            monoalt_vcfspec.apply_to_vr(new_vr)
+            new_vr.id = monoalt_vcfspec.get_id()
             out_vr_list.append(new_vr)
 
     def modify_outvr_sv(vr, in_vcf, out_vr_list, bnds, fasta):
@@ -266,28 +267,28 @@ def add_annotations(
         distance,
     ):
         transcript_set_list = ensembl_feature.TranscriptSetALTlist(is_missing=False)
-        for alt_idx, vcfspec_monoalt in enumerate(vcfspec.iter_monoalts()):
-            vep_vr = vep_vr_dict[vcfspec_monoalt.get_id()]
+        for alt_idx, monoalt_vcfspec in enumerate(vcfspec.iter_annotation_forms()):
+            vep_vr = vep_vr_dict[monoalt_vcfspec.get_id()]
             parsed = ensembl_parser.parse_cmdline_vep(vep_vr)
 
             transcript_set = parsed["transcript"]
             transcript_set.update_ensembl_gff(
-                vcfspec_monoalt,
+                monoalt_vcfspec,
                 chromdict,
                 distance,
                 tabixfile_geneset,
                 refver=refver,
                 fill_missing_canonical=False,
             )
-            # transcript_set.set_missing_distances(vcfspec_monoalt, alt_idx)
+            # transcript_set.set_missing_distances(monoalt_vcfspec, alt_idx)
             transcript_set_list.append(transcript_set)
 
             if alt_idx == 0:
                 regulatory_set = parsed["regulatory"]
                 regulatory_set.update_ensembl_gff(
-                    vcfspec_monoalt, chromdict, distance, tabixfile_regulatory
+                    monoalt_vcfspec, chromdict, distance, tabixfile_regulatory
                 )
-                regulatory_set.set_missing_distances(vcfspec_monoalt, alt_idx)
+                regulatory_set.set_missing_distances(monoalt_vcfspec, alt_idx)
 
                 motif_set = parsed["motif"]
 
@@ -485,8 +486,6 @@ def add_annotations(
         liboncokb.OncoKBInfoALTlist.add_meta(out_vcf_header)
 
         return out_vcf_header
-
-
 
     # main
     in_vcf = pysam.VariantFile(split_infile_path)
@@ -802,8 +801,10 @@ def main(cmdargs):
         sched=args.sched,
         intv_check=args.intv_check,
         intv_submit=args.intv_submit,
+        max_submit=args.max_submit, 
         logger=logger,
         log_dir=tmpdir_paths["logs"],
+        job_status_logpath=os.path.join(tmpdir_paths['root'], 'job_status_log.gz'),
         raise_on_failure=True,
     )
 

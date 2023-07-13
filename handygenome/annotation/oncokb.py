@@ -142,7 +142,7 @@ def make_OncoKBInfoALTlist_list(vr_iterator, token, **kwargs):
     vr_indexes = list()
     for vr_idx, vr in enumerate(vr_iterator):
         vcfspec = libvcfspec.Vcfspec.from_vr(vr)
-        for sub_vcfspec in vcfspec.iter_monoalts():
+        for sub_vcfspec in vcfspec.iter_annotation_forms():
             hgvsg_list.append(sub_vcfspec.to_hgvsg())
             vr_indexes.append(vr_idx)
 

@@ -46,18 +46,27 @@ class PileupBase:
     pat_insclip = re.compile("(\(.+\))?([^()]+)(\(.+\))?")
     pat_parenthesis = re.compile("[()]")
     DEL_VALUE = "*"
-    EMPTY_VALUE = ""
+    EMPTY_VALUE = "_"
+    DF_FILL_VALUES = {
+        'main': EMPTY_VALUE,
+        'bq': -1,
+        'queryonly': '',
+        'queryonly_bq': np.nan,
+        'onleft': False,
+        'unedited_main': EMPTY_VALUE,
+        'queryonly_added_main': EMPTY_VALUE,
+    }
         
     ##########################
     # methods for direct use #
     ##########################
     @property
     def start0(self):
-        return self.df.columns[0]
+        return self.seq_df.columns[0]
 
     @property
     def end0(self):
-        return self.df.columns[-1] + 1
+        return self.seq_df.columns[-1] + 1
 
     @property
     def range0(self):
@@ -65,18 +74,44 @@ class PileupBase:
 
     @property
     def width(self):
-        return self.df.shape[1]
+        return self.seq_df.shape[1]
 
     def get_ref_seq(self):
         return self.fasta.fetch(self.chrom, self.start0, self.end0)
 
     def get_depth(self, pos0):
-        col = self.df.loc[:, pos0]
+        col = self.seq_df.loc[:, pos0]
         return (col != self.__class__.EMPTY_VALUE).sum()
         #return sum(x != self.__class__.EMPTY_VALUE for x in col)
 
+    def get_queryonly_added_df(self):
+        main_asnp = self.dfs['main'].to_numpy().astype(str)
+        queryonly_asnp = self.dfs['queryonly'].to_numpy().astype(str)
+
+        queryonly_exists = (queryonly_asnp != self.__class__.DF_FILL_VALUES['queryonly'])
+        main_replaced = np.where(
+            (main_asnp == self.__class__.DF_FILL_VALUES['main']),
+            '',
+            main_asnp,
+        )
+        result = np.where(
+            queryonly_exists,
+            np.where(
+                self.dfs['onleft'], 
+                np.char.add(queryonly_asnp, main_asnp),
+                np.char.add(main_asnp, queryonly_asnp),
+            ),
+            main_asnp,
+        )
+        result = pd.DataFrame(
+            result, 
+            index=self.dfs['main'].index, 
+            columns=self.dfs['main'].columns, 
+        )
+        return result
+
     def get_allele_counter(self, pos0):
-        col = self.df.loc[:, pos0]
+        col = self.dfs['queryonly_added_main'].loc[:, pos0]
         return collections.Counter(col[col != self.__class__.EMPTY_VALUE])
         #return collections.Counter(x for x in col if x != self.__class__.EMPTY_VALUE)
 
@@ -91,6 +126,30 @@ class PileupBase:
     def get_read(self, read_uid):
         return self.read_store[read_uid]
 
+    def get_lowbq_replaced_df(self, main_df, bq_df, cutoff=15):
+        ref_seq = self.get_ref_seq()
+
+        bq_exists = (bq_df != self.__class__.DF_FILL_VALUES['bq'])
+        bq_is_low = np.logical_and(
+            bq_exists,
+            bq_df < cutoff,
+        )
+        bq_is_low = bq_is_low.to_numpy()
+
+        result = main_df.copy()
+        for row_idx, col_idx in zip(*bq_is_low.nonzero()):
+            result.iloc[row_idx, col_idx] = ref_seq[col_idx]
+
+        return result
+
+    @property
+    def seq_df(self):
+        try:
+            return self.dfs['queryonly_added_main']
+        except KeyError:
+            return self.dfs['main']
+            
+
     ############
     # backends #
     ############
@@ -101,6 +160,8 @@ class PileupBase:
         refver=None, fasta=None,
 
         init_df=True, 
+
+        lowbq_cutoff=15,
 
         verbose=False, 
         logger=None,
@@ -118,7 +179,9 @@ class PileupBase:
 
         # init df and subsequent ones
         if init_df:
-            df, read_store = make_pileup_components(
+            (
+                df, bq_df, queryonly_df, queryonly_bq_df, onleft_df, read_store,
+            )= make_pileup_components(
                 chrom,
                 start0,
                 end0,
@@ -128,11 +191,30 @@ class PileupBase:
                 verbose=self.verbose,
                 logger=self.logger,
             )
-            self.df = df
+            self.dfs = {
+                'main': df,
+                'bq': bq_df,
+                'queryonly': queryonly_df,
+                'queryonly_bq': queryonly_bq_df,
+                'onleft': onleft_df,
+            }
             self.read_store = read_store
+
+            # replace lowbq with REF
+            lowbq_replaced_df = self.get_lowbq_replaced_df(
+                main_df=self.dfs['main'],
+                bq_df=self.dfs['bq'],
+                cutoff=lowbq_cutoff,
+            )
+            self.dfs['unedited_main'] = self.dfs['main']
+            self.dfs['main'] = lowbq_replaced_df
+
+            # make queryonly-added main
+            self.dfs['queryonly_added_main'] = self.get_queryonly_added_df()
+
             self._set_MQ()
         else:
-            self.df = None
+            self.dfs = None
             self.read_store = None
             self.MQ = None
 
@@ -140,7 +222,7 @@ class PileupBase:
         return (
             f'<'
             f'{self.__class__.__name__}'
-            f'(chrom={self.chrom}, start0={self.start0:,}, end0={self.end0:,}, shape={self.df.shape})'
+            f'(chrom={self.chrom}, start0={self.start0:,}, end0={self.end0:,}, shape={self.seq_df.shape})'
             f'>'
         )
 
@@ -153,16 +235,17 @@ class PileupBase:
             raise Exception('Input "end0" argument is out of pileup range.')
 
     def _coord_arg_sanitycheck_pos0(self, pos0):
-        if pos0 not in self.df.columns:
+        if pos0 not in self.seq_df.columns:
             raise Exception('Input "pos0" argument is out of pileup range.')
 
     def _set_MQ(self):
-        if self.df.shape[1] == 0:
+        if self.seq_df.shape[1] == 0:
             self.MQ = pd.Series([], dtype=float)
         else:
-            if self.df.shape[0] > 0:
-                MQ_data = {pos0: list() for pos0 in self.df.columns}
-                for read_uid, row in self.df.iterrows():
+            if self.seq_df.shape[0] > 0:
+                MQ_data = {pos0: list() for pos0 in self.seq_df.columns}
+                #for read_uid, row in self.df.iterrows():
+                for read_uid in self.seq_df.index:
                     read = self.read_store[read_uid]
                     start0 = max(self.start0, read.reference_start)
                     end0 = min(self.end0, read.reference_end)
@@ -171,14 +254,14 @@ class PileupBase:
                 self.MQ = pd.Series(
                     [
                         np.nan if (len(MQ_data[pos0]) == 0) else np.mean(MQ_data[pos0])
-                        for pos0 in self.df.columns
+                        for pos0 in self.seq_df.columns
                     ],
-                    index=self.df.columns,
+                    index=self.seq_df.columns,
                 )
             else:
                 self.MQ = pd.Series(
-                    [np.inf] * self.df.shape[1],
-                    index=self.df.columns,
+                    [np.inf] * self.seq_df.shape[1],
+                    index=self.seq_df.columns,
                 )
 
     def _spawn_base(self, attrs_to_copy, init_df=False):
@@ -205,33 +288,58 @@ class PileupBase:
         return result
 
     def _subset_base(self, start0, end0, inplace=False):
-        subset_df = self._get_subset_df(start0, end0)
+        #subset_df, subset_bq_df = self._get_subset_df(start0, end0)
+        subset_dfs = self._get_subset_df(start0, end0)
         new_MQ = self.MQ.loc[start0:(end0 - 1)]
         if inplace:
-            self.df = subset_df
+            self.dfs = subset_dfs
             self.MQ = new_MQ
             return None
         else:
             result = self.spawn()
-            result.df = subset_df
+            result.dfs = subset_dfs
             result.MQ = new_MQ
             return result
 
     def _get_subset_df(self, start0, end0):
         self._coord_arg_sanitycheck(start0, end0)
+        # get row selector
+        row_within_range = list()
+        for row_id in self.seq_df.index:
+            read = self.read_store[row_id]
+            if read.reference_end <= start0 or read.reference_start >= end0:
+                row_within_range.append(False)
+            else:
+                row_within_range.append(True)
+
+        # subset dataframe
+        new_dfs = {
+            key: val.loc[row_within_range, start0:(end0 - 1)]
+            for key, val in self.dfs.items()
+        }
+        #new_df = self.df.loc[row_within_range, start0:(end0 - 1)]
+        #new_bq_df = self.bq_df.loc[row_within_range, start0:(end0 - 1)]
+
+        return new_dfs
+
+    def _get_subset_df_old(self, start0, end0):
+        self._coord_arg_sanitycheck(start0, end0)
         # subset dataframe
         new_df = self.df.loc[:, start0:(end0 - 1)]
+        new_bq_df = self.bq_df.loc[:, start0:(end0 - 1)]
         # remove out-of-range rows
         row_within_range = list()
-        for row_id, row in new_df.iterrows():
+        #for row_id, row in new_df.iterrows():
+        for row_id in new_df.index:
             read = self.read_store[row_id]
             if read.reference_end <= start0 or read.reference_start >= end0:
                 row_within_range.append(False)
             else:
                 row_within_range.append(True)
         new_df = new_df.loc[row_within_range, :]
+        new_bq_df = new_bq_df.loc[row_within_range, :]
 
-        return new_df
+        return new_df, new_bq_df
 
     def _merge_base(self, other, other_on_left):
         if other_on_left:
@@ -242,8 +350,27 @@ class PileupBase:
             right = other
 
         assert left.end0 == right.start0
-        border_col_idx_left = left.df.shape[1] - 1
-        self.df = left.df.join(right.df, how="outer")
+        border_col_idx_left = left.seq_df.shape[1] - 1
+        new_dfs = {
+            key: left.dfs[key].join(right.dfs[key], how="outer")
+            for key in left.dfs.keys()
+        }
+        #for key, df in zip(keys, vals):
+        for key in list(new_dfs.keys()):
+            df = new_dfs[key]
+            try:
+                df.where(df.notna(), other=self.__class__.DF_FILL_VALUES[key], inplace=True)
+            except TypeError as exc:
+                if str(exc) == 'Cannot do inplace boolean setting on mixed-types with a non np.nan value':
+                    new_dfs[key] = df.where(
+                        df.notna(), other=self.__class__.DF_FILL_VALUES[key], inplace=False,
+                    )
+                else:
+                    raise
+                    
+        self.dfs = new_dfs
+        #self.df = left.df.join(right.df, how="outer")
+        #self.bq_df = left.bq_df.join(right.bq_df, how="outer")
         self.MQ = pd.concat([left.MQ, right.MQ])
 
 #        try:
@@ -253,8 +380,7 @@ class PileupBase:
 #            print(self.df)
 #            print(type(self.df.iloc[0, 0]))
 #            raise
-        self.df = self.df.where(self.df.notna(), other=self.__class__.EMPTY_VALUE)
-        self._handle_facing_insclips(border_col_idx_left)
+        #self._handle_facing_insclips(border_col_idx_left)
         self.read_store.update(other.read_store)
 
     def _handle_facing_insclips(self, border_col_idx_left):
@@ -413,7 +539,7 @@ class MultisamplePileup(PileupBase):
             {key: val.df for key, val in self.pileup_dict.items()},
             names=['SampleID', 'ReadUID'],
         )
-        self._set_active_info()
+        #self._set_active_info()
 
     def get_read(self, row_id):
         sampleid, read_uid = row_id
@@ -617,18 +743,44 @@ def make_pileup_components(
         if tmp_pileup_range is None:  # zero depth
             ref_span_range = range(start0, end0)
             arr = np.empty((0, len(ref_span_range)))
+            bq_arr = arr.copy()
+            queryonly_arr = arr.copy()
+            queryonly_bq_arr = arr.copy()
+            onleft_arr = arr.copy()
         else:
-            # create array
+            # initialize array
             arr = np.full(
                 shape=(len(read_store), len(tmp_pileup_range)),
-                fill_value=empty_value,
+                fill_value=PileupBase.DF_FILL_VALUES['main'],
+                dtype=str,
+            )
+            bq_arr = np.full(
+                shape=(len(read_store), len(tmp_pileup_range)),
+                fill_value=PileupBase.DF_FILL_VALUES['bq'],
+                dtype=int,
+            )
+            queryonly_arr = np.full(
+                shape=(len(read_store), len(tmp_pileup_range)),
+                fill_value=PileupBase.DF_FILL_VALUES['queryonly'],
                 dtype=object,
             )
+            queryonly_bq_arr = np.full(
+                shape=(len(read_store), len(tmp_pileup_range)),
+                fill_value=PileupBase.DF_FILL_VALUES['queryonly_bq'],
+                dtype=object,
+            )
+            onleft_arr = np.full(
+                shape=(len(read_store), len(tmp_pileup_range)),
+                fill_value=PileupBase.DF_FILL_VALUES['onleft'],
+                dtype=bool,
+            )
+
             for arr_row_idx, read in enumerate(read_store.values()):
                 arr_col_idx = read.reference_start - tmp_pileup_range.start
                 try:
                     _write_read_to_array_row(
                         read, arr, arr_row_idx, arr_col_idx, del_value, 
+                        bq_arr, queryonly_arr, queryonly_bq_arr, onleft_arr, 
                         trailing_queryonly_to_right,
                     )
                 except Exception as exc:
@@ -642,40 +794,70 @@ def make_pileup_components(
             last_col_is_empty = (set(arr[:, -1]) == {empty_value})
             if last_col_is_empty:
                 arr = arr[:, :-1]
+                bq_arr = bq_arr[:, :-1]
+                queryonly_arr = queryonly_arr[:, :-1]
+                queryonly_bq_arr = queryonly_bq_arr[:, :-1]
+                onleft_arr = onleft_arr[:, :-1]
                 tmp_pileup_range = range(tmp_pileup_range.start, tmp_pileup_range.stop - 1)
 
             # truncate array
             if truncate:
                 ref_span_range = range(start0, end0)
                 arr = truncate_array(arr, tmp_pileup_range, ref_span_range)
+                bq_arr = truncate_array(bq_arr, tmp_pileup_range, ref_span_range)
+                queryonly_arr = truncate_array(queryonly_arr, tmp_pileup_range, ref_span_range)
+                queryonly_bq_arr = truncate_array(queryonly_bq_arr, tmp_pileup_range, ref_span_range)
+                onleft_arr = truncate_array(onleft_arr, tmp_pileup_range, ref_span_range)
             else:
                 ref_span_range = tmp_pileup_range
 
-        return arr, ref_span_range
+        return arr, bq_arr, queryonly_arr, queryonly_bq_arr, onleft_arr, ref_span_range
 
     # main
     read_store, tmp_pileup_range = make_read_store(bam, chrom, start0, end0)
-        # tmp_pileup_range contains end0 of the leftmost fetched read
+        # tmp_pileup_range contains end0 of the rightmost fetched read
 
-    arr, ref_span_range = make_array(
+    arr, bq_arr, queryonly_arr, queryonly_bq_arr, onleft_arr, ref_span_range = make_array(
         start0, end0, tmp_pileup_range, read_store, empty_value, del_value, trailing_queryonly_to_right,
     )
 
     # final result
     if as_array:
-        return arr, ref_span_range, read_store
+        return arr, bq_arr, queryonly_arr, queryonly_bq_arr, onleft_arr, ref_span_range, read_store
     else:
         df = pd.DataFrame(
             arr, 
             columns=list(ref_span_range), 
             index=pd.Index(read_store.keys(), tupleize_cols=False),
         )
-        return df, read_store
+        bq_df = pd.DataFrame(
+            bq_arr, 
+            columns=list(ref_span_range), 
+            index=pd.Index(read_store.keys(), tupleize_cols=False),
+        )
+        queryonly_df = pd.DataFrame(
+            queryonly_arr, 
+            columns=list(ref_span_range), 
+            index=pd.Index(read_store.keys(), tupleize_cols=False),
+        )
+        queryonly_bq_df = pd.DataFrame(
+            queryonly_bq_arr, 
+            columns=list(ref_span_range), 
+            index=pd.Index(read_store.keys(), tupleize_cols=False),
+        )
+        onleft_df = pd.DataFrame(
+            onleft_arr, 
+            columns=list(ref_span_range), 
+            index=pd.Index(read_store.keys(), tupleize_cols=False),
+        )
+        return df, bq_df, queryonly_df, queryonly_bq_df, onleft_df, read_store
 
 
 def _write_read_to_array_row(
-    read, arr, arr_row_idx, arr_col_idx, del_value,
+    read, arr, arr_row_idx, arr_col_idx, del_value, 
+    bq_arr, queryonly_arr, queryonly_bq_arr, onleft_arr, 
     trailing_queryonly_to_right=True,
+    bq_array_includes_queryonly=False,
 ):
     """Helper function for 'make_pileup_components'"""
     query_idx = 0
@@ -694,19 +876,31 @@ def _write_read_to_array_row(
                 sl_query = slice(query_idx, query_idx + cigarlen_sum)
                 sl_arr_col = slice(arr_col_idx, arr_col_idx + cigarlen_sum)
                 arr[arr_row_idx, sl_arr_col] = tuple(read.query_sequence[sl_query])
+
+                bq_arr[arr_row_idx, sl_arr_col] = tuple(read.query_qualities[sl_query])  # BQ array
             else:
-                # add the first match-base, prefixed with query-only sequence buffer
-                arr[arr_row_idx, arr_col_idx] = f'({queryonly_seq})' + read.query_sequence[query_idx]
+                # add query-only information
+                arr[arr_row_idx, arr_col_idx] = read.query_sequence[query_idx]
+                bq_arr[arr_row_idx, arr_col_idx] = read.query_qualities[query_idx]
+                queryonly_arr[arr_row_idx, arr_col_idx] = queryonly_seq
+                queryonly_bq_arr[arr_row_idx, arr_col_idx] = queryonly_bq
+                onleft_arr[arr_row_idx, arr_col_idx] = True
+
+                # add trailing matched bases
                 sl_query = slice(query_idx + 1, query_idx + cigarlen_sum)
                 sl_arr_col = slice(arr_col_idx + 1, arr_col_idx + cigarlen_sum)
                 arr[arr_row_idx, sl_arr_col] = tuple(read.query_sequence[sl_query])
+                bq_arr[arr_row_idx, sl_arr_col] = tuple(read.query_qualities[sl_query])  # BQ array
+
                 queryonly_seq = None
+                queryonly_bq = None
 
             arr_col_idx += cigarlen_sum
             query_idx += cigarlen_sum
 
         elif (not consume_target) and consume_query:  # ins, softclip
             queryonly_seq = read.query_sequence[query_idx:(query_idx + cigarlen_sum)]
+            queryonly_bq = tuple(read.query_qualities[query_idx:(query_idx + cigarlen_sum)])  # BQ array
             query_idx += cigarlen_sum
 
         elif consume_target and (not consume_query):  # del, skip
@@ -721,12 +915,95 @@ def _write_read_to_array_row(
     # When the last cigar operation is query-only
     if queryonly_seq is not None:
         if idx == 0:  # query-only-only case
+            queryonly_arr[arr_row_idx, arr_col_idx] = queryonly_seq
+            queryonly_bq_arr[arr_row_idx, arr_col_idx] = queryonly_bq  # BQ array
+        else:  # queryonly_seq is appended to the base on the left
+            queryonly_arr[arr_row_idx, arr_col_idx - 1] = queryonly_seq
+            onleft_arr[arr_row_idx, arr_col_idx - 1] = False
+            queryonly_bq_arr[arr_row_idx, arr_col_idx - 1] = queryonly_bq
+
+
+def _write_read_to_array_row_old(
+    read, arr, arr_row_idx, arr_col_idx, del_value, 
+    bq_arr, queryonly_arr, onleft_arr, 
+    trailing_queryonly_to_right=True,
+    bq_array_includes_queryonly=False,
+):
+    """Helper function for 'make_pileup_components'"""
+    query_idx = 0
+    queryonly_seq = None
+    for idx, (key, subiter) in enumerate(
+        itertools.groupby(
+            read.cigartuples, 
+            key=(lambda x: alignhandler.CIGAR_WALK_DICT[x[0]]),
+        )
+    ):
+        consume_target, consume_query = key
+        cigarlen_sum = sum(x[1] for x in subiter)
+
+        if consume_target and consume_query:  # match
+            if queryonly_seq is None:
+                sl_query = slice(query_idx, query_idx + cigarlen_sum)
+                sl_arr_col = slice(arr_col_idx, arr_col_idx + cigarlen_sum)
+                arr[arr_row_idx, sl_arr_col] = tuple(read.query_sequence[sl_query])
+
+                bq_arr[arr_row_idx, sl_arr_col] = tuple(read.query_qualities[sl_query])  # BQ array
+            else:
+                # add the first match-base, prefixed with query-only sequence buffer
+                arr[arr_row_idx, arr_col_idx] = f'({queryonly_seq})' + read.query_sequence[query_idx]
+                if bq_array_includes_queryonly:  # BQ array
+                    bq_arr[arr_row_idx, arr_col_idx] = (
+                        queryonly_bq, 
+                        read.query_qualities[query_idx],
+                    )  
+                else:
+                    bq_arr[arr_row_idx, arr_col_idx] = read.query_qualities[query_idx]
+
+                # add trailing matched bases
+                sl_query = slice(query_idx + 1, query_idx + cigarlen_sum)
+                sl_arr_col = slice(arr_col_idx + 1, arr_col_idx + cigarlen_sum)
+                arr[arr_row_idx, sl_arr_col] = tuple(read.query_sequence[sl_query])
+                bq_arr[arr_row_idx, sl_arr_col] = tuple(read.query_qualities[sl_query])  # BQ array
+
+                queryonly_seq = None
+                queryonly_bq = None
+
+            arr_col_idx += cigarlen_sum
+            query_idx += cigarlen_sum
+
+        elif (not consume_target) and consume_query:  # ins, softclip
+            queryonly_seq = read.query_sequence[query_idx:(query_idx + cigarlen_sum)]
+            queryonly_bq = tuple(read.query_qualities[query_idx:(query_idx + cigarlen_sum)])  # BQ array
+            query_idx += cigarlen_sum
+
+        elif consume_target and (not consume_query):  # del, skip
+            if queryonly_seq is not None:
+                raise Exception(f'Cigar D or N comes right after I or S. Current read: {read.to_string()}')
+
+            sl_arr_col = slice(arr_col_idx, arr_col_idx + cigarlen_sum)
+            arr[arr_row_idx, sl_arr_col] = del_value
+            bq_arr[arr_row_idx, sl_arr_col] = del_value  # BQ array
+
+            arr_col_idx += cigarlen_sum
+
+    # When the last cigar operation is query-only
+    if queryonly_seq is not None:
+        if idx == 0:  # query-only-only case
             arr[arr_row_idx, arr_col_idx] = f'({queryonly_seq})'
+            if bq_array_includes_queryonly:  # BQ array
+                bq_arr[arr_row_idx, arr_col_idx] = queryonly_bq  # BQ array
         else:  # queryonly_seq is appended to the base on the left
             if trailing_queryonly_to_right:
                 arr[arr_row_idx, arr_col_idx] = f'({queryonly_seq})'
+                if bq_array_includes_queryonly:  # BQ array
+                    bq_arr[arr_row_idx, arr_col_idx] = queryonly_bq  # BQ array
             else:
                 arr[arr_row_idx, arr_col_idx - 1] = arr[arr_row_idx, arr_col_idx - 1] + f'({queryonly_seq})'
+                if bq_array_includes_queryonly:  # BQ array
+                    bq_arr[arr_row_idx, arr_col_idx - 1] = (
+                        bq_arr[arr_row_idx, arr_col_idx - 1],
+                        queryonly_bq,
+                    )  # BQ array
 
 
 def _write_read_to_array_row_deprecated(read, arr, arr_row_idx, initial_arr_col_idx, del_value):

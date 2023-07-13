@@ -9,6 +9,7 @@ import logging
 import uuid
 import array
 import multiprocessing
+#import importlib
 
 import pysam
 import pyranges as pr
@@ -317,7 +318,7 @@ class VariantPlus:
     def write_annots_to_vr(self, fill_missing_sample=True):
         # Vcfspec
         if not self.vcfspec.components.is_missing:
-            self.vcfspec.components.write(vr)
+            self.vcfspec.components.write(self.vr)
 
         # INFO
         for key in (
@@ -393,8 +394,10 @@ class VariantPlus:
         oncokb_altlist = liboncokb.OncoKBInfoALTlist()
         oncokb_altlist.extend(
             liboncokb.query_hgvsg_post(
-                hgvsg_list=list(x.to_hgvsg() for x in self.vcfspec.iter_monoalts()), 
-                token=token, tumor_type=None, evidence_types=None,
+                hgvsg_list=list(x.to_hgvsg() for x in self.vcfspec.iter_annotation_forms()), 
+                token=token, 
+                tumor_type=None, 
+                evidence_types=None,
             )
         )
         self.oncokb = oncokb_altlist
@@ -1783,16 +1786,17 @@ class VariantPlusList(list):
         return result
     
     def isec(self, gr):
-        overlaps = self.get_gr().count_overlaps(gr, overlap_col="count")
-        marks = overlaps.df.loc[:, "count"] > 0
-        result = self.spawn()
-        result.extend(itertools.compress(self, marks))
-        return result
+        if len(self) == 0:
+            return self
+        else:
+            overlaps = self.get_gr().count_overlaps(gr, overlap_col="count")
+            marks = overlaps.df.loc[:, "count"] > 0
+            result = self.spawn()
+            result.extend(itertools.compress(self, marks))
+            return result
 
     def get_sigresult(self, catalogue_type="sbs96", **kwargs):
-        libsig = importlib.import_module(
-            ".".join([top_package_name, "signature", "signatureresult"])
-        )
+        import handygenome.signature.signatureresult as libsig
 
         vcfspec_iter = (vp.vcfspec for vp in self)
         refver = self[0].refver

@@ -88,7 +88,7 @@ def make_fetchargs_func(window, fasta):
             if end0 - start0 >= window:
                 return chrom, start0, end0
             else:
-                mid = int((start0 + end0) / 2)
+                mid = int((start0 + end0 - 1) / 2)
                 new_start0 = max(0, mid - pad_left)
                 new_end0 = min(chromlens[chrom], mid + pad_right)
                 return chrom, new_start0, new_end0

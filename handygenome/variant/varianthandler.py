@@ -7,13 +7,11 @@ import contextlib
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-infoformat = importlib.import_module('.'.join([top_package_name, 'variant', 'infoformat']))
-headerhandler = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'headerhandler']))
-initvcf = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'initvcf']))
-libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
+import handygenome.common as common
+import handygenome.variant.infoformat as infoformat
+import handygenome.vcfeditor.headerhandler as headerhandler
+import handygenome.vcfeditor.initvcf as initvcf
+import handygenome.variant.vcfspec as libvcfspec
 
 #def get_vcfspec(vr):
 #    return common.Vcfspec(vr.contig, vr.pos, vr.ref, tuple(vr.alts))

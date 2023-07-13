@@ -87,7 +87,8 @@ def get_deco_num_notNone(names, n):
     return decorator
 
 
-def get_deco_num_set_differently(names, n):
+def get_deco_num_set_differently(names, n, how='equal'):
+    assert how in ('equal', 'gt', 'lt')
     def decorator(func):
         sig = inspect.signature(func)
         if not set(names).issubset(sig.parameters.keys()):
@@ -113,12 +114,22 @@ def get_deco_num_set_differently(names, n):
                     if set_val != default_val:
                         n_diff += 1
 
-            if n_diff != n:
+            if how == 'equal':
+                cond = (n_diff == n)
+                word = 'equal to'
+            elif how == 'gt':
+                cond = (n_diff > n)
+                word = 'greater than'
+            elif how == 'lt':
+                cond = (n_diff < n)
+                word = 'less than'
+
+            if not cond:
                 raise ValueError(
                     f'For the function "{func.__name__}", the '
                     f'number of parameters, among {tuple(names)}, '
                     f'being set as a value different from the default, '
-                    f'must be {n}.')
+                    f'must be {word} {n}.')
 
             return func(*args, **kwargs)
 

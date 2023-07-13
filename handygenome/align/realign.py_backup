@@ -736,6 +736,7 @@ class RealignerPileup(RealignerPileupBase):
             **kwargs,
         )
         secresult_inactive, secresult_vcfspec = result.augment_margins()
+        print(result.row_spec_groups)
 
         return result, secresult_inactive, secresult_vcfspec
 

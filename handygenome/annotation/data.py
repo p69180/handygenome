@@ -20,7 +20,7 @@ REGULATORY_PATH = common.RefverDict({
 
 DBSNP_PATHS = common.RefverDict({
     'GRCh37': f'{common.DATA_DIR}/popfreq/dbSNP_b155_GRCh37.p13.vcf.gz',
-    'GRCh38': '/home/users/pjh/References/dbSNP38/modified_files/dbSNP_b155_GRCh38.p13.vcf.gz',
+    'GRCh38': f'{common.DATA_DIR}/popfreq/dbSNP_b156_GRCh38.p13.vcf.gz',
 })
 
 COSMIC_PATHS = common.RefverDict({

@@ -112,6 +112,10 @@ class ReadPlus:
     ##############
     # properties #
     ##############
+    
+    @property
+    def uid(self):
+        return readhandler.get_uid(self.read)
 
     @property
     def fiveprime_end(self):
@@ -143,6 +147,10 @@ class ReadPlus:
     @functools.cache
     def softclip_range0(self):
         return readhandler.get_softclip_ends_range0(self.read)
+
+    @property
+    def SAinfo(self):
+        return self.get_SAinfo()
 
     #############################################
     # ReadStats non-rppcount attributes-related #
@@ -710,6 +718,13 @@ class ReadPlus:
         self.read.set_tag(ALLELECLASS_TAG_RP, value, 'Z', replace=True)
 
     #################
+    # softclip spec #
+    #################
+
+    def get_clipspecs(self):
+        return readhandler.get_softclip_specs(self.read)
+
+    #################
     # miscellaneous #
     #################
 
@@ -724,29 +739,25 @@ class ReadPlus:
 
         return distance
 
-    def _set_SAlist(self):
+    @functools.cache
+    def get_SAinfo(self):
         """cigartuples pattern check is done:
             asserts that one end is softclip and the other end is match.
         """
+        #def SA_cigartuples_sanitycheck(cigartuples, read):
+        #    if not (
+        #            (cigartuples[0][0] == 4 and cigartuples[-1][0] == 0) or
+        #            (cigartuples[-1][0] == 4 and cigartuples[0][0] == 0)):
+        #        raise Exception(
+        #            f'Unexpected SA cigarstring pattern:\n{read.to_string()}')
 
-        def SA_cigartuples_sanitycheck(cigartuples, read):
-            if not (
-                    (cigartuples[0][0] == 4 and cigartuples[-1][0] == 0) or
-                    (cigartuples[-1][0] == 4 and cigartuples[0][0] == 0)):
-                raise Exception(
-                    f'Unexpected SA cigarstring pattern:\n{read.to_string()}')
-
+        SAinfo = list()
         if self.read.has_tag('SA'):
-            self.SAlist = list()
             SAtag_split = self.read.get_tag('SA').strip(';').split(';')
             for field in SAtag_split:
                 field_sp = field.split(',')
 
-                # 
                 MQ = int(field_sp[4])
-                #if MQ == 0:
-                #    continue
-
                 chrom = field_sp[0]
                 pos = int(field_sp[1])
 
@@ -756,26 +767,28 @@ class ReadPlus:
                     is_forward = False
                 else:
                     raise Exception(
-                        f'Unexpected strand string from SA tag. read:\n'
-                        f'{self.read.to_string()}')
+                        f'Unexpected strand string from SA tag:\n'
+                        f'{self.read.to_string()}'
+                    )
 
                 cigarstring = field_sp[3]
-                cigartuples = readhandler.get_cigartuples(cigarstring)
+                cigartuples = alignhandler.cigarstring_to_cigartuples(cigarstring)
                 #SA_cigartuples_sanitycheck(cigartuples, self.read)
 
                 NM = int(field_sp[5])
 
-                SAitem = {'chrom': chrom, 'pos': pos, 
-                          'is_forward': is_forward,
-                          'MQ': MQ, 'NM': NM,
-                          'cigarstring': cigarstring, 
-                          'cigartuples': cigartuples}
-                self.SAlist.append(SAitem)
+                SAitem = {
+                    'chrom': chrom, 
+                    'pos': pos, 
+                    'is_forward': is_forward,
+                    'MQ': MQ, 
+                    'NM': NM,
+                    'cigarstring': cigarstring, 
+                    'cigartuples': cigartuples,
+                }
+                SAinfo.append(SAitem)
 
-            if len(self.SAlist) == 0:
-                self.SAlist = None
-        else:
-            self.SAlist = None
+        return SAinfo
 
 
 class ReadPlusPair:
@@ -1020,6 +1033,12 @@ class ReadPlusPair:
             )
             return mNM_data, clipspec_data
 
+    #################
+    # softclip spec #
+    #################
+
+    def get_clipspecs(self):
+        pass
 
 
 #    def _set_is_proper_pair(self):
@@ -1049,13 +1068,92 @@ class ReadPlusPair:
 ##################################################
 
 class ReadPlusPairList(list):
-
-    def __init__(self, chromdict):
+    def __init__(self, refver, chromdict):
+        self.refver = refver
         self.chromdict = chromdict
+
+    @classmethod
+    def from_bam(
+        cls, 
+        bam, chrom, start0, end0, 
+
+        fasta=None, 
+        chromdict=None, 
+
+        view=False, 
+        no_matesearch=True,
+        fetch_padding_common=FETCH_PADDING_COMMON,
+        fetch_padding_view=FETCH_PADDING_VIEW,
+        new_fetch_padding=NEW_FETCH_PADDING,
+        long_insert_threshold=LONG_INSERT_THRESHOLD,
+        recalc_NMMD=False,
+        include_irrelevant_reads=False,
+    ):
+        refver = common.infer_refver_bamheader(bam.header)
+        if (fasta is None) or (chromdict is None):
+            fasta = common.DEFAULT_FASTAS[refver]
+            chromdict = common.ChromDict(refver=refver)
+
+        LOGGER_RPPLIST.info('Beginning initial fetch')
+        chromlen = chromdict[chrom]
+        (relevant_qname_set, new_fetch_range) = initial_fetch_nonsv(
+            bam=bam, 
+            chrom=chrom, 
+            start0=start0, 
+            end0=end0, 
+            chromlen=chromlen,
+            view=view,
+            fetch_padding_common=fetch_padding_common, 
+            fetch_padding_view=fetch_padding_view,
+            new_fetch_padding=new_fetch_padding, 
+            long_insert_threshold=long_insert_threshold,
+        )
+
+        rpplist = cls(refver=refver, chromdict=chromdict)
+        if (
+            include_irrelevant_reads
+            or ((not include_irrelevant_reads) and (len(relevant_qname_set) > 0))
+        ):
+            LOGGER_RPPLIST.info('Beginning refined fetch')
+            fetchresult_dict = refined_fetch_nonsv(
+                bam, chrom, new_fetch_range, relevant_qname_set, include_irrelevant_reads,
+            )
+
+            LOGGER_RPPLIST.info('Beginning assembly into readpluspair')
+            for readlist in fetchresult_dict.values():
+                rpp = get_rpp_from_refinedfetch(
+                    readlist, bam, fasta, chromdict, no_matesearch, recalc_NMMD=recalc_NMMD,
+                )
+                del readlist
+                if rpp is not None:
+                    rpplist.append(rpp)
+
+            rpplist.sortby_rp1()
+
+        return rpplist
 
     def __del__(self):
         for rpp in self:
             del rpp
+
+    def iter_clipspecs(self):
+        for rpp in self:
+            for spec in rpp.rp1.get_clipspecs():
+                yield rpp.rp1, spec
+            if rpp.rp2 is not None:
+                for spec in rpp.rp2.get_clipspecs():
+                    yield rpp.rp2, spec
+
+    def set_dict(self):
+        result = dict()
+        for rpp in self:
+            result[rpp.query_name] = rpp
+        if len(result) != len(self):
+            qname_counter = collections.Counter([rpp.query_name for rpp in self])
+            duplicate_qnames = [key for key, val in qname_counter.items() if val > 1]
+            raise Exception(f'There are duplicate query names: {duplicate_qnames}')
+
+        self.dict = result
 
     def select_by_qname(self, qname):
         for rpp in self:
@@ -1209,8 +1307,9 @@ def get_rpplist_nonsv(
     recalc_NMMD=False,
     include_irrelevant_reads=False,
 ):
+    # get params
+    refver = common.infer_refver_bamheader(bam.header)
     if (fasta is None) or (chromdict is None):
-        refver = common.infer_refver_bamheader(bam.header)
         fasta = common.DEFAULT_FASTAS[refver]
         chromdict = common.ChromDict(refver=refver)
 
@@ -1229,7 +1328,7 @@ def get_rpplist_nonsv(
         long_insert_threshold=long_insert_threshold,
     )
 
-    rpplist = ReadPlusPairList(chromdict=chromdict)
+    rpplist = ReadPlusPairList(refver=refver, chromdict=chromdict)
     if (
         include_irrelevant_reads
         or ((not include_irrelevant_reads) and (len(relevant_qname_set) > 0))
@@ -1267,16 +1366,20 @@ def get_rpplist_sv(bam, fasta, chromdict, bnds, view=False,
             method. Its input value is not effective.
     """
     LOGGER_RPPLIST.info('Beginning initial fetch')
-    (relevant_qname_set_bnd1, 
-     new_fetch_range_bnd1,
-     relevant_qname_set_bnd2, 
-     new_fetch_range_bnd2,
-     relevant_qname_set_union) = initial_fetch_sv(
+    (
+        relevant_qname_set_bnd1, 
+        new_fetch_range_bnd1,
+        relevant_qname_set_bnd2, 
+        new_fetch_range_bnd2,
+        relevant_qname_set_union,
+    ) = initial_fetch_sv(
         bam, bnds, view, 
         fetch_padding_common, fetch_padding_sv, fetch_padding_view,
-        new_fetch_padding, long_insert_threshold)
+        new_fetch_padding, long_insert_threshold,
+    )
 
-    rpplist = ReadPlusPairList(chromdict=chromdict)
+    refver = common.infer_refver_bamheader(bam.header)
+    rpplist = ReadPlusPairList(refver=refver, chromdict=chromdict)
     if len(relevant_qname_set_union) > 0:
         LOGGER_RPPLIST.info('Beginning refined fetch')
         fetchresult_dict = refined_fetch_sv(bam, bnds, new_fetch_range_bnd1,
