@@ -4,10 +4,8 @@ import argparse
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
+import handygenome.vcfeditor.misc as vcfmisc
+import handygenome.workflow as workflow
 
 
 def sanity_check_args(infile_path_list, outfile_path, outfile_must_not_exist):
@@ -67,5 +65,5 @@ def main(
         infile_path_list, outfile_path, outfile_must_not_exist)
     sanity_check_headers(infile_path_list)
 
-    mode_pysam = common.write_mode_arghandler(mode_bcftools, mode_pysam)
+    mode_pysam = vcfmisc.write_mode_arghandler(mode_bcftools, mode_pysam)
     write_outfile(infile_path_list, outfile_path, mode_pysam)

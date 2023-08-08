@@ -1,9 +1,10 @@
 import pysam
 
-import handygenome.common as common
+import handygenome.refgenome as refgenome
 from handygenome.variant.vcfspec import Vcfspec
 import handygenome.variant.vcfspec as libvcfspec
 import handygenome.vcfeditor.initvcf as initvcf
+import handygenome.vcfeditor.misc as vcfmisc
 import handygenome.vcfeditor.indexing as indexing
 from handygenome.annotation.callerinfo import CallerInfo
 from handygenome.variant.vcfspec import VcfspecComponents
@@ -173,8 +174,8 @@ def modify_varscan_vcf(
 
     # set params
     if fasta is None:
-        fasta = common.DEFAULT_FASTAS[refver]
-    chromdict = common.ChromDict(fasta=fasta)
+        fasta = refgenome.get_default_fasta(refver)
+    chromdict = refgenome.ChromDict.from_fasta(fasta)
 
     output_header = initvcf.create_header(chromdict=chromdict)
     CallerInfo.add_meta(output_header)
@@ -182,7 +183,7 @@ def modify_varscan_vcf(
 
     caller_info = CallerInfo.from_caller_names(['VarScan2'])
 
-    mode = common.write_mode_arghandler(mode_bcftools, mode_pysam)
+    mode = vcfmisc.write_mode_arghandler(mode_bcftools, mode_pysam)
     somatic_vcfspec_list = list()
     germline_vcfspec_list = list()
 
@@ -205,9 +206,11 @@ def modify_varscan_vcf(
                         germline_vcfspec_list.append(vcfspec)
 
     # sort vcfspecs
-    sortkey = common.get_vcfspec_sortkey(chromdict)
-    somatic_vcfspec_list.sort(key=sortkey)
-    germline_vcfspec_list.sort(key=sortkey)
+    #sortkey = common.get_vcfspec_sortkey(chromdict)
+    #somatic_vcfspec_list.sort(key=sortkey)
+    somatic_vcfspec_list.sort(key=(lambda x: x.get_sortkey(chromdict)))
+    #germline_vcfspec_list.sort(key=sortkey)
+    germline_vcfspec_list.sort(key=(lambda x: x.get_sortkey(chromdict)))
 
     # write output
     write_outfile(somatic_vcfspec_list, somatic_outfile_path, output_header, mode, caller_info, index)

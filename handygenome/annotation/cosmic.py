@@ -2,18 +2,11 @@ import copy
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-infoformat = importlib.import_module('.'.join([top_package_name, 'variant', 'infoformat']))
-annotitem = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotitem']))
-customfile = importlib.import_module('.'.join([top_package_name, 'annotation', 'customfile']))
-annotation_data = importlib.import_module(".".join([top_package_name, "annotation", "data"]))
-
-COSMIC_VCFS = annotation_data.VCFS_COSMIC
+import handygenome.annotation.annotitem as libannotitem
+import handygenome.annotation.customfile as customfile
 
 
-class CosmicInfo(annotitem.AnnotItemVariantInfoSingle):
+class CosmicInfo(libannotitem.AnnotItemVariantInfoSingle):
     @classmethod
     def init_blank(cls, metadata=None):
         result = cls.init_nonmissing()
@@ -98,7 +91,7 @@ class CosmicInfo(annotitem.AnnotItemVariantInfoSingle):
             return total_occurrence / num_sample_allsites
 
 
-class CosmicMetadata(annotitem.AnnotItemHeader):
+class CosmicMetadata(libannotitem.AnnotItemHeader):
     meta = {'ID': 'cosmic_metadata'}
 
     @classmethod
@@ -109,7 +102,7 @@ class CosmicMetadata(annotitem.AnnotItemHeader):
         self.write_base(vcfheader)
 
 
-class CosmicInfoALTlist(annotitem.AnnotItemVariantInfoALTlist):
+class CosmicInfoALTlist(libannotitem.AnnotItemVariantInfoALTlist):
     meta = {
         'ID': 'cosmic_info', 
         'Number': 'A', 

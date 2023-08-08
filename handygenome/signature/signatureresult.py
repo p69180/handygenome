@@ -1,7 +1,6 @@
 import pysam
 import pandas as pd
 
-import handygenome.common as common
 import handygenome.workflow as workflow
 import handygenome.variant.varianthandler as varianthandler
 import handygenome.signature.misc as signature_misc

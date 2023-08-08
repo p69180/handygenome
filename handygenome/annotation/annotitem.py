@@ -9,32 +9,8 @@ import textwrap
 
 import pysam
 
-import importlib
-
-top_package_name = __name__.split(".")[0]
-common = importlib.import_module(".".join([top_package_name, "common"]))
-
-infoformat = importlib.import_module(
-    ".".join([top_package_name, "variant", "infoformat"])
-)
-
-
-# annotation = importlib.import_module('.'.join([top_package_name, 'annotation']))
-#ensembl_parser = importlib.import_module(
-#    ".".join([top_package_name, "annotation", "ensembl_parser"])
-#)
-#ensembl_rest = importlib.import_module(
-#    ".".join([top_package_name, "annotation", "ensembl_rest"])
-#)
-#veplib = importlib.import_module(".".join([top_package_name, "annotation", "veplib"]))
-#customfile = importlib.import_module(
-#    ".".join([top_package_name, "annotation", "customfile"])
-#)
-#rnalib = importlib.import_module(".".join([top_package_name, "annotation", "rnalib"]))
-
-#structvars = importlib.import_module(
-#    ".".join([top_package_name, "svlib", "structvars"])
-#)
+import handygenome.tools as tools
+import handygenome.variant.infoformat as infoformat
 
 
 # annotitem codec functions #
@@ -72,7 +48,7 @@ def _decode_replacer_seps(string):
 def _convert_key_to_nonstr(dic):
     result = dict()
     for k, v in dic.items():
-        new_k = common.str_to_nonstr(k)
+        new_k = tools.str_to_nonstr(k)
         if isinstance(v, dict):
             result[new_k] = _convert_key_to_nonstr(v)
         else:
@@ -160,7 +136,7 @@ def _decode(string, handle_percent=True, convert_key=True):
 #            self.load_vr(vr)
 #
 #    def __repr__(self):
-#        return common.cpformat(self.get_showdict())
+#        return tools.cpformat(self.get_showdict())
 #
 #    def get_showdict(self):
 #        showdict = dict()
@@ -881,7 +857,7 @@ class AllBase:
         else:
             return (
                 f'<{self.__class__.__name__}(\n'
-                f'{textwrap.indent(common.cpformat(self.get_self_show(), sort_dicts=False), " " * 4)}'
+                f'{textwrap.indent(tools.cpformat(self.get_self_show(), sort_dicts=False), " " * 4)}'
                 f'\n)>'
             )
 
@@ -1022,7 +998,7 @@ class SingleItemBase(AllBase, dict):
         return dict(self)
 
     #def repr_base(self):
-    #    return common.cpformat(dict(self), sort_dicts=False)
+    #    return tools.cpformat(dict(self), sort_dicts=False)
 
     def set_is_missing(self):
         self.is_missing = True
@@ -1405,7 +1381,7 @@ class AnnotItemFormatSampledict(AllBase, FormatBase, dict):
 #        super().__setitem__(key, val)
 #
 #    def __repr__(self):
-#        return common.cpformat(self.get_showdict())
+#        return tools.cpformat(self.get_showdict())
 #
 #    def get_showdict(self):
 #        showdict = {key: dict(val) for (key, val) in self.items()}

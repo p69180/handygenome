@@ -17,7 +17,7 @@ import Bio.Align.AlignInfo
 import numpy as np
 import pysam
 
-import handygenome.common as common
+import handygenome.tools as tools
 import handygenome.align.alignhandler as alignhandler
 
 
@@ -306,7 +306,7 @@ def fasta_to_msa(fasta_path):
     seqs = list()
     names = list()
 
-    with common.openfile(fasta_path) as infile:
+    with tools.openfile(fasta_path) as infile:
         for seqrec in Bio.SeqIO.parse(infile, 'fasta'):
             seqs.append(str(seqrec.seq))
             names.append(seqrec.id)

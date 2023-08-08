@@ -17,7 +17,9 @@ import scipy
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Rectangle
 
-import handygenome.common as common
+import handygenome
+import handygenome.tools as tools
+import handygenome.refgenome as refgenome
 import handygenome.pyranges_helper as pyranges_helper
 import handygenome.cnv.misc as cnvmisc
 import handygenome.cnv.rcopynumber as rcopynumber
@@ -96,7 +98,7 @@ def calc_dot_alpha_old(
 def check_is_allregion(region_gr, refver):
     """checks if allregion_gr is included within region_gr"""
     region_gr = cnvmisc.arg_into_gr(region_gr)
-    allregion_gr = common.DEFAULT_CHROMDICTS[refver].to_gr(assembled_only=True, as_gr=True)
+    allregion_gr = refgenome.get_default_chromdict(refver).to_gr(assembled_only=True, as_gr=True)
     isec_gr = allregion_gr.intersect(region_gr)
     return (isec_gr[[]].sort().df == allregion_gr[[]].sort().df).all(axis=None)
 
@@ -120,7 +122,7 @@ def make_new_region_df(refver, chroms, start0s=None, end0s=None, weights=None):
 
     # start0s, end0s
     if start0s is None:
-        chromdict = common.DEFAULT_CHROMDICTS[refver]
+        chromdict = refgenome.get_default_chromdict(refver)
         start0s = np.repeat(0, len(chroms))
         end0s = np.fromiter((chromdict[x] for x in chroms), dtype=int)
 
@@ -148,7 +150,7 @@ def handle_region_args(
 
     if region_df is None:
         if chroms is None:
-            region_df = common.DEFAULT_CHROMDICTS[refver].to_gr(
+            region_df = refgenome.get_default_chromdict(refver).to_gr(
                 assembled_only=True, as_gr=False,
             )
         else:
@@ -260,7 +262,7 @@ class CoordConverter:
         assert region_gaps is not None
 
         self.refver = refver
-        self.chromdict = common.DEFAULT_CHROMDICTS[refver]
+        self.chromdict = refgenome.get_default_chromdict(refver)
         self.region_gaps = region_gaps
 
         cnvmisc.genome_df_sanitycheck(df)
@@ -543,9 +545,18 @@ class GenomePlotter:
         plotcoords = np.linspace(xlim[0], xlim[1], num=n, endpoint=True)
         chroms, pos0s = self.cconv.plot_to_genomic(plotcoords)
 
-        chroms = [common.prefix_chr(x) for x in chroms]
+        # remove dummy chromosome labels
+        selector = np.array([(not x.startswith('-')) for x in chroms])
+        plotcoords = plotcoords[selector]
+        chroms = chroms[selector]
+        pos0s = pos0s[selector]
+
+        chroms = [
+            x if x.startswith('chr') else ('chr' + x)
+            for x in chroms
+        ]
         pos1s = pos0s + 1
-        #pos1_strings = common.shorten_int(pos1s)
+        #pos1_strings = tools.shorten_int(pos1s)
         pos1_strings = [f'{x:,}' for x in pos1s]
 
         labels = [f'{x} : {y}' for x, y in zip(chroms, pos1_strings)]
@@ -787,18 +798,19 @@ class GenomePlotter:
             return
 
         # x
-        #xmaxs = df_plotdata['plot_end0s']
-        #xmins = df_plotdata['plot_start0s']
-        _, xmins, xmaxs = self._merge_adjacent_data_new(
-            genome_xmins=df_plotdata['Start'], 
-            genome_xmaxs=df_plotdata['End'], 
-            plot_xmins=df_plotdata['plot_start0s'], 
-            plot_xmaxs=df_plotdata['plot_end0s'], 
-            ys=None,
-        )
-        #_, xmins, xmaxs = self._merge_adjacent_data(
-        #    xmins=xmins, xmaxs=xmaxs, ys=None,
-        #)
+        if df_plotdata.shape[0] > 1:
+            _, xmins, xmaxs = self._merge_adjacent_data_new(
+                genome_xmins=df_plotdata['Start'], 
+                genome_xmaxs=df_plotdata['End'], 
+                plot_xmins=df_plotdata['plot_start0s'], 
+                plot_xmaxs=df_plotdata['plot_end0s'], 
+                ys=None,
+            )
+        else:
+            row = df_plotdata.iloc[0, :]
+            xmins = np.atleast_1d(row['plot_start0s'])
+            xmaxs = np.atleast_1d(row['plot_end0s'])
+
         widths = xmaxs - xmins
 
         # y
@@ -816,9 +828,7 @@ class GenomePlotter:
         heights = ymaxs - ymins
 
         # color
-        #colors = common.arg_into_list(colors)
         if np.isscalar(colors):
-        #if len(colors) == 1:
             match_original = False
             default_plot_kwargs['color'] = colors
         else:
@@ -1197,13 +1207,13 @@ class GenomePlotter:
 class CNVPlotter:
     def __init__(
         self, 
-        refver, 
+        refver=handygenome.OPTION['default_refver'], 
         region_df=None, 
         chroms=None, start0s=None, end0s=None, weights=None,
         region_gaps=None,
     ):
         #super().__init__(refver=refver, region_df=region_df)
-        self.refver = refver
+        self.refver = refgenome.standardize_refver(refver)
 
         region_df, region_gaps = handle_region_args(
             refver, 
@@ -1272,6 +1282,8 @@ class CNVPlotter:
         vcf_sampleid_normal=None,
 
         *,
+
+        norm_method='plain',
 
         mode='wgs',
         target_region=None,
@@ -1401,7 +1413,7 @@ class CNVPlotter:
         #self.postprocess_bafdf(sampleid)
 
         # postprocess depths
-        self.postprocess_depth(sampleid, verbose=verbose)
+        self.postprocess_depth(sampleid, verbose=verbose, norm_method=norm_method)
 
     def load_germline_vafdf(self, sampleid, vafdf_path):
         self.data[sampleid]['original_baf'] = pd.read_csv(
@@ -1450,19 +1462,22 @@ class CNVPlotter:
         left['baf_segment_peak'] = peaks
         self.data[sampleid]['baf_segment'] = left
 
-    def postprocess_depth(self, sampleid, verbose=False):
+    def postprocess_depth(self, sampleid, norm_method='plain', verbose=False):
         logger = (LOGGER_DEBUG if verbose else LOGGER_INFO)
 
         # get GC df
-        if self.data[sampleid]['mode'] == 'wgs':
-            logger.info(f'Getting gc fraction dataframe')
-            gc_df = libgcfraction.get_gc_df(
-                self.refver, 
-                self.default_binsize, 
-                coords_as_index=True,
-            )
-        elif self.data[sampleid]['mode'] == 'panel':
+        if norm_method == 'plain':
             gc_df = None
+        else:
+            if self.data[sampleid]['mode'] == 'wgs':
+                logger.info(f'Getting gc fraction dataframe')
+                gc_df = libgcfraction.get_gc_df(
+                    self.refver, 
+                    self.default_binsize, 
+                    coords_as_index=True,
+                )
+            elif self.data[sampleid]['mode'] == 'panel':
+                gc_df = None
 
         # main
         for key in ('normal', 'tumor'):
@@ -1482,7 +1497,8 @@ class CNVPlotter:
                 included_region=self.data[sampleid]['target_region'],
                 as_gr=False,
                 verbose=verbose,
-                add_norm_depth=True,
+                norm_method=norm_method,
+                #add_norm_depth=True,
             )
 
             self.data[sampleid][f'{key}_depth'] = output_depth_df
@@ -1492,17 +1508,18 @@ class CNVPlotter:
         depthratio_df = cnvmisc.make_depth_ratio(
             self.data[sampleid]['tumor_depth'], 
             self.data[sampleid]['normal_depth'],
-            make_depthratio_mystyle=False,
-            make_depthratio_plain=True,
+            #make_depthratio_mystyle=False,
+            #make_depthratio_plain=True,
             as_gr=False,
         )
         depthratio_df.rename(
-            columns={'depth_ratio_sequenzastyle': 'depthratio_raw'}, inplace=True,
+            columns={
+                #'depth_ratio_sequenzastyle': 'depthratio_raw_seqzstyle',
+                #'depth_ratio_plain': 'depthratio_raw_plain',
+                'depthratio': 'depthratio_raw',
+            }, 
+            inplace=True,
         )
-        #assert (depthratio_df['normal_excluded'] == depthratio_df['tumor_excluded']).all()
-        #depthratio_df['excluded'] = depthratio_df['normal_excluded']
-        #depthratio_df.drop(['normal_excluded', 'tumor_excluded'], axis=1, inplace=True)
-
         self.data[sampleid]['depthratio'] = depthratio_df
 
     def upscale_preprocessing(self, input_df):
@@ -1513,7 +1530,8 @@ class CNVPlotter:
         return result
 
     def upscale_depthratio(self, sampleid, binsize=1000):
-        input_df = self.upscale_preprocessing(self.data[sampleid]['depthratio'])
+        #input_df = self.upscale_preprocessing(self.data[sampleid]['depthratio'])
+        input_df = self.data[sampleid]['depthratio']
         self.data[sampleid]['depthratio_upscaled'] = cnvmisc.upsize_depth_df_bin(
             input_df, 
             size=binsize, 
@@ -1573,9 +1591,29 @@ class CNVPlotter:
         )
         self.data[sampleid]['depthratio_segment'] = depth_segment
         self.data[sampleid]['baf_segment'] = baf_segment
-        #if self.data[sampleid]['mode'] == 'wgs':
+
+        self.make_segments_postprocess(
+            sampleid, 
+            bw=bw,
+            bafcorrection_cutoff=bafcorrection_cutoff,
+            bafcorrector=bafcorrector,
+        )
+
+    def make_segments_postprocess(
+        self, sampleid, bw=1,
+        bafcorrection_cutoff=None,
+        bafcorrector=None,
+    ):
+        # add baf peak
         self.add_bafpeak_to_segment(sampleid, bw=bw)
-        self.make_merged_segment(sampleid)
+
+        # make merged segments
+        self.data[sampleid]['merged_segment'] = self.make_merged_segment(
+            sampleid,
+            self.data[sampleid]['depthratio_segment'],
+        )
+        
+        # add corrected baf
         self.add_corrected_baf(
             sampleid, 
             round_cutoff=bafcorrection_cutoff,
@@ -1611,8 +1649,7 @@ class CNVPlotter:
             normal_avg_depth_ratio=1,
         )
 
-    def calculate_tumor_ploidy(self, sampleid):
-        segment_df = self.data[sampleid]['merged_segment']
+    def calculate_tumor_ploidy(self, sampleid, segment_df):
         if self.data[sampleid]['mode'] == 'wgs':
             weights = segment_df['End'] - segment_df['Start']
         else:
@@ -1653,8 +1690,10 @@ class CNVPlotter:
         use_merged_segment=True,
 
         draw_depthratio_hist=True,
-        rm_haploid_from_hist=True,
-        depthratio_hist_threshold=3,
+        #rm_haploid_from_hist=True,
+
+        depthratio_hist_threshold=None,
+        depthratio_hist_bw=None,
 
         draw_depth=False,
         is_rawdepth=True,
@@ -1663,8 +1702,6 @@ class CNVPlotter:
 
         n_xlabel=None,
         depthratio_ymax=None,
-        
-        # plot properties
 
         depthratio_dot_kwargs=dict(),
         depthratio_line_segmean_kwargs=dict(),
@@ -1679,14 +1716,17 @@ class CNVPlotter:
         baf_line_segmean_kwargs=dict(),
         baf_line_corr_segmean_kwargs=dict(),
         #baf_line_predict_kwargs=dict(),
+
+        draw_upscaled_depthratio=True,
+        draw_upscaled_depth=True,
     ):
         LOGGER_INFO.info(f'Beginning conversion of data coordinates into plot coordinates')
-        self.make_plotdata_basic(sampleid)
+        self.make_plotdata_basic(sampleid, draw_upscaled_depthratio)
         if draw_depth:
-            self.make_plotdata_fordepth(sampleid, binsize=depth_binsize)
+            self.make_plotdata_fordepth(sampleid, use_upscaled=draw_upscaled_depth, binsize=depth_binsize)
         LOGGER_INFO.info(f'Finished conversion of data coordinates into plot coordinates')
 
-        fig, axd = self.make_axd(
+        fig, axd, bottom_axkey = self.make_axd(
             figsize=figsize, 
             hspace=hspace, 
             draw_depthratio_hist=draw_depthratio_hist, 
@@ -1706,12 +1746,13 @@ class CNVPlotter:
         self.draw_baf_ax(
             sampleid, 
             axd['baf'], 
+
             use_merged_segment=True,
 
             draw_predicted=False,
             draw_corrected=True,
             draw_segmean=True,
-            n_xlabel=n_xlabel,
+            n_xlabel=(n_xlabel if 'baf' == bottom_axkey else None),
 
             is_tumor=True,
 
@@ -1720,9 +1761,6 @@ class CNVPlotter:
             dot_kwargs=baf_dot_kwargs,
             line_segmean_kwargs=baf_line_segmean_kwargs,
             line_corr_segmean_kwargs=baf_line_corr_segmean_kwargs,
-
-            make_raw_plotdata=False,
-            make_segment_plotdata=False,
         )
         self.draw_depthratio_ax(
             sampleid, 
@@ -1734,13 +1772,12 @@ class CNVPlotter:
             draw_deviation=False,
             draw_depthratio_peaks=False,
 
-            n_xlabel=n_xlabel,
+            n_xlabel=(n_xlabel if 'depthratio' == bottom_axkey else None),
             dot_kwargs=depthratio_dot_kwargs,
             line_segmean_kwargs=depthratio_line_segmean_kwargs,
             ymax=depthratio_ymax,
 
-            make_raw_plotdata=False,
-            make_segment_plotdata=False,
+            use_upscaled=draw_upscaled_depthratio,
         )
 
         if draw_depthratio_hist:
@@ -1749,8 +1786,9 @@ class CNVPlotter:
                 axd['depthratio_hist'],
                 use_merged_segment=True, 
                 depth_ylim=axd['depthratio'].get_ylim(),
-                rm_haploid=rm_haploid_from_hist,
+                #rm_haploid=rm_haploid_from_hist,
                 peak_threshold=depthratio_hist_threshold,
+                bw=depthratio_hist_bw,
                 annotate_kwargs=depthratio_hist_annotate_kwargs,
                 plot_kwargs=depthratio_hist_plot_kwargs,
             )
@@ -1763,6 +1801,8 @@ class CNVPlotter:
                 sampleid, axd, n_xlabel, is_rawdepth, 
                 depth_dot_kwargs, depth_ymax, 
                 baf_dot_kwargs, baf_line_segmean_kwargs, baf_line_corr_segmean_kwargs,
+                bottom_axkey,
+                draw_upscaled_depth,
             )
 
         return fig, axd
@@ -1813,6 +1853,9 @@ class CNVPlotter:
         N_CNt_candidates_fraction=0.5,
 
         limited_clonal=True,
+
+        draw_upscaled_depthratio=True,
+        draw_upscaled_depth=True,
     ):
         LOGGER_INFO.info(f'Beginning calculation of subclonal solution')
         self.make_CN_solution_freeccf(
@@ -1828,12 +1871,12 @@ class CNVPlotter:
         self.add_freeccf_solution_to_segment(sampleid)
 
         LOGGER_INFO.info(f'Beginning conversion of data coordinates into plot coordinates')
-        self.make_plotdata_basic(sampleid)
+        self.make_plotdata_basic(sampleid, draw_upscaled_depthratio)
         if draw_depth:
-            self.make_plotdata_fordepth(sampleid, binsize=depth_binsize)
+            self.make_plotdata_fordepth(sampleid, use_upscaled=draw_upscaled_depth, binsize=depth_binsize)
         LOGGER_INFO.info(f'Finished conversion of data coordinates into plot coordinates')
 
-        fig, axd = self.make_axd(
+        fig, axd, bottom_axkey = self.make_axd(
             figsize=figsize, 
             hspace=hspace, 
             draw_depthratio_hist=False, 
@@ -1880,14 +1923,15 @@ class CNVPlotter:
             line_predict_clonal_kwargs=depthratio_line_predict_clonal_kwargs,
             ymax=depthratio_ymax,
 
-            make_raw_plotdata=False,
-            make_segment_plotdata=False,
+            use_upscaled=draw_upscaled_depthratio,
         )
         if draw_depth:
             self.draw_depth_bundle(
                 sampleid, axd, n_xlabel, is_rawdepth, 
                 depth_dot_kwargs, depth_ymax, 
                 baf_dot_kwargs, baf_line_segmean_kwargs, baf_line_corr_segmean_kwargs,
+                bottom_axkey,
+                draw_upscaled_depth,
             )
 
         # baf
@@ -1908,9 +1952,6 @@ class CNVPlotter:
             line_corr_segmean_kwargs=baf_line_corr_segmean_kwargs,
             line_predict_kwargs=baf_line_predict_kwargs,
             line_predict_clonal_kwargs=baf_line_predict_clonal_kwargs,
-
-            make_raw_plotdata=False,
-            make_segment_plotdata=False,
         )
 
         # clonal CN
@@ -2006,6 +2047,11 @@ class CNVPlotter:
         mark_unfit_regions=False,
 
         limited_clonal=True,
+
+        draw_upscaled_depthratio=True,
+        draw_upscaled_depth=True,
+
+        merge_same_chroms=True,
     ):
         LOGGER_INFO.info(f'Beginning calculation of subclonal solution')
         self.make_CN_solution_after_ccfs(
@@ -2024,12 +2070,12 @@ class CNVPlotter:
         if update_plotdata:
             self.add_solution_to_plotdata(sampleid)
         else:
-            self.make_plotdata_basic(sampleid)
+            self.make_plotdata_basic(sampleid, draw_upscaled_depthratio)
             if draw_depth:
-                self.make_plotdata_fordepth(sampleid, binsize=depth_binsize)
+                self.make_plotdata_fordepth(sampleid, use_upscaled=draw_upscaled_depth, binsize=depth_binsize)
         LOGGER_INFO.info(f'Finished conversion of data coordinates into plot coordinates')
 
-        fig, axd = self.make_axd(
+        fig, axd, bottom_axkey = self.make_axd(
             figsize=figsize, 
             hspace=hspace, 
             draw_depthratio_hist=False, 
@@ -2069,21 +2115,24 @@ class CNVPlotter:
             draw_integerCN_lines=True,
 
             std_factor=depthratio_std_factor,
-            n_xlabel=n_xlabel,
+            n_xlabel=(n_xlabel if 'depthratio' == bottom_axkey else None),
             dot_kwargs=depthratio_dot_kwargs,
             line_segmean_kwargs=depthratio_line_segmean_kwargs,
             line_predict_kwargs=depthratio_line_predict_kwargs,
             line_predict_clonal_kwargs=depthratio_line_predict_clonal_kwargs,
             ymax=depthratio_ymax,
 
-            make_raw_plotdata=False,
-            make_segment_plotdata=False,
+            use_upscaled=draw_upscaled_depthratio,
+
+            merge_same_chroms=merge_same_chroms,
         )
         if draw_depth:
             self.draw_depth_bundle(
                 sampleid, axd, n_xlabel, is_rawdepth, 
                 depth_dot_kwargs, depth_ymax, 
                 baf_dot_kwargs, baf_line_segmean_kwargs, baf_line_corr_segmean_kwargs,
+                bottom_axkey,
+                draw_upscaled_depth,
             )
 
         # baf
@@ -2094,7 +2143,7 @@ class CNVPlotter:
             draw_predicted=True,
             draw_corrected=True,
             draw_segmean=True,
-            n_xlabel=n_xlabel,
+            n_xlabel=(n_xlabel if 'baf' == bottom_axkey else None),
 
             is_tumor=True,
             mark_unfit_regions=mark_unfit_regions,
@@ -2105,38 +2154,43 @@ class CNVPlotter:
             line_predict_kwargs=baf_line_predict_kwargs,
             line_predict_clonal_kwargs=baf_line_predict_clonal_kwargs,
 
-            make_raw_plotdata=False,
-            make_segment_plotdata=False,
+            merge_same_chroms=merge_same_chroms,
         )
 
         # clonal CN
         self.draw_CN_ax(
             sampleid, 
             axd['clonal_CN'],
-            n_xlabel=n_xlabel,
+            n_xlabel=(n_xlabel if 'clonal_CN' == bottom_axkey else None),
             line_CNt_kwargs=CN_line_CNt_kwargs,
             ymax=CN_ymax,
             draw_CNt=True,
             draw_A=False,
             draw_B=True,
+
+            merge_same_chroms=merge_same_chroms,
         )
         # subclonal CN
         self.draw_subclonal_CN_ax(
             sampleid, 
             axd['subclonal_CN'],
-            n_xlabel=n_xlabel,
+            n_xlabel=(n_xlabel if 'subclonal_CN' == bottom_axkey else None),
             line_CNt_kwargs=subCN_line_CNt_kwargs,
             ymax=subCN_ymax,
             draw_CNt=True,
             draw_A=False,
             draw_B=True,
+
+            merge_same_chroms=merge_same_chroms,
         )
         # ccf
         self.draw_ccf_ax(
             sampleid,
             axd['ccf'],
-            n_xlabel=n_xlabel,
+            n_xlabel=(n_xlabel if 'ccf' == bottom_axkey else None),
             bar_kwargs=ccf_bar_kwargs,
+
+            merge_same_chroms=merge_same_chroms,
         )
         fixed_ccfs = self.data[sampleid]['fixed_ccfs']
         for y in fixed_ccfs:
@@ -2165,8 +2219,6 @@ class CNVPlotter:
         draw_normal_depth=False,
         draw_tumor_depth=False,
         draw_feature=False,
-
-        use_plain_depthratio=False,
 
         tumor_baf_ylabel=None,
         depthratio_ylabel=None,
@@ -2266,7 +2318,7 @@ class CNVPlotter:
         fig_not_given = (fig is None)
         axd_not_given = (axd is None)
         if axd is None:
-            fig, axd = self.make_axd(
+            fig, axd, bottom_axkey = self.make_axd(
                 figsize=figsize, 
                 hspace=hspace, 
                 height_ratios=height_ratios,
@@ -2314,17 +2366,12 @@ class CNVPlotter:
 
                 modify_ax=axd_not_given,
                 merge_same_chroms=merge_same_chroms,
-
-                make_raw_plotdata=False,
-                make_segment_plotdata=False,
             )
         if draw_depthratio:
             self.draw_depthratio_ax(
                 sampleid, 
                 axd['depthratio'], 
                 use_merged_segment=True,
-
-                use_plain_depthratio=use_plain_depthratio,
 
                 draw_predicted=False,
                 draw_segmean=False,
@@ -2344,8 +2391,7 @@ class CNVPlotter:
                 modify_ax=axd_not_given,
                 merge_same_chroms=merge_same_chroms,
 
-                make_raw_plotdata=False,
-                make_segment_plotdata=False,
+                use_upscaled=use_upscaled_depthratio,
             )
         if draw_normal_baf:
             self.draw_baf_ax(
@@ -2375,9 +2421,6 @@ class CNVPlotter:
 
                 modify_ax=axd_not_given,
                 merge_same_chroms=merge_same_chroms,
-
-                make_raw_plotdata=False,
-                make_segment_plotdata=False,
             )
         if draw_normal_depth:
             self.draw_depth_ax(
@@ -2396,8 +2439,6 @@ class CNVPlotter:
 
                 modify_ax=axd_not_given,
                 merge_same_chroms=merge_same_chroms,
-
-                make_raw_plotdata=False,
             )
         if draw_tumor_depth:
             self.draw_depth_ax(
@@ -2416,8 +2457,6 @@ class CNVPlotter:
 
                 modify_ax=axd_not_given,
                 merge_same_chroms=merge_same_chroms,
-
-                make_raw_plotdata=False,
             )
         if draw_feature:
             self.draw_feature_ax(
@@ -2478,6 +2517,7 @@ class CNVPlotter:
         if draw_feature:
             row_names.append('feature')
 
+        # default figsize
         if figsize is None:
             figsize = (30, 5 * len(row_names))
 
@@ -2529,7 +2569,9 @@ class CNVPlotter:
             if 'empty_lower' in axd:
                 axd['empty_lower'].axis('off')
 
-        return fig, axd
+        bottom_axkey = row_names[-1]
+
+        return fig, axd, bottom_axkey
 
     @staticmethod
     def get_yticklabel_size(yticks):
@@ -2557,8 +2599,8 @@ class CNVPlotter:
     def draw_centromeres_type2(self, ax):
         self.genomeplotter.draw_centromeres_type2(ax)
 
-    def make_plotdata_basic(self, sampleid):
-        self.make_depthratio_plotdata(sampleid)
+    def make_plotdata_basic(self, sampleid, use_upscaled):
+        self.make_depthratio_plotdata(sampleid, use_upscaled)
         self.make_tumor_baf_plotdata(sampleid)
         self.make_segment_plotdata(sampleid)
 
@@ -2580,6 +2622,8 @@ class CNVPlotter:
     def make_depth_plotdata(self, sampleid, is_tumor, use_upscaled=True, binsize=1000):
         # set params
         datakey = ('tumor_depth' if is_tumor else 'normal_depth')
+        if use_upscaled:
+            datakey = datakey + '_upscaled'
         plotdata_key = ('tumor_depth_plotdata' if is_tumor else 'normal_depth_plotdata')
         #y_colname = ('mean_depth' if is_rawdepth else 'sequenza_style_norm_mean_depth')
 
@@ -2594,18 +2638,20 @@ class CNVPlotter:
             :
         ]
 
-        if use_upscaled:
-            assert binsize is not None
-            input_df = cnvmisc.upsize_depth_df_bin(
-                relevant_chroms_df, 
-                size=binsize, 
-                refver=self.refver,
-            )
-        else:
-            input_df = relevant_chroms_df
+#        if use_upscaled:
+#            assert binsize is not None
+#            input_df = cnvmisc.upsize_depth_df_bin(
+#                relevant_chroms_df, 
+#                size=binsize, 
+#                refver=self.refver,
+#            )
+#        else:
+#            input_df = relevant_chroms_df
 
         # turn into plotdata
-        self.data[sampleid][plotdata_key] = self.genomeplotter.prepare_plot_data(input_df)
+        self.data[sampleid][plotdata_key] = self.genomeplotter.prepare_plot_data(
+            relevant_chroms_df
+        )
 
     def make_depthratio_plotdata(self, sampleid, use_upscaled=True):
         depthratio_df = (
@@ -2613,8 +2659,18 @@ class CNVPlotter:
             if use_upscaled else
             self.data[sampleid]['depthratio']
         )
+
+        relevant_chroms = [
+            x for x in self.genomeplotter.cconv.totalregion_df['Chromosome']
+            if not x.startswith('-')
+        ]
+        relevant_chroms_df = depthratio_df.loc[
+            depthratio_df['Chromosome'].isin(relevant_chroms), 
+            :
+        ]
+
         self.data[sampleid]['depthratio_raw_plotdata'] = (
-            self.genomeplotter.prepare_plot_data(depthratio_df)
+            self.genomeplotter.prepare_plot_data(relevant_chroms_df)
         )
 
     def make_tumor_baf_plotdata(self, sampleid):
@@ -2656,52 +2712,6 @@ class CNVPlotter:
         helper('depthratio_upscaled')
         helper('merged_segment')
 
-#    def make_plotdata_after_cp(self, sampleid, use_saved_plotdata):
-#        raw_plot_map = {
-#            'depthratio_upscaled': 'depthratio_raw_plotdata',
-#            'baf': 'baf_raw_plotdata',
-#            'merged_segment': 'merged_segment_plotdata',
-#        }
-#        def helper(raw_key):
-#            plot_key = raw_plot_map[raw_key]
-#            if (
-#                (not use_saved_plotdata) 
-#                or (plot_key not in self.data[sampleid])
-#            ):
-#                self.data[sampleid][plot_key] = self.genomeplotter.prepare_plot_data(
-#                    self.data[sampleid][raw_key]
-#                )
-#
-#        helper('depthratio_upscaled')
-#        helper('baf')
-#        helper('merged_segment')
-
-    #def draw_ax_common(
-    #    self, ax, **kwargs, 
-    #):
-    #    self.genomeplotter.draw_ax_common(
-    #        ax=ax, **kwargs,
-    #    )
-
-#        self.genomeplotter.set_xlim(ax)
-#
-#        if split_spines:
-#            self.genomeplotter.fit_spines_to_regions(
-#                ax,
-#                draw_chrom_names=True,
-#                prefix_with_chr=True,
-#                merge_same_chroms=merge_same_chroms,
-#            )
-#
-#        self.draw_grids(ax, ax.get_yticks(), line_params=dict(), merge_same_chroms=merge_same_chroms)
-#
-#        self.draw_centromeres(ax)
-#        #self.draw_centromeres_type2(ax)
-#        if n_xlabel is not None:
-#            self.genomeplotter.draw_genomecoord_labels(ax, n=n_xlabel)
-#        else:
-#            ax.set_xticks([])
-
     def draw_feature_ax(
         self, 
         ax, 
@@ -2729,7 +2739,7 @@ class CNVPlotter:
         ax.set_ylim(0, 1)
         ax.set_ylabel(ylabel, **ylabel_kwargs)
         ax.set_yticks([])
-        self.draw_ax_common(
+        self.genomeplotter.draw_ax_common(
             ax, 
             n_xlabel=n_xlabel, 
             split_spines=split_spines,
@@ -2756,28 +2766,30 @@ class CNVPlotter:
         sampleid, axd, n_xlabel, is_rawdepth, 
         depth_dot_kwargs, depth_ymax,
         baf_dot_kwargs, baf_line_segmean_kwargs, baf_line_corr_segmean_kwargs,
+        bottom_axkey,
+        use_upscaled,
     ):
         self.draw_depth_ax(
             sampleid,
             axd['tumor_depth'],
-            n_xlabel=n_xlabel,
+            n_xlabel=(n_xlabel if 'tumor_depth' == bottom_axkey else None),
             is_tumor=True,
             is_rawdepth=is_rawdepth,
             dot_kwargs=depth_dot_kwargs,
             ymax=depth_ymax,
 
-            make_raw_plotdata=False,
+            use_upscaled=use_upscaled,
         )
         self.draw_depth_ax(
             sampleid,
             axd['normal_depth'],
-            n_xlabel=n_xlabel,
+            n_xlabel=(n_xlabel if 'normal_depth' == bottom_axkey else None),
             is_tumor=False,
             is_rawdepth=is_rawdepth,
             dot_kwargs=depth_dot_kwargs,
             ymax=depth_ymax,
 
-            make_raw_plotdata=False,
+            use_upscaled=use_upscaled,
         )
         self.draw_baf_ax(
             sampleid, 
@@ -2789,7 +2801,7 @@ class CNVPlotter:
             draw_corrected=False,
             draw_segmean=False,
 
-            n_xlabel=n_xlabel,
+            n_xlabel=(n_xlabel if 'normal_baf' == bottom_axkey else None),
 
             is_tumor=False,
 
@@ -2799,7 +2811,6 @@ class CNVPlotter:
             line_segmean_kwargs=baf_line_segmean_kwargs,
             line_corr_segmean_kwargs=baf_line_corr_segmean_kwargs,
 
-            make_raw_plotdata=False,
             make_segment_plotdata=False,
         )
 
@@ -2830,7 +2841,11 @@ class CNVPlotter:
             self.make_depth_plotdata(sampleid, is_tumor=is_tumor, use_upscaled=use_upscaled)
 
         # set params
-        y_colname = ('mean_depth' if is_rawdepth else 'sequenza_style_norm_mean_depth')
+        y_colname = (
+            'mean_depth' 
+            if is_rawdepth else 
+            'norm_mean_depth'
+        )
         plotdata_key = ('tumor_depth_plotdata' if is_tumor else 'normal_depth_plotdata')
         plotdata_df = self.data[sampleid][plotdata_key]
 
@@ -2881,7 +2896,7 @@ class CNVPlotter:
             ax.set_yticks(yticks)
             ax.set_yticklabels(yticks)
 
-            self.draw_ax_common(
+            self.genomeplotter.draw_ax_common(
                 ax, 
                 n_xlabel=n_xlabel, 
                 split_spines=split_spines, 
@@ -2894,7 +2909,6 @@ class CNVPlotter:
         sampleid, 
         ax, 
 
-        use_plain_depthratio=False,
         use_merged_segment=True, 
 
         cellularity=None,
@@ -2968,20 +2982,12 @@ class CNVPlotter:
         )
 
         # draw raw data
-        if use_plain_depthratio:
-            self.genomeplotter.draw_dots(
-                ax, 
-                y_colname='depth_ratio_plain', 
-                df_plotdata=raw_plotdata, 
-                plot_kwargs=dot_kwargs,
-            )
-        else:
-            self.genomeplotter.draw_dots(
-                ax, 
-                y_colname='depthratio_raw', 
-                df_plotdata=raw_plotdata, 
-                plot_kwargs=dot_kwargs,
-            )
+        self.genomeplotter.draw_dots(
+            ax, 
+            y_colname='depthratio_raw', 
+            df_plotdata=raw_plotdata, 
+            plot_kwargs=dot_kwargs,
+        )
 
         # draw segment information
         if draw_segment_info:
@@ -3057,7 +3063,7 @@ class CNVPlotter:
             ax.set_yticks(yticks)
             ax.set_yticklabels(yticks, size=self.get_yticklabel_size(yticks))
 
-            self.draw_ax_common(
+            self.genomeplotter.draw_ax_common(
                 ax,
                 n_xlabel=n_xlabel, 
                 split_spines=split_spines,
@@ -3085,7 +3091,8 @@ class CNVPlotter:
         for ys in integer_depthratios:
             plotdata['integer_depthratio'] = ys
             self.genomeplotter.draw_hlines(
-                ax, 'integer_depthratio',
+                ax, 
+                y_colname='integer_depthratio',
                 df_plotdata=plotdata,
                 plot_kwargs=dict(linewidth=0.7, zorder=0, color='black', alpha=0.7),
             )
@@ -3116,11 +3123,14 @@ class CNVPlotter:
         ax,
         use_merged_segment, 
         depth_ylim,
-        rm_haploid,
-        peak_threshold=1,
+        #rm_haploid,
+        kde=True,
+        bw=None,
+        peak_threshold=None,
         annotate_kwargs=dict(),
         plot_kwargs=dict(),
     ):
+        """Histogram only includes CNn == 2 positions"""
         # handle kwargs
         annotate_kwargs = (
             dict(
@@ -3140,26 +3150,43 @@ class CNVPlotter:
         else:
             segment_df = self.data[sampleid]['depthratio_segment']
 
-        if rm_haploid:
-            depthratio_list = segment_df.loc[
-                segment_df['CNn'] == 2, :
-            ]['depthratio_segment_mean']
-        else:
-            depthratio_list = segment_df['depthratio_segment_mean']
-            
+        segment_df = segment_df.loc[segment_df['CNn'] == 2, :]
+
+        depthratio_list = segment_df['depthratio_segment_mean']
         weights = (segment_df['End'] - segment_df['Start'])
-        histpeaks = cnvmisc.get_hist_peaks(
-            depthratio_list, 
-            weights=weights,
-            bins=np.arange(0, depthratio_list.max(), 0.01),
-            threshold=peak_threshold,
-        )
-        peak_depthratios = histpeaks['peak_values']
+
+        # set ylim
+        ax.set_ylim(*depth_ylim)
+
+        if kde:
+            peak_values, peak_densities, density = cnvmisc.get_density_peaks(
+                depthratio_list, 
+                weights=weights, 
+                xs=None, 
+                threshold=peak_threshold, 
+                bw_method=bw, 
+                invert=False,
+            )
+            peak_depthratios = peak_values
+            ax_ymin, ax_ymax = ax.get_ylim()
+            fill_ys = np.linspace(ax_ymin, ax_ymax, 100)
+            fill_xs = density(fill_ys)
+        else:
+            histpeaks = cnvmisc.get_hist_peaks(
+                depthratio_list, 
+                weights=weights,
+                bins=np.arange(0, depthratio_list.max(), 0.01),
+                threshold=peak_threshold,
+            )
+            peak_depthratios = histpeaks['peak_values']
+            fill_ys = histpeaks['bin_midpoints']
+            fill_xs = histpeaks['hist']
+
+        # set xlim
+        ax.set_xlim(0, max(fill_xs))
 
         # draw data
-        ax.fill_betweenx(histpeaks['bin_midpoints'], histpeaks['hist'], **plot_kwargs)
-        ax.set_xlim(0, ax.get_xlim()[1])
-        ax.set_ylim(*depth_ylim)
+        ax.fill_betweenx(y=fill_ys, x1=fill_xs, **plot_kwargs)
         ytext_list = np.linspace(*ax.get_ylim(), len(peak_depthratios))
         for y, ytext in zip(peak_depthratios, ytext_list):
             ax.axhline(y, color='black', linewidth=0.5)
@@ -3319,7 +3346,7 @@ class CNVPlotter:
         ax.set_yticklabels(yticks, size=self.get_yticklabel_size(yticks))
 
         if modify_ax:
-            self.draw_ax_common(
+            self.genomeplotter.draw_ax_common(
                 ax, 
                 n_xlabel=n_xlabel, 
                 split_spines=split_spines, 
@@ -3394,13 +3421,6 @@ class CNVPlotter:
         ax.set_ylabel(ylabel, **ylabel_kwargs)
 
         if ymax is None:
-            #weights = (
-            #    self.data[sampleid]['merged_segment']['End'] 
-            #    - self.data[sampleid]['merged_segment']['Start']
-            #)
-            #CNts = self.data[sampleid]['merged_segment']['clonal_CNt']
-            #ymax = int(common.nanaverage(CNts, weights)) * 2
-
             df = self.data[sampleid]['merged_segment']
             ymax = df['clonal_CNt'].quantile(0.99)
         else:
@@ -3415,7 +3435,7 @@ class CNVPlotter:
         #ax.set_yticks(np.arange(0, ymax, 1).astype(int), minor=True)
         ax.set_yticklabels(yticks, size=self.get_yticklabel_size(yticks))
 
-        self.draw_ax_common(
+        self.genomeplotter.draw_ax_common(
             ax, 
             n_xlabel=n_xlabel, 
             split_spines=split_spines, 
@@ -3490,13 +3510,6 @@ class CNVPlotter:
         ax.set_ylabel(ylabel, **ylabel_kwargs)
 
         if ymax is None:
-            #weights = (
-            #    self.data[sampleid]['merged_segment']['End'] 
-            #    - self.data[sampleid]['merged_segment']['Start']
-            #)
-            #CNts = self.data[sampleid]['merged_segment']['subclonal_CNt']
-            #ymax = int(common.nanaverage(CNts, weights)) * 2
-
             df = self.data[sampleid]['merged_segment']
             ymax = df['subclonal_CNt'].quantile(0.99)
         else:
@@ -3511,7 +3524,7 @@ class CNVPlotter:
         #ax.set_yticks(np.arange(0, ymax, 1).astype(int), minor=True)
         ax.set_yticklabels(yticks, size=self.get_yticklabel_size(yticks))
 
-        self.draw_ax_common(
+        self.genomeplotter.draw_ax_common(
             ax, 
             n_xlabel=n_xlabel, 
             split_spines=split_spines, 
@@ -3533,6 +3546,8 @@ class CNVPlotter:
 
         merge_same_chroms=True,
         chromlabel_kwargs=dict(),
+
+        mark_clonal_region=False,
     ):
         bar_kwargs = (
             dict()
@@ -3557,14 +3572,15 @@ class CNVPlotter:
         ax.set_yticks(yticks)
         ax.set_yticklabels(yticks)
 
-        self.genomeplotter.draw_bgcolors(
-            ax,
-            df_plotdata=plotdata.loc[plotdata['ccf'].isna(), :],
-            colors='green',
-            plot_kwargs=dict(alpha=0.1),
-        )
+        if mark_clonal_region:
+            self.genomeplotter.draw_bgcolors(
+                ax,
+                df_plotdata=plotdata.loc[plotdata['ccf'].isna(), :],
+                colors='green',
+                plot_kwargs=dict(alpha=0.1),
+            )
 
-        self.draw_ax_common(
+        self.genomeplotter.draw_ax_common(
             ax, 
             n_xlabel=n_xlabel, 
             split_spines=split_spines, 
@@ -3605,96 +3621,6 @@ class CNVPlotter:
 
         return fig, ax
 
-#    def plot_base_wrapper(
-#        self,
-#        basemethod, 
-#
-#        region_chroms=None, 
-#        region_start0s=None, 
-#        region_end0s=None, 
-#        weights=None,
-#        region_gaps=None,
-#
-#        **kwargs,
-#    ):
-#        if (
-#            (region_gaps is not None)
-#            or (region_chroms is not None)
-#        ):
-#            # make new genomeplotter
-#            if region_chroms is None:
-#                new_region_df = self.genomeplotter.region_df.copy()
-#            else:
-#                new_region_df = GenomePlotter.make_new_region_df(
-#                    self.refver, 
-#                    region_chroms, 
-#                    region_start0s, 
-#                    region_end0s, 
-#                    weights,
-#                )
-#
-#            new_genomeplotter = GenomePlotter(
-#                self.refver, 
-#                region_df=new_region_df,
-#                region_gaps=region_gaps,
-#            )
-#
-#            # switch and run
-#            old_genomeplotter = self.genomeplotter
-#            self.genomeplotter = new_genomeplotter
-#
-#            fig, axd = basemethod(**kwargs)
-#
-#            self.genomeplotter = old_genomeplotter
-#        else:
-#            fig, axd = basemethod(**kwargs)
-#
-#        return fig, axd
-
-#    def plot(self, sampleid, figsize=(30, 13), draw_invalid_regions=False):
-#        LOGGER_INFO.info(f'Beginning conversion of data coordinates into plot coordinates')
-#        self.make_plotdata(sampleid)
-#        LOGGER_INFO.info(f'Finished conversion of data coordinates into plot coordinates')
-#
-#        fig, axd = plt.subplot_mosaic(
-#            [
-#                ['CN',], 
-#                ['baf',], 
-#                ['depth',],
-#            ],
-#            figsize=figsize,
-#        )
-#        for ax in axd.values():
-#            self.genomeplotter.set_xlim(ax)
-#
-#        # CN
-#        self.draw_CN_ax(sampleid, axd['CN'])
-#
-#        # baf
-#        self.draw_baf_ax(sampleid, axd['baf'])
-#
-#        # depthratio
-#        self.draw_depthratio_ax(sampleid, axd['depth'])
-#
-#        # invalid regions
-#        if draw_invalid_regions:
-#            selector = np.logical_or(
-#                self.data[sampleid]['depth_baf_merge']['depthratio_raw'].isna().to_numpy,
-#                self.data[sampleid]['depth_baf_merge']['baf_raw'].isna().to_numpy,
-#            )
-#            self.genomeplotter.draw_bgcolors(
-#                axd['depth'], 
-#                df=self.data[sampleid]['depth_baf_merge'].loc[selector, :], 
-#                colors='red',
-#                plot_kwargs=dict(alpha=0.01),
-#            )
-#
-#        # draw centromeric regions
-#        self.draw_centromeres(axd.values())
-#
-#        # return
-#        return fig, axd
-
     #############################
     # helpers of add new sample #
     #############################
@@ -3706,7 +3632,7 @@ class CNVPlotter:
                     sampleid, factors=(0.8, 1.2),
                 )
             else:
-                target_region_gr = common.DEFAULT_CHROMDICTS[self.refver].to_gr(
+                target_region_gr = refgenome.get_default_chromdict(self.refver).to_gr(
                     assembled_only=True, as_gr=True,
                 )
         elif mode == 'panel':
@@ -3714,7 +3640,7 @@ class CNVPlotter:
 
         # exclude y if female
         if self.data[sampleid]['is_female']:
-            y_chrom = common.DEFAULT_CHROMDICTS[self.refver].XY_names[1]
+            y_chrom = refgenome.get_default_chromdict(self.refver).XY_names[1]
             target_region_gr = target_region_gr[
                 target_region_gr.Chromosome != y_chrom
             ]
@@ -3726,17 +3652,24 @@ class CNVPlotter:
         self.data[sampleid]['target_region'] = target_region_gr
 
     def find_germline_copyneutral_region(self, sampleid, factors=(0.3, 2)):
-        depth_df = self.data[sampleid]['normal_depth']
+        depth_df = self.data[sampleid]['normal_depth'].copy()
+
+        # make correction for male haploid chromosomes
+        if not self.data[sampleid]['is_female']:
+            XY = refgenome.get_default_chromdict(self.refver).XY_names
+            selector = depth_df['Chromosome'].isin(XY)
+            depth_df.loc[selector, 'mean_depth'] = depth_df.loc[selector, 'mean_depth'] * 2
 
         # upscale depth bins for segmentation speed
         upscaled_depth_df = cnvmisc.upsize_depth_df_bin(
             depth_df, size=1000, refver=self.refver,
         )
+        upscaled_depth_df['depth_raw'] = upscaled_depth_df['mean_depth']
 
         # run segmentation
         LOGGER_INFO.info('Running segmentation of normal bam depth in order to find copy-neutral region')
         segdf, _ = rcopynumber.run_rcopynumber(
-            depth_df=upscaled_depth_df.rename(columns={'mean_depth': 'depth_raw'}), 
+            depth_df=upscaled_depth_df,
             refver=self.refver, 
             as_gr=False, 
             winsorize=False, 
@@ -3758,7 +3691,7 @@ class CNVPlotter:
 
         target_region_gr = pr.PyRanges(depth_df).drop().overlap(
             pr.PyRanges(included_segments)
-        )
+        ).merge()
 
         return target_region_gr
 
@@ -3805,14 +3738,14 @@ class CNVPlotter:
 #            bafcorrector=bafcorrector,
 #        )
 
-    def make_merged_segment(self, sampleid):
+    def make_merged_segment(self, sampleid, depthratio_segment):
         merged_segment = pyranges_helper.isec_union(
-            self.data[sampleid]['depthratio_segment'],
+            depthratio_segment,
             self.data[sampleid]['baf_segment'],
         )
         merged_segment = pyranges_helper.join(
             merged_segment, 
-            self.data[sampleid]['depthratio_segment'],
+            depthratio_segment,
             how='left',
             merge=None,
             find_nearest=True,
@@ -3847,7 +3780,9 @@ class CNVPlotter:
         # fit to target region
         #merged_segment = self.fit_segment_to_targetregion(sampleid, merged_segment)
 
-        self.data[sampleid]['merged_segment'] = merged_segment
+        return merged_segment
+
+        #self.data[sampleid]['merged_segment'] = merged_segment
 
     def fit_segment_to_targetregion(self, sampleid, segment_df):
         segment_gr = cnvmisc.arg_into_gr(segment_df)
@@ -3869,7 +3804,7 @@ class CNVPlotter:
     def deduplicate_merged_segment(self, merged_segment):
         merged_segment = cnvmisc.sort_genome_df(merged_segment, self.refver)
 
-        chromdict = common.DEFAULT_CHROMDICTS[self.refver]
+        chromdict = refgenome.get_default_chromdict(self.refver)
         annot_arr = np.concatenate(
             [
                 merged_segment['Chromosome'].apply(chromdict.contigs.index).to_numpy()[:, np.newaxis],
@@ -3877,7 +3812,7 @@ class CNVPlotter:
             ],
             axis=1,
         )
-        values, counts, groupkey = common.array_grouper(annot_arr, omit_values=True)
+        values, counts, groupkey = tools.array_grouper(annot_arr, omit_values=True)
         groupby = merged_segment.groupby(groupkey)
         dedup_segdf = groupby.first()
         dedup_segdf['End'] = groupby['End'].last()
@@ -4040,6 +3975,8 @@ class CNVPlotter:
             clonal_solution=self.data[sampleid]['freeccf_result']['clonal_solution'],
             freeccf_subclonal_solution=self.data[sampleid]['freeccf_result']['freeccf_solution'], 
             flags=self.data[sampleid]['freeccf_result']['flags'], 
+            unfit_region_depth_ratio=self.data[sampleid]['freeccf_result']['calculated_depth_ratio'], 
+            unfit_region_baf=self.data[sampleid]['freeccf_result']['calculated_baf'], 
         )
 
     def add_fixedccf_solution_to_segment(self, sampleid):
@@ -4423,18 +4360,19 @@ def _make_depth_segment(
 ):
     gamma, kmin = handle_gamma_kmin_args(gamma, kmin, mode)
 
-    if 'depthratio_raw' in depthratio_df.columns:
-        input_df = depthratio_df.rename(columns={'depthratio_raw': 'depth_raw'})
-    else:
-        input_df = depthratio_df
-
+    #if 'depthratio_raw' in depthratio_df.columns:
+    #    input_df = depthratio_df.rename(columns={'depthratio_raw': 'depth_raw'})
+    #else:
+    #    input_df = depthratio_df
+    input_df = depthratio_df.rename(columns={'depthratio_raw': 'depth_raw'})
     segment_df, _ = rcopynumber.run_rcopynumber_unified(
         depth_df=input_df,
         refver=refver,
 
         as_gr=False, 
         winsorize=winsorize,
-        compact=(mode == 'panel'), 
+        #compact=(mode == 'panel'), 
+        compact=False,
         verbose=verbose,
         gamma=gamma,
         kmin=kmin,
@@ -4448,6 +4386,7 @@ def _make_depth_segment(
 
 
 def add_depthratio_std(segment_df, raw_df, refver):
+    # make left df
     left_df = segment_df.drop(
         segment_df.columns.intersection(
             ['depthratio_segment_std', 'depthratio_segment_std_mean_ratio'], 
@@ -4455,9 +4394,11 @@ def add_depthratio_std(segment_df, raw_df, refver):
         axis=1, 
         inplace=False,
     )
+    # make right df
     right_df = raw_df.loc[
         :, ['Chromosome', 'Start', 'End', 'depthratio_raw']
-    ]
+    ].copy()
+    # join
     joined_segdf = pyranges_helper.join(
         left_df,
         right_df,
@@ -4504,7 +4445,8 @@ def _make_baf_segment(
 
         as_gr=False, 
         winsorize=winsorize,
-        compact=(mode == 'panel'), 
+        #compact=(mode == 'panel'), 
+        compact=False,
         verbose=verbose,
         gamma=gamma,
         kmin=kmin,
@@ -4515,12 +4457,12 @@ def _make_baf_segment(
     return segment_df
 
 
-def _make_segments_targetfunc_depth(shdict, *args, **kwargs):
-    shdict['depth_segment'] = _make_depth_segment(*args, **kwargs)
+def _make_segments_targetfunc_depth(shdict, shdict_key, **kwargs):
+    shdict[shdict_key] = _make_depth_segment(**kwargs)
 
 
-def _make_segments_targetfunc_baf(shdict, *args, **kwargs):
-    shdict['baf_segment'] = _make_baf_segment(*args, **kwargs)
+def _make_segments_targetfunc_baf(shdict, shdict_key, **kwargs):
+    shdict[shdict_key] = _make_baf_segment(**kwargs)
 
 
 def _make_segments_main(
@@ -4544,39 +4486,47 @@ def _make_segments_main(
         subp1 = multiprocessing.Process(
             target=_make_segments_targetfunc_depth,
             args=(
-                shdict, 
-                depthratio_df,
-                mode,
-                refver,
-                winsorize,
-                depthratio_gamma,
-                depthratio_kmin,
-                verbose,
+                shdict,
+                'depth_segment',
+            ),
+            kwargs=dict(
+                depthratio_df=depthratio_df,
+                mode=mode,
+                refver=refver,
+                winsorize=winsorize,
+                gamma=depthratio_gamma,
+                kmin=depthratio_kmin,
+                verbose=verbose,
             ),
         )
         subp2 = multiprocessing.Process(
             target=_make_segments_targetfunc_baf,
             args=(
                 shdict, 
-                baf_df,
-                target_region,
-                mode,
-                refver,
-                winsorize,
-                baf_gamma,
-                baf_kmin,
-                verbose,
-                baf_cutoff,
-                #bafcorrector,
+                'baf_segment',
+            ),
+            kwargs=dict(
+                baf_df=baf_df,
+                target_region=target_region,
+                mode=mode,
+                refver=refver,
+                winsorize=winsorize,
+                gamma=baf_gamma,
+                kmin=baf_kmin,
+                verbose=verbose,
+                baf_cutoff=baf_cutoff,
             ),
         )
 
         subp1.start()
         subp2.start()
+
         subp1.join()
         subp2.join()
 
-        depth_segment, baf_segment = shdict['depth_segment'], shdict['baf_segment']
+        # result
+        depth_segment = shdict['depth_segment']
+        baf_segment = shdict['baf_segment']
 
     return depth_segment, baf_segment
 

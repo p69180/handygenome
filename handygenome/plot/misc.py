@@ -4,7 +4,6 @@ import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-import handygenome.common as common
 
 
 def lightness_spectrum(color, n, l_start=0.3, l_end=0.7):

@@ -1,33 +1,11 @@
 import re
 
-import pysam
 import numpy as np
 
-import importlib
-
-top_package_name = __name__.split(".")[0]
-common = importlib.import_module(".".join([top_package_name, "common"]))
-infoformat = importlib.import_module(
-    ".".join([top_package_name, "variant", "infoformat"])
-)
-annotitem = importlib.import_module(
-    ".".join([top_package_name, "annotation", "annotitem"])
-)
-customfile = importlib.import_module(
-    ".".join([top_package_name, "annotation", "customfile"])
-)
-annotation_data = importlib.import_module(
-    ".".join([top_package_name, "annotation", "data"])
-)
+import handygenome.annotation.annotitem as libannotitem
 
 
-#from handygenome.annotation.annotitem import AnnotItemInfoALTlist
-
-
-DBSNP_VCFS = annotation_data.VCFS_DBSNP
-
-
-class PopfreqInfo(annotitem.AnnotItemInfoSingle):
+class PopfreqInfo(libannotitem.AnnotItemInfoSingle):
     # constructors
     #def __init__(self, metadata=None, **kwargs):
     #    super().__init__(**kwargs)
@@ -76,7 +54,7 @@ class PopfreqInfo(annotitem.AnnotItemInfoSingle):
         }
 
 
-class PopfreqMetadata(annotitem.AnnotItemHeader):
+class PopfreqMetadata(libannotitem.AnnotItemHeader):
     meta = {"ID": "popfreq_metadata"}
 
     @classmethod
@@ -87,7 +65,7 @@ class PopfreqMetadata(annotitem.AnnotItemHeader):
         self.write_base(vcfheader)
 
 
-class PopfreqInfoALTlist(annotitem.AnnotItemInfoALTlist):
+class PopfreqInfoALTlist(libannotitem.AnnotItemInfoALTlist):
 #class PopfreqInfoALTlist(AnnotItemInfoALTlist):
     meta = {
         "ID": "popfreq",

@@ -2,7 +2,8 @@ import itertools
 
 import pandas as pd
 
-import handygenome.common as common
+import handygenome.tools as tools
+import handygenome.network as network
 import handygenome.annotation.annotitem as annotitem
 import handygenome.variant.vcfspec as libvcfspec
 
@@ -35,7 +36,7 @@ class OncoKBInfoALTlist(annotitem.AnnotItemInfoALTlist):
 
 def get_allCuratedGenes(token):
     return pd.DataFrame.from_dict(
-        common.http_get(
+        network.http_get(
             url=URL_allCuratedGenes,
             headers={
                 'Authorization': f'Bearer {token}',
@@ -50,7 +51,7 @@ def get_allCuratedGenes(token):
 
 def get_cancerGeneList(token):
     return pd.DataFrame.from_dict(
-        common.http_get(
+        network.http_get(
             url=URL_cancerGeneList,
             headers={
                 'Authorization': f'Bearer {token}',
@@ -74,7 +75,7 @@ def query_hgvsg(hgvsg, token, tumor_type=None, evidence_types=None):
 
     result = OncoKBInfo.init_nonmissing()
     result.update_dict(
-        common.http_get(
+        network.http_get(
             url=URL_HGVSG,
             params=params,
             headers={
@@ -89,7 +90,7 @@ def query_hgvsg(hgvsg, token, tumor_type=None, evidence_types=None):
 def query_hgvsg_post(hgvsg_list, token, tumor_type=None, evidence_types=None, chunk_size=50):
     result = list()
     #NR = 0
-    for hgvsg_chunk in common.grouper(hgvsg_list, chunk_size):
+    for hgvsg_chunk in tools.chunk_iter(hgvsg_list, chunk_size):
         #NR += 1
         #print(f'{NR * chunk_size} entries being processed')
         data = list()
@@ -101,7 +102,7 @@ def query_hgvsg_post(hgvsg_list, token, tumor_type=None, evidence_types=None, ch
                 dic['evidenceTypes'] = evidence_types
             data.append(dic)
 
-        for item in common.http_post(
+        for item in network.http_post(
             url=URL_HGVSG,
             data=data,
             headers={

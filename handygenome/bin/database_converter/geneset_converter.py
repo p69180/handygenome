@@ -5,12 +5,11 @@ import gzip
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-toolsetup = importlib.import_module('.'.join([top_package_name, 'workflow', 'toolsetup']))
-assemblyspec = importlib.import_module('.'.join([top_package_name, 'assemblyspec']))
+import handygenome.network as network
+import handygenome.tools as tools
+import handygenome.workflow as workflow
+import handygenome.workflow.toolsetup as toolsetup
+import handygenome.refgenome as refgenome
 
 
 DEFAULT_OUTFILE_BASENAME = 'ensembl_geneset_sorted.gff3.gz'
@@ -59,7 +58,7 @@ def argument_parser(cmdargs):
 
 def download(logger, url, download_path):
     logger.info(f'Beginning download of url "{url}" to "{download_path}"')
-    common.download(url, download_path)
+    network.download(url, download_path)
     logger.info(f'Download finished')
 
 
@@ -68,7 +67,7 @@ def get_line_lists(download_path, chromdict, asmblspec, output_chrname_version):
     linesp_list = list()
     with gzip.open(download_path, 'rt') as infile:
         for line in infile:
-            linestrip = common.rm_newline(line)
+            linestrip = tools.rm_newline(line)
             if linestrip == '###':
                 continue
             else:
@@ -89,7 +88,7 @@ def get_line_lists(download_path, chromdict, asmblspec, output_chrname_version):
 
 def sort_linesp_list(chromdict, linesp_list):
     def sortkey(linesp):
-        return common.coord_sortkey(linesp[0], int(linesp[3]), chromdict)
+        return tools.coord_sortkey(linesp[0], int(linesp[3]), chromdict)
     linesp_list_sorted = sorted(linesp_list, key = sortkey)
 
     return linesp_list_sorted
@@ -114,8 +113,8 @@ def convert_common(original_url, output_chrname_version, refver, logger,
     else:
         rm_downloaded = False
 
-    # set assemblyspec dbs
-    asmblspec = assemblyspec.SPECS[refver]
+    # set refgenome dbs
+    asmblspec = refgenome.SPECS[refver]
     chromdict = asmblspec.chromdicts[output_chrname_version]
 
     # load

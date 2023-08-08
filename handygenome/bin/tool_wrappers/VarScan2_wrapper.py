@@ -8,7 +8,10 @@ import shutil
 
 import pysam
 
-import handygenome.common as common
+import handygenome.refgenome as refgenome
+import handygenome.tools as tools
+import handygenome.logutils as logutils
+import handygenome.tools as tools
 import handygenome.workflow as workflow
 import handygenome.workflow.toolsetup as toolsetup
 import handygenome.vcfeditor.varscan_editing as varscan_editing
@@ -21,11 +24,11 @@ SAMTOOLS_PATH = '/home/users/pjh/conda_bin/samtools'
 
 
 def unit_job_1(fasta_path, regionfile_path, in_bam_path, out_pileup_path):
-    common.print_timestamp('BEGINNING')
+    logutils.print_timestamp('BEGINNING')
 
-    common.print_timestamp('regionfile_path', regionfile_path)
-    common.print_timestamp('in_bam_path', in_bam_path)
-    common.print_timestamp('out_pileup_path', out_pileup_path)
+    logutils.print_timestamp('regionfile_path', regionfile_path)
+    logutils.print_timestamp('in_bam_path', in_bam_path)
+    logutils.print_timestamp('out_pileup_path', out_pileup_path)
 
     with open(regionfile_path) as infile:
         for line in infile:
@@ -49,10 +52,10 @@ def unit_job_1(fasta_path, regionfile_path, in_bam_path, out_pileup_path):
             ]
             p = subprocess.run(args, capture_output=True, text=True)
             if p.returncode != 0:
-                common.print_timestamp('Subprocess finished unsuccessfully. Stderr is:\n{p.stderr}')
+                logutils.print_timestamp('Subprocess finished unsuccessfully. Stderr is:\n{p.stderr}')
                 p.check_returncode()
 
-    common.print_timestamp('FINISHED')
+    logutils.print_timestamp('FINISHED')
 
 
 def unit_job_2(
@@ -64,7 +67,7 @@ def unit_job_2(
     min_coverage_normal_opt,
     min_coverage_tumor_opt,
 ):
-    common.print_timestamp('BEGINNING')
+    logutils.print_timestamp('BEGINNING')
 
     args = [
         JAVA_PATH, '-jar', VARSCAN2_JAR_PATH, 'somatic',
@@ -79,10 +82,10 @@ def unit_job_2(
     ]
     p = subprocess.run(args, capture_output=True, text=True)
     if p.returncode != 0:
-        common.print_timestamp('Subprocess finished unsuccessfully. Stderr is:\n{p.stderr}')
+        logutils.print_timestamp('Subprocess finished unsuccessfully. Stderr is:\n{p.stderr}')
         p.check_returncode()
 
-    common.print_timestamp('FINISHED')
+    logutils.print_timestamp('FINISHED')
 
 
 def argument_parser(cmdargs):
@@ -233,9 +236,9 @@ def write_job1_scripts(args, tmpdir_paths, num_split):
     )
 
     out_pileup_path_list = list()
-    for zidx in common.zrange(num_split):
+    for zidx in tools.zrange(num_split):
         out_pileup_path_list.append(os.path.join(tmpdir_paths['tumor_pileups'], f'{zidx}.pileup'))
-    for zidx in common.zrange(num_split):
+    for zidx in tools.zrange(num_split):
         out_pileup_path_list.append(os.path.join(tmpdir_paths['normal_pileups'], f'{zidx}.pileup'))
 
     toolsetup.write_jobscripts(
@@ -301,7 +304,7 @@ def write_job2_scripts(args, tmpdir_paths, num_split):
 
 
 def postprocess_and_merge(tmpdir_paths, args, fasta):
-    infile_path_list = common.listdir(tmpdir_paths['split_results'])
+    infile_path_list = tools.listdir(tmpdir_paths['split_results'])
     varscan_editing.modify_varscan_vcf(
         infile_path_list, 
         somatic_outfile_path=args.somatic_outfile_path, 
@@ -318,7 +321,7 @@ def main(cmdargs):
 
     # setup parameters
     fasta = pysam.FastaFile(args.fasta_path)
-    chromdict = common.ChromDict(fasta=fasta)
+    chromdict = refgenome.ChromDict.from_fasta(fasta)
 
     # make temporary directory tree
     tmpdir_paths = make_tmpdir(args.tbam_path)

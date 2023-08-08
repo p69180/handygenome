@@ -16,7 +16,9 @@ import numpy as np
 import pyranges as pr
 import pandas as pd
 
-import handygenome.common as common
+import handygenome.logutils as logutils
+import handygenome.tools as tools
+import handygenome.refgenome as refgenome
 import handygenome.workflow as workflow
 import handygenome.workflow.toolsetup as toolsetup
 import handygenome.annotation.readstats as libreadstats
@@ -61,8 +63,8 @@ def unit_job(
     shareddict = manager.dict()
     shareddict['finished'] = False
     shareddict['outfile_path'] = split_outfile_path
-    shareddict['parent_memuse_gb'] = common.get_rss(mode='total', unit='g')
-    common.print_timestamp(f"Memory usage: {shareddict['parent_memuse_gb']} GB")
+    shareddict['parent_memuse_gb'] = tools.get_rss(mode='total', unit='g')
+    logutils.print_timestamp(f"Memory usage: {shareddict['parent_memuse_gb']} GB")
 
     # setup paramaters
     blacklist_gr = toolsetup.get_blacklist_gr(refver)
@@ -94,8 +96,8 @@ def unit_job(
         p.start()
         while True:
             time.sleep(monitor_interval)
-            shareddict['parent_memuse_gb'] = common.get_rss(mode='total', unit='g')
-            common.print_timestamp(f"Memory usage: {shareddict['parent_memuse_gb']} GB")
+            shareddict['parent_memuse_gb'] = tools.get_rss(mode='total', unit='g')
+            logutils.print_timestamp(f"Memory usage: {shareddict['parent_memuse_gb']} GB")
             if not p.is_alive():
                 break
 
@@ -106,7 +108,7 @@ def unit_job(
         if shareddict['finished']:
             break
         else:
-            common.print_timestamp(
+            logutils.print_timestamp(
                 f"Beginning next cycle with new output file: {shareddict['outfile_path']}"
             )
             continue
@@ -139,8 +141,8 @@ def unit_job_core(
         sampleid: pysam.AlignmentFile(bam_path)
         for sampleid, bam_path in zip(pon_id_list, pon_bam_path_list)
     }
-    fasta = common.DEFAULT_FASTAS[refver]
-    chromdict = common.DEFAULT_CHROMDICTS[refver]
+    fasta = refgenome.get_default_fasta(refver)
+    chromdict = refgenome.get_default_chromdict(refver)
 
     # edit vcf header
     in_vcf = pysam.VariantFile(infile_copy_path, 'r')
@@ -163,7 +165,7 @@ def unit_job_core(
             continue
 
         read_vrspecs.append(vrspec)
-        common.print_timestamp(f'Processing {vrspec}')  # for logging
+        logutils.print_timestamp(f'Processing {vrspec}')  # for logging
 
         if added_new_samples:
             new_vr = varianthandler.reheader(vr, new_header)
@@ -208,8 +210,8 @@ def unit_job_old(
     # setup manager
     manager = multiprocessing.Manager()
     shareddict = manager.dict()
-    shareddict['parent_memuse_gb'] = common.get_rss(mode='total', unit='g')
-    common.print_timestamp(f"Memory usage: {shareddict['parent_memuse_gb']} GB")
+    shareddict['parent_memuse_gb'] = tools.get_rss(mode='total', unit='g')
+    logutils.print_timestamp(f"Memory usage: {shareddict['parent_memuse_gb']} GB")
 
     # setup paramaters
 #    bam_dict = {
@@ -220,8 +222,8 @@ def unit_job_old(
 #        sampleid: pysam.AlignmentFile(bam_path)
 #        for sampleid, bam_path in zip(pon_id_list, pon_bam_path_list)
 #    }
-#    fasta = common.DEFAULT_FASTAS[refver]
-#    chromdict = common.DEFAULT_CHROMDICTS[refver]
+#    fasta = refgenome.get_default_fasta(refver)
+#    chromdict = refgenome.get_default_chromdict(refver)
 
     cytoband_gr = ucscdata.get_cytoband_gr(refver=refver, rename_hg19=True)
     centromere_gr = cytoband_gr[cytoband_gr.Stain == 'acen']
@@ -254,8 +256,8 @@ def unit_job_old(
         p.start()
         while True:
             time.sleep(monitor_interval)
-            shareddict['parent_memuse_gb'] = common.get_rss(mode='total', unit='g')
-            common.print_timestamp(f"Memory usage: {shareddict['parent_memuse_gb']} GB")
+            shareddict['parent_memuse_gb'] = tools.get_rss(mode='total', unit='g')
+            logutils.print_timestamp(f"Memory usage: {shareddict['parent_memuse_gb']} GB")
             if not p.is_alive():
                 break
 
@@ -266,7 +268,7 @@ def unit_job_old(
         if shareddict['next_infile_path'] is None:
             break
         else:
-            common.print_timestamp(f"Next infile created: {shareddict['next_infile_path']}")
+            logutils.print_timestamp(f"Next infile created: {shareddict['next_infile_path']}")
             subproc_kwargs['split_infile_path'] = shareddict['next_infile_path']
             continue
 
@@ -297,8 +299,8 @@ def unit_job_core_old(
         sampleid: pysam.AlignmentFile(bam_path)
         for sampleid, bam_path in zip(pon_id_list, pon_bam_path_list)
     }
-    fasta = common.DEFAULT_FASTAS[refver]
-    chromdict = common.DEFAULT_CHROMDICTS[refver]
+    fasta = refgenome.get_default_fasta(refver)
+    chromdict = refgenome.get_default_chromdict(refver)
 
     split_outfile_path = os.path.join(
         split_outfiles_dir, 
@@ -315,7 +317,7 @@ def unit_job_core_old(
     vr_iterator = in_vcf.fetch()
     for vr in vr_iterator:
         vrspec = '\t'.join([vr.contig, str(vr.pos), vr.ref, ','.join(vr.alts)])
-        common.print_timestamp(f'Processing {vrspec}')  # for logging
+        logutils.print_timestamp(f'Processing {vrspec}')  # for logging
 
         if added_new_samples:
             new_vr = varianthandler.reheader(vr, new_header)
@@ -697,7 +699,7 @@ def write_jobscripts(
     log_path_list = list()
     slurm_log_pf_list = list()
     split_outfile_path_list = list()
-    for zidx in common.zrange(parallel):
+    for zidx in tools.zrange(parallel):
         jobscript_path = os.path.join(tmpdir_paths['scripts'], f'{zidx}.sbatch')
         jobscript_path_list.append(jobscript_path)
 
@@ -878,7 +880,7 @@ def main(cmdargs):
 
     # concatenates split files
     logger.info('Merging split files')
-    outfile_path_list = common.listdir(tmpdir_paths['split_outfiles'])
+    outfile_path_list = tools.listdir(tmpdir_paths['split_outfiles'])
     libconcat.main(
         infile_path_list=outfile_path_list,
         outfile_path=args.outfile_path, 
@@ -899,10 +901,10 @@ def main(cmdargs):
 #    args = argument_parser(cmdargs)
 #
 #    # postprocess depth and mq limits
-#    common.print_timestamp(f'Processing depth and MQ limits (may take a while calculating average depths of bam files)')
+#    logutils.print_timestamp(f'Processing depth and MQ limits (may take a while calculating average depths of bam files)')
 #    depth_limits, mq_limits = depth_mq_limit_processing(args)
-#    common.print_timestamp(f'Depth limits: {depth_limits}')
-#    common.print_timestamp(f'MQ limits: {mq_limits}')
+#    logutils.print_timestamp(f'Depth limits: {depth_limits}')
+#    logutils.print_timestamp(f'MQ limits: {mq_limits}')
 #
 #    # make tmpdir tree
 #    tmpdir_paths = workflow.get_tmpdir_paths(

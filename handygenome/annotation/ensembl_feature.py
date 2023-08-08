@@ -9,7 +9,7 @@ import pysam
 
 import importlib
 
-import handygenome.common as common
+from handygenome.interval import Interval
 import handygenome.deco as deco
 import handygenome.variant.infoformat as infoformat
 import handygenome.variant.varianthandler as varianthandler
@@ -453,7 +453,7 @@ class EnsemblFeatureSetBase(annotitem.AnnotItemInfoSingle):
 
 class EnsemblFeatureSetPlain(EnsemblFeatureSetBase):
     def get_fetch_interval(self, vcfspec, distance, chromdict):
-        return common.Interval(
+        return Interval(
             chrom=vcfspec.chrom,
             start1=max(1, vcfspec.pos - distance),
             end1=min(chromdict[vcfspec.chrom], vcfspec.pos + distance),

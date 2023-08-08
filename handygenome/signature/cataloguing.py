@@ -2,17 +2,17 @@ import pysam
 import Bio.Seq
 import pandas as pd
 
-import handygenome.common as common
 import handygenome.signature.misc as signature_misc
 import handygenome.deco as deco
 
 
-@deco.get_deco_arg_choices({'refver': common.AVAILABLE_REFVERS_PLUSNONE})
+#@deco.get_deco_arg_choices({'refver': common.AVAILABLE_REFVERS_PLUSNONE})
 @deco.get_deco_num_set(('fasta', 'refver'), 1)
-def get_sbs_context(chrom, pos, fasta=None, refver=None, pre=1, post=1, 
-                    to_pyrimidine=False):
+def get_sbs_context(
+    chrom, pos, fasta=None, refver=None, pre=1, post=1, to_pyrimidine=False,
+):
     if fasta is None:
-        fasta = pysam.FastaFile(common.DEFAULT_FASTA_PATHS[refver])
+        fasta = refgenome.get_default_fasta(refver)
 
     start = pos - 1 - pre
     end = pos + post
@@ -24,14 +24,6 @@ def get_sbs_context(chrom, pos, fasta=None, refver=None, pre=1, post=1,
     return seq
 
 
-#def to_pyrimidine(base):
-#    if base in 'AG':
-#        return Bio.Seq.reverse_complement(base)
-#    else:
-#        return base
-        
-
-@deco.get_deco_arg_choices({'refver': common.AVAILABLE_REFVERS})
 def get_sbs96_catalogue_vcfspecs(vcfspec_iter, refver):
     """Multialleleic records and non-snv records are ignored."""
 
@@ -46,7 +38,7 @@ def get_sbs96_catalogue_vcfspecs(vcfspec_iter, refver):
             else:
                 return False
                 
-    fasta = pysam.FastaFile(common.DEFAULT_FASTA_PATHS[refver])
+    fasta = refgenome.get_default_fasta(refver)
     catalogue_keys = signature_misc.get_catalogue_keys('sbs96')
     data = dict((x, 0) for x in catalogue_keys)
 

@@ -6,7 +6,7 @@ import collections
 import Bio.Align
 import pyranges as pr
 
-import handygenome.common as common
+import handygenome.refgenome as refgenome
 import handygenome.annotation.annotitem as annotitem
 import handygenome.variant.repeat as librepeat
 from handygenome.annotation.annotitem import AnnotItemInfoALTlist
@@ -19,6 +19,10 @@ from handygenome.annotation.annotitem import AnnotItemInfoSingle
 DEFAULT_FETCH_EXTEND_LENGTH = 10
 SV_ALTS = ('DEL', 'INS', 'DUP', 'INV', 'CNV', 'BND', 'TRA')
 CPGMET_ALT = 'CPGMET'
+
+PAT_BND1 = re.compile('^(?P<t>[^\[\]]+)(?P<bracket1>\[|\])(?P<matechrom>[^:]+):(?P<matepos>[0-9]+)(?P<bracket2>\[|\])$')
+PAT_BND2 = re.compile('^(?P<bracket1>\[|\])(?P<matechrom>[^:]+):(?P<matepos>[0-9]+)(?P<bracket2>\[|\])(?P<t>[^\[\]]+)$')
+PAT_NUCLEOBASES = re.compile('[ACGTNacgtn]+')
 
 ALIGNER_DIFF = Bio.Align.PairwiseAligner(
     mode='global',
@@ -67,7 +71,7 @@ class Vcfspec:
         if fasta is None:
             if refver is None:
                 raise Exception(f'When "fasta" is not set, "refver" must be set.')
-            self.fasta = common.DEFAULT_FASTAS[self.refver]
+            self.fasta = refgenome.get_default_fasta(self.refver)
         else:
             self.fasta = fasta
         # attributes not able to set in __init__
@@ -90,7 +94,7 @@ class Vcfspec:
     @classmethod
     def from_vr(cls, vr, refver=None):
         if refver is None:
-            refver = common.infer_refver_vcfheader(vr.header)
+            refver = refgenome.infer_refver_vcfheader(vr.header)
         components = VcfspecComponents.from_vr(vr, refver)
 
         result = cls(
@@ -397,6 +401,12 @@ class Vcfspec:
         return merge(self, other)
 
     # misc
+    def get_sortkey(self, chromdict):
+        return (
+            (chromdict.contigs.index(self.chrom), self.pos, self.ref) 
+            + self.alts
+        )
+
     def apply_to_vr(self, vr):
         vr.contig = self.chrom
         vr.pos = self.pos
@@ -622,7 +632,7 @@ class VcfspecComponents(AnnotItemInfoSingle):
     @classmethod
     def from_vr(cls, vr, refver=None):
         if refver is None:
-            refver = common.infer_refver_vcfheader(vr.header)
+            refver = refgenome.infer_refver_vcfheader(vr.header)
         return cls.from_vr_base(vr, refver)
 
     def write(self, vr):
@@ -677,22 +687,22 @@ class IdentityVcfspec:
     pass
 
 
-def check_vcfspec_monoalt(vcfspec):
-    if len(vcfspec.alts) != 1:
-        raise Exception('The input vcfspec must be with single ALT.')
+#def check_vcfspec_monoalt(vcfspec):
+#    if len(vcfspec.alts) != 1:
+#        raise Exception('The input vcfspec must be with single ALT.')
 
-check_vcfspec_monoallele = check_vcfspec_monoalt
+#check_vcfspec_monoallele = check_vcfspec_monoalt
 
 
 def get_mutation_type(ref, alt):
-    if common.RE_PATS['nucleobases'].fullmatch(alt) is None:
+    if PAT_NUCLEOBASES.fullmatch(alt) is None:
         if any(
             (re.fullmatch(f'<{x}(:.+)?>', alt) is not None) for x in SV_ALTS
         ):
             mttype = 'sv'
         elif (
-            (common.RE_PATS['alt_bndstring_1'].fullmatch(alt) is not None) or 
-            (common.RE_PATS['alt_bndstring_2'].fullmatch(alt) is not None)
+            (PAT_BND1.fullmatch(alt) is not None) or 
+            (PAT_BND2.fullmatch(alt) is not None)
         ):
             mttype = 'sv'
         elif alt == f'<{CPGMET_ALT}>':
@@ -937,7 +947,8 @@ def split(vcfspec, distance_ge, show_alignment=False):
             be split. When REF range of two vcfspecs are adjacent to 
             each other, distance is 0.
     """
-    check_vcfspec_monoalt(vcfspec)
+    #check_vcfspec_monoalt(vcfspec)
+    vcfspec.check_monoalt(raise_with_false=True)
 
     alignment = alignhandler.alignment_tiebreaker(
         realign.ALIGNER_MAIN.align(vcfspec.ref, vcfspec.alts[0]),
@@ -1021,7 +1032,8 @@ def convert_asterisk(vcfspec):
 
 
 def make_parsimonious(vcfspec):
-    check_vcfspec_monoalt(vcfspec)
+    #check_vcfspec_monoalt(vcfspec)
+    vcfspec.check_monoalt(raise_with_false=True)
 
     pos = vcfspec.pos
     ref = vcfspec.ref
@@ -1485,7 +1497,8 @@ def shifting_equivalents(vcfspec, fasta, fetch_extend_length):
             x._equivalents = result.copy()
 
     # main
-    check_vcfspec_monoalt(vcfspec)
+    #check_vcfspec_monoalt(vcfspec)
+    vcfspec.check_monoalt(raise_with_false=True)
 
     if (
         "n" not in vcfspec.ref and 

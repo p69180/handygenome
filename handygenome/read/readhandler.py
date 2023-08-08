@@ -7,7 +7,7 @@ import pysam
 import numpy as np
 import pandas as pd
 
-import handygenome.common as common
+import handygenome.tools as tools
 import handygenome.align.alignhandler as alignhandler
 
 
@@ -44,6 +44,13 @@ class NoMDTagError(Exception):
 
 
 ###################################
+
+def get_read_sortkey(chromdict):
+    def sortkey(read):
+        return tools.coord_sortkey(read.reference_name, read.reference_start, chromdict)
+
+    return sortkey
+
 
 ReadUID = collections.namedtuple(
     'ReadUID',
@@ -305,73 +312,73 @@ class Cigar:
 #    return tuples_before, tuples_within, tuples_after
 
 
-def reverse_range(rng):
-    if rng.step == 1:
-        start = rng.stop - 1
-        stop = rng.start - 1
-        return range(start, stop, -1)
-    elif rng.step == -1:
-        start = rng.stop + 1
-        stop = rng.start + 1
-        return range(start, stop, 1)
-
-
+#def reverse_range(rng):
+#    if rng.step == 1:
+#        start = rng.stop - 1
+#        stop = rng.start - 1
+#        return range(start, stop, -1)
+#    elif rng.step == -1:
+#        start = rng.stop + 1
+#        stop = rng.start + 1
+#        return range(start, stop, 1)
+#
+#
+##def check_overlaps_forward_nonzero(rng1, rng2):
+##    return (
+##        (rng1.start < rng2.stop)
+##        and (rng1.stop > rng2.start)
+##    )
+#
+#
 #def check_overlaps_forward_nonzero(rng1, rng2):
-#    return (
-#        (rng1.start < rng2.stop)
-#        and (rng1.stop > rng2.start)
-#    )
-
-
-def check_overlaps_forward_nonzero(rng1, rng2):
-    return common.check_overlaps(rng1.start, rng1.stop, rng2.start, rng2.stop)
-
-
-def check_overlaps(rng1, rng2):
-    """
-    Meaning of range
-        - Assumes range.step is either 1 or -1
-        - "current position" travels, beginning from "range.start" toward "range.stop".
-        - "cursor" position
-            - When range.step == 1: immediately left to "current position"
-            - When range.step == -1: immediately right to "current position"
-        - Area swept by "cursor" is the area represented by range object.
-        - When len(range) == 0:
-            - When range.step == 1: 0-length interval between (range.start - 1) and (range.start)
-            - When range.step == -1: 0-length interval between (range.start) and (range.start + 1)
-
-    Meaning of overlap with 0-length range
-        - consider as overlap when the interspace is contained between ALIGNED read bases (not insertion)
-
-    Args:
-        rng1, rng2: python range object.
-    """
-    # convert into positive-step range
-    if rng1.step == -1:
-        rng1 = reverse_range(rng1)
-    if rng2.step == -1:
-        rng2 = reverse_range(rng2)
-
-    # main
-    if len(rng1) == 0 and len(rng2) == 0:
-        return rng1.start == rng2.start
-    else:
-        return check_overlaps_forward_nonzero(rng1, rng2)
-
-
-def check_spans(query_range0, target_range0):
-    """Checks if query spans target"""
-
-    if len(query_range0) == 0:
-        return False
-    else:
-        if len(target_range0) == 0:
-            return check_overlaps(query_range0, target_range0)
-        else:
-            return (
-                min(query_range0) <= min(target_range0) and
-                max(query_range0) >= max(target_range0)
-            )
+#    return common.check_overlaps(rng1.start, rng1.stop, rng2.start, rng2.stop)
+#
+#
+#def check_overlaps(rng1, rng2):
+#    """
+#    Meaning of range
+#        - Assumes range.step is either 1 or -1
+#        - "current position" travels, beginning from "range.start" toward "range.stop".
+#        - "cursor" position
+#            - When range.step == 1: immediately left to "current position"
+#            - When range.step == -1: immediately right to "current position"
+#        - Area swept by "cursor" is the area represented by range object.
+#        - When len(range) == 0:
+#            - When range.step == 1: 0-length interval between (range.start - 1) and (range.start)
+#            - When range.step == -1: 0-length interval between (range.start) and (range.start + 1)
+#
+#    Meaning of overlap with 0-length range
+#        - consider as overlap when the interspace is contained between ALIGNED read bases (not insertion)
+#
+#    Args:
+#        rng1, rng2: python range object.
+#    """
+#    # convert into positive-step range
+#    if rng1.step == -1:
+#        rng1 = reverse_range(rng1)
+#    if rng2.step == -1:
+#        rng2 = reverse_range(rng2)
+#
+#    # main
+#    if len(rng1) == 0 and len(rng2) == 0:
+#        return rng1.start == rng2.start
+#    else:
+#        return check_overlaps_forward_nonzero(rng1, rng2)
+#
+#
+#def check_spans(query_range0, target_range0):
+#    """Checks if query spans target"""
+#
+#    if len(query_range0) == 0:
+#        return False
+#    else:
+#        if len(target_range0) == 0:
+#            return check_overlaps(query_range0, target_range0)
+#        else:
+#            return (
+#                min(query_range0) <= min(target_range0) and
+#                max(query_range0) >= max(target_range0)
+#            )
 
 
 def get_aligned_pairs(pos, cigartuples):

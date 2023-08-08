@@ -5,7 +5,8 @@ import functools
 import numpy as np
 import pandas as pd
 
-import handygenome.common as common
+import handygenome
+import handygenome.network as network
 import handygenome.deco as deco
 
 
@@ -22,7 +23,7 @@ COLORS_SBS6 = {
 AVAILABLE_REFVERS = ('GRCh38', 'GRCh37', 'mm10')
 AVAILABLE_CAT_TYPES = ('sbs96', 'id83', 'dbs78', 'cn48')
 
-DATA_DIR = os.path.join(common.DATA_DIR, 'signature_data')
+DATA_DIR = os.path.join(handygenome.DIRS['data'], 'signature_data')
 if not os.path.exists(DATA_DIR):
     os.mkdir(DATA_DIR)
 
@@ -113,7 +114,7 @@ def download_signature_data(refver, catalogue_type):
     """
     data_url = SIGNATURE_DATA_URLS[refver][catalogue_type]
     data_file_path = SIGNATURE_DATA_FILE_PATHS[refver][catalogue_type]
-    common.download(data_url, data_file_path)
+    network.download(data_url, data_file_path)
     
 
 @deco.get_deco_arg_choices({'refver': AVAILABLE_REFVERS})

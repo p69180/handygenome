@@ -3,21 +3,16 @@ import itertools
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-hgvs = importlib.import_module('.'.join([top_package_name, 'hgvs']))
-infoformat = importlib.import_module('.'.join([top_package_name, 'variant', 'infoformat']))
-ensembl_rest = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_rest']))
-#annotationdb = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotationdb']))
-veplib = importlib.import_module('.'.join([top_package_name, 'annotation', 'veplib']))
-ensembl_feature = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_feature']))
+import handygenome.tools as tools
+import handygenome.hgvs as hgvs
+import handygenome.variant.infoformat as infoformat
+import handygenome.annotation.ensembl_rest as ensembl_rest
+import handygenome.annotation.veplib as veplib
+import handygenome.annotation.ensembl_feature as ensembl_feature
 
 
 VEP_INFOMETA_PAT = re.compile('Consequence annotations from Ensembl VEP. Format: ([^|]+(\|[^|]+)*)')
-
 CMDLINE_VEP_POLYPHEN_SIFT_PAT = re.compile('(.+)\((.+)\)')
-
 REGULATORY_FEATURE_TYPES = {
     'regulatory': {
         'Promoter': 'promoter',
@@ -559,7 +554,7 @@ def extract_cmdline_vep_annotation(vr):
         raw_result = list()
         for item in vr.info[veplib.VEP_INFO_FIELD]:
             raw_result_item = dict(
-                zip(vepkeys, ((None if x == '' else common.str_to_nonstr(x))
+                zip(vepkeys, ((None if x == '' else tools.str_to_nonstr(x))
                               for x in item.split('|'))))
             if raw_result_item['Feature_type'] is not None:
                 raw_result.append(raw_result_item)

@@ -3,13 +3,14 @@ import itertools
 
 import pysam
 
-import handygenome.common as common
+import handygenome.interval as libinterval
 import handygenome.workflow as workflow
+import handygenome.logutils as logutils
 import handygenome.vcfeditor.misc as vcfmisc
 import handygenome.deco as deco
 
 
-LOGGER = workflow.get_logger(name=__name__)
+LOGGER = logutils.get_logger()
 
 
 def sanity_check(vcf_path, outdir):
@@ -44,11 +45,11 @@ def get_output_lineno_list(total_lineno, n_file=None, n_line=None):
     if n_file is not None:
         if n_file > total_lineno:
             warn()
-        result = common.get_interval_lengths_num(total_lineno, n_file)
+        result = libinterval.get_interval_lengths_num(total_lineno, n_file)
     elif n_line is not None:
         if n_line > total_lineno:
             warn()
-        result = common.get_interval_lengths_width(total_lineno, n_line)
+        result = libinterval.get_interval_lengths_width(total_lineno, n_line)
 
     return result
 
@@ -85,7 +86,7 @@ def main(vcf_path, outdir, n_file=None, n_line=None, mode_bcftools='z',
     output_lineno_list = get_output_lineno_list(
             total_lineno, n_file = n_file, n_line = n_line,
             )
-    mode_pysam = common.write_mode_arghandler(mode_bcftools, mode_pysam)
+    mode_pysam = vcfmisc.write_mode_arghandler(mode_bcftools, mode_pysam)
     split_filenames = workflow.get_split_filenames( 
         len(output_lineno_list), outdir, prefix, suffix)
         # "split_filenames" begins with 0

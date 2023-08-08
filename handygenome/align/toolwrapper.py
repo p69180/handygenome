@@ -7,16 +7,17 @@ import Bio.SeqRecord
 import Bio.Seq
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
+import handygenome
+import handygenome.network as network
+import handygenome.refgenome as refgenome
 
 
 BLAT_URL = 'https://genome.ucsc.edu/cgi-bin/hgBlat'
+BWA = os.path.join(handygenome.DIRS['externals'], 'bwa')
 
 
 def run_bwa(seqlist, refver, namelist=None):
-    ref_path = common.DEFAULT_FASTA_PATHS[refver]
+    ref_path = refgenome.get_default_fasta_path(refver)
     if namelist is None:
         seqrec_list = [Bio.SeqRecord.SeqRecord(seq=Bio.Seq.Seq(seq), id='query')
                        for seq in seqlist]
@@ -30,13 +31,16 @@ def run_bwa(seqlist, refver, namelist=None):
         query_path = os.path.join(tmpdir, 'input.fasta')
         sam_path = os.path.join(tmpdir, 'output.sam')
         Bio.SeqIO.write(seqrec_list, query_path, 'fasta')
-        p = subprocess.run([common.BWA, 'mem', 
-                            '-Y', 
-                            '-M', 
-                            '-t', '1',
-                            '-o', sam_path,
-                            ref_path,
-                            query_path])
+        p = subprocess.run([
+            BWA, 
+            'mem', 
+            '-Y', 
+            '-M', 
+            '-t', '1',
+            '-o', sam_path,
+            ref_path,
+            query_path,
+        ])
         readlist = list(pysam.AlignmentFile(sam_path).fetch())
 
     return readlist
@@ -45,9 +49,9 @@ def run_bwa(seqlist, refver, namelist=None):
 def blat(query, refver):
     """Reference: https://genome.ucsc.edu/FAQ/FAQblat.html#blat14
     """
-    refver = common.RefverDict.converter[refver]
+    refver = refgenome.RefverDict.converter[refver]
 
-    result = common.http_get(
+    result = network.http_get(
         url=BLAT_URL,
         params={
             'userSeq': query,

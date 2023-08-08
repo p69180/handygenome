@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pyranges as pr
 
-import handygenome.common as common
+import handygenome.deco as deco
 import handygenome.workflow as workflow
 import handygenome.variant.vcfspec as libvcfspec
 import handygenome.read.pileup as libpileup
@@ -670,7 +670,7 @@ def main_aligner(target, query, aligner, reverse_align=False, raise_with_tie=Fal
 
     try:
         aln = main_aligner_helper(alns, raise_with_tie, reverse_align)
-    except common.TimeoutError:
+    except TimeoutError:
         #if logger is not None:
         #    logger.debug(
         #        f'Skipping alignments tiebreaking due to timeout;\nrow_spec: {row_spec}\n'
@@ -684,7 +684,7 @@ def main_aligner(target, query, aligner, reverse_align=False, raise_with_tie=Fal
     return aln
 
 
-@common.timeout(0.05)
+@deco.get_deco_timeout(0.05)
 def main_aligner_helper(alns, raise_with_tie, reverse_align):
     # amend outer insdel, remove duplicates
     alns = list(

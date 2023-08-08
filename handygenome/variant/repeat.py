@@ -1,6 +1,6 @@
 import itertools
 
-import handygenome.common as common
+import handygenome.tools as tools
 
 
 class Repeat:
@@ -12,7 +12,7 @@ class Repeat:
         self.fasta = fasta
 
     def __repr__(self):
-        string = common.repr_base(self, ('chrom', 'start0', 'unit', 'count'), comma_sep_int=True)
+        string = tools.repr_base(self, ('chrom', 'start0', 'unit', 'count'), comma_sep_int=True)
         return f'<Repeat object({string})>'
 
     @property

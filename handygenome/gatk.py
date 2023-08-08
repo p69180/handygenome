@@ -6,74 +6,13 @@ import re
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-variantplus = importlib.import_module('.'.join([top_package_name, 'variant', 'variantplus']))
-bameditor = importlib.import_module('.'.join([top_package_name, 'bameditor']))
+import handygenome
+import handygenome.workflow as workflow
+import handygenome.variant.variantplus as variantplus
+import handygenome.bameditor as bameditor
 
 
-#def make_HaplotypeCaller_args(infile_path, outfile_path, fasta_path, tmpdir, incl_region_path=None, excl_region_path=None, mem_gb=12, threads=4, mbq=10):
-#    args = [
-#        common.GATK, 
-#        '--java-options', f'-Xmx{mem_gb}G',
-#        'HaplotypeCaller',
-#        '--reference', fasta_path,
-#        '--input', infile_path,
-#        '--output', outfile_path,
-#        '--native-pair-hmm-threads', str(threads),
-#        '--min-base-quality-score', str(mbq),
-#        '--sample-ploidy', '2', # gatk default
-#        '--active-probability-threshold', '0.002', # gatk default
-#        '--standard-min-confidence-threshold-for-calling', '30', # gatk default
-#        '--dont-use-soft-clipped-bases', 'false',
-#        '--create-output-variant-index', 'false',
-#        '--tmp-dir', tmpdir,
-#    ]
-#
-#    if incl_region_path is not None:
-#        args.extend(['--intervals', incl_region_path])
-#    if excl_region_path is not None:
-#        args.extend(['----exclude-intervals', excl_region_path])
-#
-#    return args
-#
-#
-#def make_Mutect2_args(infile_path_list, outfile_path, fasta_path, tmpdir, realigned_bam_path=None, incl_region_path=None, excl_region_path=None, mem_gb=12, threads=4, mbq=10):
-#    args = [
-#        common.GATK, 
-#        '--java-options', f'"-Xmx{mem_gb}G"',
-#        'Mutect2',
-#        '--reference', fasta_path,
-#        #'--input', infile_path,
-#        '--output', outfile_path,
-#
-#        '--force-active', 'true',
-#
-#        '--min-base-quality-score', str(mbq),
-#        '--native-pair-hmm-threads', str(threads),
-#        '--active-probability-threshold', '0.002', # gatk default
-#        '--dont-use-soft-clipped-bases', 'false',
-#        '--create-output-variant-index', 'false',
-#        '--tmp-dir', tmpdir,
-#
-#        '--assembly-region-padding', f'{100}',
-#        '--dont-trim-active-regions', 'true',
-#    ]
-#
-#    for infile_path in infile_path_list:
-#        args.extend(['--input', infile_path])
-#
-#    if realigned_bam_path is not None:
-#        args.extend(['--bam-output', realigned_bam_path])
-#
-#    if incl_region_path is not None:
-#        args.extend(['--intervals', incl_region_path])
-#    if excl_region_path is not None:
-#        args.extend(['----exclude-intervals', excl_region_path])
-#
-#    return args
+GATK = os.path.join(handygenome.DIRS['externals'], 'gatk_wrapper.sh')
 
 
 def run_haplotypecaller(fasta_path, infile_path, outfile_path, tmpdir=None, 
@@ -87,7 +26,7 @@ def run_haplotypecaller(fasta_path, infile_path, outfile_path, tmpdir=None,
         tmpdir = tempfile.mkdtemp(prefix='HaplotypeCaller_tmpdir_', dir=os.getcwd())
 
     args = [
-        common.GATK, 
+        GATK, 
         '--java-options', f'-Xmx{mem_gb}G',
         'HaplotypeCaller',
         '--reference', fasta_path,
@@ -122,7 +61,7 @@ def run_Mutect2(infile_path_list, outfile_path, fasta_path, tmpdir=None, realign
         tmpdir = tempfile.mkdtemp(prefix='Mutect2_tmpdir_', dir=os.getcwd())
 
     args = [
-        common.GATK, 
+        GATK, 
         '--java-options', f'-Xmx{mem_gb}G',
         'Mutect2',
         '--reference', fasta_path,

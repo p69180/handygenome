@@ -1,6 +1,5 @@
 import pysam
 
-import handygenome.common as common
 import handygenome.workflow as workflow
 import handygenome.workflow.toolsetup as toolsetup
 import handygenome.variant.svcaller_parser as svcaller_parser

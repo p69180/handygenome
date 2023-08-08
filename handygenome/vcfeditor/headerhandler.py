@@ -4,10 +4,6 @@ import warnings
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-
 
 def add_INFOmeta(vcfheader, ID, Type, Number, Description):
     vcfheader.add_meta(key='INFO',
@@ -194,27 +190,6 @@ def check_header_compatibility(vcfheader1, vcfheader2):
 #
 #    return compatible, differing_keys
 
-
-##################################
-
-
-def write_mode_arghandler(mode_bcftools, mode_pysam):
-    """
-    Args:
-        bcftools_mode: bcftools style mode string
-        mode_pysam: pysam style mode string
-
-    If 'mode_pysam' is set as a non-None value,
-    it overrides 'mode_bcftools'.
-    """
-
-    if mode_pysam is None:
-        return common.PYSAM_MODE_DICT[mode_bcftools]
-    else:
-        return mode_pysam
-
-
-##################################
 
 
 def close_vcfplus_list(vcfplus_list):

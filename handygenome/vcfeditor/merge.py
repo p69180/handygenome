@@ -5,14 +5,13 @@ import textwrap
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-varianthandler = importlib.import_module('.'.join([top_package_name, 'variant', 'varianthandler']))
-headerhandler = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'headerhandler']))
-initvcf = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'initvcf']))
-libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
+import handygenome.refgenome as refgenome
+import handygenome.workflow as workflow
+import handygenome.variant.varianthandler as varianthandler
+import handygenome.vcfeditor.headerhandler as headerhandler
+import handygenome.vcfeditor.initvcf as initvcf
+import handygenome.vcfeditor.misc as vcfmisc
+import handygenome.variant.vcfspec as libvcfspec
 
 
 LOGGER = workflow.get_logger()
@@ -116,13 +115,21 @@ def get_output_vcfspecs_isec(raw_vcfspecs, isec_indices_bool, chromdict):
         raw_vcfspecs, [not x for x in isec_indices_bool]
     ):
         vcfspecs_included.difference_update(subset)
-    output_vcfspecs = sorted(vcfspecs_included, key=common.get_vcfspec_sortkey(chromdict))
+    output_vcfspecs = sorted(
+        vcfspecs_included, 
+        #key=common.get_vcfspec_sortkey(chromdict)
+        key=(lambda x: x.get_sortkey(chromdict)),
+    )
     return output_vcfspecs
 
 
 def get_output_vcfspecs_union(raw_vcfspecs, chromdict):
     vcfspec_set = set.union(*raw_vcfspecs)
-    output_vcfspecs = sorted(vcfspec_set, key=common.get_vcfspec_sortkey(chromdict))
+    output_vcfspecs = sorted(
+        vcfspec_set, 
+        #key=common.get_vcfspec_sortkey(chromdict),
+        key=(lambda x: x.get_sortkey(chromdict)),
+    )
 
     return output_vcfspecs
 
@@ -188,9 +195,9 @@ def main_file(
         outfile_must_not_exist,
     )
     isec_indices_bool = isec_indices_to_bool(isec_indices, len(infile_path_list))
-    mode_pysam = common.write_mode_arghandler(mode_bcftools, mode_pysam)
+    mode_pysam = vcfmisc.write_mode_arghandler(mode_bcftools, mode_pysam)
     fasta = pysam.FastaFile(fasta_path)
-    chromdict = common.ChromDict(fasta=fasta)
+    chromdict = refgenome.ChromDict.from_fasta(fasta)
     if remove_infoformat:
         output_header = initvcf.create_header(chromdict=chromdict)
     else:

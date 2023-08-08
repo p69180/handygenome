@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pyranges as pr
 
-import handygenome.common as common
+import handygenome.tools as tools
 import handygenome.workflow as workflow
 import handygenome.variant.vcfspec as libvcfspec
 import handygenome.read.pileup as libpileup
@@ -419,7 +419,7 @@ class MultisampleRealignerPileupSeries:
         # validity check
         if any(
             rng2.start - (rng1.stop - 1) > max_pileup_width
-            for rng1, rng2 in common.pairwise(start_candidate_ranges)
+            for rng1, rng2 in tools.pairwise(start_candidate_ranges)
         ):
             # abort this split strategy
             start0_list = None

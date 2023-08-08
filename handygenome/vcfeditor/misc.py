@@ -4,8 +4,60 @@ import gzip
 import pysam
 import numpy as np
 
-import handygenome.common as common
+import handygenome.refgenome as refgenome
+import handygenome.interval as libinterval
 
+
+# pysam VariantFile mode related ones
+
+"""
+pysam file mode string
+
+- Valid mode string pattern : ^[rwa]([bzu]?[0-9]?|[0-9]?[bzu]?)$
+- Conflicting characters: (b,z,u)
+
+- 'wb' : Compressed BCF (level 6), regardless of file name. 
+- 'wb[0-9]' : BCF with level of compression indicated by the number, regardless of file name. 
+
+- 'wz' : Compressed VCF (level 6), regardless of file name.
+- 'wz[0-9]' : VCF with level of compression indicated by the number, regardless of file name. 
+
+- 'wu' : Uncompressed VCF, regardless of file name.
+- 'wu[0-9]' : Uncompressed VCF, regardless of file name.
+
+- 'w[0-9]' : Uncompressed VCF, regardless of file name. 
+
+- 'w' :
+    *.vcf : uncompressed VCF
+    *.vcf.gz : compressed VCF (level 6)
+    *.bcf : compressed BCF (level 6)
+    *.bcf.gz : compressed VCF (level 6)
+"""
+
+CYVCF2_FORMAT_DICT = {'v':'w', 'z':'wz', 'u':'wbu', 'b':'wb'}  
+    # keys: bcftools format strings
+    # values: cyvcf2 format strings
+PYSAM_MODE_DICT = {'v':'wz0', 'z':'wz', 'u':'wb0', 'b':'wb'}
+    # keys: bcftools format strings
+    # values: pysam format strings
+#DEFAULT_MODE_BCFTOOLS = 'z'
+
+
+def write_mode_arghandler(mode_bcftools, mode_pysam):
+    """
+    Args:
+        mode_bcftools: bcftools style mode string
+        mode_pysam: pysam style mode string
+
+    If 'mode_pysam' is set as a non-None value,
+    it overrides 'mode_bcftools'.
+    """
+    if mode_pysam is None:
+        return PYSAM_MODE_DICT[mode_bcftools]
+    else:
+        return mode_pysam
+
+###
 
 def get_vcf_format(vcf_path):
     with pysam.VariantFile(vcf_path) as vcf:
@@ -88,9 +140,10 @@ def get_fetchargs_from_vcf_positions(vcf_positions, refver):
     chrom_right = vcf_positions[-1]['Chromosome']
     end0_right = vcf_positions[-1]['Start'] + 1  
         # only the 1-base position indicated by POS value is used
+    chromdict = refgenome.get_default_chromdict(refver)
 
-    intvlist = common.IntervalList.from_margin(
-        refver, chrom_left, start0_left, chrom_right, end0_right,
+    intvlist = libinterval.IntervalList.from_margin(
+        chromdict, chrom_left, start0_left, chrom_right, end0_right,
     )
     fetchargs_list = [
         (intv.chrom, intv.start0, intv.end0) for intv in intvlist
@@ -126,7 +179,7 @@ def get_vr_fetcher(vcf, refver, chrom=None, start0=None, end0=None, respect_refr
         if start0 is None:
             start0 = 0
         if end0 is None:
-            end0 = common.DEFAULT_CHROMDICTS[refver][chrom]
+            end0 = refgenome.get_default_chromdict(refver)[chrom]
         
         fetcher = vcf.fetch(contig=chrom, start=start0, stop=end0)
 
@@ -199,5 +252,20 @@ def get_vcf_lineno_pysam(vcf_path):
     with pysam.VariantFile(vcf_path) as vcf:
         lineno = count_iterator(vcf.fetch())
     return lineno
+
+
+# this does not work
+def get_vcf_noerr(*args, **kwargs):
+    with contextlib.redirect_stderr(io.StringIO()) as err, \
+            contextlib.redirect_stdout(io.StringIO()) as out:
+        vcf = pysam.VariantFile(*args, **kwargs)
+
+    for buf in (err, out):
+        msg = buf.getvalue()
+        if not msg.startswith('[E::idx_find_and_load] '
+                              'Could not retrieve index file for'):
+            print(msg, end='', file=sys.stderr)
+
+    return vcf
 
 

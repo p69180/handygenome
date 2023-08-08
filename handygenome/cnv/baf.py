@@ -8,11 +8,11 @@ import scipy.optimize
 import scipy.interpolate
 import sklearn.mixture
 
-import handygenome.common as common
+import handygenome
 import handygenome.cnv.misc as cnvmisc
 
 
-BAFCORRECT_PATH = os.path.join(common.DATA_DIR, f'baf_correction_func.pickle')
+BAFCORRECT_PATH = os.path.join(handygenome.DIRS['data'], f'baf_correction_func.pickle')
 
 def save_bafcorrect_func(func):
     with open(BAFCORRECT_PATH, 'wb') as outfile:
@@ -275,7 +275,10 @@ def infer_baf_density(bafs, bw, rmzero=True):
     else:
         peak_values, peak_densities, density = cnvmisc.get_density_peaks(bafs, bw_method=bw)
         #return np.average(peak_values, weights=peak_densities)
-        return max(peak_values)
+        if peak_values is None:
+            return np.nan
+        else:
+            return max(peak_values)
 
 
 def infer_baf_mean(bafs):

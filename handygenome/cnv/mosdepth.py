@@ -6,7 +6,7 @@ import subprocess
 import pyranges as pr
 import pandas as pd
 
-import handygenome.common as common
+import handygenome.tools as tools
 import handygenome.bameditor as bameditor
 import handygenome.cnv.misc as cnvmisc
 
@@ -42,7 +42,7 @@ def get_mosdepth_args(prefix, bam_path, t, use_median, no_perbase=True, bed_path
 def load_mosdepth_output(filename, depth_colname='mean_depth', as_gr=True):
     """Only for *.regions.bed.gz file"""
 
-    with common.openfile(filename) as infile:
+    with tools.openfile(filename) as infile:
         firstline = next(infile)
     firstline_sp = firstline.split('\t')
     if firstline_sp[0] == 'Chromosome':
@@ -113,7 +113,7 @@ def run_mosdepth(
             unedited_input_bed_path = region_bed_path
 
         mosdepth_input_bed_path = os.path.join(tmpdir, 'region.bed')
-        with common.openfile(unedited_input_bed_path, 'r') as infile:
+        with tools.openfile(unedited_input_bed_path, 'r') as infile:
             with open(mosdepth_input_bed_path, 'wt') as outfile:
                 for line in infile:
                     linesp = line.strip().split('\t')

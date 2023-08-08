@@ -1,9 +1,3 @@
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-breakends = importlib.import_module('.'.join([top_package_name, 'sv', 'breakends']))
-
-
 DEFAULT_FLANKLEN_PARSIDE = 1
 DEFAULT_FLANKLEN_BNDSIDE = 1
 BND_DISTANCE_THRESHOLD = 1000

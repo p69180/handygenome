@@ -5,7 +5,8 @@ import tempfile
 
 import pysam
 
-import handygenome.common as common
+import handygenome.refgenome as refgenome
+import handygenome.interval as libinterval
 import handygenome.workflow as workflow
 import handygenome.workflow.toolsetup as toolsetup
 import handygenome.gatk as libgatk
@@ -28,7 +29,7 @@ def unit_job(split_outfile_path, fasta_path, region_path, padded_region_path, mb
     )
 
     # filter
-    region_intvlist = common.IntervalList.from_bed(region_path)
+    region_intvlist = libinterval.IntervalList.from_bed(region_path)
     in_vcf = pysam.VariantFile(split_outfile_path_prefilter, "r")
     out_vcf = pysam.VariantFile(split_outfile_path, "wz", header=in_vcf.header.copy())
 
@@ -86,7 +87,7 @@ def main(cmdargs):
     logger.info("Beginning")
 
     # setup other parameters
-    chromdict = common.ChromDict(fasta_path=args.fasta_path)
+    chromdict = refgenome.Chromdict.from_fasta_path(args.fasta_path)
 
     # make split intervals and write bed files
     toolsetup.handle_region_args(

@@ -10,20 +10,18 @@ import matplotlib.pyplot as plt
 import scipy
 import pyranges as pr
 
+import handygenome
 import handygenome.common as common
 import handygenome.cnv.read_cnvfile as read_cnvfile
 import handygenome.pyranges_helper as pyranges_helper
 
 
-SCRIPTS_DIR = os.path.join(common.PROJECT_PATH, 'misc')
-R_DIR = os.path.join(common.PROJECT_PATH, 'R')
-
-CONDA_WRAPPER = os.path.join(SCRIPTS_DIR, 'conda_wrapper.sh')
-RUN_EXTRACT = os.path.join(R_DIR, 'sequenza_extract.R')
-RUN_FIT = os.path.join(R_DIR, 'sequenza_fit.R')
-WRITE_EXTRACT_TSV = os.path.join(R_DIR, 'sequenza_extract_to_tsv.R')
-WRITE_FIT_TSV = os.path.join(R_DIR, 'sequenza_fit_to_tsv.R')
-MAKE_SEGMENTS = os.path.join(R_DIR, 'sequenza_results_segment.R')
+CONDA_WRAPPER = os.path.join(handygenome.DIRS['scripts'], 'conda_wrapper.sh')
+RUN_EXTRACT = os.path.join(handygenome.DIRS['R'], 'sequenza_extract.R')
+RUN_FIT = os.path.join(handygenome.DIRS['R'], 'sequenza_fit.R')
+WRITE_EXTRACT_TSV = os.path.join(handygenome.DIRS['R'], 'sequenza_extract_to_tsv.R')
+WRITE_FIT_TSV = os.path.join(handygenome.DIRS['R'], 'sequenza_fit_to_tsv.R')
+MAKE_SEGMENTS = os.path.join(handygenome.DIRS['R'], 'sequenza_results_segment.R')
 
 CONDA_WRAPPER_ARGS = [
     CONDA_WRAPPER,  

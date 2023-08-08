@@ -9,20 +9,24 @@ import numpy as np
 import pandas as pd
 import pyranges as pr
 
-import handygenome.common as common
+import handygenome
+import handygenome.refgenome as refgenome
+import handygenome.logutils as logutils
 import handygenome.pyranges_helper as pyranges_helper
 import handygenome.deco as deco
+import handygenome.refgenome as refgenome
 
 
-GCDATA_DIR = os.path.join(common.DATA_DIR, 'gcdata')
-if not os.path.exists(GCDATA_DIR):
-    os.mkdir(GCDATA_DIR)
+GCDATA_DIR = os.path.join(handygenome.DIRS['data'], 'gcdata')
+os.makedirs(GCDATA_DIR, exist_ok=True)
+#if not os.path.exists(GCDATA_DIR):
+#    os.mkdir(GCDATA_DIR)
 
 
 # making and saving gc fraction bigwig files
 
 def write_gcfile(outfile_path, fasta, binsize=100):
-    chromdict = common.ChromDict(fasta=fasta)
+    chromdict = refgenome.ChromDict(fasta=fasta)
     bin_gr = chromdict.to_gr().window(binsize)
     gc_df = bin_gr.df
     gc_df['GC'] = calculate_gcvals(
@@ -37,7 +41,7 @@ def write_gcfile(outfile_path, fasta, binsize=100):
 
 
 def get_gcfile_path(refver, binsize):
-    refver = common.RefverDict.standardize(refver)
+    refver = refgenome.RefverDict.standardize(refver)
     gcdata_refver_dir = os.path.join(GCDATA_DIR, refver)
     if not os.path.exists(gcdata_refver_dir):
         os.mkdir(gcdata_refver_dir)
@@ -49,10 +53,10 @@ def get_gc_df(refver, binsize, coords_as_index=True):
     gcfile_path = get_gcfile_path(refver, binsize)
 
     if not os.path.exists(gcfile_path):
-        common.print_timestamp(f'There is no pre-existing gc data file. A new one is being created. It may take a few minutes.')
-        fasta = common.DEFAULT_FASTAS[refver]
+        logutils.print_timestamp(f'There is no pre-existing gc data file. A new one is being created. It may take a few minutes.')
+        fasta = refgenome.get_default_fasta(refver)
         write_gcfile(gcfile_path, fasta, binsize=binsize)
-        common.print_timestamp(f'Finished making a gc data file.')
+        logutils.print_timestamp(f'Finished making a gc data file.')
 
     if coords_as_index:
         index_col = ['Chromosome', 'Start', 'End']
@@ -107,7 +111,7 @@ def calculate_gcvals_generator(chroms, start0s, end0s, fasta, get_fetchargs):
 
 @functools.cache
 def calculate_gcvals(chroms, start0s, end0s, fasta, window=None, as_array=True):
-    common.print_timestamp('Beginning gc fraction calculation')
+    logutils.print_timestamp('Beginning gc fraction calculation')
     get_fetchargs = make_fetchargs_func(window, fasta)
     #val_gen = calculate_gcvals_generator(chroms, start0s, end0s, fasta, get_fetchargs)
     val_gen = (
@@ -151,7 +155,7 @@ def load_gcvals_with_df(df, refver, binsize, fasta, window=None):
         df.Chromosome, df.Start, df.End, 
         refver=refver, 
         binsize=binsize, 
-        fasta=common.DEFAULT_FASTAS[refver], 
+        fasta=refgenome.get_default_fasta(refver), 
         window=window,
     )
 
@@ -170,7 +174,7 @@ def add_gc_calculating(df, *, refver=None, fasta=None, window=None):
     Modifies input DataFrame
     """
     if fasta is None:
-        fasta = common.DEFAULT_FASTAS[refver]
+        fasta = refgenome.get_default_fasta(refver)
 
     gcvals = calculate_gcvals(
         tuple(df.Chromosome), 
@@ -198,7 +202,7 @@ def add_gc_loading(df, refver, binsize, window=None):
         df.Chromosome, df.Start, df.End, 
         refver=refver, 
         binsize=binsize, 
-        fasta=common.DEFAULT_FASTAS[refver], 
+        fasta=refgenome.get_default_fasta(refver), 
         window=window,
     )
     if isinstance(df, pd.DataFrame):

@@ -3,11 +3,6 @@ import operator
 
 import Bio.Align
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-readplus = importlib.import_module('.'.join([top_package_name, 'read', 'readplus']))
-
 
 DEFAULT_FLANKLEN = 1
 

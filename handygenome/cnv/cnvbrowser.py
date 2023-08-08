@@ -1,6 +1,5 @@
 import pysam
 
-import handygenome.common as common
 
 
 class CNVBrowser:

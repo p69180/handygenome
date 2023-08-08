@@ -7,7 +7,7 @@ import pyranges as pr
 import numpy as np
 import pandas as pd
 
-import handygenome.common as common
+import handygenome
 import handygenome.workflow as workflow
 import handygenome.ucscdata as ucscdata
 import handygenome.pyranges_helper as pyranges_helper
@@ -18,7 +18,7 @@ LOGGER_INFO = workflow.get_debugging_logger(verbose=False)
 LOGGER_DEBUG = workflow.get_debugging_logger(verbose=True)
 
 RSCRIPT_COPYNUMBER = '/home/users/pjh/tools/miniconda/221104/miniconda3/envs/r-copynumber/lib/R/bin/Rscript'
-COPYNUMBER_SCRIPT_PATH = os.path.join(common.R_DIR, 'copynumber.R')
+COPYNUMBER_SCRIPT_PATH = os.path.join(handygenome.DIRS['R'], 'copynumber.R')
 
 
 def add_arm_info(gr, cytoband_gr, as_gr=True):

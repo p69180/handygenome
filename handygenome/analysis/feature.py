@@ -1,7 +1,7 @@
 import numpy as np
 import pyranges as pr
 
-from handygenome.common import Interval
+from handygenome.interval import Interval
 import handygenome.annotation.ensembl_rest as ensembl_rest
 import handygenome.annotation.data as annotdata
 

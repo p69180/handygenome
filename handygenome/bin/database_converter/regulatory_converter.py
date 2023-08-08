@@ -7,13 +7,12 @@ import shutil
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-toolsetup = importlib.import_module('.'.join([top_package_name, 'workflow', 'toolsetup']))
-customfile = importlib.import_module('.'.join([top_package_name, 'annotation', 'customfile']))
-assemblyspec = importlib.import_module('.'.join([top_package_name, 'assemblyspec']))
+import handygenome.network as network
+import handygenome.tools as tools
+import handygenome.workflow as workflow
+import handygenome.workflow.toolsetup as toolsetup
+import handygenome.annotation.customfile as customfile
+import handygenome.refgenome as refgenome
 
 
 DEFAULT_OUTFILE_BASENAME = 'ensembl_regulatory_sorted.gff.gz'
@@ -72,7 +71,7 @@ def download(logger, mainfile_url, ftp_activity_directory, download_dir,
              mainfile_path, activity_dir):
     # main file
     logger.info(f'Beginning download of main gff to "{mainfile_path}"')
-    common.download(mainfile_url, mainfile_path)
+    network.download(mainfile_url, mainfile_path)
 
     # activity files
     logger.info(f'LOGIN to ensembl ftp host "{FTP_HOST}"')
@@ -97,13 +96,13 @@ def download(logger, mainfile_url, ftp_activity_directory, download_dir,
 def load_activity_data(activity_dir, logger):
     activity_data = dict()
     tissue_list = list()
-    for fname in common.listdir(activity_dir):
+    for fname in tools.listdir(activity_dir):
         tissue = re.sub('\.gff\.gz$', '', os.path.basename(fname))
         tissue_list.append(tissue)
         logger.info(f'Loading {tissue} file')
         with gzip.open(fname, 'rt') as infile:
             for line in infile:
-                linesp = common.get_linesp(line)
+                linesp = tools.get_linesp(line)
                 attrs = linesp[8]
                 attrs_parsed = customfile.parse_gff3_attrs(attrs)
                 ID = attrs_parsed['regulatory_feature_stable_id']
@@ -120,7 +119,7 @@ def load_mainfile(mainfile_path, chromdict, asmblspec,
     mainfile_data = list()
     with gzip.open(mainfile_path, 'rt') as infile:
         for line in infile:
-            linesp = common.get_linesp(line)
+            linesp = tools.get_linesp(line)
 
             # edit chrom
             if linesp[0] not in chromdict:
@@ -145,8 +144,8 @@ def load_mainfile(mainfile_path, chromdict, asmblspec,
 
 def sort_mainfile_data(chromdict, mainfile_data):
     def sortkey(line_data):
-        return common.coord_sortkey(line_data['linesp'][0], int(line_data['linesp'][3]), chromdict)
-    mainfile_data_sorted = sorted(mainfile_data, key = sortkey)
+        return tools.coord_sortkey(line_data['linesp'][0], int(line_data['linesp'][3]), chromdict)
+    mainfile_data_sorted = sorted(mainfile_data, key=sortkey)
 
     return mainfile_data_sorted
 
@@ -182,8 +181,8 @@ def convert_common(logger, mainfile_url, ftp_activity_directory, refver,
 
         rm_downloaded = False
 
-    # set assemblyspec dbs
-    asmblspec = assemblyspec.SPECS[refver]
+    # set refgenome dbs
+    asmblspec = refgenome.SPECS[refver]
     chromdict = asmblspec.chromdicts[output_chrname_version]
 
     # load activity data

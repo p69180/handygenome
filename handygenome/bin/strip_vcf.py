@@ -2,7 +2,6 @@ import textwrap
 
 import pysam
 
-import handygenome.common as common
 import handygenome.workflow as workflow
 import handygenome.vcfeditor.indexing as indexing
 

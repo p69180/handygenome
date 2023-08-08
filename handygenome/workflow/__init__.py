@@ -12,9 +12,13 @@ import tempfile
 
 import pyranges as pr
 
-import importlib
-import handygenome.common as common
+import handygenome
+import handygenome.logutils as logutils
+import handygenome.interval as libinterval
+import handygenome.tools as tools
 import handygenome.deco as deco
+import handygenome.refgenome as refgenome
+import handygenome.vcfeditor.misc as vcfmisc
 
 
 SLURMBIN = '/usr/local/slurm/bin'
@@ -110,15 +114,10 @@ def get_split_filenames(n_file, outdir, prefix, suffix):
             <outdir>/<prefix>000<suffix>.
         File creation is not done.
     """
-
-    result = list()
-    padded_indices = common.get_padded_indices(n_file)
-    result = [
+    return [
         os.path.join(outdir, prefix + idx_pad + suffix)
-        for idx_pad in padded_indices
+        for idx_pad in tools.get_padded_indices(n_file)
     ]
-    
-    return result
 
 
 def check_infile_validity(infile):
@@ -383,7 +382,7 @@ def add_outdir_arg(
 
 
 def add_fasta_arg(parser, required=True, help=None):
-    available_versions = ", ".join(common.DEFAULT_FASTA_PATHS.keys())
+    available_versions = ", ".join(refgenome.REFVERINFO.list_known_refvers())
 
     if help is None:
         help=(f'A fasta file path or, alternatively, a reference genome '
@@ -399,8 +398,7 @@ def add_fasta_arg(parser, required=True, help=None):
 
 def add_refver_arg(parser, required=True, choices='all', help=None):
     if choices == 'all':
-        #allowed_vals = tuple(common.RefverDict.aliases.keys()) + tuple(common.RefverDict.converter.keys())
-        allowed_vals = common.RefverDict.known_refvers
+        allowed_vals = refgenome.RefverDict.known_refvers
     elif choices == 'mouse':
         allowed_vals = ('mm9', 'mm10', 'mm39')
     elif choices == 'human':
@@ -426,7 +424,7 @@ def add_outfmt_arg(
     parser.add_argument(
         '-O', '--output-format', dest='mode_pysam', required=required, 
         default=default, choices=('v', 'z', 'u', 'b'), 
-        type=(lambda x: common.PYSAM_FORMAT_DICT[x]),
+        type=(lambda x: vcfmisc.PYSAM_MODE_DICT[x]),
         metavar='<output format>',
         help=textwrap.fill(help, width=HELP_WIDTH))
 
@@ -508,14 +506,16 @@ def add_excl_region_arg(
 def get_incl_gr_from_args(args):
     if args.incl_region_path is None:
         if args.fasta_path is not None:
-            chromdict = common.ChromDict(fasta_path=fasta_path)
-            gr_incl = chromdict.to_interval_list().to_gr()
+            chromdict = refgenome.ChromDict.from_fasta_path(args.fasta_path)
         elif args.refver is not None:
-            chromdict = common.ChromDict(refver=refver)
-            gr_incl = chromdict.to_interval_list().to_gr()
+            chromdict = refgenome.ChromDict.from_refver(refver)
         else:
             raise Exception(
-                f'"incl_region_path", "fasta_path", "refver" are all not set.')
+                f'"incl_region_path", "fasta_path", "refver" are all not set.'
+            )
+
+        #gr_incl = chromdict.to_interval_list().to_gr()
+        gr_incl = chromdict.to_gr(assembled_only=False, as_gr=True)
     else:
         gr_incl = pr.read_bed(args.incl_region_path)
 
@@ -530,7 +530,7 @@ def get_merged_intervals_from_args(args):
         gr_excl = pr.read_bed(args.excl_region_path)
         gr_merged = gr_incl.subtract(gr_excl)
 
-    return common.IntervalList.from_gr(gr_merged)
+    return libinterval.IntervalList.from_gr(gr_merged)
             
 
 ########
@@ -690,8 +690,9 @@ def arghandler_outdir(arg):
 
 
 def arghandler_fasta(arg):
-    if arg in common.DEFAULT_FASTA_PATHS.get_valid_keys():
-        return common.DEFAULT_FASTA_PATHS[arg]
+    if arg in refgenome.REFVERINFO.list_known_refvers():
+    #if arg in common.DEFAULT_FASTA_PATHS.get_valid_keys():
+        return refgenome.get_default_fasta_path(arg)
     else:
         return arghandler_infile(arg)
 
@@ -973,8 +974,8 @@ class JobList(list):
     def write_job_status_log(self, msg):
         if self.job_status_logpath is not None:
             #with open(self.job_status_logpath, 'wt') as f:
-            with common.openfile(self.job_status_logpath, 'a') as f:
-                f.write(f'[{common.get_timestamp()}] {msg}')
+            with tools.openfile(self.job_status_logpath, 'a') as f:
+                f.write(f'[{logutils.get_timestamp()}] {msg}')
 
     def get_num_pending_running(self):
         return len(self.sublists['pending']) + len(self.sublists['running'])
@@ -1332,7 +1333,7 @@ def make_jobscript_string(lines, shell = False, python = False, **kwargs):
     string_list = list()
 
 
-    string_list.append('#!' + common.BASH)
+    string_list.append('#!' + handygenome.OPTION['bash'])
 
     if 'N' not in kwargs:
         kwargs['N'] = 1

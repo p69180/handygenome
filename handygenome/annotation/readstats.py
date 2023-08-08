@@ -11,14 +11,12 @@ import pysam
 import numpy as np
 import scipy.stats
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-annotitem = importlib.import_module('.'.join([top_package_name, 'annotation', 'annotitem']))
-infoformat = importlib.import_module('.'.join([top_package_name, 'variant', 'infoformat']))
-readplus = importlib.import_module('.'.join([top_package_name, 'read', 'readplus']))
-liballeleinfo = importlib.import_module('.'.join([top_package_name, 'read', 'alleleinfo']))
+import handygenome.logutils as logutils
+import handygenome.workflow as workflow
+import handygenome.annotation.annotitem as annotitem
+import handygenome.variant.infoformat as infoformat
+import handygenome.read.readplus as readplus
+import handygenome.read.alleleinfo as liballeleinfo
 
 
 ZERO_ONE_UNIFORM = scipy.stats.uniform(loc=0, scale=1)
@@ -221,12 +219,12 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         result.is_invalid = False
         result.vcfspec = vcfspec
         result.fasta = (
-            common.DEFAULT_FASTAS[vcfspec.refver]
+            refgenome.get_default_fasta(vcfspec.refver)
             if fasta is None else
             fasta
         )
         result.chromdict = (
-            common.DEFAULT_CHROMDICTS[vcfspec.refver]
+            refgenome.get_default_chromdict(vcfspec.refver)
             if chromdict is None else
             chromdict
         )
@@ -266,18 +264,18 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
     @classmethod
     def init_invalid(cls, vcfspec, fasta=None, chromdict=None, countonly=False, verbose=True):
         if verbose:
-            common.print_timestamp(f'Initiating ReadStats object as invalid mode')
+            logutils.print_timestamp(f'Initiating ReadStats object as invalid mode')
         # main
         result = cls(is_missing=False)
         result.is_invalid = True
         result.vcfspec = vcfspec
         result.fasta = (
-            common.DEFAULT_FASTAS[vcfspec.refver]
+            refgenome.get_default_fasta(vcfspec.refver)
             if fasta is None else
             fasta
         )
         result.chromdict = (
-            common.DEFAULT_CHROMDICTS[vcfspec.refver]
+            refgenome.get_default_chromdict(vcfspec.refver)
             if chromdict is None else
             chromdict
         )

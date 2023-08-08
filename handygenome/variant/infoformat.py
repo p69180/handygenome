@@ -4,10 +4,6 @@ import warnings
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-
 
 NA_VALUES = ('', '.', None)
 NA_VALUES_SET = set(NA_VALUES)

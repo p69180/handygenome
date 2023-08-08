@@ -7,7 +7,9 @@ import functools
 import numpy as np
 import pysam
 
-import handygenome.common as common
+import handygenome.tools as tools
+import handygenome.refgenome as refgenome
+import handygenome.interval as libinterval
 import handygenome.workflow as workflow
 import handygenome.read.readhandler as readhandler
 import handygenome.read.alleleinfo as liballeleinfo
@@ -60,9 +62,9 @@ class ReadPlus:
             self.fasta = fasta
         else:
             if fasta is None:
-                self.fasta = common.DEFAULT_FASTAS[
-                    common.infer_refver_bamheader(self.read.header)
-                ]
+                self.fasta = refgenome.get_default_fasta(
+                    refgenome.infer_refver_bamheader(self.read.header)
+                )
             else:
                 self.fasta = fasta
         # pairs_dict
@@ -311,7 +313,7 @@ class ReadPlus:
         assert len(range0) > 0
 
         # check if read range contains target range
-        if not readhandler.check_overlaps_forward_nonzero(self.range0, range0):
+        if not libinterval.check_overlaps_forward_nonzero(self.range0, range0):
             return None
 
         # handle all-queryonly cases (added on 230127)
@@ -379,7 +381,7 @@ class ReadPlus:
         if num_cigarM == 0:
             return False
         else:
-            return readhandler.check_spans(self.range0, range0)
+            return libinterval.check_spans(self.range0, range0)
 
     def check_matches(
         self, range0, 
@@ -450,7 +452,7 @@ class ReadPlus:
         return spans, matches
 
     def check_overlaps(self, range0):
-        return readhandler.check_overlaps(self.range0, range0)
+        return libinterval.check_overlaps(self.range0, range0)
 
     def check_overlaps_vcfspec(self, vcfspec):
         return (
@@ -464,7 +466,7 @@ class ReadPlus:
         
     def check_softclip_overlaps(self, range0):
         softclip_range0 = self.get_softclip_range0()
-        return readhandler.check_overlaps(softclip_range0, range0)
+        return libinterval.check_overlaps(softclip_range0, range0)
 
     def check_softclip_overlaps_vcfspec(self, vcfspec):
         return (
@@ -476,8 +478,8 @@ class ReadPlus:
         preflank_range0, postflank_range0 = vcfspec.get_flank_range0s_equivalents(flanklen=flanklen)
         softclip_range0 = self.get_softclip_range0()
         return (
-            readhandler.check_spans(softclip_range0, preflank_range0)
-            and readhandler.check_spans(softclip_range0, postflank_range0)
+            libinterval.check_spans(softclip_range0, preflank_range0)
+            and libinterval.check_spans(softclip_range0, postflank_range0)
         )
 
     #################################
@@ -850,12 +852,13 @@ class ReadPlusPair:
             self.rp1 = rplist_primary[0]
             self.rp2 = None
         elif len(rplist_primary) == 2:
-            order = common.compare_coords(
+            order = tools.compare_coords(
                 rplist_primary[0].read.reference_name, 
                 rplist_primary[0].fiveprime_end,
                 rplist_primary[1].read.reference_name, 
                 rplist_primary[1].fiveprime_end,
-                chromdict)
+                chromdict,
+            )
             if order <= 0:
                 self.rp1 = rplist_primary[0]
                 self.rp2 = rplist_primary[1]
@@ -1089,10 +1092,10 @@ class ReadPlusPairList(list):
         recalc_NMMD=False,
         include_irrelevant_reads=False,
     ):
-        refver = common.infer_refver_bamheader(bam.header)
+        refver = refgenome.infer_refver_bamheader(bam.header)
         if (fasta is None) or (chromdict is None):
-            fasta = common.DEFAULT_FASTAS[refver]
-            chromdict = common.ChromDict(refver=refver)
+            fasta = refgenome.get_default_fasta(refver)
+            chromdict = refgenome.ChromDict.from_refver(refver)
 
         LOGGER_RPPLIST.info('Beginning initial fetch')
         chromlen = chromdict[chrom]
@@ -1162,7 +1165,7 @@ class ReadPlusPairList(list):
         raise Exception(f'QNAME {qname} is not present')
 
     def sortby_rp1(self):
-        read_sortkey = common.get_read_sortkey(self.chromdict)
+        read_sortkey = readhandler.get_read_sortkey(self.chromdict)
         sortkey = lambda rpp: read_sortkey(rpp.rp1.read)
         self.sort(key=sortkey)
 
@@ -1282,7 +1285,7 @@ class ReadPlusPairList(list):
             raise Exception(f'Contig specs are different between read headers.')
 
         bamheader = self[0].rp1.read.header.copy()
-        sortkey = common.get_read_sortkey(common.ChromDict(bamheader=bamheader))
+        sortkey = readhandler.get_read_sortkey(refgenome.ChromDict.from_bamheader(bamheader))
         readlist.sort(key=sortkey)
 
         with pysam.AlignmentFile(outfile_path, mode='wb', header=bamheader) as out_bam:
@@ -1308,10 +1311,10 @@ def get_rpplist_nonsv(
     include_irrelevant_reads=False,
 ):
     # get params
-    refver = common.infer_refver_bamheader(bam.header)
+    refver = refgenome.infer_refver_bamheader(bam.header)
     if (fasta is None) or (chromdict is None):
-        fasta = common.DEFAULT_FASTAS[refver]
-        chromdict = common.ChromDict(refver=refver)
+        fasta = refgenome.get_default_fasta(refver)
+        chromdict = refgenome.ChromDict.from_refver(refver)
 
     LOGGER_RPPLIST.info('Beginning initial fetch')
     chromlen = chromdict[chrom]
@@ -1378,7 +1381,7 @@ def get_rpplist_sv(bam, fasta, chromdict, bnds, view=False,
         new_fetch_padding, long_insert_threshold,
     )
 
-    refver = common.infer_refver_bamheader(bam.header)
+    refver = refgenome.infer_refver_bamheader(bam.header)
     rpplist = ReadPlusPairList(refver=refver, chromdict=chromdict)
     if len(relevant_qname_set_union) > 0:
         LOGGER_RPPLIST.info('Beginning refined fetch')

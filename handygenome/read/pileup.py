@@ -8,38 +8,13 @@ import uuid
 
 import numpy as np
 import pandas as pd
-#import pyranges as pr
 
-import importlib
-
-top_package_name = __name__.split(".")[0]
-common = importlib.import_module(".".join([top_package_name, "common"]))
-workflow = importlib.import_module(".".join([top_package_name, "workflow"]))
-readhandler = importlib.import_module(
-    ".".join([top_package_name, "read", "readhandler"])
-)
-alignhandler = importlib.import_module(".".join([top_package_name, "align", "alignhandler"]))
-#librealign = importlib.import_module(".".join([top_package_name, "align", "realign"]))
-readplus = importlib.import_module(".".join([top_package_name, "read", "readplus"]))
-#fetchcache = importlib.import_module(".".join([top_package_name, "read", "fetchcache"]))
-
-
-#DEL_VALUE = "*"
-#EMPTY_VALUE = ""
-#DEFAULT_EXTEND_FETCHEDREADS_BY = 300
-#DEFAULT_EXTEND_PILEUP_BY = 20
-
-
-#def get_logger(verbose):
-#    formatter = logging.Formatter(
-#        fmt='[%(asctime)s.%(msecs)03d] Pileup: %(message)s', 
-#        datefmt='%Z %Y-%m-%d %H:%M:%S'
-#    )
-#    return workflow.get_logger(
-#        name=str(uuid.uuid4()),
-#        level=('debug' if verbose else 'info'),
-#        formatter=formatter,
-#    )
+import handygenome.tools as tools
+import handygenome.refgenome as refgenome
+import handygenome.workflow as workflow
+import handygenome.read.readhandler as readhandler
+import handygenome.align.alignhandler as alignhandler
+import handygenome.read.readplus as readplus
 
 
 class PileupBase:
@@ -283,7 +258,7 @@ class PileupBase:
         assert all((x in range(self.start0 + 1, self.end0)) for x in start0_list)
         result = list()
         margins = [self.start0] + start0_list + [self.end0]
-        for new_start0, new_end0 in common.pairwise(margins):
+        for new_start0, new_end0 in tools.pairwise(margins):
             result.append(self.subset(new_start0, new_end0, inplace=False))
         return result
 
@@ -411,12 +386,12 @@ class PileupBase:
             raise Exception(f'At least one of "refver" or "fasta" must be set.')
 
         if refver is None:
-            refver_result = common.infer_refver_fasta(fasta)
+            refver_result = refgenome.infer_refver_fasta(fasta)
         else:
             refver_result = refver
 
         if fasta is None:
-            fasta_result = common.DEFAULT_FASTAS[refver_result]
+            fasta_result = refgenome.get_default_fasta(refver_result)
         else:
             fasta_result = fasta
 

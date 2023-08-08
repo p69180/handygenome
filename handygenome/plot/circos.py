@@ -10,9 +10,9 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import Bio.Seq
 
-import handygenome.common as common
 import handygenome.signature.misc as libsigmisc
 import handygenome.deco as deco
+import handygenome.refgenome as refgenome
 
 
 """Issues with pyranges.PyRanges.intersect:
@@ -45,7 +45,7 @@ CYTOBAND_COLORMAP = {
     "acen": "#D82322",
 }
 
-CYTOBAND_PATHS = common.RefverDict({
+CYTOBAND_PATHS = refgenome.RefverDict({
     'GRCh37': '/home/users/pjh/References/cytoband/cytoBand_hg19.bed',
     'GRCh38': '/home/users/pjh/References/cytoband/cytoBand_hg38.bed',
 })
@@ -59,7 +59,7 @@ def read_cytoband(cytoband_path, refver):
     )
     result['Color'] = result['Stain'].apply(lambda x: CYTOBAND_COLORMAP[x])
 
-    refver = common.RefverDict.standardize(refver)
+    refver = refgenome.RefverDict.standardize(refver)
     if refver == 'GRCh37':
         result['Chromosome'] = result['Chromosome'].apply(
             lambda x: re.sub('^chr', '', x)
@@ -125,7 +125,7 @@ class SectorList(list):
         end0s = list()
         for chrom, length in chromdict.items():
             if assembled_only:
-                if not common.RE_PATS['assembled_chromosome'].fullmatch(chrom):
+                if not refgenome.PAT_ASSEMBLED_CHROM.fullmatch(chrom):
                     continue
 
             chroms.append(chrom)
@@ -136,7 +136,7 @@ class SectorList(list):
 
     @classmethod
     def from_refver(cls, refver, assembled_only=True):
-        chromdict = common.ChromDict(refver=refver)
+        chromdict = refgenome.ChromDict.from_refver(refver)
         return cls.from_chromdict(chromdict, assembled_only=assembled_only)
 
     @classmethod
@@ -193,7 +193,7 @@ class Circos:
         """
         # chromdict
         if refver is not None:
-            self.chromdict = common.ChromDict(refver=refver)
+            self.chromdict = refgenome.ChromDict.from_refver(refver)
         elif chromdict is not None:
             self.chromdict = chromdict
         # sectorlist

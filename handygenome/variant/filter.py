@@ -5,11 +5,7 @@ import collections
 import pysam
 import numpy as np
 
-import importlib
-
-top_package_name = __name__.split(".")[0]
-common = importlib.import_module(".".join([top_package_name, "common"]))
-
+import handygenome.tools as tools
 import handygenome.workflow as workflow
 from handygenome.annotation.annotitem import AnnotItemInfoSingle, AnnotItemFormatSingle, AnnotItemFormatSampledict
 import handygenome.variant.ponbams as libponbams
@@ -806,9 +802,9 @@ class PonFilterBase(SamplewiseFilter):
         if mode == 'stdev':
             return np.std(values)
         elif mode == 'mean_mad':
-            return common.mean_mad(values)
+            return tools.mean_mad(values)
         elif mode == 'median_mad':
-            return common.median_mad(values)
+            return tools.median_mad(values)
 
     def check_greater_than_lower(
         self, query_vaf, pon_vafs_lower, pon_vaf_array, mode='mean_mad',

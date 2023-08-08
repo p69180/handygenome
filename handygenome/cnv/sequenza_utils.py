@@ -8,9 +8,10 @@ import tempfile
 import sequenza.commands
 
 import handygenome.common as common
+import handygenome.assemblyspec as assemblyspec
 
 
-DEFAULT_GCWIG_PATHS = common.RefverDict(
+DEFAULT_GCWIG_PATHS = assemblyspec.RefverDict(
     {
         'GRCh37': '/home/users/data/01_reference/human_g1k_v37/human_g1k_v37.gc50Base.txt.gz',
         'GRCh38': '/home/users/pjh/References/reference_genome/GRCh38/GCA_for_alignment_pipelines/no_alt_plus_hs38d1/GCA_000001405.15_GRCh38_no_alt_plus_hs38d1_analysis_set.gc50Base.txt.gz',

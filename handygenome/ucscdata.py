@@ -6,19 +6,20 @@ import itertools
 import pandas as pd
 import pyranges as pr
 
-import handygenome.common as common
-import handygenome.assemblyspec as libassemblyspec
+import handygenome
+import handygenome.network as network
 import handygenome.cnv.misc as cnvmisc
+import handygenome.refgenome as refgenome
 
 
 URL_BASE = 'https://api.genome.ucsc.edu'
 
-CYTOBAND_URLS = common.RefverDict({
+CYTOBAND_URLS = refgenome.RefverDict({
     'GRCh37': 'http://hgdownload.cse.ucsc.edu/goldenpath/hg19/database/cytoBand.txt.gz', 
     'GRCh38': 'http://hgdownload.cse.ucsc.edu/goldenpath/hg38/database/cytoBand.txt.gz', 
 })
 
-CYTOBAND_DIR = os.path.join(common.DATA_DIR, 'cytoband')
+CYTOBAND_DIR = os.path.join(handygenome.DIRS['data'], 'cytoband')
 os.makedirs(CYTOBAND_DIR, exist_ok=True)
 
 
@@ -42,7 +43,7 @@ CYTOBAND_COLORMAP = {
 
 def get_avaliable_genomes():
     url = f'{URL_BASE}/list/ucscGenomes'
-    raw = common.http_get(url)
+    raw = network.http_get(url)
     return raw['ucscGenomes']
 
 
@@ -67,13 +68,13 @@ def standardize_refver(refver):
 
 def list_tracks(refver):
     refver = standardize_refver(refver)
-    raw = common.http_get(f'{URL_BASE}/list/tracks?genome={refver}')
+    raw = network.http_get(f'{URL_BASE}/list/tracks?genome={refver}')
     return sorted(raw[refver].keys())
 
 
 def rename_hg19_cytoband(cytoband_df):
     result = cytoband_df.copy()
-    assemblyspec = libassemblyspec.SPECS['hg19']
+    assemblyspec = refgenome.SPECS['hg19']
     new_chroms = result['Chromosome'].apply(
         lambda x: assemblyspec.convert(x, 'nochr_plus_genbank')
     )
@@ -88,7 +89,7 @@ def get_cytoband_from_ucsc_api(refver, rename_hg19=True, as_gr=True):
     if 'cytoBand' not in list_tracks(refver):
         raise Exception(f'"cytoBand" is not available for this reference genome.')
 
-    raw = common.http_get(
+    raw = network.http_get(
         f'{URL_BASE}/getData/track?genome={refver};track=cytoBand'
     )
     data = list()

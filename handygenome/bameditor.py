@@ -3,7 +3,7 @@ import os
 import pysam
 import numpy as np
 
-import handygenome.common as common
+import handygenome.refgenome as refgenome
 import handygenome.workflow as workflow
 import handygenome.analysis.feature as libfeature
 
@@ -118,7 +118,7 @@ def get_region_depths(bam, chrom, start0, end0):
 
 def get_exon_depths(bam, gene_coords, refver=None):
     if refver is None:
-        refver = common.infer_refver_bamheader(bam.header)
+        refver = refgenome.infer_refver_bamheader(bam.header)
 
     result = dict()
     for rng in gene_coords['exon']:

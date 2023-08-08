@@ -3,15 +3,15 @@ import gzip
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-toolsetup = importlib.import_module('.'.join([top_package_name, 'workflow', 'toolsetup']))
-indexing = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'indexing']))
-initvcf = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'initvcf']))
-headerhandler = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'headerhandler']))
-libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
+import handygenome.tools as tools
+import handygenome.refgenome as refgenome
+import handygenome.workflow as workflow
+import handygenome.workflow.toolsetup as toolsetup
+import handygenome.vcfeditor.indexing as indexing
+import handygenome.vcfeditor.initvcf as initvcf
+import handygenome.vcfeditor.headerhandler as headerhandler
+import handygenome.variant.vcfspec as libvcfspec
+import handygenome.variant.varianthandler as varianthandler
 
 
 def argument_parser(cmdargs):
@@ -140,7 +140,7 @@ def parse_one_line(infile):
     except StopIteration:
         return None
     else:
-        linesp = common.get_linesp(line)
+        linesp = tools.get_linesp(line)
         linesp_parsed = parse_linesp(linesp)
         return linesp_parsed
 
@@ -258,8 +258,7 @@ def get_linesp_buffer(infile):
                 break
             else:
                 linesp_buffer.append(linesp_parsed)
-                if check_linesp_adjacency(linesp_buffer[-2], 
-                                          linesp_buffer[-1]):
+                if check_linesp_adjacency(linesp_buffer[-2], linesp_buffer[-1]):
                     break
                 else:
                     continue
@@ -314,7 +313,7 @@ def write_oufile(infile_path, outfile_path, mode_pysam, vcfheader, fasta,
 
     # sort
     logger.info('Sorting variant records')
-    out_vr_list.sort(key=common.get_vr_sortkey(chromdict))
+    out_vr_list.sort(key=varianthandler.get_vr_sortkey(chromdict))
 
     # write
     logger.info('Writing variant records')
@@ -331,7 +330,7 @@ def main(cmdargs):
     logger.info('BEGINNING')
 
     fasta = pysam.FastaFile(args.fasta_path)
-    chromdict = common.ChromDict(fasta=fasta)
+    chromdict = refgenome.Chromdict.from_fasta(fasta)
     vcfheader = init_vcfheader(chromdict, args.sampleid)
 
     write_oufile(args.infile_path, args.outfile_path, args.mode_pysam, 

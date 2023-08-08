@@ -7,7 +7,9 @@ import re
 
 import pysam
 
-import handygenome.common as common
+import handygenome.tools as tools
+import handygenome.refgenome as refgenome
+import handygenome.logutils as logutils
 import handygenome.workflow as workflow
 import handygenome.hgvs as hgvs
 import handygenome.variant.varianthandler as varianthandler
@@ -23,7 +25,7 @@ LOGGER = workflow.get_logger(name='COSMIC converter')
 
 def get_header(infile_path):
     with gzip.open(infile_path, "rt") as infile:
-        header = common.get_linesp(next(infile), sep="\t")
+        header = tools.get_linesp(next(infile), sep="\t")
     return header
 
 
@@ -37,9 +39,7 @@ def check_decodable(b):
 
 
 def get_linedict_byte(byteline, header):
-    return dict(zip(
-                header, common.get_linesp_byte(byteline)
-                ))
+    return dict(zip(header, tools.get_linesp_byte(byteline)))
 
 
 def get_infile_looper(infile_path):
@@ -71,7 +71,7 @@ def get_infile_looper(infile_path):
             except UnicodeDecodeError:
                 linedict_str = decoding_error_handler(line_bytes, header, NR)
             else:
-                linedict_str = dict(zip(header, common.get_linesp(line_str)))
+                linedict_str = dict(zip(header, tools.get_linesp(line_str)))
 
             yield linedict_str
 
@@ -207,7 +207,7 @@ def load_datafile(infile_path, line_parser, summary, site_count, logging_lineno=
 
     # loop over data file
     looper = get_infile_looper(infile_path)
-    for linedict in common.iter_lineno_logging(looper, LOGGER, logging_lineno):
+    for linedict in logutils.iter_lineno_logging(looper, LOGGER, logging_lineno):
         line_sanity_check(linedict)
         parsed_line = line_parser(linedict)
         if not line_filter(parsed_line):
@@ -311,7 +311,7 @@ def modify_vcfspec(cosv_info, fasta, is_hg19):
 @deco.get_deco_timestamp('SUMMARY MODIFICATION', LOGGER)
 def modify_summary(summary, site_count, fasta, is_hg19, logging_lineno=500_000):
     # summary
-    for cosv, cosv_info in common.iter_lineno_logging(summary.items(), LOGGER, logging_lineno):
+    for cosv, cosv_info in logutils.iter_lineno_logging(summary.items(), LOGGER, logging_lineno):
         # coding & noncoding score
         for key in ('coding_score', 'noncoding_score'):
             try:
@@ -353,7 +353,8 @@ def get_vcfspec_cosv_map(summary, fasta, is_hg19):
 
 @deco.get_deco_timestamp('VCFSPEC SORTING', LOGGER)
 def sort_vcfspecs(vcfspec_cosv_map, chromdict):
-    return sorted(vcfspec_cosv_map.keys(), key=common.get_vcfspec_sortkey(chromdict))
+    #return sorted(vcfspec_cosv_map.keys(), key=common.get_vcfspec_sortkey(chromdict))
+    return sorted(vcfspec_cosv_map.keys(), key=(lambda x: x.get_sortkey(chromdict)))
 
 
 ###############################################
@@ -400,7 +401,7 @@ def write_outfile(outfile_path, summary, site_count, vcfspec_cosv_map, sorted_vc
     cosmic_metadata = get_cosmic_metadata(site_count, refver, cosmic_version)
     header = get_vcf_header(chromdict, cosmic_metadata)
     with pysam.VariantFile(outfile_path, mode='wz', header=header) as out_vcf:
-        for vcfspec in common.iter_lineno_logging(sorted_vcfspecs, LOGGER, logging_lineno):
+        for vcfspec in logutils.iter_lineno_logging(sorted_vcfspecs, LOGGER, logging_lineno):
             cosv = vcfspec_cosv_map[vcfspec]
             cosv_info = summary[cosv]
             cosmicinfolist = into_CosmicInfo(cosv, cosv_info)
@@ -419,8 +420,8 @@ def write_outfile(outfile_path, summary, site_count, vcfspec_cosv_map, sorted_vc
 
 @deco.get_deco_arg_choices({'refver': ('GRCh37', 'GRCh38')})
 def main(infile_path_ncv, infile_path_mutantexport, outfile_path, refver, cosmic_version):
-    fasta = pysam.FastaFile(common.DEFAULT_FASTA_PATHS[refver])
-    chromdict = common.ChromDict(refver=refver)
+    fasta = refgenome.get_default_fasta(refver)
+    chromdict = refgenome.get_default_chromdict(refver)
     is_hg19 = (refver == 'GRCh37')
 
     summary = dict()

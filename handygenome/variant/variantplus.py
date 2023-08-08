@@ -16,7 +16,9 @@ import pyranges as pr
 import numpy as np
 import pandas as pd
 
-import handygenome.common as common
+import handygenome.tools as tools
+import handygenome.refgenome as refgenome
+import handygenome.logutils as logutils
 import handygenome.workflow as workflow
 import handygenome.variant.varianthandler as varianthandler
 import handygenome.variant.filter as libfilter
@@ -107,14 +109,14 @@ class VariantPlus:
         result = cls()
 
         result.vr = vr
-        result.refver = common.infer_refver_vr(result.vr) if (refver is None) else refver
+        result.refver = refgenome.infer_refver_vr(result.vr) if (refver is None) else refver
         result.fasta = (
-            pysam.FastaFile(common.DEFAULT_FASTA_PATHS[result.refver])
+            pysam.FastaFile(refgenome.get_default_fasta_path(result.refver))
             if fasta is None
             else fasta
         )
         result.chromdict = (
-            common.ChromDict(fasta=result.fasta) if chromdict is None else chromdict
+            refgenome.ChromDict.from_fasta(result.fasta) if chromdict is None else chromdict
         )
         result.vcfspec = libvcfspec.Vcfspec.from_vr(result.vr, refver=result.refver)
 
@@ -143,7 +145,7 @@ class VariantPlus:
         result.refver = result.vcfspec.refver
         result.fasta = result.vcfspec.fasta
         result.chromdict = (
-            common.DEFAULT_CHROMDICTS[result.refver]
+            refgenome.get_default_chromdict(result.refver)
             if chromdict is None else 
             chromdict
         )
@@ -1033,17 +1035,17 @@ class VariantPlusList(list):
         if refver is None:
             if self.vcf is None:
                 raise Exception(f'When "refver" is not set, "vcf_path" or "vcf" must be set.')
-            self.refver = common.infer_refver_vcfheader(self.vcf.header)
+            self.refver = refgenome.infer_refver_vcfheader(self.vcf.header)
         else:
             self.refver = refver
 
         if fasta is None:
-            self.fasta = common.DEFAULT_FASTAS[self.refver]
+            self.fasta = refgenome.get_default_fasta(self.refver)
         else:
             self.fasta = fasta
 
         if chromdict is None:
-            self.chromdict = common.ChromDict(fasta=self.fasta)
+            self.chromdict = refgenome.ChromDict.from_fasta(self.fasta)
         else:
             self.chromdict = chromdict
 
@@ -1205,7 +1207,7 @@ class VariantPlusList(list):
 #        refver, fasta, chromdict = result.refver, result.fasta, result.chromdict
 #        with multiprocessing.Pool(ncore) as p:
 #            NR = 0
-#            for vr_subiter in common.grouper(vr_iterator(result.vcf), result.logging_lineno):
+#            for vr_subiter in tools.chunk_iter(vr_iterator(result.vcf), result.logging_lineno):
 #                vp_sublist = p.starmap(
 #                    _init_helper_make_vp, 
 #                    (
@@ -1284,7 +1286,7 @@ class VariantPlusList(list):
         if prop is None:
             vr_iterator = fetcher
         else:
-            vr_iterator = common.bernoulli_iterator(fetcher, p=prop, block_size=int(1e5))
+            vr_iterator = tools.bernoulli_iterator(fetcher, p=prop, block_size=int(1e5))
 
         return vr_iterator
 
@@ -1318,7 +1320,7 @@ class VariantPlusList(list):
         )
         vp_iterator = self._get_vp_iter_from_vr_iter(vr_iterator)
         vp_iterator = filter(vpfilter, vp_iterator)
-        vp_iterator = common.iter_lineno_logging(vp_iterator, self.logger, self.logging_lineno)
+        vp_iterator = logutils.iter_lineno_logging(vp_iterator, self.logger, self.logging_lineno)
         return vp_iterator
 
     def get_vp_iter_from_self(
@@ -1340,11 +1342,11 @@ class VariantPlusList(list):
                 vp_iterator = itertools.islice(self, sl.start, sl.stop, sl.step)
         # filter by prop
         if prop is not None:
-            vp_iterator = common.bernoulli_iterator(vp_iterator, p=prop, block_size=int(1e5))
+            vp_iterator = tools.bernoulli_iterator(vp_iterator, p=prop, block_size=int(1e5))
         # filter by vpfilter
         vp_iterator = filter(vpfilter, vp_iterator)
 
-        vp_iterator = common.iter_lineno_logging(vp_iterator, self.logger, self.logging_lineno)
+        vp_iterator = logutils.iter_lineno_logging(vp_iterator, self.logger, self.logging_lineno)
         return vp_iterator
 
 
@@ -1825,7 +1827,7 @@ class VariantPlusList(list):
         return result
 
     def get_vp_sortkey(self):
-        vr_sortkey = common.get_vr_sortkey(self.chromdict)
+        vr_sortkey = varianthandler.get_vr_sortkey(self.chromdict)
         def vp_sortkey(vp):
             return vr_sortkey(vp.vr)
         return vp_sortkey
@@ -1875,9 +1877,8 @@ class VariantPlusList(list):
         # main
         if not self.is_sorted:
             self.sort()
-        mode_pysam = common.write_mode_arghandler(mode_bcftools, mode_pysam)
+        mode_pysam = vcfmisc.write_mode_arghandler(mode_bcftools, mode_pysam)
         with pysam.VariantFile(outfile_path, mode=mode_pysam, header=header) as out_vcf:
-            #for vp in common.iter_lineno_logging(self, self.logger, self.logging_lineno):
             for vp in self.get_vp_iter_from_self():
                 if vp.is_sv:
                     self.write_each_vr(vp.vr, out_vcf, conflicting_keys)
@@ -1892,7 +1893,7 @@ class VariantPlusList(list):
     ):
         """Loads VariantRecords from VCF file, filters, and writes"""
         header = self.vcf.header.copy()
-        mode_pysam = common.write_mode_arghandler(mode_bcftools, mode_pysam)
+        mode_pysam = vcfmisc.write_mode_arghandler(mode_bcftools, mode_pysam)
         with pysam.VariantFile(outfile_path, mode=mode_pysam, header=header) as out_vcf:
             for vp in self.get_vp_iter_from_vcf(vpfilter=vpfilter):
                 if vp.is_sv:
@@ -1927,7 +1928,7 @@ def get_vafdf(
     # setup params
     logger = (LOGGER_DEBUG if verbose else LOGGER_INFO)
     with pysam.VariantFile(vcf_path) as vcf:
-        refver = common.infer_refver_vcfheader(vcf.header)
+        refver = refgenome.infer_refver_vcfheader(vcf.header)
 
     logger.info(f'Extracting vcf position information') 
     all_position_info = vcfmisc.get_vcf_positions(
@@ -1985,7 +1986,7 @@ def get_vafdf_nonparallel(
     logging_lineno=1000, 
     verbose=True,
 ):
-    sampleid = common.arg_to_list(sampleid)
+    sampleid = list(np.atleast_1d(sampleid))
     vplist = VariantPlusList.from_vcf_lazy(
         vcf_path, 
         logging_lineno=logging_lineno, 

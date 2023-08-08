@@ -5,7 +5,6 @@ import textwrap
 
 import pysam
 
-import handygenome.common as common
 import handygenome.workflow as workflow
 import handygenome.workflow.toolsetup as toolsetup
 import handygenome.vcfeditor.merge as libmerge

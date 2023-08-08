@@ -1,6 +1,5 @@
 import textwrap
 
-import handygenome.common as common
 import handygenome.workflow as workflow
 import handygenome.vcfeditor.split as split_module
 import handygenome.vcfeditor.indexing as indexing

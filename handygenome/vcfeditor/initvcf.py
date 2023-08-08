@@ -3,14 +3,14 @@ import warnings
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-varianthandler = importlib.import_module('.'.join([top_package_name, 'variant', 'varianthandler']))
+import handygenome.variant.varianthandler as varianthandler
+
+
+DEFAULT_VCFVER = '4.3'
 
 
 def write_empty_vcf(outfile_path, chromdict=None, samples=None, pysamhdr=None, 
-                    vcfver=common.DEFAULT_VCFVER):
+                    vcfver=DEFAULT_VCFVER):
     """
     Args:
         outfile_path: Output vcf file path.
@@ -51,7 +51,7 @@ def write_empty_vcf(outfile_path, chromdict=None, samples=None, pysamhdr=None,
 
 
 def create_empty_pysamvcf(chromdict=None, samples=None, pysamhdr=None, 
-                          vcfver=common.DEFAULT_VCFVER):
+                          vcfver=DEFAULT_VCFVER):
     """
     Args:
         outfile_path: Output vcf file path.

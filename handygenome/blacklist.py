@@ -4,12 +4,13 @@ import itertools
 import pandas as pd
 import pyranges as pr
 
-import handygenome.common as common
+import handygenome
+import handygenome.refgenome as refgenome
 
 
 # curated blacklist
 
-CURATED_BLACKLIST = common.RefverDict({
+CURATED_BLACKLIST = refgenome.RefverDict({
     'GRCh37': {
         'peri_centromere': [
             ('10', 38_000_000, 42_523_247),
@@ -42,20 +43,20 @@ CURATED_BLACKLIST = common.RefverDict({
 def make_blacklist_gr(data, refver):
     df_data = list(itertools.chain.from_iterable(data.values()))
     df = pd.DataFrame.from_records(df_data, columns=['Chromosome', 'Start', 'End'])
-    assert set(df['Chromosome']).issubset(common.DEFAULT_CHROMDICTS[refver].contigs)
+    assert set(df['Chromosome']).issubset(refgenome.get_default_chromdict(refver).contigs)
     gr = pr.PyRanges(df).merge().sort()
 
     return gr
 
 
-CURATED_BLACKLIST_GRS = common.RefverDict(
+CURATED_BLACKLIST_GRS = refgenome.RefverDict(
     {refver: make_blacklist_gr(data, refver) for refver, data in CURATED_BLACKLIST.items()}
 )
 
 
 # blacklist generated with excessive depth region calculation with normal bams
 
-HIGHDEPTH_BLACKLIST_PATH = os.path.join(common.DATA_DIR, 'custom_blacklist.tsv.gz')
+HIGHDEPTH_BLACKLIST_PATH = os.path.join(handygenome.DIRS['data'], 'custom_blacklist.tsv.gz')
 HIGHDEPTH_BLACKLIST_DF = pd.read_csv(
     HIGHDEPTH_BLACKLIST_PATH, 
     sep='\t',

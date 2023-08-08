@@ -1,15 +1,13 @@
 import numpy as np
 import pandas as pd
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-libcircos = importlib.import_module('.'.join([top_package_name, 'plot', 'circos']))
+import handygenome.tools as tools
+import handygenome.plot.circos as libcircos
 
 
 def previous_sv_reader(sv_path):
     data = list()
-    for linedict in common.fileiter(
+    for linedict in tools.fileiter(
         sv_path, sep='\t', remove_leading_hashes=True, skip_double_hashes=True,
     ):
         keys = list(linedict.keys())

@@ -1,10 +1,8 @@
 import logging
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-toolsetup = importlib.import_module('.'.join([top_package_name, 'workflow', 'toolsetup']))
+import handygenome.tools as tools
+import handygenome.workflow as workflow
+import handygenome.workflow.toolsetup as toolsetup
 
 
 DEFAULT_NUM_SUBMITTED = 400
@@ -41,7 +39,7 @@ def main(cmdargs):
     args = argument_parser(cmdargs)
     logger = toolsetup.setup_logger(args)
 
-    jobscript_path_list = common.listdir(args.indir_path)
+    jobscript_path_list = tools.listdir(args.indir_path)
     joblist = workflow.JobList(jobscript_path_list, logger=logger)
     joblist.submit(intv_submit=args.intv_submit)
     if not args.nowait:

@@ -1,47 +1,43 @@
 import re
 
-import handygenome.common as common
+import handygenome.tools as tools
+import handygenome.network as network
 import handygenome.deco as deco
+import handygenome.refgenome as refgenome
 
 
-SPECIES = common.RefverDict({
-    'GRCh37': 'homo_sapiens',
-    'GRCh38': 'homo_sapiens',
-    'GRCm39': 'mus_musculus',
-})
-
-PREFIX_LOOKUP_ID = common.RefverDict({
+PREFIX_LOOKUP_ID = refgenome.RefverDict({
     'GRCh37': 'http://grch37.rest.ensembl.org/lookup/id',
     'GRCh38': 'http://rest.ensembl.org/lookup/id',
 })
 
-PREFIX_LOOKUP_SYMBOL = common.RefverDict({
+PREFIX_LOOKUP_SYMBOL = refgenome.RefverDict({
     'GRCh37': 'http://grch37.rest.ensembl.org/lookup/symbol',
     'GRCh38': 'http://rest.ensembl.org/lookup/symbol',
 })
 
-PREFIX_REGULATORY = common.RefverDict({
+PREFIX_REGULATORY = refgenome.RefverDict({
     'GRCh37': 'http://grch37.rest.ensembl.org/regulatory/species/homo_sapiens/id',
     'GRCh38': 'http://rest.ensembl.org/regulatory/species/homo_sapiens/id',
 })
 
-PREFIX_VEP = common.RefverDict({
+PREFIX_VEP = refgenome.RefverDict({
     'GRCh37': 'http://grch37.rest.ensembl.org/vep/human/hgvs',
     'GRCh38': 'http://rest.ensembl.org/vep/human/hgvs',
     'GRCm39': 'http://rest.ensembl.org/vep/mouse/hgvs',
 })
 
-PREFIX_OVERLAP = common.RefverDict({
+PREFIX_OVERLAP = refgenome.RefverDict({
     'GRCh37': 'http://grch37.rest.ensembl.org/overlap/region',
     'GRCh38': 'http://rest.ensembl.org/overlap/region',
 })
 
-PREFIX_MAP = common.RefverDict({
+PREFIX_MAP = refgenome.RefverDict({
     'GRCh37': 'http://grch37.rest.ensembl.org/map',
     'GRCh38': 'http://rest.ensembl.org/map',
 })
 
-PREFIX_SEQUENCE = common.RefverDict({
+PREFIX_SEQUENCE = refgenome.RefverDict({
     'GRCh37': 'http://grch37.rest.ensembl.org/sequence/id',
     'GRCh38': 'http://rest.ensembl.org/sequence/id',
     'GRCm39': 'http://rest.ensembl.org/sequence/id',
@@ -71,7 +67,7 @@ def lookup_id(ID, refver, expand=False):
     url = '/'.join([prefix, ID])
     params = {'expand': int(expand)}
 
-    return common.http_get(url, params=params, headers=HTTP_HEADERS_GET)
+    return network.http_get(url, params=params, headers=HTTP_HEADERS_GET)
 
 
 def lookup_id_post(ID_list, refver, expand=False):
@@ -80,9 +76,9 @@ def lookup_id_post(ID_list, refver, expand=False):
 
     url = PREFIX_LOOKUP_ID[refver]
     params = {'expand' : int(expand)}
-    for sublist in common.grouper(ID_list, MAX_POST_SIZE['lookup_id']):
+    for sublist in tools.chunk_iter(ID_list, MAX_POST_SIZE['lookup_id']):
         data = {'ids' : sublist}
-        subresult = common.http_post(url, data, params=params, headers=HTTP_HEADERS_POST)
+        subresult = network.http_post(url, data, params=params, headers=HTTP_HEADERS_POST)
         result.extend(subresult.values())
 
     return result
@@ -90,23 +86,23 @@ def lookup_id_post(ID_list, refver, expand=False):
 
 def lookup_symbol(symbol, refver, expand=False):
     prefix = PREFIX_LOOKUP_SYMBOL[refver]
-    species = SPECIES[refver]
+    species = refgenome.RefverDict.find_species(refver)
     url = '/'.join([prefix, species, symbol])
     params = {'expand' : int(expand)}
 
-    return common.http_get(url, params=params, headers=HTTP_HEADERS_GET)
+    return network.http_get(url, params=params, headers=HTTP_HEADERS_GET)
 
 
 def lookup_symbol_post(symbols, refver, expand=False):
     prefix = PREFIX_LOOKUP_SYMBOL[refver]
-    species = SPECIES[refver]
+    species = refgenome.RefverDict.find_species(refver)
     url = '/'.join([prefix, species])
     params = {'expand' : int(expand)}
 
     result = list()
-    for sublist in common.grouper(symbols, MAX_POST_SIZE['lookup_symbol']):
+    for sublist in tools.chunk_iter(symbols, MAX_POST_SIZE['lookup_symbol']):
         data = {'symbols' : sublist}
-        subresult = common.http_post(url, data, params=params, headers=HTTP_HEADERS_POST)
+        subresult = network.http_post(url, data, params=params, headers=HTTP_HEADERS_POST)
         result.extend(subresult.values())
 
     return result
@@ -117,7 +113,7 @@ def regulatory(ID, refver, activity=True):
     url = '/'.join([prefix, ID])
     params = {'activity' : int(activity)}
 
-    result = common.http_get(url, params=params, headers=HTTP_HEADERS_GET)
+    result = network.http_get(url, params=params, headers=HTTP_HEADERS_GET)
     if isinstance(result, list) and len(result) == 1:
         result = result[0]
     else:
@@ -157,7 +153,7 @@ def vep(
             # even when it is set to False
         params.update({'Phenotypes' : int(with_Phenotypes)})
 
-    return common.http_get(url, params=params, headers=HTTP_HEADERS_GET)
+    return network.http_get(url, params=params, headers=HTTP_HEADERS_GET)
 
 
 def vep_post(
@@ -194,9 +190,9 @@ def vep_post(
         params.update({'Phenotypes': int(with_Phenotypes)})
 
     result = list()
-    for sublist in common.grouper(hgvsg_list, MAX_POST_SIZE['vep']):
+    for sublist in tools.chunk_iter(hgvsg_list, MAX_POST_SIZE['vep']):
         data = {'hgvs_notations': sublist}
-        result.extend(common.http_post(url, data, params=params, headers=HTTP_HEADERS_POST))
+        result.extend(network.http_post(url, data, params=params, headers=HTTP_HEADERS_POST))
 
     return result
 
@@ -208,7 +204,7 @@ def overlap(
     """start1, end1: 1-based closed system"""
 
     prefix = PREFIX_OVERLAP[refver]
-    species = SPECIES[refver]
+    species = refgenome.RefverDict.find_species(refver)
 
     suffix_list = list()
     if transcript: 
@@ -224,14 +220,14 @@ def overlap(
     if len(suffix_list) > 0:
         url += '?' + ';'.join(suffix_list)
 
-    return common.http_get(url, headers=HTTP_HEADERS_GET)
+    return network.http_get(url, headers=HTTP_HEADERS_GET)
 
 
 @deco.get_deco_arg_choices({'mode': ('cdna', 'cds', 'translation')})
 def map(ID, start1, end1, mode, refver):
     prefix = PREFIX_MAP[refver]
     url = '/'.join([prefix, mode, ID, f'{start1}..{end1}'])
-    return common.http_get(url, headers=HTTP_HEADERS_GET)
+    return network.http_get(url, headers=HTTP_HEADERS_GET)
     
 
 def sequence_get(ID, refver, type='genomic'):
@@ -241,7 +237,7 @@ def sequence_get(ID, refver, type='genomic'):
         'type': type,
     }
 
-    return common.http_get(
+    return network.http_get(
         url, 
         params=params, 
         headers={'Content-Type': 'text/plain'},
@@ -256,10 +252,10 @@ def sequence_post(ID_list, refver, type='genomic'):
     }
 
     result = list()
-    for sublist in common.grouper(ID_list, MAX_POST_SIZE['sequence']):
+    for sublist in tools.chunk_iter(ID_list, MAX_POST_SIZE['sequence']):
         data = {'ids': sublist}
         result.extend(
-            common.http_post(
+            network.http_post(
                 url, 
                 data, 
                 params=params, 

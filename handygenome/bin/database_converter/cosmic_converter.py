@@ -1,16 +1,6 @@
-import os
-import re
-import argparse
-import gzip
-
-import pysam
-
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-#toolsetup = importlib.import_module('.'.join([top_package_name, 'workflow', 'toolsetup']))
-libcosmicdb = importlib.import_module('.'.join([top_package_name, 'dbconv', 'cosmicdb']))
+import handygenome.workflow as workflow
+#import handygenome.workflow.toolsetup as toolsetup
+import handygenome.dbconv.cosmicdb as cosmicconv
 
 
 def argument_parser(cmdargs):
@@ -55,5 +45,5 @@ def argument_parser(cmdargs):
 def main(cmdargs):
     args = argument_parser(cmdargs)
     #logger = toolsetup.setup_logger(args)
-    libcosmicdb.main(args.ncv_path, args.mutexp_path, args.outfile_path, args.refver, args.cosmicver)
+    cosmicconv.main(args.ncv_path, args.mutexp_path, args.outfile_path, args.refver, args.cosmicver)
 

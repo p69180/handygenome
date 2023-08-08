@@ -4,7 +4,7 @@ import numpy as np
 import Bio.Seq
 import Bio.SeqRecord
 
-import handygenome.common as common
+import handygenome.refgenome as refgenome
 import handygenome.read.readplus as libreadplus
 import handygenome.align.msa as libmsa
 import handygenome.align.alignhandler as alignhandler
@@ -15,7 +15,7 @@ def call_breakends(bam, chrom, start0, end0, refver, SA_region_factor=1):
     rpplist = libreadplus.ReadPlusPairList.from_bam(bam, chrom, start0, end0)
 
     # set params
-    chromdict = common.DEFAULT_CHROMDICTS[refver]
+    chromdict = refgenome.get_default_chromdict(refver)
     rp_dict = dict()
     clipspec_list = list()
     for rp, clipspec in rpplist.iter_clipspecs():
@@ -39,61 +39,84 @@ def call_breakends(bam, chrom, start0, end0, refver, SA_region_factor=1):
                 rp = rp_dict[uid]
                 rp_list.append(rp)
 
-            extended_SA_regions, SAregion_is_reversed = get_extended_SA_regions(
+            confident_regions, unconfident_regions = get_SA_region_info(
                 rp_list, chromdict, SA_region_factor,
             )
 
-            key = clipkey + (consensus_item['consensus'],)
+            key = clipkey + (consensus_item['true_consensus'],)
             SA_region_info[key] = {
-                'confident': extended_SA_regions['confident'],
-                'inconfident': extended_SA_regions['inconfident'],
-                'is_reversed': SAregion_is_reversed,
+                'confident': confident_regions,
+                'unconfident': unconfident_regions,
+                #'is_reversed': SAregion_is_reversed,
             }
 
     return SA_region_info, consensus_result
 
 
-def get_extended_SA_regions(rp_list, chromdict, SA_region_factor):
+def get_SA_region_info(rp_list, chromdict, SA_region_factor):
+    """Args:
+        rp_list: list of ReadPlus objects which harbor a softclip of a given consensus
+    """
+    def make_gr_from_data(data):
+        data_edit = tuple(zip(*data))
+        gr = pr.from_dict(
+            dict(Chromosome=data_edit[0], Start=data_edit[1], End=data_edit[2], is_reversed=data_edit[3])
+        )
+
+        # cluster
+        gr = gr.cluster(slack=0)
+
+        # merge by cluster; handle "is_reversed" values within a cluster
+        merged_grs = list()
+        for key, subdf in gr.df.groupby('Cluster'):
+            flags = set(subdf['is_reversed'])
+            if len(flags) == 1:
+                is_reversed = flags.pop()
+            else:
+                is_reversed = None
+
+            subgr = pr.PyRanges(subdf).merge()
+            subgr.is_reversed = is_reversed
+            merged_grs.append(subgr)
+
+        # concat
+        result = pr.concat(merged_grs)
+        return result
+
+    def extend_region(region, SA_region_factor, chromdict):
+        """Modifies 'region' in-place"""
+        length = region['end0'] - region['start0']
+        pad = int(length * SA_region_factor)
+        region['start0'] = max(0, region['start0'] - pad)
+        region['end0'] = min(chromdict[region['chrom']], region['end0'] + pad)
+
     # collect SA region intervals
     confident_SA_regions = list()
     all_SA_regions = list()
-    SAregion_is_reversed_data = set()
 
     for rp in rp_list:
         n_clip = sum((x[0] == 4) for x in rp.read.cigartuples)
-        is_confident = ((n_clip == 1) and (len(rp.SAinfo) == 1))
-            # This SAitem confidently matches the softclip
+        is_confident = (n_clip == 1)  # This SAitem confidently matches the softclip
 
         for SAitem in rp.SAinfo:
             aligned_length = alignhandler.get_target_length(SAitem['cigartuples'])
             _start0 = SAitem['pos'] - 1
             _end0 = _start0 + aligned_length
-            SA_region = (SAitem['chrom'], _start0, _end0)
+            is_reversed = (SAitem['is_forward'] != rp.read.is_forward)
+            SA_region = (SAitem['chrom'], _start0, _end0, is_reversed)
 
             all_SA_regions.append(SA_region)
             if is_confident:
                 confident_SA_regions.append(SA_region)
-                is_reversed = (SAitem['is_forward'] != rp.read.is_forward)
-                SAregion_is_reversed_data.add(is_reversed)
-
-    # determine if SA region is reversed or not
-    if len(SAregion_is_reversed_data) == 1:
-        SAregion_is_reversed = SAregion_is_reversed_data.pop()
-    else:  # 0 or >=2
-        SAregion_is_reversed = None
 
     # merge SA regions, considering confident/nonconfident regions
-    merged_SA_regions = {'confident': list(), 'inconfident': list()}
-    if len(all_SA_regions) == 0:
-        pass
-    else:
+    confident_regions = list()
+    unconfident_regions = list()
+    if all_SA_regions:
         # make into clustered grs
-        chroms, start0s, end0s = zip(*all_SA_regions)
-        all_gr = pr.PyRanges(chromosomes=chroms, starts=start0s, ends=end0s).merge()
-
+        all_gr = make_gr_from_data(all_SA_regions)
         if confident_SA_regions:
-            chroms, start0s, end0s = zip(*confident_SA_regions)
-            confident_gr = pr.PyRanges(chromosomes=chroms, starts=start0s, ends=end0s).merge()
+            confident_gr = make_gr_from_data(confident_SA_regions)
             for selector in np.eye(confident_gr.df.shape[0]).astype(bool):
                 part_confident_gr = confident_gr[selector]
                 joined = part_confident_gr.join(all_gr, report_overlap=True)
@@ -102,37 +125,31 @@ def get_extended_SA_regions(rp_list, chromdict, SA_region_factor):
                         (x[1] for x in joined.df.iterrows()),
                         key=(lambda x: x['Overlap']),
                     )
-                    SA_region = (max_row['Chromosome'], max_row['Start_b'], max_row['End_b'])
-                    merged_SA_regions['confident'].append(SA_region)
+                    SA_region = {
+                        'chrom': max_row['Chromosome'], 
+                        'start0': max_row['Start_b'], 
+                        'end0': max_row['End_b'], 
+                        'is_reversed': max_row['is_reversed'],
+                    }
+                        # follows "is_reversed" value of the confident gr
+                    confident_regions.append(SA_region)
         else:
             for idx, row in all_gr.df.iterrows():
-                SA_region = (row['Chromosome'], row['Start'], row['End'])
-                merged_SA_regions['inconfident'].append(SA_region)
+                SA_region = {
+                    'chrom': row['Chromosome'], 
+                    'start0': row['Start'], 
+                    'end0': row['End'], 
+                    'is_reversed': row['is_reversed'],
+                }
+                unconfident_regions.append(SA_region)
 
     # extend merged SA regions
-    def extend_region(region, SA_region_factor, chromdict):
-        _chrom, _start0, _end0 = region
+    for region in confident_regions:
+        extend_region(region, SA_region_factor, chromdict)
+    for region in unconfident_regions:
+        extend_region(region, SA_region_factor, chromdict)
 
-        length = _end0 - _start0
-        pad = int(length * SA_region_factor)
-
-        new_start0 = max(0, _start0 - pad)
-        new_end0 = min(chromdict[_chrom], _end0 + pad)
-
-        return (_chrom, new_start0, new_end0)
-
-    extened_SA_regions = dict()
-    extened_SA_regions['confident'] = [
-        extend_region(x, SA_region_factor, chromdict)
-        for x in merged_SA_regions['confident']
-    ]
-    extened_SA_regions['inconfident'] = [
-        extend_region(x, SA_region_factor, chromdict)
-        for x in merged_SA_regions['inconfident']
-    ]
-
-    # return
-    return extened_SA_regions, SAregion_is_reversed
+    return confident_regions, unconfident_regions
 
 
 

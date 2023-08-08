@@ -2,7 +2,7 @@ import textwrap
 
 import pysam
 
-import handygenome.common as common
+import handygenome.refgenome as refgenome
 import handygenome.workflow as workflow
 import handygenome.workflow.toolsetup as toolsetup
 import handygenome.variant.svcaller_parser as svcaller_parser
@@ -17,11 +17,9 @@ def argument_parser(cmdargs):
         pass
 
     parser_dict = workflow.init_parser(
-        description=textwrap.dedent(f"""\
-            - Split multiallelic lines.
-            - Change SV caller records into breakends form.
-            - Normalize non-SV records into the leftmost form.
-            - Normalize SV records into the bnd1-advanced form."""
+        description=(
+            f'Modifes Strelka2 output file:'
+            f'Annotations created by VarScan2 are removed.'
         )
     )
 
@@ -49,14 +47,15 @@ def process_nonsv(vr, out_vr_list, nonsv_set, logger, refver):
     """
 
     vcfspec_original = libvcfspec.Vcfspec.from_vr(vr, refver=refver)
-    vcfspec_left = vcfspec_original.leftmost()
-    ID = vcfspec_left.get_id()
+    normalized_vcfspec = vcfspec_original.normalize()
+    ID = normalized_vcfspec.get_id()
 
     if ID in nonsv_set:
         logger.info(f'Input variant record is discarded since vcfspec is duplicated:\n{vr}')
     else:
         nonsv_set.add(ID)
-        varianthandler.apply_vcfspec(vr, vcfspec_left)
+        normalized_vcfspec.apply_to_vr(vr)
+        #varianthandler.apply_vcfspec(vr, normalized_vcfspec)
         vr.id = ID
         out_vr_list.append(vr)
 
@@ -118,19 +117,15 @@ def main(cmdargs):
 
     logger.info('BEGINNING')
 
-    fasta = common.DEFAULT_FASTAS[args.refver]
-    chromdict = common.DEFAULT_CHROMDICTS[args.refver]
+    fasta = refgenome.get_default_fasta(args.refver)
+    chromdict = refgenome.get_default_chromdict(args.refver)
     refver = args.refver
-    #fasta = pysam.FastaFile(args.fasta_path)
-    #chromdict = common.ChromDict(fasta=fasta)
 
     nonsv_set = set()
     bnds_set = set()
     out_vr_list = list()
     
     with pysam.VariantFile(args.infile_path) as in_vcf:
-        #headerhandler.addmeta_MATEID(in_vcf.header)
-        #headerhandler.addmeta_END(in_vcf.header)
         with pysam.VariantFile(args.outfile_path, mode=args.mode_pysam, header=in_vcf.header) as out_vcf:
             if vr.contig not in chromdict.contigs:
                 continue
@@ -144,7 +139,7 @@ def main(cmdargs):
                         new_vr.alts = [alt]
                         process_monoallelic_vr(new_vr, out_vr_list, nonsv_set, bnds_set, fasta, chromdict, logger, refver)
 
-            out_vr_list.sort(key=common.get_vr_sortkey(chromdict))
+            out_vr_list.sort(key=varianthandler.get_vr_sortkey(chromdict))
 
             for vr in out_vr_list:
                 out_vcf.write(vr)

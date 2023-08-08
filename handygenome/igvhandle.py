@@ -2,7 +2,8 @@ import re
 import os
 import socket
 
-import handygenome.common as common
+import numpy as np
+
 import handygenome.sv.breakends as breakends
 import handygenome.variant.vcfspec as libvcfspec
 
@@ -65,10 +66,8 @@ class IGVHandle:
         self.cmd(f'goto {" ".join(cmd_src)}')
 
     def load(self, filepaths):
-        filepaths = common.arg_to_list(filepaths)
-
         # make into absolute paths
-        filepaths = [os.path.abspath(x) for x in filepaths]
+        filepaths = [os.path.abspath(x) for x in np.atleast_1d(filepaths)]
         # do substition
         if self.pathsub is not None:
             filepaths = [re.sub(self.pathsub[0], self.pathsub[1], x) for x in filepaths]

@@ -1,10 +1,12 @@
+import re
 import itertools
 import logging
 import functools
 
 import Bio.Seq
 
-import handygenome.common as common
+import handygenome.refgenome as refgenome
+import handygenome.tools as tools
 import handygenome.workflow as workflow
 import handygenome.sv.structvars as structvars
 import handygenome.variant.vcfspec as libvcfspec
@@ -34,7 +36,7 @@ class Breakends:
                 the plus(Crick) strand
 
         fasta: pysam.FastaFile instance
-        chromdict: julib.common.ChromDict instance
+        chromdict: ChromDict instance
         svtype
         score
         endis3_bnd1
@@ -66,7 +68,7 @@ class Breakends:
         self.fasta = fasta
 
         if chromdict is None:
-            self.chromdict = common.ChromDict(fasta=fasta)
+            self.chromdict = refgenome.ChromDict.from_fasta(fasta)
         else:
             self.chromdict = chromdict
 
@@ -915,8 +917,7 @@ def get_vr_svinfo_standard_vr(vr, fasta, chromdict):
 
 
 def parse_sv_altstring(sv_altstring):
-    mats = [common.RE_PATS['alt_bndstring_1'].match(sv_altstring), 
-            common.RE_PATS['alt_bndstring_2'].match(sv_altstring)]
+    mats = [libvcfspec.PAT_BND1.match(sv_altstring), libvcfspec.PAT_BND2.match(sv_altstring)]
     mats_isNotNone = [(x is not None) for x in mats]
 
     nTrue = mats_isNotNone.count(True)
@@ -951,8 +952,9 @@ def parse_sv_altstring(sv_altstring):
 
 
 def get_is_bnd1(vr, vr_svinfo, chromdict):
-    order = common.compare_coords(vr.contig, vr.pos, vr_svinfo['chrom_mate'], 
-                                  vr_svinfo['pos_mate'], chromdict)
+    order = tools.compare_coords(
+        vr.contig, vr.pos, vr_svinfo['chrom_mate'], vr_svinfo['pos_mate'], chromdict,
+    )
     if order < 0:
         is_bnd1 = True
     elif order > 0:

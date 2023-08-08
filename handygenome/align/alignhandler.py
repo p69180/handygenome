@@ -5,7 +5,8 @@ import itertools
 import Bio.Align
 import numpy as np
 
-import handygenome.common as common
+import handygenome.refgenome as refgenome
+import handygenome.tools as tools
 import handygenome.variant.vcfspec as libvcfspec
 
 
@@ -708,7 +709,7 @@ def path_to_walks(alignpath):
     """Args:
         alignpath: 'path' attribute of Bio.Align.PairwiseAlignment object
     """
-    for x0, x1 in common.pairwise(alignpath):
+    for x0, x1 in tools.pairwise(alignpath):
         yield range(x0[0], x1[0]), range(x0[1], x1[1])  # target_range, query_range
 
 
@@ -1015,7 +1016,7 @@ def alignment_to_vcfspec(
             idx_offset += len(seq_pairs)
 
     # set paramters
-    refver = common.infer_refver_fasta(fasta)
+    refver = refgenome.infer_refver_fasta(fasta)
 
     if lstrip_query_gaps:
         if rstrip_query_gaps:
@@ -1141,21 +1142,21 @@ def tiebreakers_merged_main(alignments):
     # alignment with the highest score is selected
 
     # step 1
-    selected_alns = common.multi_max(
+    selected_alns = tools.multi_max(
         alignments, 
         key=tiebreaker_scorer_gap_length_sum, 
         with_target_val=False,
     )
     if len(selected_alns) != 1:
         # step 2
-        selected_alns = common.multi_max(
+        selected_alns = tools.multi_max(
             selected_alns, 
             key=tiebreaker_scorer_leftmost_gaps, 
             with_target_val=False,
         )
         if len(selected_alns) != 1:
             # step 3
-            selected_alns = common.multi_max(
+            selected_alns = tools.multi_max(
                 selected_alns, 
                 key=tiebreaker_scorer_gap_ordering, 
                 with_target_val=False,

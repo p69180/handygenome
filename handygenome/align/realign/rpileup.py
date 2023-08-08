@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pyranges as pr
 
-import handygenome.common as common
+import handygenome.deco as deco
 import handygenome.workflow as workflow
 import handygenome.variant.vcfspec as libvcfspec
 import handygenome.read.pileup as libpileup
@@ -722,14 +722,14 @@ class RealignerPileup(realign_base.RealignerPileupBase):
                 #alns = [alignhandler.amend_outer_insdel_both(x) for x in alns]
                 try:
                     aln = self.align_row_spec_to_ref_helper(alns, raise_with_tie, row_spec)
-                except common.TimeoutError:
+                except TimeoutError:
                     self.logger.debug(f'skipping alignments tiebreaking due to timeout;\nrow_spec: {row_spec}')
                     aln = alns[0]
                     aln = alignhandler.amend_outer_insdel_both(aln)
             
         return aln
 
-    @common.timeout(0.05)
+    @deco.get_deco_timeout(0.05)
     def align_row_spec_to_ref_helper(self, alns, raise_with_tie, row_spec):
         alns = list(
             alignhandler.remove_identical_alignments(

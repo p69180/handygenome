@@ -5,14 +5,8 @@ import logging
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-infoformat = importlib.import_module('.'.join([top_package_name, 'variant', 'infoformat']))
-ensembl_parser = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_parser']))
-ensembl_feature = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_feature']))
-libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
+import handygenome.annotation.ensembl_feature as ensembl_feature
+import handygenome.variant.vcfspec as libvcfspec
 
 
 DEFAULT_FETCHWIDTH = 10
@@ -78,7 +72,6 @@ def fetch_relevant_vr(vcfspec, vcf, search_equivs=True, raise_with_multihit=True
             for vr in fetchresult:
                 vr_vcfspec = libvcfspec.make_parsimonious(
                     libvcfspec.Vcfspec.from_vr(vr)
-                    #varianthandler.get_vcfspec(vr)
                 )
                 if any(matcher(query, vr_vcfspec) for query in equivs):
                     relevant_vr_candidates.append(vr)
@@ -95,7 +88,6 @@ def fetch_relevant_vr(vcfspec, vcf, search_equivs=True, raise_with_multihit=True
             relevant_vr_candidates = list()
             for vr in fetchresult:
                 vr_vcfspec = libvcfspec.Vcfspec.from_vr(vr)
-                #vr_vcfspec = varianthandler.get_vcfspec(vr)
                 if matcher(vcfspec, vr_vcfspec):
                     relevant_vr_candidates.append(vr)
         else:

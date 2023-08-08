@@ -3,11 +3,11 @@ import re
 
 import pysam
 
-import handygenome.common as common
 import handygenome.bameditor as bameditor
+import handygenome.refgenome as refgenome
 
 
-PON_BAM_PATHS_WITHOUT_NAMES = common.RefverDict({
+PON_BAM_PATHS_WITHOUT_NAMES = refgenome.RefverDict({
     'GRCh37': {
         'BGI': [
             '/home/users/team_projects/LungAdeno_WGS_sypark/02_BAM/BGI_BAM/BGI-WG01.normal.rmBDBI.cram',
@@ -225,7 +225,7 @@ def _get_pon_bam_paths():
                 sampleid = 'PON_' + os.path.basename(bam_path).split('.')[0]
                 result[refver][cohort][sampleid] = bam_path
 
-    return common.RefverDict(result)
+    return refgenome.RefverDict(result)
 
 
 PON_BAM_PATHS = _get_pon_bam_paths()

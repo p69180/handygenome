@@ -2,7 +2,6 @@ import itertools
 
 import Bio.Align
 
-import handygenome.common as common
 import handygenome.annotation.annotitem as annotitem
 
 

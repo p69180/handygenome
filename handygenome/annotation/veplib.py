@@ -4,12 +4,11 @@ import subprocess
 
 import pysam
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-workflow = importlib.import_module('.'.join([top_package_name, 'workflow']))
-initvcf = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'initvcf']))
-libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
+import handygenome
+import handygenome.refgenome as refgenome
+import handygenome.workflow as workflow
+import handygenome.vcfeditor.initvcf as initvcf
+import handygenome.variant.vcfspec as libvcfspec
 
 
 VEP_INFO_FIELD = 'CSQ'
@@ -19,7 +18,7 @@ REFVER_TO_VEPARGS = {
     'hg38' : {'species': 'homo_sapiens', 'assembly': 'GRCh38'},
     'mm10' : {'species': 'mus_musculus', 'assembly': 'GRCm38'},
     'mm39' : {'species': 'mus_musculus', 'assembly': 'GRCm39'},
-    }
+}
 
 ALLOWED_SPECIES_ASSEMBLIES = {
     'homo_sapiens': ('GRCh37', 'GRCh38'),
@@ -43,9 +42,11 @@ def get_vep_args(infile_path, outfile_path, fasta_path, species, assembly,
     check_species_assembly_sanity(species, assembly)
 
     if species == 'mus_musculus' and assembly == 'GRCm38':
-        vep_path = common.VEP_MM10
+        #vep_path = common.VEP_MM10
+        vep_path = handygenome.OPTION['vep_mm10']
     else:
-        vep_path = common.VEP
+        #vep_path = common.VEP
+        vep_path = handygenome.OPTION['vep']
 
     with pysam.FastaFile(fasta_path) as fasta:
         max_chrom_size = max(fasta.lengths)
@@ -59,12 +60,13 @@ def get_vep_args(infile_path, outfile_path, fasta_path, species, assembly,
         '--assembly', f'{assembly}',
         '--max_sv_size', f'{max_chrom_size}',
 
-        '--dir', f'{common.VEP_CACHE_DIR}',
+        #'--dir', f'{common.VEP_CACHE_DIR}',
+        '--dir', handygenome.OPTION['vep_cache_dir'],
         '--cache',
         '--offline',
 
         '--vcf',
-        '--vcf_info_field', f'{VEP_INFO_FIELD}',
+        '--vcf_info_field', VEP_INFO_FIELD,
         '--terms', 'SO',
         '--shift_hgvs', '0',
         '--dont_skip',
@@ -110,14 +112,14 @@ def get_vep_args(infile_path, outfile_path, fasta_path, species, assembly,
 
 
 def run_vep_with_vcfspec(vcfspec, refver, distance=DEFAULT_DISTANCE):
-    chromdict = common.ChromDict(refver = refver)
+    chromdict = refgenome.ChromDict(refver = refver)
     vr = initvcf.create_vr(chromdict=chromdict, vcfspec=vcfspec)
 
     return run_vep_with_vr(vr, refver, distance)
 
 
 def run_vep_with_interval(interval, refver, distance=DEFAULT_DISTANCE):
-    chromdict = common.ChromDict(refver = refver)
+    chromdict = refgenome.ChromDict(refver = refver)
     vcfspec = libvcfspec.Vcfspec(interval.chrom, interval.start0, 'N', ['<DEL>'])
     while True:
         vr = initvcf.create_vr(chromdict=chromdict, vcfspec=vcfspec, 
@@ -134,14 +136,14 @@ def run_vep_with_interval(interval, refver, distance=DEFAULT_DISTANCE):
 
 def run_vep_with_vr(vr, refver=None, distance=DEFAULT_DISTANCE):
     if refver is None:
-        refver = common.infer_refver_vr(vr)
+        refver = refgenome.infer_refver_vr(vr)
 
     assert refver in REFVER_TO_VEPARGS.keys()
 
     species = REFVER_TO_VEPARGS[refver]['species']
     assembly = REFVER_TO_VEPARGS[refver]['assembly']
 
-    fasta_path = common.DEFAULT_FASTA_PATHS[refver]
+    fasta_path = refgenome.get_default_fasta_path(refver)
     infile_path = workflow.get_tmpfile_path(delete=True)
     outfile_path = infile_path + '.vep'
 

@@ -16,15 +16,17 @@ import pyranges as pr
 import matplotlib.pyplot as plt
 import seaborn as sns
 import scipy
+import scipy.linalg
 #from scipy.stats.mstats import winsorize
 
-import handygenome.common as common
+import handygenome.tools as tools
+import handygenome.logutils as logutils
 import handygenome.workflow as workflow
 import handygenome.pyranges_helper as pyranges_helper
 import handygenome.cnv.mosdepth as libmosdepth
 import handygenome.cnv.gcfraction as gcfraction
 import handygenome.cnv.rcopynumber as rcopynumber
-import handygenome.assemblyspec as libassemblyspec
+import handygenome.refgenome as refgenome
 import handygenome.deco as deco
 
 
@@ -94,17 +96,17 @@ def get_genome_df_annotcols(df):
 
 
 def genome_df_groupkey(df, refver):
-    chromdict = common.DEFAULT_CHROMDICTS[refver]
+    chromdict = refgenome.get_default_chromdict(refver)
     chrom_indexes = df['Chromosome'].apply(chromdict.contigs.index)
     coord_arr = np.stack(
         [chrom_indexes.to_numpy(), df['Start'].to_numpy(), df['End'].to_numpy()], 
         axis=1,
     )
-    return common.array_grouper(coord_arr, omit_values=True)[2]
+    return tools.array_grouper(coord_arr, omit_values=True)[2]
 
 
 def sort_genome_df(df, refver):
-    chromdict = common.DEFAULT_CHROMDICTS[refver]
+    chromdict = refgenome.get_default_chromdict(refver)
     chrom_indexes = df['Chromosome'].apply(lambda x: chromdict.contigs.index(x))
     sortkey = np.lexsort([df['End'], df['Start'], chrom_indexes])
     result = df.iloc[sortkey, :]
@@ -114,7 +116,7 @@ def sort_genome_df(df, refver):
 
 def remove_unassembled_contigs(df):
     selector = df['Chromosome'].apply(
-        lambda x: common.RE_PATS['assembled_chromosome'].fullmatch(x) is not None
+        lambda x: refgenome.PAT_ASSEMBLED_CHROM.fullmatch(x) is not None
     )
     return df.loc[selector, :]
 
@@ -154,7 +156,7 @@ def get_1d_peaks(row, invert=False):
 #        peak_indexes = sorted(
 #            (
 #                x[0] for x in
-#                common.multi_max(enumerate(row), key=operator.itemgetter(1))
+#                tools.multi_max(enumerate(row), key=operator.itemgetter(1))
 #            )
 #        )
     else:
@@ -211,20 +213,31 @@ def get_hist_peaks(data, weights=None, bins=10, threshold=None):
     return result
 
 
-def get_density_peaks(data, weights=None, xs=None, threshold=None, bw_method=None, invert=False):
-    density = scipy.stats.gaussian_kde(data, weights=weights, bw_method=bw_method)
-    if xs is None:
-        xs = np.linspace(data.min(), data.max(), 100)
-    ys = density(xs)
+def get_density_peaks(
+    data, weights=None, xs=None, threshold=None, bw_method=None, invert=False,
+):
+    try:
+        density = scipy.stats.gaussian_kde(data, weights=weights, bw_method=bw_method)
+    except scipy.linalg.LinAlgError as exc:
+        if str(exc) == 'singular matrix':
+            return None, None, None
+        else:
+            raise
+    else:
+        if xs is None:
+            xs = np.linspace(data.min(), data.max(), 1000)
+        ys = density(xs)
 
-    peak_indexes = get_1d_peaks(ys, invert=invert)
-    if threshold is not None:
-        peak_indexes = peak_indexes[ys[peak_indexes] > threshold]
+        peak_indexes = get_1d_peaks(ys, invert=invert)
+        if threshold is not None:
+            peak_indexes = peak_indexes[ys[peak_indexes] > threshold]
 
-    peak_values = xs[peak_indexes]
-    peak_densities = ys[peak_indexes]
-
-    return peak_values, peak_densities, density
+        if len(peak_indexes) == 0:
+            return None, None, None
+        else:
+            peak_values = xs[peak_indexes]
+            peak_densities = ys[peak_indexes]
+            return peak_values, peak_densities, density
 
 
 def get_df_diagonals(df, upslope=True):
@@ -368,16 +381,16 @@ def get_peak_info(cp_score_dict, key='segfit', invert=True):
 @functools.cache
 def get_CNn_gr(refver, is_female):
     """Only accepts PAR-available reference versions"""
-    chromdict = common.DEFAULT_CHROMDICTS[refver]
+    chromdict = refgenome.get_default_chromdict(refver)
     autosomal_chroms = [
         x for x in chromdict.contigs 
         if (
-            (common.RE_PATS['assembled_chromosome'].fullmatch(x) is not None)
+            (refgenome.PAT_ASSEMBLED_CHROM.fullmatch(x) is not None)
             and (x not in MALE_HAPLOID_CHROMS)
         )
     ]  # 1, 2, ...,
     X_chrom, Y_chrom = chromdict.XY_names
-    par_gr = libassemblyspec.get_par_gr(refver)
+    par_gr = refgenome.get_par_gr(refver)
 
     # autosomal
     all_chrom_gr = chromdict.to_gr()
@@ -414,9 +427,9 @@ def get_normal_mean_ploidy(refver, is_female, target_region_gr=None):
         if target_region_gr is not None:
             assert 'CNn' not in target_region_gr.columns
 
-        chromdict = common.DEFAULT_CHROMDICTS[refver]
+        chromdict = refgenome.get_default_chromdict(refver)
         if target_region_gr is None:
-            N_region_gr = libassemblyspec.get_N_region_gr(refver)
+            N_region_gr = refgenome.get_N_region_gr(refver)
             target_region_gr = chromdict.to_gr(assembled_only=True, as_gr=True).subtract(N_region_gr)
 
         CNn_gr = get_CNn_gr(refver, is_female)
@@ -502,43 +515,43 @@ def baf_function_wrapper(func):
     return wrapper
 
 
-def baf_function_wrapper_old(func):
-    sig = inspect.signature(func)
-    params = sig.parameters
-    assert 'CNn' in params, f'There must be an argument named "CNn"'
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs): 
-        ba = sig.bind(*args, **kwargs)
-        ba.apply_defaults()
-        keys = list(ba.arguments.keys())
-        vals = common.broadcast_args(list(ba.arguments.values()))
-        argdict = dict(zip(keys, vals))
-
-        CNn = argdict['CNn']
-        result = np.full(CNn.shape, np.nan)
-        valid_CNn_indexes = CNn[(0,) * (CNn.ndim - 1) + (slice(None, None),)] >= 2
-        valid_argdict = {
-            key: val[..., valid_CNn_indexes]
-            for key, val in argdict.items()
-        }
-
-        # main
-        result[..., valid_CNn_indexes] = func(**valid_argdict)
-
-        # reduce dimension
-        if isinstance(result, (list, tuple)):
-            result = tuple(
-                x[0] if x.shape == (1,) else x
-                for x in result
-            )
-        else:
-            if result.shape == (1,):
-                result = result[0]
-
-        return result
-
-    return wrapper
+#def baf_function_wrapper_old(func):
+#    sig = inspect.signature(func)
+#    params = sig.parameters
+#    assert 'CNn' in params, f'There must be an argument named "CNn"'
+#
+#    @functools.wraps(func)
+#    def wrapper(*args, **kwargs): 
+#        ba = sig.bind(*args, **kwargs)
+#        ba.apply_defaults()
+#        keys = list(ba.arguments.keys())
+#        vals = common.broadcast_args(list(ba.arguments.values()))
+#        argdict = dict(zip(keys, vals))
+#
+#        CNn = argdict['CNn']
+#        result = np.full(CNn.shape, np.nan)
+#        valid_CNn_indexes = CNn[(0,) * (CNn.ndim - 1) + (slice(None, None),)] >= 2
+#        valid_argdict = {
+#            key: val[..., valid_CNn_indexes]
+#            for key, val in argdict.items()
+#        }
+#
+#        # main
+#        result[..., valid_CNn_indexes] = func(**valid_argdict)
+#
+#        # reduce dimension
+#        if isinstance(result, (list, tuple)):
+#            result = tuple(
+#                x[0] if x.shape == (1,) else x
+#                for x in result
+#            )
+#        else:
+#            if result.shape == (1,):
+#                result = result[0]
+#
+#        return result
+#
+#    return wrapper
 
 
 def get_normal_norm_depth(normal_avg_depth, CNn, normal_ploidy):
@@ -1892,7 +1905,7 @@ def get_CNt_candidates(
 
 
 def get_CNt_candidates_type1(average_CNt, min_N_CNt_candidates, N_CNt_candidates_fraction):
-    average_CNt = np.squeeze(average_CNt)
+    average_CNt = np.atleast_1d(np.squeeze(average_CNt))
     assert average_CNt.ndim == 1
 
     # make lower_CNts, upper_CNts
@@ -1954,7 +1967,7 @@ def get_CNt_candidates_type2(average_CNt, min_N_CNt_candidates, N_CNt_candidates
     return clonal_CNts, subclonal_CNts
 
 
-def get_min_diff_args(diffs, global_mask=None):
+def get_min_diff_args_backup(diffs, global_mask=None):
     """raveled argmin is 0 for global_masked positions"""
     if global_mask is None:
         global_mask = np.full(diffs.shape[0], False)
@@ -1963,6 +1976,29 @@ def get_min_diff_args(diffs, global_mask=None):
     minargs = np.zeros(diffs.shape[0], dtype=int)
     minargs[~global_mask] = np.nanargmin(
         diffs_nomask.reshape(diffs_nomask.shape[0], -1), 
+        axis=1,
+    )
+    minargs_unraveled = (
+        (np.arange(diffs.shape[0]),)
+        + np.unravel_index(minargs, shape=diffs.shape[1:])
+    )
+    return minargs_unraveled
+
+
+def get_min_diff_args(diffs, global_mask=None):
+    """raveled argmin is 0 for global_masked positions"""
+    if global_mask is None:
+        global_mask = np.full(diffs.shape[0], False)
+
+    all_nan_indexes = np.isnan(diffs.reshape(diffs.shape[0], -1)).all(axis=1)
+    global_mask = global_mask | all_nan_indexes
+
+    diffs_nomask = diffs[~global_mask]
+    diffs_nomask_reshaped = diffs_nomask.reshape(diffs_nomask.shape[0], -1)
+
+    minargs = np.zeros(diffs.shape[0], dtype=int)
+    minargs[~global_mask] = np.nanargmin(
+        diffs_nomask_reshaped, 
         axis=1,
     )
     minargs_unraveled = (
@@ -2903,6 +2939,10 @@ def select_fixed_ccfs_main(ccfs, lengths, bandwidth=0.1):
     #dup_ccfs = np.concatenate([ccfs, 1 - ccfs])
     #dup_lengths = np.tile(lengths, 2)
 
+    ccfs_isnan = np.isnan(ccfs)
+    ccfs = ccfs[~ccfs_isnan]
+    lengths = lengths[~ccfs_isnan]
+
     peak_values, peak_densities, density = get_density_peaks(
         ccfs, 
         weights=lengths, 
@@ -2911,7 +2951,11 @@ def select_fixed_ccfs_main(ccfs, lengths, bandwidth=0.1):
         bw_method=bandwidth,
     )
 
-    fixed_ccfs = choose_ccfs_new(peak_values, peak_densities)
+    if peak_values is None:
+        fixed_ccfs = None
+    else:
+        fixed_ccfs = choose_ccfs_new(peak_values, peak_densities)
+
     ccf_plotdata = {
         'ccfs': ccfs,
         'lengths': lengths,
@@ -3108,18 +3152,6 @@ def find_solution_after_ccfs(
 
     limited_clonal=True,
 ):
-    # make diff factors
-#    baf_selector = ~flags['monoploid']
-#    depth_selector = (CNn == 2)
-#    depthratio_diff_factor = common.get_diffmean(
-#        depth_ratio[depth_selector], 
-#        lengths[depth_selector],
-#    )  # based on CNn == 2 regions
-#    baf_diff_factor = common.get_diffmean(
-#        baf[baf_selector], 
-#        lengths[baf_selector],
-#    )
-
     # main
     if flags['polyploid_unfit'].any():
         subclonal_solution_both = find_subclonal_solution_fixedccf(
@@ -3356,6 +3388,8 @@ def add_freeccf_solution_to_segment(
     clonal_solution,
     freeccf_subclonal_solution, 
     flags, 
+    unfit_region_depth_ratio,
+    unfit_region_baf,
 ):
     """Args:
         clonal_solution, freeccf_subclonal_solution, flags: 
@@ -3366,6 +3400,7 @@ def add_freeccf_solution_to_segment(
     segment_df['subclonal_CNt'] = np.nan
     segment_df['subclonal_B'] = np.nan
     segment_df['ccf'] = np.nan
+
     segment_df['depthratio_predicted_clonal'] = clonal_solution['theoretical_depth_ratio']
     segment_df['baf_predicted_clonal'] = clonal_solution['theoretical_baf']
 
@@ -3383,11 +3418,11 @@ def add_freeccf_solution_to_segment(
 
     add_A_to_segment(segment_df)
 
-    #segment_df['depthratio_predicted'] = clonal_solution['theoretical_depth_ratio']
-    #segment_df['baf_predicted'] = clonal_solution['theoretical_baf']
-    #segment_df.loc[flags['polyploid_unfit'], 'depthratio_predicted'] = subclonal_theoretical_depthratio
-    #segment_df.loc[flags['polyploid_unfit'], 'baf_predicted'] = subclonal_theoretical_baf
-
+    # add predicted
+    segment_df['depthratio_predicted'] = clonal_solution['theoretical_depth_ratio']
+    segment_df['baf_predicted'] = clonal_solution['theoretical_baf']
+    segment_df.loc[flags['polyploid_unfit'], 'depthratio_predicted'] = unfit_region_depth_ratio
+    segment_df.loc[flags['polyploid_unfit'], 'baf_predicted'] = unfit_region_baf
 
 def add_A_to_segment(segment_df):
     segment_df['clonal_A'] = segment_df['clonal_CNt'] - segment_df['clonal_B']
@@ -4135,8 +4170,10 @@ def postprocess_depth_df(
     trim_limits=None,
     exclude_y=False,
 
-    add_norm_depth=False,
-    add_gccorr_depth=False,
+    norm_method='plain',
+
+    #add_norm_depth=False,
+    #add_gccorr_depth=False,
 
     #nan_lower_cutoff=None,
     #nan_upper_cutoff=None,
@@ -4157,26 +4194,30 @@ def postprocess_depth_df(
     Returns:
         postprocessed df & gcbin average depth dict
         Adds 4 columns:
-            - GC
+            #- GC
             - norm_mean_depth
-            - gc_corrected_mean_depth
-            - sequenza_style_norm_mean_depth
+            #- gc_corrected_mean_depth
+            #- sequenza_style_norm_mean_depth
     """
     if verbose:
         def printlog(msg):
             funcname = inspect.stack()[0].function
-            common.print_timestamp(f'{funcname}: {msg}')
+            logutils.print_timestamp(f'{funcname}: {msg}')
     else:
         def printlog(msg):
             pass
 
     # sanity check
+    assert norm_method in ('plain', 'sequenza', 'mystyle')
+
     depth_df = arg_into_df(depth_df)
     assert 'mean_depth' in depth_df.columns, f'"depth_df" must include a column named "mean_depth"'
     assert preset_cutoffs in ('wgs', 'normal_wgs', 'panel', None)
-    gcadd_by_df = (gc_df is not None)
-    gcadd_by_calc = ((refver is not None) or (fasta is not None))
-    assert gcadd_by_df ^ gcadd_by_calc
+
+    if norm_method != 'plain':
+        gcadd_by_df = (gc_df is not None)
+        gcadd_by_calc = ((refver is not None) or (fasta is not None))
+        assert gcadd_by_df ^ gcadd_by_calc
 
     # make a copy of input df
     depth_df = depth_df.copy()
@@ -4198,16 +4239,6 @@ def postprocess_depth_df(
         lower_cutoff = avg_depth * 0.7
         upper_cutoff = avg_depth * 1.3
 
-    # add GC fractions
-    printlog(f'Adding GC fraction values')
-    depth_df = depth_df_gc_addition(
-        depth_df, 
-        gc_df=gc_df, 
-        refver=refver, 
-        fasta=fasta, 
-        window=gc_window,
-    )
-
     # mark outlier positions with 'excluded' column
     printlog(f'Marking outlier positions')
     if outlier_region is not None:
@@ -4227,26 +4258,39 @@ def postprocess_depth_df(
     #)
 
     # get gc depth data
-    printlog(f'Getting depth statistics stratified by gc ranges')
-    gc_breaks, gc_intervals = get_gc_breaks(n_gcbin)
-    (
-        gcbin_depth_data, 
-        gcbin_average_depths, 
-        gcbin_norm_average_depths, 
-        cutresult 
-    #) = get_gcbin_data(gcdata_depth_df, gc_breaks, make_raw_data=False)
-    ) = get_gcbin_data(
-        output_depth_df, 
-        gc_breaks, 
-        make_raw_data=False,
-    )
-    cutresult_idx = common.get_indexes_of_array(cutresult, gcbin_norm_average_depths.index)
+    if norm_method == 'plain':
+        gcbin_average_depths = None
+    else:
+        # add GC fractions
+        printlog(f'Adding GC fraction values')
+        output_depth_df = depth_df_gc_addition(
+            output_depth_df, 
+            gc_df=gc_df, 
+            refver=refver, 
+            fasta=fasta, 
+            window=gc_window,
+        )
 
-    # norm_mean_depth
-    if add_norm_depth:
+        printlog(f'Getting depth statistics stratified by gc ranges')
+        gc_breaks, gc_intervals = get_gc_breaks(n_gcbin)
+        (
+            gcbin_depth_data, 
+            gcbin_average_depths, 
+            gcbin_norm_average_depths, 
+            cutresult 
+        ) = get_gcbin_data(
+            output_depth_df, 
+            gc_breaks, 
+            make_raw_data=False,
+        )
+        cutresult_idx = tools.get_indexes_of_array(cutresult, gcbin_norm_average_depths.index)
+
+    # make normalized depths
+    if norm_method == 'plain':
+        #if add_norm_depth:
         printlog(f'Getting normalized depths')
         filterd_depth_df = output_depth_df.loc[~output_depth_df['excluded'], :]
-        avg_depth_wo_outliers = common.nanaverage(
+        avg_depth_wo_outliers = tools.nanaverage(
             filterd_depth_df['mean_depth'].to_numpy(), 
             weights=(
                 filterd_depth_df['End'] 
@@ -4258,20 +4302,22 @@ def postprocess_depth_df(
             / avg_depth_wo_outliers
         ).array
 
-    # gc_corrected_mean_depth
-    if add_gccorr_depth:
+    elif norm_method == 'mystyle':
+        #if add_gccorr_depth:
         printlog(f'Getting GC-corrected depths')
-        output_depth_df['gc_corrected_mean_depth'] = (
+        #output_depth_df['gc_corrected_mean_depth'] = (
+        output_depth_df['norm_mean_depth'] = (
             output_depth_df['mean_depth'].array 
             / gcbin_norm_average_depths.iloc[cutresult_idx].array
         )
 
-    # sequenza_style_norm_mean_depth
-    printlog(f'Getting GC-corrected normalized depths (sequenza style)')
-    output_depth_df['sequenza_style_norm_mean_depth'] = (
-        output_depth_df['mean_depth'].array 
-        / gcbin_average_depths.iloc[cutresult_idx].array
-    )
+    elif norm_method == 'sequenza':
+        printlog(f'Getting GC-corrected normalized depths (sequenza style)')
+        #output_depth_df['sequenza_style_norm_mean_depth'] = (
+        output_depth_df['norm_mean_depth'] = (
+            output_depth_df['mean_depth'].array 
+            / gcbin_average_depths.iloc[cutresult_idx].array
+        )
 
     # result
     if as_gr:
@@ -4322,9 +4368,10 @@ def get_processed_depth_df(
 
 
 def make_depth_ratio(
-    tumor_depth_df, normal_depth_df, 
-    make_depthratio_mystyle=False,
-    make_depthratio_plain=False,
+    tumor_depth_df, 
+    normal_depth_df, 
+    #make_depthratio_mystyle=False,
+    #make_depthratio_plain=False,
     as_gr=False,
     #verbose=False,
 ):
@@ -4336,7 +4383,8 @@ def make_depth_ratio(
             return arr
 
     def copy_annotations(result, input_df, prefix):
-        annot_cols = get_genome_df_annotcols(input_df).drop(['GC', 'excluded'])
+        original_annot_cols = get_genome_df_annotcols(input_df)
+        annot_cols = set(original_annot_cols).difference(['GC', 'excluded'])
         for colname in annot_cols:
             result[f'{prefix}_{colname}'] = input_df.loc[:, colname].array
 
@@ -4349,10 +4397,10 @@ def make_depth_ratio(
 
     required_cols = {
         'mean_depth', 
-        #'norm_mean_depth', 
+        'norm_mean_depth', 
         #'gc_corrected_mean_depth', 
-        'GC', 
-        'sequenza_style_norm_mean_depth',
+        #'GC', 
+        #'sequenza_style_norm_mean_depth',
     }
     assert all(
         required_cols.issubset(df.columns)
@@ -4363,7 +4411,9 @@ def make_depth_ratio(
     #logger = (LOGGER_DEBUG if verbose else LOGGER_INFO)
 
     # tumor/normal dfs shape check
-    compared_columns = ['Chromosome', 'Start', 'End', 'GC', 'excluded']
+    compared_columns = ['Chromosome', 'Start', 'End', 'excluded']
+    if 'GC' in tumor_depth_df.columns:
+        compared_columns.append('GC')
     tumor_common_cols = tumor_depth_df.loc[:, compared_columns]
     normal_common_cols = normal_depth_df.loc[:, compared_columns]
     if not (normal_common_cols == tumor_common_cols).all(axis=None):
@@ -4373,22 +4423,26 @@ def make_depth_ratio(
 
     # main
     result = tumor_common_cols
+    result['depthratio'] = make_ratio(
+        tumor_depth_df['norm_mean_depth'].array, 
+        normal_depth_df['norm_mean_depth'].array,
+    )
 
     # make depth ratios
-    result['depth_ratio_sequenzastyle'] = make_ratio(
-        tumor_depth_df['sequenza_style_norm_mean_depth'].array, 
-        normal_depth_df['sequenza_style_norm_mean_depth'].array,
-    )
-    if make_depthratio_mystyle:
-        result['depth_ratio_mystyle'] = make_ratio(
-            tumor_depth_df['gc_corrected_mean_depth'].array, 
-            normal_depth_df['gc_corrected_mean_depth'].array,
-        )
-    if make_depthratio_plain:
-        result['depth_ratio_plain'] = make_ratio(
-            tumor_depth_df['norm_mean_depth'].array, 
-            normal_depth_df['norm_mean_depth'].array,
-        )
+#    result['depth_ratio_sequenzastyle'] = make_ratio(
+#        tumor_depth_df['sequenza_style_norm_mean_depth'].array, 
+#        normal_depth_df['sequenza_style_norm_mean_depth'].array,
+#    )
+#    if make_depthratio_mystyle:
+#        result['depth_ratio_mystyle'] = make_ratio(
+#            tumor_depth_df['gc_corrected_mean_depth'].array, 
+#            normal_depth_df['gc_corrected_mean_depth'].array,
+#        )
+#    if make_depthratio_plain:
+#        result['depth_ratio_plain'] = make_ratio(
+#            tumor_depth_df['norm_mean_depth'].array, 
+#            normal_depth_df['norm_mean_depth'].array,
+#        )
 
     # copy annotation columns from input dfs
     copy_annotations(result, tumor_depth_df, 'tumor')
@@ -4461,7 +4515,7 @@ def upsize_depth_df_bin(depth_df, size, refver=None, chromdict=None, annot_cols=
         groupers = np.repeat(range(len(group_lengths)), group_lengths)
         return groupers, n_newbin
 
-    def upsize_chrom_df(chrom_df, new_binsize, groupers, n_newbin, chromlen, annot_cols):
+    def upsize_singlechrom_df(chrom_df, new_binsize, groupers, n_newbin, chromlen, annot_cols):
         starts = np.arange(n_newbin) * new_binsize
         ends = np.concatenate((starts[1:], [chromlen]))
         nonannot_subdf = pd.DataFrame({
@@ -4494,7 +4548,7 @@ def upsize_depth_df_bin(depth_df, size, refver=None, chromdict=None, annot_cols=
             )
         ]
     if chromdict is None:
-        chromdict = common.DEFAULT_CHROMDICTS[refver]
+        chromdict = refgenome.get_default_chromdict(refver)
 
     dfs_bychrom = pyranges_helper.group_df_bychrom(depth_df)
     new_binsize = size
@@ -4511,7 +4565,7 @@ def upsize_depth_df_bin(depth_df, size, refver=None, chromdict=None, annot_cols=
     for chrom, chrom_df in dfs_bychrom.items():
         chromlen = chromdict[chrom]
         groupers, n_newbin = get_chrom_df_groupers(chrom_df, chromlen, new_binsize, old_binsize)
-        newbin_dfs_bychrom[chrom] = upsize_chrom_df(
+        newbin_dfs_bychrom[chrom] = upsize_singlechrom_df(
             chrom_df, new_binsize, groupers, n_newbin, chromlen, annot_cols
         )
 

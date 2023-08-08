@@ -3,12 +3,11 @@ import re
 import pysam
 import Bio.Seq
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-ensembl_rest = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_rest']))
-ensembl_parser = importlib.import_module('.'.join([top_package_name, 'annotation', 'ensembl_parser']))
-libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
+import handygenome
+import handygenome.refgenome as refgenome
+import handygenome.annotation.ensembl_rest as ensembl_rest
+import handygenome.annotation.ensembl_parser as ensembl_parser
+import handygenome.variant.vcfspec as libvcfspec
 
 
 HGVSG_PATTERNS = {
@@ -18,11 +17,12 @@ HGVSG_PATTERNS = {
     'ins': re.compile('(?P<contig>[^:]+):[gm]\.(?P<pos1>[0-9]+)_(?P<pos2>[0-9]+)ins(?P<seq1>[ACGTN]+)'),
     'delins': re.compile('(?P<contig>[^:]+):[gm]\.(?P<pos1>[0-9]+)(_(?P<pos2>[0-9]+))?delins(?P<seq1>[ACGTN]+)'),
     'inv': re.compile('(?P<contig>[^:]+):[gm]\.(?P<pos1>[0-9]+)_(?P<pos2>[0-9]+)?inv'),
-    }
+}
 
 
 def vcfspec_to_hgvsg(vcfspec):
-    common.check_vcfspec_monoallele(vcfspec)
+    #common.check_vcfspec_monoallele(vcfspec)
+    vcfspec.check_monoalt(raise_with_false=True)
 
     chrom = vcfspec.chrom
     pos = vcfspec.pos
@@ -77,7 +77,7 @@ def modify_chrom(chrom, fasta):
     if chrom in fasta.references:
         return chrom
     else:
-        chrom_mat = common.RE_PATS['assembled_chromosome'].fullmatch(chrom)
+        chrom_mat = refgenome.PAT_ASSEMBLED_CHROM.fullmatch(chrom)
         if chrom_mat is not None:
             if 'chr1' in fasta.references:
                 modified_chrom = 'chr' + chrom_mat.group(2)
@@ -184,28 +184,21 @@ def hgvsg_to_vcfspec(hgvsg, fasta, leftmost=True):
     return vcfspec
         
 
-def hgvsg_to_vcfspec_refver(hgvsg, refver):
-    assert refver in ('hg19', 'hg38')
-
-    return hgvsg_to_vcfspec_fastapath(hgvsg, 
-                                      common.DEFAULT_FASTA_PATHS[refver])
-
-
-def hgvsg_to_vcfspec_fastapath(hgvsg, fasta_path):
-    with pysam.FastaFile(fasta_path) as fasta:
-        result = hgvsg_to_vcfspec(hgvsg, fasta)
-
-    return result
+#def hgvsg_to_vcfspec_refver(hgvsg, refver):
+#    assert refver in ('hg19', 'hg38')
+#
+#    return hgvsg_to_vcfspec_fastapath(hgvsg, refgenome.get_default_fasta_path(refver))
+#
+#
+#def hgvsg_to_vcfspec_fastapath(hgvsg, fasta_path):
+#    with pysam.FastaFile(fasta_path) as fasta:
+#        result = hgvsg_to_vcfspec(hgvsg, fasta)
+#
+#    return result
 
 
 def hgvsc_to_hgvsg(hgvsc, hg19):
-    """
-    Runs ensembl rest variantrecoder
-    """
-
-    assemblyspec = importlib.import_module(
-        '.'.join([top_package_name, 'assemblyspec']))
-
+    """Runs ensembl rest variantrecoder"""
     if hg19:
         raw_result = ensembl_rest.get_url_contents(
             f'http://grch37.rest.ensembl.org/variant_recoder/human/{hgvsc}')
@@ -235,8 +228,11 @@ def hgvsc_to_hgvsg(hgvsc, hg19):
     assert len(raw_hgvsg_split) == 2
     raw_contig = raw_hgvsg_split[0]
 
-    namemap = (assemblyspec.SPECS['grch37'] if hg19 else 
-               assemblyspec.SPECS['grch38'])
+    namemap = (
+        refgenome.SPECS['grch37'] 
+        if hg19 else 
+        refgenome.SPECS['grch38']
+    )
     if raw_contig not in namemap.data['refseq']:
         raise Exception(f'contig name of variantrecoder result is not '
                         f'refseq: {raw_hgvsg}')

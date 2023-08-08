@@ -8,7 +8,8 @@ import textwrap
 
 import pysam
 
-import handygenome.common as common
+import handygenome.tools as tools
+import handygenome.refgenome as refgenome
 import handygenome.workflow as workflow
 import handygenome.workflow.toolsetup as toolsetup
 
@@ -47,7 +48,7 @@ def unit_job(
 ):
     # basic setup
     fasta = pysam.FastaFile(fasta_path)
-    chromdict = common.ChromDict(fasta=fasta)
+    chromdict = refgenome.ChromDict.from_fasta(fasta)
     # setup for features
     tabixfile_geneset = annotation_data.TABIXFILES_GENESET[refver]
     tabixfile_regulatory = annotation_data.TABIXFILES_REGULATORY[refver]
@@ -158,7 +159,7 @@ def make_vepinput(split_infile_path, vepinput_path, fasta, chromdict):
         else:
             modify_outvr_nonsv(vr, out_vcf_header, out_vr_list)
 
-    out_vr_list.sort(key=common.get_vr_sortkey(chromdict))
+    out_vr_list.sort(key=varianthandler.get_vr_sortkey(chromdict))
     for vr in out_vr_list:
         out_vcf.write(vr)
 
@@ -679,7 +680,7 @@ def write_jobscripts(
     jobscript_path_list = list()
     split_outfile_path_list = list()
 
-    for zidx, split_infile_path in common.zenumerate(split_infile_path_list):
+    for zidx, split_infile_path in tools.zenumerate(split_infile_path_list):
         basename = os.path.basename(split_infile_path)
 
         split_outfile_path = os.path.join(tmpdir_paths["split_outfiles"], basename)
@@ -695,7 +696,7 @@ def write_jobscripts(
 
         script_contents = textwrap.dedent(
             f"""\
-            #!{common.PYTHON}
+            #!{handygenome.OPTION["python"]}
 
             #SBATCH -N 1
             #SBATCH -n 1
@@ -709,7 +710,7 @@ def write_jobscripts(
             import contextlib
             import traceback
             import sys
-            sys.path.append('{common.PACKAGE_LOCATION}')
+            sys.path.append('{handygenome.DIRS["package"]}')
             from {__name__} import unit_job
 
             log = open('{logpath}', 'w')
@@ -776,7 +777,7 @@ def main(cmdargs):
     logger.info("Beginning")
 
     # setup other parameters
-    fasta_path = common.DEFAULT_FASTA_PATHS[args.refver]
+    fasta_path = refgenome.get_default_fasta_path(args.refver)
 
     # split the input file and run jobs
     logger.info("Splitting the input file")

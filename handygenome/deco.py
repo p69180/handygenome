@@ -2,10 +2,30 @@ import functools
 import time
 import inspect
 import itertools
+import signal
 
 import numpy as np
 
-import handygenome.common as common
+
+# timeout (https://daeguowl.tistory.com/139)
+def get_deco_timeout(seconds, error_message=''):
+    def decorator(func):
+        def _handle_timeout(signum, frame):
+            raise TimeoutError(error_message)
+        
+        def wrapper(*args, **kwargs):
+            signal.signal(signal.SIGALRM, _handle_timeout)
+            #signal.alarm(seconds)
+            signal.setitimer(signal.ITIMER_REAL, seconds)
+            try:
+                result = func(*args, **kwargs)
+            finally:
+                signal.alarm(0)
+            return result
+
+        return functools.wraps(func)(wrapper)
+
+    return decorator
 
 
 def deco_timer(func):
@@ -199,7 +219,7 @@ def vectorize(func):
     def wrapper(*args, **kwargs):
         keys = list(kwargs.keys())
         arglist = list(itertools.chain(args, kwargs.values()))
-        arglist = common.broadcast_args(arglist)
+        arglist = np.broadcast_arrays(arglist)
 
         new_args = arglist[:len(args)]
         new_kwargs = dict(zip(keys, arglist[len(args):]))

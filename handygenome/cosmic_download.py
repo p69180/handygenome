@@ -1,6 +1,6 @@
 import base64
 
-import handygenome.common as common
+import handygenome.network as network
 import handygenome.deco as deco
 
 
@@ -12,7 +12,7 @@ def get_cosmic_auth_string(email, password):
 @deco.get_deco_arg_choices({'refver': ('GRCh37', 'GRCh38')})
 def get_cosmic_file_url(auth_string, refver, cosmicver, cosmicfile):
     open_url = f'https://cancer.sanger.ac.uk/cosmic/file_download/{refver}/cosmic/{cosmicver}/{cosmicfile}'
-    url = common.http_get(open_url, headers={'Authorization' : f'Basic {auth_string}'})['url']
+    url = network.http_get(open_url, headers={'Authorization' : f'Basic {auth_string}'})['url']
     return url
 
 
@@ -24,4 +24,4 @@ def download_cosmic_file(outfile_path, email, password, cosmicfile, cosmicver, r
     """
     auth_string = get_cosmic_auth_string(email, password)
     cosmicfile_url = get_cosmic_file_url(auth_string, refver, cosmicver, cosmicfile)
-    common.download(cosmicfile_url, outfile_path)
+    network.download(cosmicfile_url, outfile_path)

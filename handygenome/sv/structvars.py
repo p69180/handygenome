@@ -1,20 +1,19 @@
 import pysam
 import Bio.Seq
 
-import importlib
-top_package_name = __name__.split('.')[0]
-common = importlib.import_module('.'.join([top_package_name, 'common']))
-initvcf = importlib.import_module('.'.join([top_package_name, 'vcfeditor', 'initvcf']))
-breakends = importlib.import_module('.'.join([top_package_name, 'sv', 'breakends']))
-libvcfspec = importlib.import_module('.'.join([top_package_name, 'variant', 'vcfspec']))
+import handygenome.refgenome as refgenome
+import handygenome.interval as libinterval
+import handygenome.vcfeditor.initvcf as initvcf
+import handygenome.sv.breakends as breakends
+import handygenome.variant.vcfspec as libvcfspec
 
 
 MITOCHONDRIAL = ('chrM', 'MT')
 
 
-class SimpleStructuralVariant(common.Interval):
+class SimpleStructuralVariant(libinterval.Interval):
 
-	def __init__(self, chrom, start1 = None, end1 = None, start0 = None, end0 = None, fasta = None, refver = None):
+	def __init__(self, chrom, *, start1=None, end1=None, start0=None, end0=None, fasta=None, refver=None):
 		"""
 		'chrom' is mandatory
 		('start1' and 'end1') or ('start0' and 'end0') must be given(for coordinate setting).
@@ -30,7 +29,7 @@ class SimpleStructuralVariant(common.Interval):
 		super().__init__(chrom, start1, end1, start0, end0)
 
 		if fasta is None:
-			self.fasta = pysam.FastaFile(common.DEFAULT_FASTA_PATHS[refver])
+			self.fasta = refgenome.get_default_fasta(refver)
 		else:
 			self.fasta = fasta
 
@@ -41,12 +40,12 @@ class SimpleStructuralVariant(common.Interval):
 		return self.fasta.fetch(self.chrom, self.start0, self.end0)
 
 	def get_vr_symbolic(self):
-		chromdict = common.ChromDict(fasta = self.fasta)
-		vr = initvcf.create_vr(chromdict = chromdict)
+		chromdict = refgenome.ChromDict.from_fasta(self.fasta)
+		vr = initvcf.create_vr(chromdict=chromdict)
 		vr.contig = self.chrom
 		vr.pos = self.start0
 		vr.ref = self.fasta.fetch(self.chrom, vr.pos - 1, vr.pos)
-		vr.alts = [ self.__class__.ALTsymbol ]
+		vr.alts = [self.__class__.ALTsymbol]
 		vr.stop = self.end0
 
 		return vr

@@ -7,26 +7,26 @@ import contextlib
 
 import pysam
 
-import handygenome.common as common
+import handygenome.refgenome as refgenome
+import handygenome.tools as tools
 import handygenome.variant.infoformat as infoformat
 import handygenome.vcfeditor.headerhandler as headerhandler
 import handygenome.vcfeditor.initvcf as initvcf
 import handygenome.variant.vcfspec as libvcfspec
 
-#def get_vcfspec(vr):
-#    return common.Vcfspec(vr.contig, vr.pos, vr.ref, tuple(vr.alts))
-
 
 def check_SV(vr):
     alt = vr.alts[0]
     if any(
-            (re.fullmatch(f'<{x}(:.+)?>', alt) is not None)
-            for x in libvcfspec.SV_ALTS):
+        (re.fullmatch(f'<{x}(:.+)?>', alt) is not None)
+        for x in libvcfspec.SV_ALTS
+    ):
         # <DEL>, <INV>, ...
         return True
     elif (
-        (common.RE_PATS['alt_bndstring_1'].fullmatch(alt) is not None) or
-        (common.RE_PATS['alt_bndstring_2'].fullmatch(alt) is not None)):
+        (libvcfspec.PAT_BND1.fullmatch(alt) is not None)
+        or (libvcfspec.PAT_BND2.fullmatch(alt) is not None)
+    ):
         return True
     else:
         return False
@@ -38,8 +38,11 @@ def check_cpgmet(vr):
 
 # sorting helpers
 
-def vr_sortkey(vr, chromdict):
-    return common.coord_sortkey(vr.contig, vr.pos, chromdict)
+def get_vr_sortkey(chromdict):
+    def sortkey(vr):
+        return (chromdict.contigs.index(vr.contig), vr.pos, vr.ref) + vr.alts
+
+    return sortkey
 
 
 # applying vcfspec to vr
@@ -118,7 +121,7 @@ def rename(vr, samples):
         raise Exception(
             f'The number of samples must be the same.')
 
-    chromdict = common.ChromDict(vcfheader=vr.header)
+    chromdict = refgenome.ChromDict.from_vcfheader(vr.header)
     new_header = initvcf.create_header(chromdict=chromdict, samples=samples, vcfheader=vr.header)
     new_vr = new_header.new_record()
     _copy_basic_attrs(vr, new_vr)

@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pyranges as pr
 
-import handygenome.common as common
+import handygenome.tools as tools
 import handygenome.workflow as workflow
 import handygenome.variant.vcfspec as libvcfspec
 import handygenome.read.pileup as libpileup
@@ -557,7 +557,7 @@ class RealignerPileupSeries:
 
     def softclip_reduce_cigartuples_list_decorated(self, cigartuples_list_decorated):
         reduced = False
-        for idx, (left_item, right_item) in enumerate(common.pairwise(cigartuples_list_decorated)):
+        for idx, (left_item, right_item) in enumerate(tools.pairwise(cigartuples_list_decorated)):
             ref_range0_left, cigartuples_left, read_seq_left = left_item
             ref_range0_right, cigartuples_right, read_seq_right = right_item
 

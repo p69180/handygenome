@@ -7,13 +7,15 @@ import numpy as np
 import pandas as pd
 import pyranges as pr
 
-import handygenome.common as common
-import handygenome.workflow as workflow
+import handygenome.refgenome as refgenome
+import handygenome.tools as tools
 import handygenome.cnv.misc as cnvmisc
+import handygenome.logutils as logutils
 
 
-LOGGER_INFO = workflow.get_debugging_logger(verbose=False)
-LOGGER_DEBUG = workflow.get_debugging_logger(verbose=True)
+#import handygenome.workflow as workflow
+#LOGGER_INFO = workflow.get_debugging_logger(verbose=False)
+#LOGGER_DEBUG = workflow.get_debugging_logger(verbose=True)
 
 
 def sort_df_by_coord(df, chromdict):
@@ -445,7 +447,7 @@ def isec_union(gr1, gr2, as_gr=True):
 ###############################
 
 def join_preprocess_df(df):
-    df = common.arg_into_df(df)
+    df = cnvmisc.arg_into_df(df)
 
     leading_cols = ['Chromosome', 'Start', 'End']
     if df.columns.to_list()[:3] != leading_cols:
@@ -663,14 +665,10 @@ def merge_right_subdf_old(right_subdf, merge, annot_columns):
                 def subdf_handler(subdf):
                     weights = subdf['overlap_length'].to_numpy()
                     if np.isnan(weights.sum()):
-                        #return subdf.drop(columns='overlap_length').iloc[0, :]
                         return subdf.iloc[0, :]
                     else:
-                        #return subdf.drop(columns='overlap_length').apply(
-                        #    lambda x: common.nanaverage(x.to_numpy(), weights=weights)
-                        #)
                         return subdf.apply(
-                            lambda x: common.nanaverage(x.to_numpy(), weights=weights)
+                            lambda x: tools.nanaverage(x.to_numpy(), weights=weights)
                         )
             elif merge == 'longest':
                 def subdf_handler(subdf):
@@ -885,13 +883,14 @@ def join_newest(
     join_df_sanitycheck(left_df, right_df, index_col, add_std)
 
     # set logger
-    logger = (LOGGER_DEBUG if verbose else LOGGER_INFO)
+    #logger = (LOGGER_DEBUG if verbose else LOGGER_INFO)
+    logger = logutils.get_funclogger(verbose)
 
     # arg handling
     left_df = join_preprocess_df(left_df)
     right_df = join_preprocess_df(right_df)
     if (chromdict is None) and (refver is not None):
-        chromdict = common.DEFAULT_CHROMDICTS[refver]
+        chromdict = refgenome.get_default_chromdict(refver)
 
     # join
     result = join_main_newest(left_df, right_df, how, merge, find_nearest, index_col, sort, chromdict, logger, nproc, add_std, ddof)

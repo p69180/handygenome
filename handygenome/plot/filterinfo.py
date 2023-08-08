@@ -4,7 +4,6 @@ import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-import handygenome.common as common
 import handygenome.workflow as workflow
 import handygenome.variant.ponbams as libponbams
 import handygenome.variant.filter as libfilter
