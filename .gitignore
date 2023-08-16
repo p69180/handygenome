@@ -6,6 +6,7 @@ __pycache__/
 # package files
 *.egg-info
 /dist/
+/build/
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -17,3 +18,5 @@ __pycache__/
 /tests/
 /utils/
 /bin/
+/src/data/
+/src/config.yaml

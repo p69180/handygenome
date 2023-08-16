@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "handygenome"
 version = "0.4.0"
@@ -17,16 +21,12 @@ authors = [
     {name="Ji-Hyung Park", email="p69180@gmail.com"},
 ]
 description = "An integrated platform for genome sequencing analysis"
-readme = "README.md"
+readme = "README.rst"
 requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-url = "https://github.com/p69180/handygenome"
 
-[build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
 
