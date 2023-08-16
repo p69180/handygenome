@@ -1,10 +1,14 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools", "setuptools-git-versioning<2"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools-git-versioning]
+enabled = true
 
 [project]
 name = "handygenome"
-version = "0.4.0"
+#version = "0.4.0"
+dynamic = ["version"]
 dependencies = [
     "numpy",
     "pandas",
