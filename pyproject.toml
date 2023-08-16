@@ -33,4 +33,6 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
-
+[project.urls]
+Documentation = "https://handygenome.readthedocs.io/en/latest/"
+Repository = "https://github.com/p69180/handygenome.git"
