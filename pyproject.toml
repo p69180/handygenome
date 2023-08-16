@@ -5,13 +5,13 @@ dependencies = [
     "numpy",
     "pandas",
     "matplotlib",
-    "Bio>=1.80",
+    "biopython >= 1.80",
     "pysam",
     "pyranges",
     "scipy",
-    "sklearn",
-    "yaml",
-    "IPython",
+    "scikit-learn",
+    "PyYAML",
+    "ipython",
 ]
 authors = [
     {name="Ji-Hyung Park", email="p69180@gmail.com"},
@@ -24,10 +24,9 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+url = "https://github.com/p69180/handygenome"
 
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find]
-where = ["handygenome"]

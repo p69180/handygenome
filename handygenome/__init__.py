@@ -1,10 +1,14 @@
 import sys
 import os
 import importlib
+import importlib.metadata
 
 import yaml
 
 import handygenome
+
+
+__version__ = importlib.metadata.version(handygenome.__name__)
 
 
 # set numpy threads (https://stackoverflow.com/questions/30791550/limit-number-of-threads-in-numpy)
