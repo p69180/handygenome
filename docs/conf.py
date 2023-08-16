@@ -9,8 +9,14 @@
 project = 'handygenome'
 copyright = '2023, Ji-Hyung Park'
 author = 'Ji-Hyung Park'
-release = '0.4.0'
-version = '0.4.0'
+
+try:
+    import handygenome
+    release = handygenome.__version__
+    version = handygenome.__version__
+except:
+    release = '0.4.0'
+    version = '0.4.0'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -29,12 +35,12 @@ intersphinx_mapping = {
 }
 intersphinx_disabled_domains = ['std']
 
-templates_path = ['_templates']
-exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
+#templates_path = ['_templates']
+#exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
 html_theme = 'furo'
-html_static_path = ['_static']
+#html_static_path = ['_static']
