@@ -23,17 +23,21 @@ Indices and tables
 Install
 =======
 
+You can install handygenome by running the commands below,
+
 .. code-block:: bash
     
     conda env create -n handygenome rpy2 bioconductor-dnacopy
     pip install handygenome
-    
-| Including all dependencies in a conda package could not be achived due to package conflicts.
-| Above commands are a workaround which works well: 1) Install rpy2 and R DNAcopy within a conda environment, 2) then install other python packages with pip
+
+| which 1) makes a conda environment to install rpy2 using R with DNAcopy package, 2) then installs remaining python dependencies with pip.
+|   
+
+    Including all dependencies in a single conda package could not be achived due to package conflicts.
     
 
-Dependencies
-============
+Python Dependencies
+===================
 
 - numpy
 - pandas
