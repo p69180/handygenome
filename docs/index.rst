@@ -18,3 +18,14 @@ Indices and tables
 * :ref:`genindex`
 * :ref:`modindex`
 * :ref:`search`
+
+
+Install
+=======
+
+::
+    
+    conda env create -n handygenome rpy2 bioconductor-dnacopy
+    pip install handygenome
+    
+    
