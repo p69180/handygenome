@@ -6,22 +6,28 @@ import subprocess
 import pyranges as pr
 import pandas as pd
 
+import handygenome
+import handygenome.deco as deco
+import handygenome.refgenome.refgenome as refgenome
+import handygenome.logutils as logutils
+#import handygenome.genomedf as genomedf
+#from handygenome.cnv.cnvdf import GenomeDataFrame as GDF
+from handygenome.genomedf import GenomeDataFrame as GDF
+from handygenome.cnv.depth import DepthDataFrame as DepthDF
 import handygenome.tools as tools
 import handygenome.bameditor as bameditor
-import handygenome.cnv.misc as cnvmisc
 
 
-MOSDEPTH_PATH = '/home/users/pjh/tools/miniconda/221104/miniconda3/envs/mosdepth/bin/mosdepth'
-
-
-def get_mosdepth_args(prefix, bam_path, t, use_median, no_perbase=True, bed_path=None, window_size=None):
+def get_mosdepth_args(
+    prefix, bam_path, t, use_median, no_perbase=True, bed_path=None, window_size=None,
+):
     if (
         (bed_path is not None)
         and (window_size is not None)
     ):
         raise Exception(f'"window_size" and "bed_path" arguments must not be used at the same time.')
 
-    args = [MOSDEPTH_PATH, '-x', '-t', str(t)]
+    args = [handygenome.PARAMS['mosdepth'], '-x', '-t', str(t)]
 
     if use_median:
         args.append('-m')
@@ -38,115 +44,169 @@ def get_mosdepth_args(prefix, bam_path, t, use_median, no_perbase=True, bed_path
 
     return args
 
-
-def load_mosdepth_output(filename, depth_colname='mean_depth', as_gr=True):
-    """Only for *.regions.bed.gz file"""
-
-    with tools.openfile(filename) as infile:
-        firstline = next(infile)
-    firstline_sp = firstline.split('\t')
-    if firstline_sp[0] == 'Chromosome':
-        if firstline_sp[-1] != depth_colname:
-            raise Exception(f'Last column must be "{depth_colname}"')
-        header = 0
-        names = None
-    else:
-        header = None
-        names = ['Chromosome', 'Start', 'End', depth_colname]
-        
-    df = pd.read_csv(
-        filename, 
-        sep='\t', 
-        header=header,
-        names=names, 
-        dtype={'Chromosome': str, 'Start': int, 'End': int, depth_colname: float},
-    )
-    if as_gr:
-        return pr.PyRanges(df)
-    else:
-        return df
-
-
+@deco.get_deco_num_set_differently(('region_bed_path', 'region_gdf'), 1)
 def run_mosdepth(
     bam_path, 
+    refver=None,
     t=8, 
     use_median=False, 
     region_bed_path=None, 
-    region_gr=None, 
-    window_size=None, 
-    donot_subset_bam=False, 
-    as_gr=True, 
-    load_perbase=False,
+    region_gdf=None, 
+    perbase=False,
+    prefix='PREFIX'
 ):
-    # sanity check
-    if (
-        (window_size is not None)
-        and (
-            (region_bed_path is not None)
-            or (region_gr is not None)
-        )
-    ):  
-        raise Exception(f'"window_size" and "region*" arguments must not be used at the same time.')
-
-    if (
-        (region_bed_path is not None)
-        and (region_gr is not None)
-    ):  
-        raise Exception(f'Only one of "region_bed_path" and "region_gr" argument must be set.')
-
-    # handle region_gr argument
-    region_df = cnvmisc.arg_into_df(region_gr)
-    if region_df is not None:
-        cnvmisc.genome_df_sanitycheck(region_df)
-
+    """- Input bam must be indexed.
+    - region bed file: May be gzipped. May not have header row.
+    """
     # make tmp directory
     tmpdir = tempfile.mkdtemp(dir=os.getcwd(), prefix='mosdepth_tmpdir_')
 
+    # set refver
+    if refver is None:
+        refver = refgenome.infer_refver_bampath(bam_path)
+
     # write region bed file
-    if (region_bed_path is None) and (region_df is None):
-        mosdepth_input_bed_path = None
-    else:
-        if region_df is not None:
-            unedited_input_bed_path = os.path.join(tmpdir, 'unedited_region.bed')
-            region_df.to_csv(unedited_input_bed_path, sep='\t', header=False, index=False)
-        elif region_bed_path is not None:
-            unedited_input_bed_path = region_bed_path
+    region_is_given = (region_bed_path is not None) or (region_gdf is not None)
+    if region_is_given:
+        if region_bed_path is not None:
+            region_gdf = GDF.read_tsv(region_bed_path, refver)
+        if perbase:
+            region_gdf = region_gdf.window(1)
 
         mosdepth_input_bed_path = os.path.join(tmpdir, 'region.bed')
-        with tools.openfile(unedited_input_bed_path, 'r') as infile:
-            with open(mosdepth_input_bed_path, 'wt') as outfile:
-                for line in infile:
-                    linesp = line.strip().split('\t')
-                    if not (linesp[1].isdigit() and linesp[2].isdigit()):
-                        continue
-                    outfile.write('\t'.join(linesp[:3]) + '\n')
-
-    if mosdepth_input_bed_path is None:
-        mosdepth_input_bed_gr = None
+        region_gdf.df.iloc[:, :3].to_csv(
+            mosdepth_input_bed_path, 
+            sep='\t', 
+            header=False, 
+            index=False,
+        )
     else:
-        mosdepth_input_bed_gr = pr.PyRanges(pr.read_bed(mosdepth_input_bed_path, as_df=True), int64=False)
+        mosdepth_input_bed_path = None
 
-    # subset input bam file
-    if mosdepth_input_bed_path is not None:
-        if donot_subset_bam:
-            mosdepth_input_bam_path = bam_path
-        else:
-            mosdepth_input_bam_path = os.path.join(tmpdir, 'mosdepth_input.bam')
-            bameditor.samtools_view(
-                in_bam_path=bam_path, 
-                out_bam_path=mosdepth_input_bam_path, 
-                region_bed_path=mosdepth_input_bed_path, 
-                index=True,
-            )
+    # prepare mosdepth input bam
+    mosdepth_input_bam_path = os.path.join(tmpdir, 'mosdepth_input.bam')
+    os.symlink(bam_path, mosdepth_input_bam_path)
+
+    # make index of the symlink
+    bam_idx_path = bameditor.get_index_path(bam_path)
+    if bam_idx_path is None:
+        _ = pysam.index(mosdepth_input_bam_path)
     else:
-        mosdepth_input_bam_path = bam_path
+        os.symlink(bam_idx_path, mosdepth_input_bam_path + '.bai')
 
     # make mosdepth outdir
     outdir = os.path.join(tmpdir, 'outdir')
     os.mkdir(outdir)
 
     # run mosdepth
-    prefix = 'PREFIX'
+    bam_basename = os.path.basename(bam_path)
+    logutils.log(f'Running mosdepth (bam: {bam_basename})', add_locstring=False)
+    mosdepth_args = get_mosdepth_args(
+        prefix=os.path.join(outdir, prefix), 
+        bam_path=mosdepth_input_bam_path, 
+        t=t, 
+        use_median=use_median, 
+        no_perbase=True,
+        bed_path=mosdepth_input_bed_path, 
+    )
+    p = subprocess.check_call(mosdepth_args)
+    logutils.log(f'Finished running mosdepth (bam: {bam_basename})', add_locstring=False)
+
+    # load mosdepth outputs
+    outfile_path = os.path.join(outdir, f'{prefix}.regions.bed.gz')
+    result_gdf = DepthDF.load_mosdepth(outfile_path, refver, use_median=use_median)
+
+    # remove tmpdir
+    shutil.rmtree(tmpdir)
+
+    # return
+    return result_gdf
+
+
+def run_mosdepth_old(
+    bam_path, 
+    refver=None,
+    t=8, 
+    use_median=False, 
+    region_bed_path=None, 
+    region_gdf=None, 
+    window_size=None, 
+    #donot_subset_bam=False, 
+    subset_bam=None, 
+    load_perbase=False,
+    prefix='PREFIX'
+):
+    """- Input bam must be indexed.
+    - region bed file: May be gzipped. May not have header row.
+    """
+    # sanity check
+    if (
+        (window_size is not None)
+        and (
+            (region_bed_path is not None)
+            or (region_gdf is not None)
+        )
+    ):
+        raise Exception(f'"window_size" and "region*" arguments must not be used at the same time.')
+
+    if (
+        (region_bed_path is not None)
+        and (region_gdf is not None)
+    ):  
+        raise Exception(f'Only one of "region_bed_path" and "region_gdf" argument must be set.')
+
+    # make tmp directory
+    tmpdir = tempfile.mkdtemp(dir=os.getcwd(), prefix='mosdepth_tmpdir_')
+
+    # set refver
+    if refver is None:
+        refver = refgenome.infer_refver_bampath(bam_path)
+
+    # write region bed file
+    region_is_given = (region_bed_path is not None) or (region_gdf is not None)
+    if region_is_given:
+        mosdepth_input_bed_path = os.path.join(tmpdir, 'region.bed')
+        if region_bed_path is not None:
+            region_gdf = GDF.read_tsv(region_bed_path, refver)
+        region_gdf.df.iloc[:, :3].to_csv(
+            mosdepth_input_bed_path, 
+            sep='\t', 
+            header=False, 
+            index=False,
+        )
+    else:
+        mosdepth_input_bed_path = None
+
+    # prepare mosdepth input bam
+    mosdepth_input_bam_path = os.path.join(tmpdir, 'mosdepth_input.bam')
+    if subset_bam is None:
+        subset_bam = load_perbase
+    if (region_is_given and subset_bam): 
+        # subset input bam file
+        logutils.log(f'Subsetting input bam file', add_locstring=False)
+        bameditor.samtools_view(
+            in_bam_path=bam_path, 
+            out_bam_path=mosdepth_input_bam_path, 
+            region_bed_path=mosdepth_input_bed_path, 
+            index=True,
+        )
+    else:  
+        # do not subset bam
+        os.symlink(bam_path, mosdepth_input_bam_path)
+
+        # make index of the symlink
+        bam_idx_path = bameditor.get_index_path(bam_path)
+        if bam_idx_path is None:
+            _ = pysam.index(mosdepth_input_bam_path)
+        else:
+            os.symlink(bam_idx_path, mosdepth_input_bam_path + '.bai')
+
+    # make mosdepth outdir
+    outdir = os.path.join(tmpdir, 'outdir')
+    os.mkdir(outdir)
+
+    # run mosdepth
+    logutils.log(f'Running mosdepth', add_locstring=False)
     mosdepth_args = get_mosdepth_args(
         prefix=os.path.join(outdir, prefix), 
         bam_path=mosdepth_input_bam_path, 
@@ -156,55 +216,28 @@ def run_mosdepth(
         bed_path=mosdepth_input_bed_path, 
         window_size=window_size,
     )
-    p = subprocess.run(mosdepth_args, capture_output=True, text=True, check=False)
-    if p.returncode != 0:
-        print(f'stdout: {p.stdout}')
-        print(f'stderr: {p.stderr}')
-        p.check_returncode()
+    p = subprocess.check_call(mosdepth_args)
 
     # load mosdepth outputs
-    outfile_path = os.path.join(outdir, f'{prefix}.regions.bed.gz')
-    if use_median:
-        depth_colname = 'median_depth'
-    else:
-        depth_colname = 'mean_depth'
-    df = load_mosdepth_output(outfile_path, depth_colname=depth_colname, as_gr=False)
+    region_outfile_path = os.path.join(outdir, f'{prefix}.regions.bed.gz')
+    region_result_gdf = DepthDF.load_mosdepth(region_outfile_path, refver, use_median=use_median)
 
+    # load mosdepth outputs - perbase
+    perbase_outfile_path = os.path.join(outdir, f'{prefix}.per-base.bed.gz')
     if load_perbase:
-        perbase_outfile_path = os.path.join(outdir, f'{prefix}.per-base.bed.gz')
-        df_perbase = pd.read_csv(
-            perbase_outfile_path, 
-            sep='\t', 
-            names=['Chromosome', 'Start', 'End', 'depth'], 
-            dtype={'Chromosome': str, 'Start': int, 'End': int, 'depth': int},
-        )
-
-        if mosdepth_input_bed_gr is not None:
-            df_perbase = mosdepth_input_bed_gr.window(1).join(
-                pr.PyRanges(df_perbase, int64=False),
-                apply_strand_suffix=False,
-            )[['depth']].df
+        perbase_result_gdf = DepthDF.load_mosdepth_perbase(perbase_outfile_path, refver)
+        if region_is_given:
+            perbase_result_gdf = perbase_result_gdf.intersect(region_gdf)
     else:
-        df_perbase = None
-
-    # prepare result
-    if as_gr:
-        result = pr.PyRanges(df, int64=False)
-        if load_perbase:
-            result_perbase = pr.PyRanges(df_perbase, int64=False)
-        else:
-            result_perbase = None
-    else:
-        result = df
-        result_perbase = df_perbase
+        perbase_result_gdf = None
 
     # remove tmpdir
     shutil.rmtree(tmpdir)
 
     # return
-    if result_perbase is None:
-        return result
+    if load_perbase:
+        return region_result_gdf, perbase_result_gdf
     else:
-        return result, result_perbase
+        return region_result_gdf
 
 

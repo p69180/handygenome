@@ -3,7 +3,7 @@ import re
 import handygenome.tools as tools
 import handygenome.network as network
 import handygenome.deco as deco
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 
 
 PREFIX_LOOKUP_ID = refgenome.RefverDict({

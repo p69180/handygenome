@@ -9,7 +9,7 @@ import pyranges as pr
 import handygenome
 import handygenome.network as network
 import handygenome.cnv.misc as cnvmisc
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 
 
 URL_BASE = 'https://api.genome.ucsc.edu'
@@ -19,7 +19,7 @@ CYTOBAND_URLS = refgenome.RefverDict({
     'GRCh38': 'http://hgdownload.cse.ucsc.edu/goldenpath/hg38/database/cytoBand.txt.gz', 
 })
 
-CYTOBAND_DIR = os.path.join(handygenome.DIRS['data'], 'cytoband')
+CYTOBAND_DIR = os.path.join(handygenome.USERDATA_DIR, 'cytoband')
 os.makedirs(CYTOBAND_DIR, exist_ok=True)
 
 

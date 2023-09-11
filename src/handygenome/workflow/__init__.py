@@ -17,7 +17,7 @@ import handygenome.logutils as logutils
 import handygenome.interval as libinterval
 import handygenome.tools as tools
 import handygenome.deco as deco
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.vcfeditor.misc as vcfmisc
 
 
@@ -692,7 +692,7 @@ def arghandler_outdir(arg):
 def arghandler_fasta(arg):
     if arg in refgenome.REFVERINFO.list_known_refvers():
     #if arg in common.DEFAULT_FASTA_PATHS.get_valid_keys():
-        return refgenome.get_default_fasta_path(arg)
+        return refgenome.get_fasta_path(arg)
     else:
         return arghandler_infile(arg)
 

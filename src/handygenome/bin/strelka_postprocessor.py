@@ -2,7 +2,7 @@ import textwrap
 
 import pysam
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.workflow as workflow
 import handygenome.workflow.toolsetup as toolsetup
 import handygenome.variant.svcaller_parser as svcaller_parser
@@ -117,8 +117,8 @@ def main(cmdargs):
 
     logger.info('BEGINNING')
 
-    fasta = refgenome.get_default_fasta(args.refver)
-    chromdict = refgenome.get_default_chromdict(args.refver)
+    fasta = refgenome.get_fasta(args.refver)
+    chromdict = refgenome.get_chromdict(args.refver)
     refver = args.refver
 
     nonsv_set = set()

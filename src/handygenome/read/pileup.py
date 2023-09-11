@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 import handygenome.tools as tools
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.workflow as workflow
 import handygenome.read.readhandler as readhandler
 import handygenome.align.alignhandler as alignhandler
@@ -391,7 +391,7 @@ class PileupBase:
             refver_result = refver
 
         if fasta is None:
-            fasta_result = refgenome.get_default_fasta(refver_result)
+            fasta_result = refgenome.get_fasta(refver_result)
         else:
             fasta_result = fasta
 

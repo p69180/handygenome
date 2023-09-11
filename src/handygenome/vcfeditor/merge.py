@@ -5,7 +5,7 @@ import textwrap
 
 import pysam
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.workflow as workflow
 import handygenome.variant.varianthandler as varianthandler
 import handygenome.vcfeditor.headerhandler as headerhandler

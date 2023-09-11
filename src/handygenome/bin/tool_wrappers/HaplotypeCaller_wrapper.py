@@ -5,7 +5,7 @@ import tempfile
 
 import pysam
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.interval as libinterval
 import handygenome.workflow as workflow
 import handygenome.workflow.toolsetup as toolsetup

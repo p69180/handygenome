@@ -5,7 +5,7 @@ import subprocess
 import pysam
 
 import handygenome
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.workflow as workflow
 import handygenome.vcfeditor.initvcf as initvcf
 import handygenome.variant.vcfspec as libvcfspec
@@ -143,7 +143,7 @@ def run_vep_with_vr(vr, refver=None, distance=DEFAULT_DISTANCE):
     species = REFVER_TO_VEPARGS[refver]['species']
     assembly = REFVER_TO_VEPARGS[refver]['assembly']
 
-    fasta_path = refgenome.get_default_fasta_path(refver)
+    fasta_path = refgenome.get_fasta_path(refver)
     infile_path = workflow.get_tmpfile_path(delete=True)
     outfile_path = infile_path + '.vep'
 

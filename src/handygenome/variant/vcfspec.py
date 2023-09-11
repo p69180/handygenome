@@ -6,7 +6,7 @@ import collections
 import Bio.Align
 import pyranges as pr
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.annotation.annotitem as annotitem
 import handygenome.variant.repeat as librepeat
 from handygenome.annotation.annotitem import AnnotItemInfoALTlist
@@ -71,7 +71,7 @@ class Vcfspec:
         if fasta is None:
             if refver is None:
                 raise Exception(f'When "fasta" is not set, "refver" must be set.')
-            self.fasta = refgenome.get_default_fasta(self.refver)
+            self.fasta = refgenome.get_fasta(self.refver)
         else:
             self.fasta = fasta
         # attributes not able to set in __init__

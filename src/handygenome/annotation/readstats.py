@@ -24,6 +24,10 @@ DEFAULT_DEPTH_LIMITS = (0, -1)
 DEFAULT_MQ_LIMITS = (0, -1)
 
 
+class AlleleclassError(Exception):
+    pass
+
+
 def get_position_info(bam, chrom, pos0):
     mqlist = list()
     idx = -1
@@ -219,12 +223,12 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         result.is_invalid = False
         result.vcfspec = vcfspec
         result.fasta = (
-            refgenome.get_default_fasta(vcfspec.refver)
+            refgenome.get_fasta(vcfspec.refver)
             if fasta is None else
             fasta
         )
         result.chromdict = (
-            refgenome.get_default_chromdict(vcfspec.refver)
+            refgenome.get_chromdict(vcfspec.refver)
             if chromdict is None else
             chromdict
         )
@@ -270,12 +274,12 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         result.is_invalid = True
         result.vcfspec = vcfspec
         result.fasta = (
-            refgenome.get_default_fasta(vcfspec.refver)
+            refgenome.get_fasta(vcfspec.refver)
             if fasta is None else
             fasta
         )
         result.chromdict = (
-            refgenome.get_default_chromdict(vcfspec.refver)
+            refgenome.get_chromdict(vcfspec.refver)
             if chromdict is None else
             chromdict
         )
@@ -352,7 +356,10 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         if total_rppcount == 0:
             return np.nan
         else:
-            return self['rppcounts'][alleleclass] / total_rppcount
+            try:
+                return self['rppcounts'][alleleclass] / total_rppcount
+            except KeyError:
+                raise AlleleclassError(f'Invalid alleleclass')
 
     def get_sorted_vafs(self, exclude_other=True, reverse=True):
         vafs = list()

@@ -1,7 +1,7 @@
 import pysam
 import Bio.Seq
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.interval as libinterval
 import handygenome.vcfeditor.initvcf as initvcf
 import handygenome.sv.breakends as breakends
@@ -29,7 +29,7 @@ class SimpleStructuralVariant(libinterval.Interval):
 		super().__init__(chrom, start1, end1, start0, end0)
 
 		if fasta is None:
-			self.fasta = refgenome.get_default_fasta(refver)
+			self.fasta = refgenome.get_fasta(refver)
 		else:
 			self.fasta = fasta
 

@@ -4,18 +4,25 @@ import re
 import gzip
 import shutil
 import itertools
+import tempfile
 
-import scipy.stats
 import numpy as np
+import scipy.stats
+import scipy.signal
+import scipy.linalg
+import Bio.bgzf
 
 import handygenome.deco as deco
+import handygenome.logutils as logutils
 
 
 PAT_INT = re.compile('-?[0-9]+')
 PAT_FLOAT = re.compile('(-?[0-9]+\.[0-9]+)|(-?[0-9]+(\.[0-9]+)?e-?[0-9]+)')
 
 
-# custom class base
+#####################
+# custom class base #
+#####################
 
 def repr_base(obj, keylist, comma_sep_int=False):
     string_list = list()
@@ -29,7 +36,9 @@ def repr_base(obj, keylist, comma_sep_int=False):
     return ', '.join(string_list)
 
 
-# colors
+##########
+# colors #
+##########
 
 COLORS = {
     'red':     '\033[38;5;196m',
@@ -45,7 +54,7 @@ COLORS = {
     'gray':    '\033[38;5;8m',
     'white':   '\033[38;5;15m',
     'end':     '\033[0m',
-    }
+}
 
 
 class ColorsQQ:
@@ -77,7 +86,9 @@ def cpprint(obj):
     print(cpformat(obj))
 
 
-# string manipulators
+#######################
+# string manipulators #
+#######################
 
 def str_to_nonstr(val):
     #assert isinstance(val, str)
@@ -134,8 +145,6 @@ def get_padded_indices(n):
     width = len(str(n-1))
     for idx in range(n):
         yield str(idx).zfill(width)
-    #result = [str(idx).zfill(width) for idx in range(n)]
-    #return result
 
 
 def shorten_int(numlist, n_after_dot=3):
@@ -162,10 +171,10 @@ def shorten_int(numlist, n_after_dot=3):
     return result
 
 
-"""
+'''
 http://code.activestate.com/recipes/578019
 https://psutil.readthedocs.io/en/latest/#bytes-conversion
-"""
+'''
 _bytes2human_symbols = ('K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y')
 _bytes2human_symbols_rev = tuple(reversed(_bytes2human_symbols))
 _bytes2human_prefix = {
@@ -187,7 +196,9 @@ def listdir(path):
     return sorted(os.path.join(path, x) for x in os.listdir(path))
 
 
-# file handling
+#################
+# file handling #
+#################
 
 def unzip(src, dest, rm_src=False):
     with gzip.open(src, 'rb') as infile:
@@ -197,14 +208,58 @@ def unzip(src, dest, rm_src=False):
         os.remove(src)
 
 
-@deco.get_deco_arg_choices({'mode': ('r', 'w', 'a')})
-def openfile(fname, mode='r'):
-    mode = mode + 't'
+#def check_file_is_plain(fname):
+def check_textfile(fname):
+    with open(fname, 'r') as f:
+        try:
+            _ = f.read(1)
+        except UnicodeDecodeError:
+            return False
+        else:
+            return True
 
-    if fname.endswith('.gz'):
+
+def check_gzipped(fname):
+    with gzip.open(fname, 'rb') as f:
+        try:
+            _ = f.read(1)
+        except gzip.BadGzipFile as exc:
+            if str(exc).startswith('Not a gzipped file'):
+                return False
+            else:
+                raise
+        else:
+            return True
+
+
+def check_bgzipped(fname):
+    try:
+        f = Bio.bgzf.open(fname)
+    except ValueError as exc:
+        if str(exc).startswith('A BGZF (e.g. a BAM file) block should start with'):
+            return False
+        else:
+            raise
+    else:
+        f.close()
+        return True
+
+
+#@deco.get_deco_arg_choices({'mode': ('rt', 'wt', 'a')})
+def openfile(fname, mode='rt'):
+    patstring = r'[rwa][tb]'
+    if not re.fullmatch(patstring, mode):
+        raise Exception(f'Invalid "mode" argument. Allowed pattern: {patstring}')
+
+    if len(mode) == 1:
+        mode = mode + 't'
+
+    if check_textfile(fname):
+        return open(fname, mode)
+    elif check_gzipped(fname):
         return gzip.open(fname, mode)
     else:
-        return open(fname, mode)
+        raise Exception(f'Input file is neither plain text nor gzipped.')
 
 
 def fileiter(path, sep='\t', remove_leading_hashes=True, skip_double_hashes=True):
@@ -299,7 +354,10 @@ def printwidth(df, margin = 2, target = 'out'):
         printwidth_print_line(line, width_list, margin, target)
 
 
-# memory usage check
+######################
+# memory usage check #
+######################
+
 def get_rss(mode='total', unit='b'):
     assert mode in ('self', 'children', 'total')
     assert unit in ('b', 'k', 'm', 'g')
@@ -328,7 +386,9 @@ def get_rss(mode='total', unit='b'):
     return rss
 
 
-# multi-min, multi-max
+########################
+# multi-min, multi-max #
+########################
 
 def _multi_selector_base(sequence, comparing_func, key=None, with_target_val=False):
     sequence = list(sequence)
@@ -354,7 +414,9 @@ def multi_max(sequence, key=None, with_target_val=False):
 
 
 
-# itertools plus utilities
+############################
+# itertools plus utilities #
+############################
 
 def pairwise(iterable):
     iterable = iter(iterable)
@@ -399,7 +461,9 @@ def grouper_Itertools_Recipes(iterable, n, *, incomplete='fill', fillvalue=None)
 
 
 
-# array handlers & mathematical ones
+######################################
+# array handlers & mathematical ones #
+######################################
 
 def round_sig(num, n):
     """round 'num' with 'n' significant digits"""
@@ -418,6 +482,7 @@ def get_split_nums(total_length, num):
 
 
 def array_grouper(arr, omit_values=False):
+    """Does not sort before grouping, like itertools.groupby"""
     assert arr.ndim in (1, 2)
 
     diff = np.empty(arr.shape[0], dtype=bool)
@@ -517,6 +582,40 @@ def get_diffmean(values, weights=None):
     return np.average(np.abs(diffs), weights=diff_weights)
 
 
+def dirichlet_multinomial_rvs(n, alpha, rng=None):
+    """Args:
+        n: int or 1d array. Number of trials.
+        alpha: alpha parameter passed to Dirichlet distribution.
+
+    A single Dirichlet distribution is created with "alpha" parameter.
+    Proportions for multinomial distribution are drawn from the Dirichlet 
+    distribution for each element of "n" parameter.
+
+    Returns:
+        array with shape (len(n), len(alpha))
+    """
+    n = np.atleast_1d(n)
+    assert n.ndim == 1
+
+    if rng is None:
+        rng = np.random.default_rng()
+
+    props = rng.dirichlet(alpha=alpha, size=n.shape[0])
+    result = rng.multinomial(n=n, pvals=props)
+    return result
+
+
+def get_nearest_integers(x):
+    x = np.atleast_1d(x)
+
+    lower = np.floor(x)
+    upper = np.ceil(x)
+    same_ind = (upper == lower)
+    upper[same_ind] += 1
+
+    return upper, lower
+
+
 ##############################
 # Genomic coordinate sorting #
 ##############################
@@ -560,27 +659,6 @@ def compare_coords(chrom1, pos1, chrom2, pos2, chromdict):
 # Check if file is plain text or gzipped #
 ##########################################
 
-def check_file_is_plain(fname):
-    with open(fname, 'r') as f:
-        try:
-            _ = f.read(1)
-        except UnicodeDecodeError:
-            return False
-        else:
-            return True
-
-
-def check_file_is_gzipped(fname):
-    with gzip.open(fname, 'rb') as f:
-        try:
-            _ = f.read(1)
-        except gzip.BadGzipFile as exc:
-            if str(exc).startswith('Not a gzipped file'):
-                return False
-            else:
-                raise
-        else:
-            return True
     
 
 ##################################
@@ -611,3 +689,77 @@ def get_tmpfile_path(prefix=None, suffix=None, dir=None, where=None, delete=Fals
             os.close(fd)
 
     return path
+
+
+################
+# peak finding #
+################
+
+def find_hist_peaks(data, weights=None, bins=10, **kwargs):
+    find_peak_kwargs = (
+        {'height': (None, None)}
+        | kwargs
+    )
+
+    hist, bin_edges = np.histogram(
+        data, bins=bins, weights=weights, density=True,
+    )
+    bin_midpoints = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    peaks, peak_properties = scipy.signal.find_peaks(
+        hist, **find_peak_kwargs,
+    )
+
+    if len(peaks) == 0:
+        return None
+    else:
+        return {
+            'peak_indexes': peaks,
+            'peak_xs': bin_midpoints[peaks],
+            'peak_ys': peak_properties['peak_heights'],
+            'peak_properties': peak_properties,
+            'bin_edges': bin_edges,
+            'bin_midpoints': bin_midpoints,
+            'hist': hist,
+        }
+
+
+def find_density_peaks(data, weights=None, xs=None, bw_method=None, **kwargs):
+    find_peak_kwargs = (
+        {'height': (None, None)}
+        | kwargs
+    )
+
+    try:
+        density = scipy.stats.gaussian_kde(
+            data, weights=weights, bw_method=bw_method,
+        )
+    except scipy.linalg.LinAlgError as exc:
+        if str(exc) == 'singular matrix':
+            logutils.log(
+                f'Density generation failed.', 
+                add_locstring=True, 
+                level='warn',
+            )
+            return None
+        else:
+            raise
+
+    data = np.asarray(data)
+    if isinstance(xs, int):
+        xs = np.linspace(data.min(), data.max(), xs)
+    ys = density(xs)
+
+    peaks, peak_properties = scipy.signal.find_peaks(ys, **find_peak_kwargs)
+    if len(peaks) == 0:
+        return None
+    else:
+        return {
+            'peak_indexes': peaks,
+            'peak_xs': xs[peaks],
+            'peak_ys': peak_properties['peak_heights'],
+            'peak_properties': peak_properties,
+            'density': density,
+        }
+
+

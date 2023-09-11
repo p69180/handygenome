@@ -4,7 +4,7 @@ import re
 import pysam
 
 import handygenome.bameditor as bameditor
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 
 
 PON_BAM_PATHS_WITHOUT_NAMES = refgenome.RefverDict({

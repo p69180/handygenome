@@ -9,7 +9,7 @@ import handygenome.tools as tools
 import handygenome.network as network
 import handygenome.workflow as workflow
 import handygenome.workflow.toolsetup as toolsetup
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 
 
 DEFAULT_OUTFILE_BASENAME = 'ucsc_repeatmasker_out_sorted.bed.gz'

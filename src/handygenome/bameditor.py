@@ -1,11 +1,11 @@
 import os
+import re
 
 import pysam
 import numpy as np
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.workflow as workflow
-import handygenome.analysis.feature as libfeature
 
 
 def create_header(chromdict):
@@ -20,6 +20,18 @@ def sort_and_index(bam_path):
     pysam.sort('-O', 'BAM', '-o', tmp_bam_path, bam_path)
     os.rename(tmp_bam_path, bam_path)
     _ = pysam.index(bam_path)
+
+
+def get_index_path(bam_path):
+    assert bam_path.endswith('.bam')
+    bambai_path = bam_path + '.bai'
+    bai_path = re.sub(r'\.bam$', '.bai', bam_path)
+    if os.path.exists(bambai_path):
+        return bambai_path
+    elif os.path.exists(bai_path):
+        return bai_path
+    else:
+        return None
 
 
 def samtools_view(in_bam_path, out_bam_path, region_bed_path=None, index=True):

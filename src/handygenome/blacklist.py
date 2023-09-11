@@ -5,7 +5,7 @@ import pandas as pd
 import pyranges as pr
 
 import handygenome
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 
 
 # curated blacklist
@@ -43,7 +43,7 @@ CURATED_BLACKLIST = refgenome.RefverDict({
 def make_blacklist_gr(data, refver):
     df_data = list(itertools.chain.from_iterable(data.values()))
     df = pd.DataFrame.from_records(df_data, columns=['Chromosome', 'Start', 'End'])
-    assert set(df['Chromosome']).issubset(refgenome.get_default_chromdict(refver).contigs)
+    assert set(df['Chromosome']).issubset(refgenome.get_chromdict(refver).contigs)
     gr = pr.PyRanges(df).merge().sort()
 
     return gr

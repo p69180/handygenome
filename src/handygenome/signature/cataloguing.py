@@ -12,7 +12,7 @@ def get_sbs_context(
     chrom, pos, fasta=None, refver=None, pre=1, post=1, to_pyrimidine=False,
 ):
     if fasta is None:
-        fasta = refgenome.get_default_fasta(refver)
+        fasta = refgenome.get_fasta(refver)
 
     start = pos - 1 - pre
     end = pos + post
@@ -38,7 +38,7 @@ def get_sbs96_catalogue_vcfspecs(vcfspec_iter, refver):
             else:
                 return False
                 
-    fasta = refgenome.get_default_fasta(refver)
+    fasta = refgenome.get_fasta(refver)
     catalogue_keys = signature_misc.get_catalogue_keys('sbs96')
     data = dict((x, 0) for x in catalogue_keys)
 

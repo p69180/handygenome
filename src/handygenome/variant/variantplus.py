@@ -3,6 +3,7 @@ import pprint
 import os
 import itertools
 import functools
+import collections
 import random
 import shutil
 import logging
@@ -17,7 +18,8 @@ import numpy as np
 import pandas as pd
 
 import handygenome.tools as tools
-import handygenome.refgenome as refgenome
+import handygenome.deco as deco
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.logutils as logutils
 import handygenome.workflow as workflow
 import handygenome.variant.varianthandler as varianthandler
@@ -28,7 +30,7 @@ import handygenome.plot.filterinfo as plot_filterinfo
 import handygenome.variant.infoformat as infoformat
 import handygenome.vcfeditor.initvcf as initvcf
 import handygenome.vcfeditor.headerhandler as headerhandler
-import handygenome.annotation.data as annotdata
+#import handygenome.annotation.data as annotdata
 import handygenome.annotation.ensembl_feature as ensembl_feature
 import handygenome.annotation.ensembl_parser as ensembl_parser
 import handygenome.annotation.ensembl_rest as ensembl_rest
@@ -37,18 +39,17 @@ import handygenome.annotation.cosmic as libcosmic
 import handygenome.annotation.oncokb as liboncokb
 import handygenome.read.readplus as readplus
 import handygenome.annotation.readstats as libreadstats
+from handygenome.annotation.readstats import AlleleclassError
 import handygenome.variant.vcfspec as libvcfspec
 import handygenome.vcfeditor.indexing as indexing
 import handygenome.cnv.misc as cnvmisc
 from handygenome.variant.filter import FilterResultInfo, FilterResultFormat
 import handygenome.variant.ponbams as libponbams
 import handygenome.vcfeditor.misc as vcfmisc
+from handygenome.genomedf import GenomeDataFrame as GDF
 
 
 #READCOUNT_FORMAT_KEY = "allele_readcounts"
-
-LOGGER_INFO = workflow.get_debugging_logger(verbose=False)
-LOGGER_DEBUG = workflow.get_debugging_logger(verbose=True)
 
 
 class VariantPlusInitParams(dict):
@@ -111,7 +112,7 @@ class VariantPlus:
         result.vr = vr
         result.refver = refgenome.infer_refver_vr(result.vr) if (refver is None) else refver
         result.fasta = (
-            pysam.FastaFile(refgenome.get_default_fasta_path(result.refver))
+            refgenome.get_fasta(result.refver)
             if fasta is None
             else fasta
         )
@@ -145,7 +146,7 @@ class VariantPlus:
         result.refver = result.vcfspec.refver
         result.fasta = result.vcfspec.fasta
         result.chromdict = (
-            refgenome.get_default_chromdict(result.refver)
+            refgenome.get_chromdict(result.refver)
             if chromdict is None else 
             chromdict
         )
@@ -288,6 +289,16 @@ class VariantPlus:
     @property
     def sampleids(self):
         return tuple(self.vr.header.samples)
+
+    def get_allele(self, allele_index):
+        if allele_index == 0:
+            return self.ref
+        else:
+            alt_index = allele_index - 1
+            try:
+                return self.alts[alt_index]
+            except IndexError:
+                return pd.NA
 
     # BREAKENDS
     def get_vr_bnd2(self):
@@ -725,6 +736,22 @@ class VariantPlus:
         readstats = self.readstats_dict[sampleid]
         return readstats.get_total_rppcount(exclude_other=exclude_other)
 
+    @deco.get_deco_atleast1d(['sampleids'])
+    def get_vafs(self, sampleids, n_allele=2, exclude_other=False):
+        result = {sid: list() for sid in sampleids}
+        for sid in sampleids:
+            readstats = self.readstats_dict[sid]
+            for allele_idx in range(n_allele):
+                try:
+                    vaf = readstats.get_vaf(
+                        alleleclass=allele_idx, 
+                        exclude_other=exclude_other,
+                    )
+                except AlleleclassError:
+                    vaf = np.nan
+                result[sid].append(vaf)
+        return result
+
     def get_vaf(self, sampleid, allele_index=1, exclude_other=False, ndigits=None):
         if isinstance(sampleid, (list, tuple)):
             return [
@@ -1040,7 +1067,7 @@ class VariantPlusList(list):
             self.refver = refver
 
         if fasta is None:
-            self.fasta = refgenome.get_default_fasta(self.refver)
+            self.fasta = refgenome.get_fasta(self.refver)
         else:
             self.fasta = fasta
 
@@ -1320,7 +1347,8 @@ class VariantPlusList(list):
         )
         vp_iterator = self._get_vp_iter_from_vr_iter(vr_iterator)
         vp_iterator = filter(vpfilter, vp_iterator)
-        vp_iterator = logutils.iter_lineno_logging(vp_iterator, self.logger, self.logging_lineno)
+        if self.logging_lineno is not None:
+            vp_iterator = logutils.iter_lineno_logging(vp_iterator, self.logger, self.logging_lineno)
         return vp_iterator
 
     def get_vp_iter_from_self(
@@ -1346,7 +1374,9 @@ class VariantPlusList(list):
         # filter by vpfilter
         vp_iterator = filter(vpfilter, vp_iterator)
 
-        vp_iterator = logutils.iter_lineno_logging(vp_iterator, self.logger, self.logging_lineno)
+        if self.logging_lineno is not None:
+            vp_iterator = logutils.iter_lineno_logging(vp_iterator, self.logger, self.logging_lineno)
+
         return vp_iterator
 
 
@@ -1762,6 +1792,95 @@ class VariantPlusList(list):
             return pd.DataFrame.from_dict(data).astype(
                 {'Start': int, 'End': int, 'POS': int}
             )
+    
+    @staticmethod
+    def vafdf_allele_columns(num):
+        return ['REF'] + [f'ALT{x + 1}' for x in range(num - 1)]
+
+    @deco.get_deco_atleast1d(['sampleids'])
+    def get_vafdf(
+        self, 
+        sampleids, 
+        chrom=None, start0=None, end0=None,
+        n_allele=2,
+        exclude_other=False,
+
+        lazy=False,
+        prop=None,
+        vpfilter=None,
+
+        sampleid_index_name='sampleid',
+    ):
+        # main
+        chroms = list()
+        pos1s = list()
+        starts = list()
+        ends = list()
+
+        alleles = [list() for x in range(n_allele)]
+        vafs = {
+            sid: [list() for x in range(n_allele)] 
+            for sid in sampleids
+        }
+
+        if lazy:
+            vp_iterator = self.get_vp_iter_from_vcf(
+                chrom=chrom, start0=start0, end0=end0, 
+                prop=prop,
+                vpfilter=vpfilter,
+            )
+        else:
+            if chrom is None:
+                vp_iterator = iter(self)
+            else:
+                vp_iterator = self.fetch_by_coord(chrom, start0, end0)
+
+        for vp in vp_iterator:
+            chroms.append(vp.vcfspec.chrom)
+            pos1s.append(vp.vcfspec.pos)
+            starts.append(vp.vcfspec.pos0)
+            ends.append(vp.vcfspec.end0)
+
+            for allele_idx, sublist in enumerate(alleles):
+                sublist.append(vp.get_allele(allele_idx))
+
+            this_vafs = vp.get_vafs(sampleids, n_allele=n_allele, exclude_other=exclude_other)
+            for sid, this_vaf_list in this_vafs.items():
+                for vaflist, vafval in zip(vafs[sid], this_vaf_list):
+                    vaflist.append(vafval)
+
+        # make data
+        data = list()
+        columns_lv2 = list()
+
+        data.append(chroms)
+        columns_lv2.append('Chromosome')
+        data.append(starts)
+        columns_lv2.append('Start')
+        data.append(ends)
+        columns_lv2.append('End')
+        data.append(pos1s)
+        columns_lv2.append('POS')
+
+        allele_colnames = self.vafdf_allele_columns(n_allele)
+        for colname, sublist in zip(allele_colnames, alleles):
+            data.append(sublist)
+            columns_lv2.append(colname)
+
+        for sid in sampleids:
+            for allele_col, vaflist in zip(allele_colnames, vafs[sid]):
+                data.append(vaflist)
+                columns_lv2.append(f'{allele_col}_vaf')
+
+        columns = pd.MultiIndex.from_arrays(
+            [
+                np.concatenate([np.repeat(None, 4 + n_allele), np.repeat(sampleids, n_allele)]),
+                columns_lv2,
+            ],
+            names=[sampleid_index_name, None],
+        )
+
+        return pd.DataFrame(list(zip(*data)), columns=columns)
 
     def get_gr(self, vaf_sampleid=None):
         return self.get_df(vaf_sampleid=vaf_sampleid, as_gr=True)
@@ -1906,107 +2025,215 @@ class VariantPlusList(list):
             indexing.index_vcf(outfile_path)
 
 
-def vplist_get_df_subproc(vp, alt_index, vaf_sampleid, get_vaf_kwargs):
-    result = list()
-    result.extend(
-        (vp.chrom, vp.start0, vp.end0, vp.ref, vp.alts[alt_index])
-    )
-    if vaf_sampleid is not None:
-        result.extend(vp.get_vaf(vaf_sampleid, **get_vaf_kwargs))
-    return result
-
+#########################################
+# parallelized vaf dataframe generation #
+#########################################
 
 def get_vafdf(
     vcf_path, 
-    sampleid, 
+    sampleids, 
+    n_allele=2,
     nproc=1,
-    alt_index=0, 
-    get_vaf_kwargs=dict(),
-    vcf_iter_kwargs=dict(),
+    exclude_other=False,
+    prop=None,
+    vpfilter=None,
     verbose=True,
 ):
+    """Columns: MultiIndex with 2 levels
+        level 1: (name:                                              None |                                 sid1 |                                 sid2
+        level 2: Chromosome, Start, End, REF, [ALT1, [ALT2, ...]]   REF_vaf, [ALT1_vaf, [ALT2_vaf, ...]]   REF_vaf, [ALT1_vaf, [ALT2_vaf, ...]]
+    """
     # setup params
-    logger = (LOGGER_DEBUG if verbose else LOGGER_INFO)
-    with pysam.VariantFile(vcf_path) as vcf:
-        refver = refgenome.infer_refver_vcfheader(vcf.header)
+    refver = refgenome.infer_refver_vcfpath(vcf_path)
 
-    logger.info(f'Extracting vcf position information') 
+    if verbose:
+        logutils.log(f'Extracting vcf position information') 
+
     all_position_info = vcfmisc.get_vcf_positions(
         vcf_path, as_iter=False, verbose=False,
     )
     split_position_info = [
-        x for x in np.array_split(all_position_info, nproc) if x.shape[0] != 0
+        x for x in np.array_split(all_position_info, nproc) 
+        if x.shape[0] != 0
     ]
 
     # run multiprocess jobs
-    logger.info(f'Running parallel jobs') 
+    if verbose:
+        logutils.log(f'Running parallel jobs') 
+
     args = (
-        (position_info, refver, vcf_path, sampleid, alt_index, get_vaf_kwargs, vcf_iter_kwargs)
+        (
+            position_info, 
+            refver, 
+            vcf_path, 
+            sampleids, 
+            n_allele, 
+            exclude_other,
+            prop,
+            vpfilter,
+        )
         for position_info in split_position_info
     )
     with multiprocessing.Pool(nproc) as pool:
-        mp_result = pool.starmap(_get_vafdf_targetfunc, args)
-        logger.info(f'Concatenating split job dataframes') 
+        mp_result = pool.starmap(get_vafdf_targetfunc, args)
+        if verbose:
+            logutils.log(f'Concatenating split job dataframes') 
         result = pd.concat(itertools.chain.from_iterable(mp_result), axis=0)
 
     result.reset_index(drop=True, inplace=True)
-
     return result
 
 
-def _get_vafdf_targetfunc(
-    position_info, refver, vcf_path, sampleid, alt_index, get_vaf_kwargs, vcf_iter_kwargs,
+def get_vafdf_targetfunc(
+    position_info, 
+    refver, 
+    vcf_path, 
+    sampleids, 
+    n_allele, 
+    exclude_other,
+    prop,
+    vpfilter,
 ):
     fetchargs_list = vcfmisc.get_fetchargs_from_vcf_positions(position_info, refver)
     dflist = list()
     for fetchargs in fetchargs_list:
-        #LOGGER_INFO.info(f'Beginning job over {intv}')
         df = get_vafdf_nonparallel(
-            vcf_path, sampleid, 
+            vcf_path, 
+            sampleids, 
             chrom=fetchargs[0], start0=fetchargs[1], end0=fetchargs[2],
-            alt_index=alt_index, 
-            as_gr=False, 
-            get_vaf_kwargs=get_vaf_kwargs,
-            vcf_iter_kwargs=vcf_iter_kwargs,
-            logging_lineno=1000, 
-            verbose=False,
+            n_allele=n_allele,
+
+            exclude_other=exclude_other,
+            prop=prop,
+            vpfilter=vpfilter,
         )
         dflist.append(df)
 
     return dflist
 
 
+@deco.get_deco_atleast1d(['sampleids'])
 def get_vafdf_nonparallel(
-    vcf_path, sampleid, 
+    vcf_path, 
+    sampleids, 
     chrom=None, start0=None, end0=None,
-    alt_index=0, 
-    as_gr=False, 
-    get_vaf_kwargs=dict(),
-    vcf_iter_kwargs=dict(),
-    logging_lineno=1000, 
-    verbose=True,
+    n_allele=2, 
+    exclude_other=False,
+    prop=None,
+    vpfilter=None,
 ):
-    sampleid = list(np.atleast_1d(sampleid))
     vplist = VariantPlusList.from_vcf_lazy(
         vcf_path, 
-        logging_lineno=logging_lineno, 
-        verbose=verbose,
+        logging_lineno=None, 
+        verbose=False,
         init_all_attrs=False,
         vp_init_params=dict(
             init_readstats=True,
-            sampleid_list=sampleid,
+            sampleid_list=sampleids,
         ),
     )
-    vafdf = vplist.get_df(
+    vafdf = vplist.get_vafdf(
+        sampleids=sampleids,
         chrom=chrom, start0=start0, end0=end0,
-        alt_index=alt_index, 
-        vaf_sampleid=sampleid,
-        as_gr=as_gr,
+        n_allele=n_allele,
+        exclude_other=exclude_other,
         lazy=True,
-        get_vaf_kwargs=get_vaf_kwargs,
-        vcf_iter_kwargs=vcf_iter_kwargs,
+        prop=prop,
+        vpfilter=vpfilter,
     )
     return vafdf
+
+
+#def get_vafdf_old(
+#    vcf_path, 
+#    sampleid, 
+#    nproc=1,
+#    alt_index=0, 
+#    get_vaf_kwargs=dict(),
+#    vcf_iter_kwargs=dict(),
+#    verbose=True,
+#):
+#    # setup params
+#    with pysam.VariantFile(vcf_path) as vcf:
+#        refver = refgenome.infer_refver_vcfheader(vcf.header)
+#
+#    logutils.log(f'Extracting vcf position information') 
+#    all_position_info = vcfmisc.get_vcf_positions(
+#        vcf_path, as_iter=False, verbose=False,
+#    )
+#    split_position_info = [
+#        x for x in np.array_split(all_position_info, nproc) 
+#        if x.shape[0] != 0
+#    ]
+#
+#    # run multiprocess jobs
+#    logutils.log(f'Running parallel jobs') 
+#    args = (
+#        (position_info, refver, vcf_path, sampleid, alt_index, get_vaf_kwargs, vcf_iter_kwargs)
+#        for position_info in split_position_info
+#    )
+#    with multiprocessing.Pool(nproc) as pool:
+#        mp_result = pool.starmap(_get_vafdf_targetfunc_old, args)
+#        logutils.log(f'Concatenating split job dataframes') 
+#        result = pd.concat(itertools.chain.from_iterable(mp_result), axis=0)
+#
+#    result.reset_index(drop=True, inplace=True)
+#
+#    return result
+#
+#
+#def _get_vafdf_targetfunc_old(
+#    position_info, refver, vcf_path, sampleid, alt_index, get_vaf_kwargs, vcf_iter_kwargs,
+#):
+#    fetchargs_list = vcfmisc.get_fetchargs_from_vcf_positions(position_info, refver)
+#    dflist = list()
+#    for fetchargs in fetchargs_list:
+#        df = get_vafdf_nonparallel_old(
+#            vcf_path, sampleid, 
+#            chrom=fetchargs[0], start0=fetchargs[1], end0=fetchargs[2],
+#            alt_index=alt_index, 
+#            as_gr=False, 
+#            get_vaf_kwargs=get_vaf_kwargs,
+#            vcf_iter_kwargs=vcf_iter_kwargs,
+#            logging_lineno=1000, 
+#            verbose=False,
+#        )
+#        dflist.append(df)
+#
+#    return dflist
+#
+#
+#def get_vafdf_nonparallel_old(
+#    vcf_path, sampleid, 
+#    chrom=None, start0=None, end0=None,
+#    alt_index=0, 
+#    as_gr=False, 
+#    get_vaf_kwargs=dict(),
+#    vcf_iter_kwargs=dict(),
+#    logging_lineno=1000, 
+#    verbose=True,
+#):
+#    sampleid = list(np.atleast_1d(sampleid))
+#    vplist = VariantPlusList.from_vcf_lazy(
+#        vcf_path, 
+#        logging_lineno=logging_lineno, 
+#        verbose=verbose,
+#        init_all_attrs=False,
+#        vp_init_params=dict(
+#            init_readstats=True,
+#            sampleid_list=sampleid,
+#        ),
+#    )
+#    vafdf = vplist.get_df(
+#        chrom=chrom, start0=start0, end0=end0,
+#        alt_index=alt_index, 
+#        vaf_sampleid=sampleid,
+#        as_gr=as_gr,
+#        lazy=True,
+#        get_vaf_kwargs=get_vaf_kwargs,
+#        vcf_iter_kwargs=vcf_iter_kwargs,
+#    )
+#    return vafdf
 
 
 # not used

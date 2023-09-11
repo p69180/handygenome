@@ -1,6 +1,6 @@
 import pysam
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 from handygenome.variant.vcfspec import Vcfspec
 import handygenome.variant.vcfspec as libvcfspec
 import handygenome.vcfeditor.initvcf as initvcf
@@ -174,7 +174,7 @@ def modify_varscan_vcf(
 
     # set params
     if fasta is None:
-        fasta = refgenome.get_default_fasta(refver)
+        fasta = refgenome.get_fasta(refver)
     chromdict = refgenome.ChromDict.from_fasta(fasta)
 
     output_header = initvcf.create_header(chromdict=chromdict)

@@ -5,7 +5,7 @@ import functools
 
 import Bio.Seq
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.tools as tools
 import handygenome.workflow as workflow
 import handygenome.sv.structvars as structvars

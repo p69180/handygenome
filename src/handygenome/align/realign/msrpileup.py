@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pyranges as pr
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.workflow as workflow
 import handygenome.variant.vcfspec as libvcfspec
 import handygenome.read.pileup as libpileup
@@ -234,7 +234,7 @@ class MultisampleRealignerPileup(realign_base.RealignerPileupBase):
             rpplist_dict[sampleid] = readplus.get_rpplist_nonsv(
                 bam=pileup.bam, 
                 fasta=self.fasta, 
-                chromdict=refgenome.get_default_chromdict(self.refver),
+                chromdict=refgenome.get_chromdict(self.refver),
                 chrom=self.chrom,
                 start0=merged_ref_range0.start,
                 end0=merged_ref_range0.stop,
@@ -315,7 +315,7 @@ class MultisampleRealignerPileup(realign_base.RealignerPileupBase):
             rpplist_dict[sampleid] = readplus.get_rpplist_nonsv(
                 bam=pileup.bam, 
                 fasta=self.fasta, 
-                chromdict=refgenome.get_default_chromdict(self.refver),
+                chromdict=refgenome.get_chromdict(self.refver),
                 chrom=self.chrom,
                 start0=merged_ref_range0.start,
                 end0=merged_ref_range0.stop,

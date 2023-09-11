@@ -1,0 +1,107 @@
+import os
+import gzip
+import multiprocessing
+#import shutil
+
+import pysam
+import Bio.SeqIO
+
+import handygenome.tools as tools
+
+
+def make_index(fasta_path):
+    """If input file is bgzipped, *.fai and *.gzi files are created."""
+    #fai_path = fasta_path + '.fai'
+    #if not os.path.exists(fai_path):
+    _ = pysam.faidx(fasta_path)
+
+
+def chrom_converter_handler(chrom_converter):
+    if isinstance(chrom_converter, dict):
+        def converter(x):
+            if x in chrom_converter:
+                return chrom_converter[x]
+            else:
+                return None
+        return converter
+    elif callable(chrom_converter):
+        return chrom_converter
+    else:
+        raise Exception(f'Invalid input type')
+
+
+def rename_fasta(infile_path, outfile_path, chrom_converter):
+    chrom_converter = chrom_converter_handler(chrom_converter)
+
+    with (
+        tools.openfile(infile_path, 'rt') as infile,
+        open(outfile_path, 'wt') as outfile,
+    ):
+        def record_iter():
+            for record in Bio.SeqIO.parse(infile, 'fasta'):
+                new_id = chrom_converter(record.id)
+                if new_id is None:
+                    continue
+
+                record.id = new_id
+                record.name = None
+                record.description = ''
+                yield record
+
+        Bio.SeqIO.write(record_iter(), outfile, 'fasta')
+
+
+def rename_fasta_compress(infile_path, outfile_path, chrom_converter, index=True):
+    """Not to be used since fetching from bgzipped fasta is much slower than
+    from plain text fasta. (1.68 ms vs 20.5 ms)
+    """
+    # make target functions
+    def pipe_out(pipe_path, outfile_path, index):
+        """Read from fifo, bgzip-compress, and write to final output file"""
+        pysam.tabix_compress(pipe_path, outfile_path, force=True)
+        if index:
+            make_index(outfile_path)
+
+    # make fifo
+    pipe_path = tools.get_tmpfile_path(prefix=f'{infile_path}_', suffix=f'.fifo', delete=True)
+    os.mkfifo(pipe_path)
+
+    # run
+    subp1 = multiprocessing.Process(
+        target=rename_fasta_nocompress, 
+        args=(infile_path, pipe_path, chrom_converter),
+    )
+    subp2 = multiprocessing.Process(
+        target=pipe_out, 
+        args=(pipe_path, outfile_path, index),
+    )
+    subp1.start()
+    subp2.start()
+    subp1.join()
+    subp2.join()
+
+    # remove fifo
+    os.remove(pipe_path)
+
+    # raise if erroneous
+    if (subp1.exitcode != 0) or (subp2.exitcode != 0):
+        raise Exception(f'Finished with an error.')
+
+
+def postprocess_fasta(infile_path, outfile_path, chrom_converter=None):
+    """Entry point for other modules"""
+
+    if chrom_converter is None:
+        if tools.check_textfile(infile_path):
+            #shutil.copyfile(infile_path, outfile_path)
+            os.symlink(infile_path, outfile_path)
+        elif tools.check_gzipped(infile_path):
+            tools.unzip(infile_path, outfile_path, rm_src=False)
+        else:
+            raise Exception(f'Input file is neither plain text nor gzipped.')
+    else:
+        rename_fasta(infile_path, outfile_path, chrom_converter)
+        
+    make_index(outfile_path)
+
+

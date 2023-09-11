@@ -1,0 +1,54 @@
+import os
+import collections
+import functools
+
+import handygenome.refgenome as refgenome
+
+
+MALE_HAPLOID_CHROMS = ('X', 'Y', 'chrX', 'chrY')
+DEFAULT_CNT_WEIGHT = 5
+
+
+class CCFInfo(
+    collections.namedtuple('CCFInfo', ('CNm', 'ccf', 'mutated_allele'))
+):
+    pass
+
+
+class CPPair(
+    collections.namedtuple('CPPair', ('cellularity', 'ploidy'))
+):
+    pass
+
+
+@functools.cache
+def get_default_CNn(refver, is_female):
+    """Only accepts PAR-available reference versions"""
+    chromdict = refgenome.get_chromdict(refver)
+    autosomal_chroms = [
+        x for x in chromdict.contigs 
+        if (
+            (refgenome.PAT_ASSEMBLED_CHROM.fullmatch(x) is not None)
+            and (x not in MALE_HAPLOID_CHROMS)
+        )
+    ]  # 1, 2, ...,
+    X_chrom, Y_chrom = chromdict.XY_names
+    par_gr = refgenome.get_par_gr(refver)
+
+    # autosomal
+    all_chrom_gr = chromdict.to_gr()
+    autosomal_gr = all_chrom_gr[all_chrom_gr.Chromosome.isin(autosomal_chroms)]
+    autosomal_gr.CNn = 2
+    # sex
+    if is_female:
+        sex_gr = all_chrom_gr[all_chrom_gr.Chromosome.isin([X_chrom, Y_chrom])]
+        sex_gr.CNn = 2
+    else:
+        all_sex_gr = all_chrom_gr[all_chrom_gr.Chromosome.isin([X_chrom, Y_chrom])]
+        nonpar_sex_gr = all_sex_gr.subtract(par_gr)
+        nonpar_sex_gr.CNn = 1
+        par_sex_gr = par_gr.copy()
+        par_sex_gr.CNn = [(2 if x == X_chrom else 0) for x in par_sex_gr.Chromosome]
+        sex_gr = pr.concat([nonpar_sex_gr, par_sex_gr]).sort()
+    # result
+    return pr.concat([autosomal_gr, sex_gr]).sort()

@@ -4,7 +4,7 @@ import gzip
 import pysam
 import numpy as np
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.interval as libinterval
 
 
@@ -140,7 +140,7 @@ def get_fetchargs_from_vcf_positions(vcf_positions, refver):
     chrom_right = vcf_positions[-1]['Chromosome']
     end0_right = vcf_positions[-1]['Start'] + 1  
         # only the 1-base position indicated by POS value is used
-    chromdict = refgenome.get_default_chromdict(refver)
+    chromdict = refgenome.get_chromdict(refver)
 
     intvlist = libinterval.IntervalList.from_margin(
         chromdict, chrom_left, start0_left, chrom_right, end0_right,
@@ -179,7 +179,7 @@ def get_vr_fetcher(vcf, refver, chrom=None, start0=None, end0=None, respect_refr
         if start0 is None:
             start0 = 0
         if end0 is None:
-            end0 = refgenome.get_default_chromdict(refver)[chrom]
+            end0 = refgenome.get_chromdict(refver)[chrom]
         
         fetcher = vcf.fetch(contig=chrom, start=start0, stop=end0)
 

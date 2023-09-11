@@ -4,7 +4,7 @@ import gzip
 import pysam
 
 import handygenome.tools as tools
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.workflow as workflow
 import handygenome.workflow.toolsetup as toolsetup
 import handygenome.vcfeditor.indexing as indexing

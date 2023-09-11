@@ -8,7 +8,7 @@ import shutil
 
 import pysam
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.tools as tools
 import handygenome.logutils as logutils
 import handygenome.tools as tools

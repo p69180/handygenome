@@ -3,7 +3,7 @@ import os
 import pysam
 
 import handygenome
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 
 
 def get_dbsnp_path(refver):

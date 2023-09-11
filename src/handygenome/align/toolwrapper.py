@@ -9,7 +9,7 @@ import pysam
 
 import handygenome
 import handygenome.network as network
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 
 
 BLAT_URL = 'https://genome.ucsc.edu/cgi-bin/hgBlat'
@@ -17,7 +17,7 @@ BWA = os.path.join(handygenome.DIRS['externals'], 'bwa')
 
 
 def run_bwa(seqlist, refver, namelist=None):
-    ref_path = refgenome.get_default_fasta_path(refver)
+    ref_path = refgenome.get_fasta_path(refver)
     if namelist is None:
         seqrec_list = [Bio.SeqRecord.SeqRecord(seq=Bio.Seq.Seq(seq), id='query')
                        for seq in seqlist]

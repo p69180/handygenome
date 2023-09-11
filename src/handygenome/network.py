@@ -31,17 +31,17 @@ def retry_or_raise(n_try, retry_count, exc, retry_interval, msg_prefix=''):
         retry_count_string = (
             'inf' if retry_count is None else str(retry_count)
         )
-        logutils.print_timestamp(
-            f'{msg_prefix}Retrying due to failure (Exception: {exc}); '
-            f'n_try={n_try}/{retry_count_string}'
+        logutils.log(
+            f'{msg_prefix}Retrying due to failure (Exception: {exc}); n_try={n_try}/{retry_count_string}',
+            level='info',
         )
 #        if isinstance(exc, TimeoutError):
-#            logutils.print_timestamp(
+#            logutils.log(
 #                f'{msg_prefix}Retrying due to TimeoutError (Exception: {exc}); '
 #                f'n_try={n_try}/{retry_count_string}'
 #            )
 #        else:
-#            logutils.print_timestamp(
+#            logutils.log(
 #                f'{msg_prefix}Retrying due to non-TimeoutError (Exception: {exc}); '
 #                f'n_try={n_try}/{retry_count_string}'
 #            )
@@ -88,8 +88,18 @@ def ftp_login(url, retry_count=10, retry_interval=1, timeout=5):
     return ftp
 
 
-def ftp_nlst(authority, path, retry_count=10, retry_interval=1, timeout=5):
+
+def ftp_nlst(
+    authority, path, 
+    retry_count=10, retry_interval=1, timeout=5, verbose=False,
+):
     retry_msg_pf = 'ftp nlst: '
+
+    if verbose:
+        logutils.log(
+            f'Performing ftp nlst (authority={repr(authority)}, path={repr(path)})',
+            level='debug',
+        )
 
     n_try = 0
     while True:
@@ -150,7 +160,7 @@ def http_run_urlopen(url_or_req, retry_count=10, retry_interval=1, urlopen_timeo
         if isinstance(url_or_req, str) else
         url_or_req.full_url
     )
-    logutils.print_timestamp(f'Trying to open url {repr(url_string)}')
+    logutils.log(f'Trying to open url {repr(url_string)}', level='info')
 
     n_try = 0
     while True:
@@ -178,7 +188,7 @@ def http_run_urlopen(url_or_req, retry_count=10, retry_interval=1, urlopen_timeo
         else:
             break
 
-    logutils.print_timestamp(f'Succeeded to open url {repr(url_string)}')
+    logutils.log(f'Succeeded to open url {repr(url_string)}', level='info')
 
     return response
 
@@ -228,6 +238,7 @@ def http_send_request(req, text, retry_count=10, retry_interval=1, urlopen_timeo
 
 
 def download(url, path, retry_count=10, retry_interval=1, urlopen_timeout=5):
+    logutils.log(f'Beginning download: url={repr(url)}, path={repr(path)}', level='info')
     while True:
         try:
             with http_run_urlopen(
@@ -239,11 +250,13 @@ def download(url, path, retry_count=10, retry_interval=1, urlopen_timeout=5):
                 with open(path, 'wb') as outfile:
                     shutil.copyfileobj(response, outfile)
         except TimeoutError as exc:
-            logutils.print_timestamp(f'Retrying due to TimeoutError (Exception: {exc})')
+            logutils.log(f'Retrying due to TimeoutError (Exception: {exc})', level='info')
             continue
         else:
             break
+    logutils.log(f'Finished download: url={repr(url)}, path={repr(path)}', level='info')
 
 
 def download_wget(url, path):
     subprocess.run(['wget', '-O', path, url])
+

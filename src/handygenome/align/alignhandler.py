@@ -5,7 +5,7 @@ import itertools
 import Bio.Align
 import numpy as np
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.tools as tools
 import handygenome.variant.vcfspec as libvcfspec
 

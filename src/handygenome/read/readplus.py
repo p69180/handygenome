@@ -8,7 +8,7 @@ import numpy as np
 import pysam
 
 import handygenome.tools as tools
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.interval as libinterval
 import handygenome.workflow as workflow
 import handygenome.read.readhandler as readhandler
@@ -62,7 +62,7 @@ class ReadPlus:
             self.fasta = fasta
         else:
             if fasta is None:
-                self.fasta = refgenome.get_default_fasta(
+                self.fasta = refgenome.get_fasta(
                     refgenome.infer_refver_bamheader(self.read.header)
                 )
             else:
@@ -1094,7 +1094,7 @@ class ReadPlusPairList(list):
     ):
         refver = refgenome.infer_refver_bamheader(bam.header)
         if (fasta is None) or (chromdict is None):
-            fasta = refgenome.get_default_fasta(refver)
+            fasta = refgenome.get_fasta(refver)
             chromdict = refgenome.ChromDict.from_refver(refver)
 
         LOGGER_RPPLIST.info('Beginning initial fetch')
@@ -1313,7 +1313,7 @@ def get_rpplist_nonsv(
     # get params
     refver = refgenome.infer_refver_bamheader(bam.header)
     if (fasta is None) or (chromdict is None):
-        fasta = refgenome.get_default_fasta(refver)
+        fasta = refgenome.get_fasta(refver)
         chromdict = refgenome.ChromDict.from_refver(refver)
 
     LOGGER_RPPLIST.info('Beginning initial fetch')

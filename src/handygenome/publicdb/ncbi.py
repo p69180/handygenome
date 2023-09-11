@@ -1,10 +1,13 @@
+import sys
 import os
 import re
 import contextlib
-import pickle
 import tempfile
+import importlib.resources
+import json
 
 import pysam
+import pandas as pd
 
 import handygenome
 import handygenome.tools as tools
@@ -21,6 +24,7 @@ REFSEQ_ACC_PATSTR = r'(?P<refseq_acc>(?P<refseq_acc_prefix>[^_]+)_(?P<refseq_acc
 REFVER_PATSTR = r'(?P<refver>(?P<refver_main>[^.]+)(\.(?P<refver_sub>[^.]+))?)'
 GENOME_DIR_PAT = re.compile(REFSEQ_ACC_PATSTR + '_' + REFVER_PATSTR)
 
+
 #SPECIES_PARDIR_MAP = {
 #    'Homo_sapiens': 'vertebrate_mammalian',
 #    'Mus_musculus': 'vertebrate_mammalian',
@@ -32,14 +36,66 @@ class UnavailableSpeciesError(Exception):
     pass
 
 
+class UnavailableRefverError(Exception):
+    pass
+
+
 #################################
 # RefSeq ftp genome directories #
 #################################
 
-class RefseqPaths:
-    species_toppaths_pickle = os.path.join(
-        handygenome.DIRS['data'], 'refseq_genome_toppaths.pickle',
+class RefseqGenomePaths:
+    """Data structure:
+        :species_toppaths: dict(species superset(e.g. vertebrate_mammalian) -> dict(species -> path))
+        :refver_toppaths: dict(species -> dict(refver -> dict(accesion -> path)))
+        :latest_refver_toppaths: dict(species -> dict(refver -> path))
+        :refver_details: dict(refver -> dict(file type(e.g. assembly_report, fasta) -> file path))
+
+    Data update methods
+    * get_species_toppath (main updater)
+    """
+
+    # cache managers
+    cache_path = os.path.join(
+        handygenome.DATA_DIR, 
+        'refseq_genome_toppaths.json',
     )
+
+    def remove_cache(self):
+        os.remove(self.__class__.cache_path)
+
+    def load_cache(self):
+        #with open(self.__class__.cache_path, 'rt') as f:
+        #    self.species_toppaths = json.load(f)
+        with open(self.__class__.cache_path, 'rt') as f:
+            cacheobj = json.load(f)
+
+        self.species_toppaths = cacheobj['species_toppaths']
+        self.refver_toppaths = cacheobj['refver_toppaths']
+        self.latest_refver_toppaths = cacheobj['latest_refver_toppaths']
+        self.refver_details = cacheobj['refver_details']
+
+    def save_cache(self):
+        cacheobj = dict()
+        cacheobj['species_toppaths'] = self.species_toppaths
+        cacheobj['refver_toppaths'] = self.refver_toppaths
+        cacheobj['latest_refver_toppaths'] = self.latest_refver_toppaths
+        cacheobj['refver_details'] = self.refver_details
+
+        with open(self.__class__.cache_path, 'wt') as f:
+            json.dump(cacheobj, f)
+
+    def init_path_dicts(self):
+        if os.path.exists(self.__class__.cache_path):
+            self.load_cache()
+        else:
+            self.species_toppaths = dict()
+            self.refver_toppaths = dict()
+            self.latest_refver_toppaths = dict()
+            self.refver_details = dict()
+
+    ####
+
     all_genome_supersets = [
         #'assembly_summary_refseq.txt',
         #'assembly_summary_refseq_historical.txt',
@@ -59,35 +115,18 @@ class RefseqPaths:
         #'metagenomes',
     ]
 
-    def __init__(self):
-        self.initialize(force_update=False)
+    def __init__(self, force_update=False):
+        self.initialize(force_update=force_update)
 
-    def remove_species_toppaths_pickle(self):
-        os.remove(self.__class__.species_toppaths_pickle)
+    def __del__(self):
+        self.save_cache()
 
     def initialize(self, force_update=False):
         if force_update:
-            self.remove_species_toppaths_pickle()
-        self.init_species_toppaths()
-        self.refver_toppaths = dict()
-        self.latest_refver_toppaths = dict()
-        self.refver_details = dict()
-
-    def init_species_toppaths(self):
-        if os.path.exists(self.__class__.species_toppaths_pickle):
-            self.load_species_toppaths_pickle()
-        else:
-            self.species_toppaths = dict()
+            self.remove_cache()
+        self.init_path_dicts()
 
     #####
-
-    def load_species_toppaths_pickle(self):
-        with open(self.__class__.species_toppaths_pickle, 'rb') as f:
-            self.species_toppaths = pickle.load(f)
-
-    def save_species_toppaths_pickle(self):
-        with open(self.__class__.species_toppaths_pickle, 'wb') as f:
-            pickle.dump(self.species_toppaths, f)
 
     def search_for_species_toppath(self, query_species):
         for superset, subdic in self.species_toppaths.items():
@@ -99,9 +138,9 @@ class RefseqPaths:
     def get_species_toppath(self, species):
         toppath = self.search_for_species_toppath(species)
         if toppath is None:  # now query species is not in the data
-            for superset in self.__class__.all_genome_supersets:
+            for species_superset in self.__class__.all_genome_supersets:
                 success = self.set_species_toppaths(
-                    species_superset=superset,
+                    species_superset=species_superset,
                     retry_count=None, 
                     retry_interval=5, 
                     timeout=180,  # set a large value for "bacteria"
@@ -132,6 +171,7 @@ class RefseqPaths:
                     retry_count=retry_count, 
                     retry_interval=retry_interval, 
                     timeout=timeout,
+                    verbose=True,
                 )
             except network.MaxRetryError as exc:
                 logutils.print_timestamp(
@@ -145,8 +185,7 @@ class RefseqPaths:
                     species = species_path.split('/')[-1]
                     self.species_toppaths[species_superset][species] = species_path
                 success = True
-                # save updated dict to pickle file
-                self.save_species_toppaths_pickle()
+                self.save_cache()
 
         return success
 
@@ -164,19 +203,20 @@ class RefseqPaths:
             retry_count=retry_count, 
             retry_interval=retry_interval, 
             timeout=timeout,
+            verbose=True,
         )
 
-        data = dict()
+        self.refver_toppaths[species] = dict()
         for path in fname_list:
             mat = GENOME_DIR_PAT.fullmatch(os.path.basename(path))
             if mat is None:
                 continue
             refver = mat.group('refver_main')
             acc_ver = int(mat.group('refseq_acc_version'))
-            data.setdefault(refver, dict())
-            data[refver][acc_ver] = path
+            self.refver_toppaths[species].setdefault(refver, dict())
+            self.refver_toppaths[species][refver][acc_ver] = path
 
-        self.refver_toppaths[species] = data
+        self.save_cache()
 
     def set_latest_refver_toppaths(
         self, species,
@@ -189,10 +229,11 @@ class RefseqPaths:
             timeout=timeout,
         )
 
-        data = dict() 
+        self.latest_refver_toppaths[species] = dict() 
         for refver, subdic in self.refver_toppaths[species].items():
-            data[refver] = max(subdic.items(), key=lambda x: x[0])[1]
-        self.latest_refver_toppaths[species] = data
+            self.latest_refver_toppaths[species][refver] = max(subdic.items(), key=lambda x: x[0])[1]
+
+        self.save_cache()
 
     def get_refver_toppath(
         self, refver, species,
@@ -242,9 +283,12 @@ class RefseqPaths:
             retry_count=retry_count, 
             retry_interval=retry_interval, 
             timeout=timeout,
+            verbose=True,
         ):
             if path.endswith('assembly_report.txt'):
                 data['assembly_report'] = path
+            elif path.endswith('assembly_regions.txt'):
+                data['assembly_regions'] = path
             elif (
                 path.endswith('genomic.fna.gz')
                 and (not path.endswith('rna_from_genomic.fna.gz'))
@@ -258,6 +302,8 @@ class RefseqPaths:
                 data['repeatmasker'] = path
 
         self.refver_details[refver] = data
+
+        self.save_cache()
 
     def get_refver_details(
         self, refver, species,
@@ -288,6 +334,9 @@ class RefseqPaths:
     def get_assembly_report_url(self, refver, species, force_update=False):
         return self.get_url(refver, species, 'assembly_report', force_update)
 
+    def get_assembly_regions_url(self, refver, species, force_update=False):
+        return self.get_url(refver, species, 'assembly_regions', force_update)
+
     def get_gff_url(self, refver, species, force_update=False):
         return self.get_url(refver, species, 'gff', force_update)
 
@@ -310,146 +359,201 @@ class RefseqPaths:
         self, species,
         retry_count=None, retry_interval=5, timeout=60,
     ):
-        refver_toppaths = self.get_latest_refver_toppaths(
+        refver_toppaths_for_species = self.get_latest_refver_toppaths(
             species,
             retry_count=retry_count, 
             retry_interval=retry_interval, 
             timeout=timeout,
         )
-        return tuple(refver_toppaths.keys())
+        return tuple(refver_toppaths_for_species.keys())
+
+    # find species from a RefSeq refver
+    def find_species_without_update(self, RefSeq_refver):
+        for species, subdic in self.latest_refver_toppaths.items():
+            if RefSeq_refver in subdic.keys():
+                return species
+        return None
+
+    def find_species(self, RefSeq_refver):
+        species = self.find_species_without_update(RefSeq_refver)
+        if species is None:
+            for species_superset in self.__class__.all_genome_supersets:
+                success = self.set_species_toppaths(
+                    species_superset=species_superset,
+                    retry_count=None, 
+                    retry_interval=5, 
+                    timeout=180,  # set a large value for "bacteria"
+                )
+                species = self.find_species_without_update(RefSeq_refver)
+                if species is None:
+                    continue
+                else:
+                    break
+
+        if species is None:
+            raise UnavailableRefverError(f'Reference version "{RefSeq_refver}" could not be found from the list of RefSeq genomes')
+
+        return species
 
 
-REFSEQPATHS = RefseqPaths()
+def reset_genome_paths(force_update=False):
+    setattr(sys.modules[__name__], 'GENOME_PATHS', RefseqGenomePaths(force_update=force_update))
+
+reset_genome_paths()
+#GENOME_PATHS = RefseqGenomePaths()
+
+
+
+################################
+# assembly_regions file parser #
+################################
+
+def parse_assembly_regions(filepath):
+    # get column names and the number of rows to skip
+    skiprows = 0
+    with open(filepath) as infile:
+        for line in infile:
+            skiprows += 1
+            if line.startswith('# Region-Name'):
+                columns = re.sub('^#\s*', '', line).strip().split() 
+                break
+
+    # parse the rest with pandas
+    result = pd.read_csv(
+        filepath, sep='\s+', names=columns, header=None, skiprows=skiprows,
+        dtype={'Chromosome-Start': int, 'Chromosome-Stop': int},
+    )
+    return result
 
 
 # convenience functions
 
 #def get_fasta_url(refver, species, force_update=False):
-#    return REFSEQPATHS.get_fasta_url(refver, species, force_update)
+#    return GENOME_PATHS.get_fasta_url(refver, species, force_update)
 #
 #
 #def get_assembly_report_url(refver, species, force_update=False):
-#    return REFSEQPATHS.get_assembly_report_url(refver, species, force_update)
+#    return GENOME_PATHS.get_assembly_report_url(refver, species, force_update)
 #
 #
 #def get_gff_url(refver, species, force_update=False):
-#    return REFSEQPATHS.get_gff_url(refver, species, force_update)
+#    return GENOME_PATHS.get_gff_url(refver, species, force_update)
 
 
 ########################################
 # RefSeq file downloaders and fetchers #
 ########################################
 
-def refseqfile_cacher_base(
-    topdir, standard_refver, species, path_basename, force_download, get_url_key,
-    download_msg=None,
-):
-    species_subdir = os.path.join(topdir, species)
-    os.makedirs(species_subdir, exist_ok=True)
-    filepath = os.path.join(species_subdir, path_basename)
-
-    if (not os.path.exists(filepath)) or force_download:
-        did_download = True
-        if download_msg is None:
-            download_msg = (
-                f'Downloading {get_url_key} file for reference version "{standard_refver}"'
-            )
-        logutils.print_timestamp(download_msg)
-
-        url = REFSEQPATHS.get_url(
-            refver=standard_refver, 
-            species=species, 
-            key=get_url_key, 
-            force_update=False,
-        )
-        network.download(url, filepath)
-    else:
-        did_download = False
-
-    return filepath, did_download
-
-
-# fasta
-
-FASTAFILE_DIR = os.path.join(handygenome.DIRS['data'], 'refseq_fasta')
-os.makedirs(FASTAFILE_DIR, exist_ok=True)
-
-def get_unedited_fasta_path(standard_refver, species, force_download=False):
-    filepath, did_download = refseqfile_cacher_base(
-        topdir=FASTAFILE_DIR, 
-        standard_refver=standard_refver, 
-        species=species, 
-        path_basename=f'{standard_refver}.unedited.fna.gz', 
-        force_download=force_download, 
-        get_url_key='fasta',
-    )
-
-    return filepath
-
-
-def get_edited_fasta_path(standard_refver, species, force_download=False):
-    edited_fasta_path = os.path.join(FASTAFILE_DIR, f'{standard_refver}.edited.fasta.gz')
-    if not os.path.exists(edited_fasta_path):
-        unedited_fasta_path = get_unedited_fasta_path(
-            standard_refver, species, force_download=force_download,
-        )
-        from handygenome.publicdb.ncbi_postprocess import postprocess_fasta
-        postprocess_fasta(unedited_fasta_path, edited_fasta_path)
-    return edited_fasta_path
-
-
-# assemblyspec
-
-ASSEMBLYFILE_DIR = os.path.join(handygenome.DIRS['data'], 'assembly_reports')
-os.makedirs(ASSEMBLYFILE_DIR, exist_ok=True)
-
-def get_assemblyfile_path(standard_refver, species, force_download=False):
-    filepath, did_download = refseqfile_cacher_base(
-        topdir=ASSEMBLYFILE_DIR, 
-        standard_refver=standard_refver, 
-        species=species, 
-        path_basename=f'{standard_refver}.txt', 
-        force_download=force_download, 
-        get_url_key='assembly_report',
-    )
-
-    return filepath
-
-
-# repeatmasker
-
-REPEATMASKER_DIR = os.path.join(handygenome.DIRS['data'], 'refseq_repeatmasker')
-os.makedirs(REPEATMASKER_DIR, exist_ok=True)
-
-def get_repeatmasker_path(standard_refver, species, force_download=False):
-    filepath, did_download = refseqfile_cacher_base(
-        topdir=REPEATMASKER_DIR, 
-        standard_refver=standard_refver, 
-        species=species, 
-        path_basename=f'{standard_refver}.rm.out.gz', 
-        force_download=force_download, 
-        get_url_key='repeatmasker',
-    )
-
-    return filepath
-
-
-# geneset
-
-GENESET_DIR = os.path.join(handygenome.DIRS['data'], 'refseq_geneset')
-os.makedirs(GENESET_DIR, exist_ok=True)
-
-def get_geneset_path(standard_refver, species, force_download=False):
-    filepath, did_download = refseqfile_cacher_base(
-        topdir=GENESET_DIR, 
-        standard_refver=standard_refver, 
-        species=species, 
-        path_basename=f'{standard_refver}.unedited.gff.gz', 
-        force_download=force_download, 
-        get_url_key='gff',
-    )
-
-    return filepath
+#def refseqfile_cacher_base(
+#    topdir, standard_refver, species, path_basename, force_download, get_url_key,
+#    download_msg=None,
+#):
+#    species_subdir = os.path.join(topdir, species)
+#    os.makedirs(species_subdir, exist_ok=True)
+#    filepath = os.path.join(species_subdir, path_basename)
+#
+#    if (not os.path.exists(filepath)) or force_download:
+#        did_download = True
+#        if download_msg is None:
+#            download_msg = (
+#                f'Downloading {get_url_key} file for reference version "{standard_refver}"'
+#            )
+#        logutils.print_timestamp(download_msg)
+#
+#        url = GENOME_PATHS.get_url(
+#            refver=standard_refver, 
+#            species=species, 
+#            key=get_url_key, 
+#            force_update=False,
+#        )
+#        network.download(url, filepath)
+#    else:
+#        did_download = False
+#
+#    return filepath, did_download
+#
+#
+## fasta
+#
+#FASTAFILE_DIR = os.path.join(handygenome.DATADIR, 'refseq_fasta')
+#os.makedirs(FASTAFILE_DIR, exist_ok=True)
+#
+#def get_unedited_fasta_path(standard_refver, species, force_download=False):
+#    filepath, did_download = refseqfile_cacher_base(
+#        topdir=FASTAFILE_DIR, 
+#        standard_refver=standard_refver, 
+#        species=species, 
+#        path_basename=f'{standard_refver}.unedited.fna.gz', 
+#        force_download=force_download, 
+#        get_url_key='fasta',
+#    )
+#
+#    return filepath
+#
+#
+#def get_edited_fasta_path(standard_refver, species, force_download=False):
+#    edited_fasta_path = os.path.join(FASTAFILE_DIR, f'{standard_refver}.edited.fasta.gz')
+#    if not os.path.exists(edited_fasta_path):
+#        unedited_fasta_path = get_unedited_fasta_path(
+#            standard_refver, species, force_download=force_download,
+#        )
+#        from handygenome.publicdb.ncbi_postprocess import postprocess_fasta
+#        postprocess_fasta(unedited_fasta_path, edited_fasta_path)
+#    return edited_fasta_path
+#
+#
+## assemblyspec
+#
+#ASSEMBLYFILE_DIR = os.path.join(handygenome.DATADIR, 'assembly_reports')
+#os.makedirs(ASSEMBLYFILE_DIR, exist_ok=True)
+#
+#def get_assemblyfile_path(standard_refver, species, force_download=False):
+#    filepath, did_download = refseqfile_cacher_base(
+#        topdir=ASSEMBLYFILE_DIR, 
+#        standard_refver=standard_refver, 
+#        species=species, 
+#        path_basename=f'{standard_refver}.txt', 
+#        force_download=force_download, 
+#        get_url_key='assembly_report',
+#    )
+#
+#    return filepath
+#
+#
+## repeatmasker
+#
+#REPEATMASKER_DIR = os.path.join(handygenome.DATADIR, 'refseq_repeatmasker')
+#os.makedirs(REPEATMASKER_DIR, exist_ok=True)
+#
+#def get_repeatmasker_path(standard_refver, species, force_download=False):
+#    filepath, did_download = refseqfile_cacher_base(
+#        topdir=REPEATMASKER_DIR, 
+#        standard_refver=standard_refver, 
+#        species=species, 
+#        path_basename=f'{standard_refver}.rm.out.gz', 
+#        force_download=force_download, 
+#        get_url_key='repeatmasker',
+#    )
+#
+#    return filepath
+#
+#
+## geneset
+#
+#GENESET_DIR = os.path.join(handygenome.DATADIR, 'refseq_geneset')
+#os.makedirs(GENESET_DIR, exist_ok=True)
+#
+#def get_geneset_path(standard_refver, species, force_download=False):
+#    filepath, did_download = refseqfile_cacher_base(
+#        topdir=GENESET_DIR, 
+#        standard_refver=standard_refver, 
+#        species=species, 
+#        path_basename=f'{standard_refver}.unedited.gff.gz', 
+#        force_download=force_download, 
+#        get_url_key='gff',
+#    )
+#
+#    return filepath
 
 
 
@@ -565,6 +669,10 @@ def get_geneset_path(standard_refver, species, force_download=False):
 #    ftp.quit()
 #
 #    return assemblyfile_urls
+
+
+class RefseqDbsnpPaths:
+    pass
 
 
 def get_dbsnp_urls(retry_count=10, retry_interval=1, timeout=5):

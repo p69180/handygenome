@@ -4,7 +4,7 @@ import pysam
 import Bio.Seq
 
 import handygenome
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.annotation.ensembl_rest as ensembl_rest
 import handygenome.annotation.ensembl_parser as ensembl_parser
 import handygenome.variant.vcfspec as libvcfspec
@@ -187,7 +187,7 @@ def hgvsg_to_vcfspec(hgvsg, fasta, leftmost=True):
 #def hgvsg_to_vcfspec_refver(hgvsg, refver):
 #    assert refver in ('hg19', 'hg38')
 #
-#    return hgvsg_to_vcfspec_fastapath(hgvsg, refgenome.get_default_fasta_path(refver))
+#    return hgvsg_to_vcfspec_fastapath(hgvsg, refgenome.get_fasta_path(refver))
 #
 #
 #def hgvsg_to_vcfspec_fastapath(hgvsg, fasta_path):

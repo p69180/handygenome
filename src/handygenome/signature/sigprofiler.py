@@ -13,7 +13,7 @@ import pysam
 from handygenome.sigprofiler_clone.SigProfilerAssignment.single_sample import add_remove_signatures
 from handygenome.sigprofiler_clone.SigProfilerMatrixGenerator.scripts.SigProfilerMatrixGeneratorFunc import SigProfilerMatrixGeneratorFunc
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.variant.varianthandler as varianthandler
 import handygenome.vcfeditor.initvcf as initvcf
 import handygenome.signature.misc as signature_misc

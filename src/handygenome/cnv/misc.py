@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import pyranges as pr
 import matplotlib.pyplot as plt
-import seaborn as sns
+#import seaborn as sns
 import scipy
 import scipy.linalg
 #from scipy.stats.mstats import winsorize
@@ -26,7 +26,7 @@ import handygenome.pyranges_helper as pyranges_helper
 import handygenome.cnv.mosdepth as libmosdepth
 import handygenome.cnv.gcfraction as gcfraction
 import handygenome.cnv.rcopynumber as rcopynumber
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.deco as deco
 
 
@@ -96,7 +96,7 @@ def get_genome_df_annotcols(df):
 
 
 def genome_df_groupkey(df, refver):
-    chromdict = refgenome.get_default_chromdict(refver)
+    chromdict = refgenome.get_chromdict(refver)
     chrom_indexes = df['Chromosome'].apply(chromdict.contigs.index)
     coord_arr = np.stack(
         [chrom_indexes.to_numpy(), df['Start'].to_numpy(), df['End'].to_numpy()], 
@@ -106,7 +106,7 @@ def genome_df_groupkey(df, refver):
 
 
 def sort_genome_df(df, refver):
-    chromdict = refgenome.get_default_chromdict(refver)
+    chromdict = refgenome.get_chromdict(refver)
     chrom_indexes = df['Chromosome'].apply(lambda x: chromdict.contigs.index(x))
     sortkey = np.lexsort([df['End'], df['Start'], chrom_indexes])
     result = df.iloc[sortkey, :]
@@ -381,7 +381,7 @@ def get_peak_info(cp_score_dict, key='segfit', invert=True):
 @functools.cache
 def get_CNn_gr(refver, is_female):
     """Only accepts PAR-available reference versions"""
-    chromdict = refgenome.get_default_chromdict(refver)
+    chromdict = refgenome.get_chromdict(refver)
     autosomal_chroms = [
         x for x in chromdict.contigs 
         if (
@@ -427,7 +427,7 @@ def get_normal_mean_ploidy(refver, is_female, target_region_gr=None):
         if target_region_gr is not None:
             assert 'CNn' not in target_region_gr.columns
 
-        chromdict = refgenome.get_default_chromdict(refver)
+        chromdict = refgenome.get_chromdict(refver)
         if target_region_gr is None:
             N_region_gr = refgenome.get_N_region_gr(refver)
             target_region_gr = chromdict.to_gr(assembled_only=True, as_gr=True).subtract(N_region_gr)
@@ -4548,7 +4548,7 @@ def upsize_depth_df_bin(depth_df, size, refver=None, chromdict=None, annot_cols=
             )
         ]
     if chromdict is None:
-        chromdict = refgenome.get_default_chromdict(refver)
+        chromdict = refgenome.get_chromdict(refver)
 
     dfs_bychrom = pyranges_helper.group_df_bychrom(depth_df)
     new_binsize = size
@@ -4808,52 +4808,6 @@ def make_normalsample_segment(
     return segment_df
     
     
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

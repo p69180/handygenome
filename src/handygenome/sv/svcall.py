@@ -4,7 +4,7 @@ import numpy as np
 import Bio.Seq
 import Bio.SeqRecord
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.read.readplus as libreadplus
 import handygenome.align.msa as libmsa
 import handygenome.align.alignhandler as alignhandler
@@ -15,7 +15,7 @@ def call_breakends(bam, chrom, start0, end0, refver, SA_region_factor=1):
     rpplist = libreadplus.ReadPlusPairList.from_bam(bam, chrom, start0, end0)
 
     # set params
-    chromdict = refgenome.get_default_chromdict(refver)
+    chromdict = refgenome.get_chromdict(refver)
     rp_dict = dict()
     clipspec_list = list()
     for rp, clipspec in rpplist.iter_clipspecs():

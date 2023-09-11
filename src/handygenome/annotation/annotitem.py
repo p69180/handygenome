@@ -8,6 +8,7 @@ import functools
 import textwrap
 
 import pysam
+import numpy as np
 
 import handygenome.tools as tools
 import handygenome.variant.infoformat as infoformat
@@ -1183,10 +1184,10 @@ class AnnotItemFormatSampledict(AllBase, FormatBase, dict):
 
     @classmethod
     def from_vr_base(cls, vr, sampleid_list=None):
-        assert isinstance(sampleid_list, (list, tuple, type(None)))
-
         if sampleid_list is None:
             sampleid_list = list(vr.samples.keys())
+        else:
+            sampleid_list = np.atleast_1d(sampleid_list)
 
         result = cls()
         annotkey = cls.get_annotkey()

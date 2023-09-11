@@ -12,7 +12,7 @@ import handygenome.tools as tools
 import handygenome.workflow as workflow
 import handygenome.workflow.toolsetup as toolsetup
 import handygenome.annotation.customfile as customfile
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 
 
 DEFAULT_OUTFILE_BASENAME = 'ensembl_regulatory_sorted.gff.gz'

@@ -12,7 +12,7 @@ import Bio.Seq
 
 import handygenome.signature.misc as libsigmisc
 import handygenome.deco as deco
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 
 
 """Issues with pyranges.PyRanges.intersect:

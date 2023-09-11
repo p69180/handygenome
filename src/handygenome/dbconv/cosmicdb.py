@@ -8,7 +8,7 @@ import re
 import pysam
 
 import handygenome.tools as tools
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.logutils as logutils
 import handygenome.workflow as workflow
 import handygenome.hgvs as hgvs
@@ -420,8 +420,8 @@ def write_outfile(outfile_path, summary, site_count, vcfspec_cosv_map, sorted_vc
 
 @deco.get_deco_arg_choices({'refver': ('GRCh37', 'GRCh38')})
 def main(infile_path_ncv, infile_path_mutantexport, outfile_path, refver, cosmic_version):
-    fasta = refgenome.get_default_fasta(refver)
-    chromdict = refgenome.get_default_chromdict(refver)
+    fasta = refgenome.get_fasta(refver)
+    chromdict = refgenome.get_chromdict(refver)
     is_hg19 = (refver == 'GRCh37')
 
     summary = dict()

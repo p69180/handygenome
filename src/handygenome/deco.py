@@ -7,6 +7,15 @@ import signal
 import numpy as np
 
 
+def make_errmsg(deconame, funcname):
+    return (
+        f'The names of parameters given '
+        f'to the decorator generator "{deconame}"'
+        f'is not included in the parameter names of '
+        f'the function "{funcname}".'
+    )
+
+
 # timeout (https://daeguowl.tistory.com/139)
 def get_deco_timeout(seconds, error_message=''):
     def decorator(func):
@@ -48,11 +57,7 @@ def get_deco_num_set(names, n):
     def decorator(func):
         sig = inspect.signature(func)
         if not set(names).issubset(sig.parameters.keys()):
-            raise Exception(
-                f'The names of parameters given to '
-                f'"get_deco_num_set" function '
-                f'is not included in the parameter names of '
-                f'the function "{func.__name__}".')
+            raise Exception(make_errmsg('get_deco_num_set', func.__name__))
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -77,10 +82,8 @@ def get_deco_num_notNone(names, n):
         sig = inspect.signature(func)
         if not set(names).issubset(sig.parameters.keys()):
             raise Exception(
-                f'The names of parameters given to '
-                f'"get_deco_num_set_differently" function '
-                f'is not included in the parameter names of '
-                f'the function "{func.__name__}".')
+                make_errmsg('get_deco_num_notNone', func.__name__)
+            )
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -113,10 +116,8 @@ def get_deco_num_set_differently(names, n, how='equal'):
         sig = inspect.signature(func)
         if not set(names).issubset(sig.parameters.keys()):
             raise Exception(
-                f'The names of parameters given to '
-                f'"get_deco_num_set_differently" function '
-                f'is not included in the parameter names of '
-                f'the function "{func.__name__}".')
+                make_errmsg('get_deco_num_set_differently', func.__name__)
+            )
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -167,10 +168,8 @@ def get_deco_arg_choices(mapping):
         sig = inspect.signature(func)
         if not set(mapping.keys()).issubset(sig.parameters.keys()):
             raise Exception(
-                f'The names of parameters given to '
-                f'"get_deco_check_arg_choices" function '
-                f'is not included in the parameter names of '
-                f'the function "{func.__name__}".')
+                make_errmsg('get_deco_arg_choices', func.__name__)
+            )
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -181,7 +180,8 @@ def get_deco_arg_choices(mapping):
                     raise ValueError(
                         f'For the function "{func.__name__}", '
                         f'the parameter "{key}" must be one of these values: '
-                        f'{tuple(val)}.')
+                        f'{tuple(val)}.'
+                    )
 
             return func(*args, **kwargs)
 
@@ -288,10 +288,8 @@ def get_deco_broadcast(names):
         sig = inspect.signature(func)
         if not set(names).issubset(sig.parameters.keys()):
             raise Exception(
-                f'The names of parameters given to '
-                f'"get_deco_broadcast" function '
-                f'is not included in the parameter names of '
-                f'the function "{func.__name__}".')
+                make_errmsg('get_deco_broadcast', func.__name__)
+            )
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -315,10 +313,8 @@ def get_deco_asarray(names):
         sig = inspect.signature(func)
         if not set(names).issubset(sig.parameters.keys()):
             raise Exception(
-                f'The names of parameters given to '
-                f'"get_deco_asarray" function '
-                f'is not included in the parameter names of '
-                f'the function "{func.__name__}".')
+                make_errmsg('get_deco_asarray', func.__name__)
+            )
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):

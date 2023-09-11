@@ -7,7 +7,7 @@ import contextlib
 
 import pysam
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.tools as tools
 import handygenome.variant.infoformat as infoformat
 import handygenome.vcfeditor.headerhandler as headerhandler

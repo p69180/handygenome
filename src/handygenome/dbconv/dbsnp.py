@@ -10,7 +10,7 @@ import pysam
 import handygenome.network as network
 import handygenome.workflow as workflow
 import handygenome.workflow.toolsetup as toolsetup
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.vcfeditor.initvcf as initvcf
 import handygenome.vcfeditor.indexing as indexing
 import handygenome.publicdb.ncbi as libncbi

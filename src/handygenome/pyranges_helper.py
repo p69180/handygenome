@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pyranges as pr
 
-import handygenome.refgenome as refgenome
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.tools as tools
 import handygenome.cnv.misc as cnvmisc
 import handygenome.logutils as logutils
@@ -890,7 +890,7 @@ def join_newest(
     left_df = join_preprocess_df(left_df)
     right_df = join_preprocess_df(right_df)
     if (chromdict is None) and (refver is not None):
-        chromdict = refgenome.get_default_chromdict(refver)
+        chromdict = refgenome.get_chromdict(refver)
 
     # join
     result = join_main_newest(left_df, right_df, how, merge, find_nearest, index_col, sort, chromdict, logger, nproc, add_std, ddof)
