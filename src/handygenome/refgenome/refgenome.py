@@ -21,17 +21,20 @@ import handygenome.deco as deco
 import handygenome.publicdb.ncbi as libncbi
 import handygenome.publicdb.ncbi_cache as libncbicache
 import handygenome.refgenome.refverfile_wogdf as refverfile_wogdf
-#from handygenome.genomedf import GenomeDataFrame as GDF
 
 
 # constants
 
 MT_CHROMS = ('chrM', 'MT')
+
 CHROM_PATSTRING_CHR = '(?P<chr>chr)'
 CHROM_PATSTRING_NUMBER = '(?P<number>0*(?P<number_proper>[1-9][0-9]*))'
 CHROM_PATSTRING_XY = '(?P<xy>[XY])'
-PAT_NUMERIC_CHROM = re.compile(f'{CHROM_PATSTRING_CHR}?{CHROM_PATSTRING_NUMBER}')
-PAT_ASSEMBLED_CHROM = re.compile(f'{CHROM_PATSTRING_CHR}?({CHROM_PATSTRING_NUMBER}|{CHROM_PATSTRING_XY})')
+
+PAT_NUMERIC_CHROM = re.compile(f'{CHROM_PATSTRING_CHR}?{CHROM_PATSTRING_NUMBER}', flags=re.I)
+PAT_ASSEMBLED_CHROM = re.compile(f'{CHROM_PATSTRING_CHR}?({CHROM_PATSTRING_NUMBER}|{CHROM_PATSTRING_XY})', flags=re.I)
+PAT_XY_CHROM = re.compile(f'{CHROM_PATSTRING_CHR}?{CHROM_PATSTRING_XY}', flags=re.I)
+
 CHR1_NAME_PAT = re.compile(r'(chr)?0*1')
 
 FASTA_URLS = {
@@ -82,11 +85,16 @@ def normalize_chrom(chrom, strip_chr=False):
                 return 'chr' + mat.group('xy')
 
 
+def check_assembled_chrom(chrom):
+    return PAT_ASSEMBLED_CHROM.fullmatch(chrom) is not None
+
+
 def choose_assembled_chroms(chroms):
-    return [
-        x for x in chroms 
-        if PAT_ASSEMBLED_CHROM.fullmatch(x) is not None
-    ]
+    return list(filter(check_assembled_chrom, chroms))
+
+
+def check_xy_chrom(chrom):
+    return PAT_XY_CHROM.fullmatch(chrom) is not None
 
 
 ##############
@@ -102,6 +110,10 @@ class NoChr1NameError(Exception):
 
 
 class AssemblyspecUnavailableError(Exception):
+    pass
+
+
+class NoXYError(Exception):
     pass
 
 
@@ -671,14 +683,14 @@ class ChromDict(collections.OrderedDict):
         else:
             raise Exception(f'Chromosome names are inconsistent of whether prefixed with "chr"')
 
-    @functools.cached_property
-    def XY_names(self):
+    #@functools.cached_property
+    def get_XY_names(self):
         def helper(name, xy):
             assert xy in ('X', 'Y')
             if name in self.contigs:
                 return name
             else:
-                raise Exception(f'No {xy} chromosome name detected')
+                raise NoXYError(f'No {xy} chromosome name detected')
             
         if self.is_chr_prefixed:
             X = helper('chrX', 'X')
@@ -688,6 +700,18 @@ class ChromDict(collections.OrderedDict):
             Y = helper('Y', 'Y')
 
         return X, Y
+
+    @property
+    def XY_names(self):
+        return self.get_XY_names()
+
+    def check_has_XY(self):
+        try:
+            X, Y = self.get_XY_names()
+        except NoXYError:
+            return False
+        else:
+            return True
 
     @functools.cached_property
     def assembled_chroms(self):
@@ -984,7 +1008,11 @@ class AssemblySpec:
         return converter
 
     def get_chrom_converter_from_self(self, key='default'):
-        """Normalize 'default' names with 'strip_chr=False'"""
+        """key was chosen to 'default' since some reference 
+        version does not have ucsc names.
+        Normalize 'default' names with 'strip_chr=False'
+        """
+
         valid_indexes = tuple((x is not None) for x in self.data[key])
         contigs = list(itertools.compress(self.data[key], valid_indexes))
         lengths = list(itertools.compress(self.data['length'], valid_indexes))

@@ -468,16 +468,17 @@ def flip_gt_half(array):
     return array
 
 
-def get_nearest_integers(x):
+def get_nearest_integers(x, elevate=True):
     x = np.atleast_1d(x)
 
-    lower = np.floor(x)
-    upper = np.ceil(x)
-    same_ind = (upper == lower)
-    upper[upper == lower] += 1
-
-    #lower = np.squeeze(lower)
-    #upper = np.squeeze(upper)
+    lower = np.floor(x).astype(int)
+    upper = np.ceil(x).astype(int)
+    print(lower.dtype)
+    same_indexes = (upper == lower)
+    if elevate:
+        upper[same_indexes] += 1
+    else:
+        lower[same_indexes] -= 1
 
     return upper, lower
 

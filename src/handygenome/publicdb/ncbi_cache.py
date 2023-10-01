@@ -51,7 +51,9 @@ def assembly_report_path_string(RefSeq_refver, species):
 def get_assembly_report_path(RefSeq_refver, species, force_download=False):
     assembly_report_path = assembly_report_path_string(RefSeq_refver, species)
     if force_download or (not os.path.exists(assembly_report_path)):
-        assembly_report_url = libncbi.GENOME_PATHS.get_assembly_report_url(RefSeq_refver, species)
+        assembly_report_url = libncbi.GENOME_PATHS.get_assembly_report_url(
+            RefSeq_refver, species, force_update=force_download,
+        )
         network.download(assembly_report_url, assembly_report_path)
     return assembly_report_path
 
@@ -67,7 +69,9 @@ def assembly_regions_path_string(RefSeq_refver, species):
 def get_assembly_regions_path(RefSeq_refver, species, force_download=False):
     assembly_regions_path = assembly_regions_path_string(RefSeq_refver, species)
     if force_download or (not os.path.exists(assembly_regions_path)):
-        assembly_regions_url = libncbi.GENOME_PATHS.get_assembly_regions_url(RefSeq_refver, species)
+        assembly_regions_url = libncbi.GENOME_PATHS.get_assembly_regions_url(
+            RefSeq_refver, species, force_update=force_download,
+        )
         network.download(assembly_regions_url, assembly_regions_path)
     return assembly_regions_path
 

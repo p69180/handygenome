@@ -11,7 +11,7 @@ import pandas as pd
 import pyranges as pr
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-import seaborn as sns
+#import seaborn as sns
 import sklearn.cluster
 import scipy
 from matplotlib.collections import PatchCollection
@@ -30,6 +30,9 @@ import handygenome.deco as deco
 import handygenome.workflow as workflow
 import handygenome.ucscdata as ucscdata
 import handygenome.cnv.baf as libbaf
+
+import handygenome.genomedf.genomedf as libgenomedf
+from handygenome.genomedf.genomedf import GenomeDataFrame as GDF
 
 
 LOGGER_INFO = workflow.get_debugging_logger(verbose=False)
@@ -106,315 +109,260 @@ def check_is_allregion(region_gr, refver):
     return (isec_gr[[]].sort().df == allregion_gr[[]].sort().df).all(axis=None)
 
 
-# region argument handler
-
-def make_new_region_df(refver, chroms, start0s=None, end0s=None, weights=None):
-    assert (start0s is None) == (end0s is None)
-    # weights
-    if weights is None:
-        weights = 1
-
-    weights = np.atleast_1d(weights)
-    #if not all(str(x).isdecimal() for x in weights):
-        #raise Exception(f'"weights" argument must be all integers')
-    if not (weights > 0).all():
-        raise Exception(f'All weights values must be greater than 0')
-
-    # chroms
-    chroms = np.atleast_1d(chroms)
-
-    # start0s, end0s
-    if start0s is None:
-        chromdict = refgenome.get_chromdict(refver)
-        start0s = np.repeat(0, len(chroms))
-        end0s = np.fromiter((chromdict[x] for x in chroms), dtype=int)
-
-    # broadcast
-    chroms, start0s, end0s, weights = np.broadcast_arrays(
-        chroms, start0s, end0s, weights,
-    )
-
-    return pd.DataFrame({
-        'Chromosome': chroms,
-        'Start': start0s,
-        'End': end0s,
-        'weight': weights,
-    })
-
-
-def handle_region_args(
-    refver, 
-    region_df=None, 
-    chroms=None, start0s=None, end0s=None, weights=None,
-    region_gaps=None,
-):
-    if region_gaps is None:
-        region_gaps = 0.1
-
-    if region_df is None:
-        if chroms is None:
-            region_df = refgenome.get_chromdict(refver).to_gr(
-                assembled_only=True, as_gr=False,
-            )
-        else:
-            region_df = make_new_region_df(
-                refver, chroms, start0s=start0s, end0s=end0s, weights=weights
-            )
-
-    return region_df, region_gaps
-
-
 # decorator for making plot method
 
-PLOTTER_DECORATOR_REGION_ARG_NAMES = (
-    'region_chroms',
-    'region_start0s',
-    'region_end0s',
-    'weights',
-    'region_gaps',
-)
+#PLOTTER_DECORATOR_REGION_ARG_NAMES = (
+#    'region_chroms',
+#    'region_start0s',
+#    'region_end0s',
+#    'weights',
+#    'region_gaps',
+#)
+#
+#
+#def plotter_decorator(func):
+#    sig = inspect.signature(func)
+#    new_sig = sig.replace(
+#        parameters=itertools.chain(
+#            sig.parameters.values(),
+#            (
+#                inspect.Parameter(
+#                    x, inspect.Parameter.POSITIONAL_OR_KEYWORD, default=None,
+#                ) for x in PLOTTER_DECORATOR_REGION_ARG_NAMES
+#            ),
+#        )
+#    )
+#
+#    @functools.wraps(func)
+#    def wrapper(*args, **kwargs):
+#        ba = new_sig.bind(*args, **kwargs)
+#        ba.apply_defaults()
+#        argdict = ba.arguments
+#
+#        fig, axd = plotter_decorator_core(
+#            basemethod=func, 
+#            **argdict,
+#        )
+#
+#        return fig, axd
+#
+#    return wrapper
+#
+#
+#def plotter_decorator_core(
+#    basemethod, 
+#
+#    region_chroms=None, 
+#    region_start0s=None, 
+#    region_end0s=None, 
+#    weights=None,
+#    region_gaps=None,
+#
+#    **kwargs,
+#):
+#    if (
+#        (region_gaps is not None)
+#        or (region_chroms is not None)
+#    ):
+#        self = kwargs['self']
+#
+#        # make new genomeplotter
+#        if region_chroms is None:
+#            new_region_df = self.genomeplotter.region_df.copy()
+#        else:
+#            new_region_df = make_new_region_df(
+#                self.refver, 
+#                region_chroms, 
+#                region_start0s, 
+#                region_end0s, 
+#                weights,
+#            )
+#
+#        new_genomeplotter = GenomePlotter(
+#            self.refver, 
+#            region_df=new_region_df,
+#            region_gaps=region_gaps,
+#        )
+#
+#        # switch and run
+#        old_genomeplotter = self.genomeplotter
+#        self.genomeplotter = new_genomeplotter
+#
+#        fig, axd = basemethod(**kwargs)
+#
+#        self.genomeplotter = old_genomeplotter
+#    else:
+#        fig, axd = basemethod(**kwargs)
+#
+#    return fig, axd
 
 
-def plotter_decorator(func):
-    sig = inspect.signature(func)
-    new_sig = sig.replace(
-        parameters=itertools.chain(
-            sig.parameters.values(),
-            (
-                inspect.Parameter(
-                    x, inspect.Parameter.POSITIONAL_OR_KEYWORD, default=None,
-                ) for x in PLOTTER_DECORATOR_REGION_ARG_NAMES
-            ),
-        )
-    )
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        ba = new_sig.bind(*args, **kwargs)
-        ba.apply_defaults()
-        argdict = ba.arguments
-
-        fig, axd = plotter_decorator_core(
-            basemethod=func, 
-            **argdict,
-        )
-
-        return fig, axd
-
-    return wrapper
-
-
-def plotter_decorator_core(
-    basemethod, 
-
-    region_chroms=None, 
-    region_start0s=None, 
-    region_end0s=None, 
-    weights=None,
-    region_gaps=None,
-
-    **kwargs,
-):
-    if (
-        (region_gaps is not None)
-        or (region_chroms is not None)
+class CoordinateConverter:
+    def __init__(
+        self, 
+        refver, 
+        chroms=None, 
+        start0s=None, 
+        end0s=None, 
+        weights=1,
+        region_gaps=0.1,
+        region_gdf=None, 
     ):
-        self = kwargs['self']
-
-        # make new genomeplotter
-        if region_chroms is None:
-            new_region_df = self.genomeplotter.region_df.copy()
-        else:
-            new_region_df = make_new_region_df(
-                self.refver, 
-                region_chroms, 
-                region_start0s, 
-                region_end0s, 
-                weights,
-            )
-
-        new_genomeplotter = GenomePlotter(
-            self.refver, 
-            region_df=new_region_df,
-            region_gaps=region_gaps,
-        )
-
-        # switch and run
-        old_genomeplotter = self.genomeplotter
-        self.genomeplotter = new_genomeplotter
-
-        fig, axd = basemethod(**kwargs)
-
-        self.genomeplotter = old_genomeplotter
-    else:
-        fig, axd = basemethod(**kwargs)
-
-    return fig, axd
-
-
-class CoordConverter:
-    def __init__(self, refver, df, region_gaps):
         """Args:
-            df: pandas.DataFrame object with mandatory columns 'Chromosome', 
-                'Start', 'End'. Each row represents a genomic interval, which 
-                will be drawn separately in the plot. The rows need not be 
-                sorted by chromosome or position. The order of rows of the 
-                input DataFrame is respected.
             region_gaps: fraction of sum of gap lengths over plotting region lengths
         """
-        assert region_gaps is not None
-
         self.refver = refver
-        self.chromdict = refgenome.get_chromdict(refver)
+        self.chromdict = refgenome.get_chromdict(self.refver)
+
+        # input region_gdf sanitycheck
+        if region_gdf is not None:
+            assert 'weight' in region_gdf.annot_cols
+
+        # set region_gaps
+        #if region_gaps is None:
+        #    region_gaps = 0.1
         self.region_gaps = region_gaps
 
-        cnvmisc.genome_df_sanitycheck(df)
-        df = cnvmisc.arg_into_df(df)
-        df = self.handle_df(df, region_gaps)
-        self.set_params(df)
-
-    @staticmethod
-    def handle_df(df, region_gaps):
-        df = df.copy()
-
-        if 'weight' in df.columns:
-            df = df.loc[
-                :, ['Chromosome', 'Start', 'End', 'weight']
-            ].copy().reset_index(drop=True)
-        else:
-            df = df.loc[
-                :, ['Chromosome', 'Start', 'End']
-            ].copy().reset_index(drop=True)
-            df['weight'] = 1
-
-        #if region_gaps:
-        if (region_gaps != 0) and (df.shape[0] > 1):
-            total_gap_length = ((df['End'] - df['Start']) * df['weight']).sum() * region_gaps
-            gap_weight = total_gap_length / (df.shape[0] - 1)
-
-            tmplist = list()
-            for idx, row in df.iterrows():
-                chrom = str(-idx - 1)
-                gap_row = pd.Series(
-                    {
-                        'Chromosome': chrom, 
-                        'Start': 0, 
-                        'End': 1, 
-                        'weight': gap_weight,
-                    }
+        # prepare unmodified region_gdf
+        if region_gdf is None:
+            if chroms is None:
+                region_gdf = GDF.all_regions(self.refver, assembled_only=True)
+                region_gdf['weight'] = weights
+            else:
+                region_gdf = GDF.from_data(
+                    refver, 
+                    chroms=chroms, 
+                    start0s=start0s, 
+                    end0s=end0s, 
+                    weight=weights,
                 )
 
-                tmplist.append(row)
-                tmplist.append(gap_row)
-            tmplist = tmplist[:-1]
+        # insert gap regions into region_gdf
+        region_gdf = self.insert_gap_to_region_gdf(region_gdf, region_gaps)
 
-            df = pd.DataFrame.from_records(tmplist)
-
-        return df
+        # set attributes for internal use
+        self.set_params(region_gdf)
 
     @staticmethod
-    def handle_df_old(df, region_gaps):
-        df = df.copy()
+    def insert_gap_to_region_gdf(gdf, region_gaps):
+        new_gdf = gdf.copy().choose_annots('weight')
 
-        if 'weight' in df.columns:
-            df = df.loc[
-                :, ['Chromosome', 'Start', 'End', 'weight']
-            ].copy().reset_index(drop=True)
-        else:
-            df = df.loc[
-                :, ['Chromosome', 'Start', 'End']
-            ].copy().reset_index(drop=True)
-            df['weight'] = 1
+        # intercalate with gap rows
+        if (region_gaps != 0) and (new_gdf.nrow > 1):
+            weighted_length_sum = (new_gdf.lengths * new_gdf['weight']).sum()
+            total_gap_length = weighted_length_sum * region_gaps
+            gap_weight = total_gap_length / (new_gdf.nrow - 1)
+                # since raw length of every gap region is 1, weight is equal to weighted length
 
-        #if region_gaps:
-        if region_gaps is not None:
-            total_length = (df['End'] - df['Start']).sum()
-            gap_length = int(total_length * region_gaps)
-            median_weight = np.median(df['weight']).astype(int)
+            src_arr = np.empty(
+                (new_gdf.nrow * 2 - 1,  new_gdf.ncol), 
+                dtype=object,
+            )
+            src_arr[0::2, :] = new_gdf.df
+            src_arr[1::2, 0] = [str(-x - 1) for x in range(new_gdf.nrow - 1)]  # Chromosome
+            src_arr[1::2, 1] = 0  # Start
+            src_arr[1::2, 2] = 1  # End
+            src_arr[1::2, 3] = gap_weight  # weight
 
-            tmplist = list()
-            for idx, row in df.iterrows():
-                chrom = str(-idx - 1)
-                if 'weight' in df.columns:
-                    gap_row = pd.Series({'Chromosome': chrom, 'Start': 0, 'End': gap_length, 'weight': median_weight})
-                else:
-                    gap_row = pd.Series({'Chromosome': chrom, 'Start': 0, 'End': gap_length})
+            new_df = pd.DataFrame(src_arr, columns=new_gdf.columns)
+            new_gdf = GDF.from_frame(
+                new_df, 
+                refver=new_gdf.refver,
+                dtype={'weight': float},
+            )
 
-                tmplist.append(row)
-                tmplist.append(gap_row)
-            tmplist = tmplist[:-1]
+        # return
+        return new_gdf
 
-            df = pd.DataFrame.from_records(tmplist)
+#            total_gap_length = (gdf.lengths * gdf['weight']).sum() * region_gaps
+#            gap_weight = total_gap_length / (gdf.nrow - 1)
+#
+#            chroms = np.empty(2 * gdf.nrow  - 1, dtype=object)
+#            chroms[0::2] = gdf.chromosomes
+#            chroms[1::2] = [str(-x - 1) for x in range(gdf.nrow - 1)]
+#
+#            start0s = np.empty(2 * gdf.nrow  - 1, dtype=int)
+#            start0s[0::2] = gdf.starts
+#            start0s[1::2] = 0
+#
+#            end0s = np.empty(2 * gdf.nrow  - 1, dtype=int)
+#            end0s[0::2] = gdf.ends
+#            end0s[1::2] = 1
+#
+#            weights = np.empty(2 * gdf.nrow  - 1, dtype=float)
+#            weights[0::2] = gdf['weight']
+#            weights[1::2] = gap_weight
+#
+#            gdf = GDF.from_data(
+#                **{
+#                    'refver': gdf.refver,
+#                    'chroms': chroms,
+#                    'start0s': start0s,
+#                    'end0s': end0s,
+#                    'weight': weights,
+#                }
+#            ) return gdf
 
-        return df
-
-    def set_params(self, df):
+    def set_params(self, gdf):
         """Set attributes:
-            totalregion_df
+            totalregion_gdf
             totalregion_gr
             plot_interval_start0s
             plot_interval_end0s
         """
-        # sanity check
-        tmp_gr = pr.PyRanges(df)
-        if tmp_gr.length != tmp_gr.merge().length:
+        # check internal overlap
+        if gdf.check_self_overlap():
             raise Exception(f'Plot region dataframe must not have overlapping intervals.')
 
-        # set totalregion_df and totalregion_gr
-        totalregion_df = df
-        totalregion_df['raw_region_length'] = (
-            totalregion_df['End'] - totalregion_df['Start']
-        ).array
-        totalregion_df['plot_region_length'] = (
-            totalregion_df['raw_region_length'] * totalregion_df['weight']
-        ).array
+        # set totalregion_gdf
+        totalregion_gdf = gdf
+        totalregion_gdf['raw_region_length'] = totalregion_gdf.lengths
+        totalregion_gdf['plot_region_length'] = (
+            totalregion_gdf['raw_region_length'] 
+            * totalregion_gdf['weight']
+        )
 
-        cumsum = totalregion_df['plot_region_length'].cumsum()
-        cumsum_shift = cumsum.shift(1, fill_value=0)
-        #totalregion_df['region_start_offset'] = cumsum_shift.array
-        totalregion_df['plot_interval_start0s'] = cumsum_shift.array
-        totalregion_df['plot_interval_end0s'] = cumsum.array
-
-        self.totalregion_df = totalregion_df
-        self.totalregion_gr = pr.PyRanges(self.totalregion_df)
+        cumsum = totalregion_gdf['plot_region_length'].cumsum()
+        cumsum_shift = pd.Series(cumsum).shift(1, fill_value=0)
+        totalregion_gdf['plot_interval_start0s'] = np.asarray(cumsum_shift)
+        totalregion_gdf['plot_interval_end0s'] = np.asarray(cumsum)
 
         # set dfs without gap regions
         gap_indexes = np.char.startswith(
-            totalregion_df['Chromosome'].to_numpy().astype(str), '-',
+            totalregion_gdf.chromosomes.astype(str), 
+            '-',
         )
-        self.totalregion_df_wogap = totalregion_df.loc[~gap_indexes, :]
-        self.totalregion_gr_wogap = pr.PyRanges(self.totalregion_df_wogap)
+        totalregion_gdf_wogap = totalregion_gdf.loc[~gap_indexes, :]
 
         # set chromosome-wise params
-        self.chromwise_params = dict()
-        for chrom, subdf in self.totalregion_gr.items():
-            self.chromwise_params[chrom] = {
-                'start0': np.array(subdf['Start']),
-                'end0': np.array(subdf['End']),
-                'raw_region_length': np.array(subdf['raw_region_length']),
-                'plot_region_length': np.array(subdf['plot_region_length']),
-                'plot_region_start_offset': np.array(subdf['plot_interval_start0s']),
+        chromwise_params = dict()
+
+        for chrom, subgdf in totalregion_gdf.group_bychrom(sort=False).items():
+            chromwise_params[chrom] = {
+                'start0': subgdf.starts,
+                'end0': subgdf.ends,
+                'raw_region_length': subgdf['raw_region_length'],
+                'plot_region_length': subgdf['plot_region_length'],
+                'plot_region_start_offset': subgdf['plot_interval_start0s'],
             }
 
-    def iter_totalregion_df(self, merge_same_chroms=True):
-        totalregion_df_subset = self.totalregion_df.loc[
-            ~np.char.startswith(
-                self.totalregion_df['Chromosome'].to_numpy().astype(str),
-                '-',
-            ),
-            :
-        ]
+        # result
+        self.totalregion_gdf = totalregion_gdf
+        self.totalregion_gdf_wogap = totalregion_gdf_wogap
+        self.chromwise_params = chromwise_params
+
+    def iter_totalregion_gdf(self, merge_same_chroms=True):
         if merge_same_chroms:
-            chroms = totalregion_df_subset['Chromosome']
-            grouper = (chroms != chroms.shift(1)).cumsum()
+            chrom_idxs = self.totalregion_gdf_wogap.chromosome_indexes
+            grouper = np.cumsum(np.concatenate([[0], np.diff(chrom_idxs)]))
         else:
-            grouper = np.arange(totalregion_df_subset.shape[0])
-        return iter(totalregion_df_subset.groupby(grouper))
+            grouper = np.arange(self.totalregion_gdf_wogap.nrow)
+        return iter(self.totalregion_gdf_wogap.df.groupby(grouper))
 
     @property
     def xlim(self):
-        start0 = self.totalregion_df['plot_interval_start0s'].iloc[0]
-        end0 = self.totalregion_df['plot_interval_end0s'].iloc[-1] - 1
+        start0 = self.totalregion_gdf['plot_interval_start0s'][0]
+        end0 = self.totalregion_gdf['plot_interval_end0s'][-1] - 1
         return (start0, end0)
 
     def genomic_to_plot(self, chrom, pos0_list):
@@ -444,7 +392,7 @@ class CoordConverter:
         return (indexes, plot_coords)
 
     def plot_to_genomic(self, plotcoord_list):
-        plotcoord_list = np.array(plotcoord_list)
+        plotcoord_list = np.asarray(plotcoord_list)
         xlim = self.xlim
         assert np.logical_and(
             plotcoord_list >= xlim[0],
@@ -453,20 +401,22 @@ class CoordConverter:
 
         plotcoord_list_expand = plotcoord_list[:, np.newaxis]
         compare_result = np.logical_and(
-            plotcoord_list_expand >= self.totalregion_df['plot_interval_start0s'].to_numpy(),
-            plotcoord_list_expand < self.totalregion_df['plot_interval_end0s'].to_numpy(),
+            plotcoord_list_expand >= self.totalregion_gdf['plot_interval_start0s'],
+            plotcoord_list_expand < self.totalregion_gdf['plot_interval_end0s'],
         )
         input_indexes, plotregion_indexes = np.where(compare_result)
         assert (plotcoord_list[input_indexes] == plotcoord_list).all()
 
         # results
-        totalregion_subdf = self.totalregion_df.iloc[plotregion_indexes, :]
-        result_chroms = totalregion_subdf['Chromosome'].to_numpy()
+        subgdf = self.totalregion_gdf.iloc[plotregion_indexes, :]
+
+        result_chroms = subgdf.chromosomes
         offsets = (
-            (plotcoord_list - totalregion_subdf['plot_interval_start0s'])
-            / totalregion_subdf['plot_region_length']
-        ) * (totalregion_subdf['End'] - totalregion_subdf['Start'])
-        result_pos0s = np.rint(totalregion_subdf['Start'] + offsets).astype(int)
+            (plotcoord_list - subgdf['plot_interval_start0s'])
+            / subgdf['plot_region_length']
+        ) * subgdf.lengths
+
+        result_pos0s = np.rint(subgdf['Start'] + offsets).astype(int)
         return result_chroms, result_pos0s
 
     def plot_to_genomic_old(self, x):
@@ -495,7 +445,7 @@ class CoordConverter:
     def get_chrom_borders(self, merge_same_chroms=True):
         """Chromosome names starting with "-1" are omitted"""
         result = list()
-        for key, subdf in self.iter_totalregion_df(merge_same_chroms=merge_same_chroms):
+        for key, subdf in self.iter_totalregion_gdf(merge_same_chroms=merge_same_chroms):
             chroms = set(subdf['Chromosome'])
             assert len(chroms) == 1
             chrom = chroms.pop()
@@ -511,33 +461,140 @@ class CoordConverter:
             )
         return result
 
+    #######################
+    # plotdata generation #
+    #######################
+
+    def prepare_plot_data(self, data):
+        #assert isinstance(data, GDF)
+        isec_gdf = data.intersect(self.totalregion_gdf_wogap)
+        if isec_gdf.is_empty:
+            return False
+
+        isec_gdf.sort()
+
+        result_start0s = list()
+        result_end0s = list()
+        ordered_chroms = tools.unique_keeporder(isec_gdf.chromosomes)
+        for chrom in ordered_chroms:
+            subgdf = isec_gdf.subset_chroms(chrom)
+            result_start0s.extend(
+                self.genomic_to_plot(chrom, subgdf.starts)
+            )
+            result_end0s.extend(
+                self.genomic_to_plot(chrom, subgdf.ends - 1) + 1
+            )
+
+        isec_gdf['plot_start0s'] = result_start0s
+        isec_gdf['plot_end0s'] = result_end0s
+
+        return isec_gdf
+
 
 class GenomePlotter:
-    def __init__(
-        self, refver, 
-        *, 
-        region_df=None, 
-        chroms=None, start0s=None, end0s=None, weights=None,
-        region_gaps=None,
-    ):
-        region_df, region_gaps = handle_region_args(
-            refver, 
-            region_df=region_df, 
-            chroms=chroms, 
-            start0s=start0s, 
-            end0s=end0s, 
-            weights=weights,
-            region_gaps=region_gaps,
-        )
-            
+    def __init__(self, refver, **kwargs):
         self.refver = refver
-        self.region_gaps = region_gaps
-        self.region_df = region_df
-        self.cconv = CoordConverter(refver=refver, df=region_df, region_gaps=region_gaps)
+        self.cconv = CoordinateConverter(refver, **kwargs)
 
-    @property
-    def totalregion_df(self):
-        return self.cconv.totalregion_df
+    #############################
+    # common drawer & decorator #
+    #############################
+
+    def draw_common(
+        self, 
+        ax, 
+        n_xlabel=None,
+        split_spines=True,
+        merge_same_chroms=True,
+        chromlabel_kwargs=dict(), 
+        draw_chromlabel=True,
+    ):
+        """Should be done after data drawings are finished"""
+
+        self.set_xlim(ax)
+
+        # horizontal lines at the level of yticks
+        ylims = ax.get_ylim()
+        yticks = [
+            x for x in ax.get_yticks()
+            if (x > ylims[0]) and (x < ylims[1])
+        ]
+        self.draw_grids(
+            ax, 
+            ys=yticks, 
+            line_params=dict(), 
+            merge_same_chroms=merge_same_chroms,
+        )
+
+        # xaxis label (genomic coordinates)
+        if n_xlabel is not None:
+            self.draw_genomecoord_labels(ax, n=n_xlabel)
+        else:
+            ax.set_xticks([])
+
+        # centromere bgcolor
+        ylims = ax.get_ylim()
+        self.draw_centromeres(ax, ymins=ylims[0], ymaxs=ylims[1], draw_common=False)
+        #self.draw_centromeres_type2(ax)
+
+        # spine modification
+        if split_spines:
+            self.fit_spines_to_regions(
+                ax,
+                ylims=ylims,
+                draw_chromlabel=draw_chromlabel,
+                prefix_with_chr=True,
+                merge_same_chroms=merge_same_chroms,
+                chromlabel_kwargs=chromlabel_kwargs,
+            )
+
+    def draw_decorator(func):
+        sig = inspect.signature(func)
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            ba = sig.bind(*args, **kwargs)
+            ba.apply_defaults()
+
+            # data, plotdata
+            if (
+                ('plotdata' in ba.arguments)
+                and ('data' in ba.arguments)
+            ):
+                if ba.arguments['plotdata'] is None:
+                    gplotter = ba.arguments['self']
+                    ba.arguments['plotdata'] = gplotter.cconv.prepare_plot_data(
+                        ba.arguments['data']
+                    )
+                    del ba.arguments['data']
+                if ba.arguments['plotdata'] is False:
+                    return None
+
+            # ys
+            if (
+                ('ys' in ba.arguments)
+                and ('y_colname' in ba.arguments)
+            ):
+                if ba.arguments['y_colname'] is not None:
+                    ba.arguments['ys'] = ba.arguments['plotdata'][ba.arguments['y_colname']]
+                    del ba.arguments['y_colname']
+
+            # main drawing
+            func(**ba.arguments)
+
+            # draw_common
+            if 'draw_common' in ba.arguments:
+                if ba.arguments['draw_common']:
+                    ba.arguments['self'].draw_common(
+                        ba.arguments['ax'], 
+                        **ba.arguments['draw_common_kwargs'], 
+                    )
+
+        return wrapper
+
+    ###############################
+    # components of common drawer #
+    ###############################
 
     def set_xlim(self, ax):
         ax.set_xlim(*self.cconv.xlim)
@@ -574,7 +631,15 @@ class GenomePlotter:
         line_kwargs=dict(),
         merge_same_chroms=True,
     ):
-        """Should be done after data drawings are finished"""
+        """What it does:
+            1) draw spines (axes border lines) (top, bottom, left, right, region borders)
+            2) draw region names above top spine (e.g. chr1, chr3:100-200)
+
+        Should be done after data drawings are finished
+
+        Args:
+            chromlabel_offset: 
+        """
         # set plotting kwargs
         chromlabel_kwargs = (
             dict(ha='center', va='bottom', size=12)
@@ -585,12 +650,12 @@ class GenomePlotter:
             | line_kwargs
         )
 
-        # main
+        # get region border coordinates
         chrom_borders = self.cconv.get_chrom_borders(
             merge_same_chroms=merge_same_chroms,
         )
 
-        # horizontal spines
+        # top and bottom spines
         ax.spines[['top', 'bottom']].set_visible(False)
         _, start0s, end0s = zip(*chrom_borders)
         ax.hlines(
@@ -602,11 +667,11 @@ class GenomePlotter:
             color='black', linewidth=1.5,
         )
 
-        # draw vertical spines
+        # vertical spines - left and right margins
         ax.spines[['left', 'right']].set_visible(False)
         ax.vlines(ax.get_xlim(), ylims[0], ylims[1], **line_kwargs)
 
-        # draw chromosome region borderlines
+        # vertical spines - region borderlines
         border_pos0s = set()
         xlim = self.cconv.xlim
         for _, start0, end0 in chrom_borders:
@@ -614,20 +679,17 @@ class GenomePlotter:
                 border_pos0s.add(start0)
             if end0 != xlim[1]:
                 border_pos0s.add(end0)
-
         ax.vlines(tuple(border_pos0s), ylims[0], ylims[1], **line_kwargs)
 
-        # draw chromosome name texts
+        # chromosome name texts
         if draw_chromlabel:
             chromlabel_y = ylims[1] + chromlabel_offset * (ylims[1] - ylims[0])
             for chrom, start0, end0 in chrom_borders:
                 if chrom.startswith('-'):
                     continue
-                   
                 if prefix_with_chr:
                     if not chrom.startswith('chr'):
                         chrom = 'chr' + chrom
-
                 ax.text(
                     (start0 + end0) / 2, 
                     chromlabel_y, 
@@ -635,56 +697,97 @@ class GenomePlotter:
                     **chromlabel_kwargs,
                 )
 
+    def draw_grids(
+        self, 
+        ax, 
+        ys, 
+        line_params=dict(), 
+        merge_same_chroms=True,
+    ):
+        line_params = (
+            dict(color='black', linewidth=0.2, alpha=0.5)
+            | line_params
+        )
+        chroms, start0s, end0s = zip(
+            *self.cconv.get_chrom_borders(
+                merge_same_chroms=merge_same_chroms,
+            )
+        )
+        for y in ys:
+            ax.hlines(
+                np.repeat(y, len(start0s)), start0s, end0s, 
+                **line_params,
+            )
+
+    #############################
+    # elemental drawing methods #
+    #############################
+
+    @draw_decorator
+    @deco.get_deco_num_set_differently(('ys', 'y_colname'), 1)
     def draw_hlines(
         self, 
         ax, 
         *, 
+        data=None, 
+        plotdata=None, 
+
+        ys=None,
         y_colname=None, 
-        y_val=None,
-        df=None, 
-        df_plotdata=None, 
+
         offset=0,
         plot_kwargs=dict(),
+
+        draw_common=True, 
+        draw_common_kwargs=dict(),
     ):
         plot_kwargs = (
             dict()
             | plot_kwargs
         )
 
-        if df_plotdata is None:
-            df_plotdata = self.prepare_plot_data(df)
+        #if plotdata is None:
+        #    plotdata = self.prepare_plot_data(data)
 
-        if df_plotdata is False:
-            return
+        #if plotdata is False:
+        #    return
 
         # draw data
-        if y_colname is None:
-            ys = np.repeat(y_val, df_plotdata.shape[0]) + offset
-        else:
-            ys = df_plotdata[y_colname].to_numpy() + offset
+        ys = ys + offset
+        #if y_colname is None:
+        #    ys = np.repeat(y_val, plotdata.nrow) + offset
+        #else:
+        #    ys = plotdata[y_colname] + offset
 
-        if df_plotdata.shape[0] > 1:
+        if plotdata.nrow > 1:
             ys, xmins, xmaxs = self._merge_adjacent_data_new(
-                genome_xmins=df_plotdata['Start'], 
-                genome_xmaxs=df_plotdata['End'], 
-                plot_xmins=df_plotdata['plot_start0s'], 
-                plot_xmaxs=df_plotdata['plot_end0s'], 
+                genome_xmins=plotdata['Start'], 
+                genome_xmaxs=plotdata['End'], 
+                plot_xmins=plotdata['plot_start0s'], 
+                plot_xmaxs=plotdata['plot_end0s'], 
                 ys=ys,
             )
         else:
-            row = df_plotdata.iloc[0, :]
-            xmins = row['plot_start0s']
-            xmaxs = row['plot_end0s']
+            xmins = plotdata['plot_start0s'][0]
+            xmaxs = plotdata['plot_end0s'][0]
 
         ax.hlines(ys, xmins, xmaxs, **plot_kwargs)
 
+    @draw_decorator
+    @deco.get_deco_num_set_differently(('ys', 'y_colname'), 1)
     def draw_dots(
         self, ax, 
         *, 
+        data=None, 
+        plotdata=None,
+
+        ys=None,
         y_colname=None, 
-        y_val=None,
-        df=None, df_plotdata=None,
+
         plot_kwargs=dict(),
+
+        draw_common=True, 
+        draw_common_kwargs=dict(),
     ):
         # kwargs handling
         plot_kwargs = (
@@ -695,96 +798,167 @@ class GenomePlotter:
             } | plot_kwargs
         )
 
-        # main
-        if df_plotdata is None:
-            df_plotdata = self.prepare_plot_data(df)
-
-        if df_plotdata is False:
-            return
-
-        xs = (df_plotdata['plot_start0s'] + (df_plotdata['plot_end0s'] - 1)) / 2
-        if y_colname is None:
-            ys = np.repeat(y_val, len(xs))
-        else:
-            ys = df_plotdata[y_colname].to_numpy()
-
+        xs = (plotdata['plot_start0s'] + (plotdata['plot_end0s'] - 1)) / 2
         ax.plot(xs, ys, **plot_kwargs)
 
+    @draw_decorator
+    @deco.get_deco_num_set_differently(('ys', 'y_colname'), 1)
+    @deco.get_deco_num_set_differently(('color_colname', 'color_values'), 2, 'lt')
     def draw_dots_scatter(
-        self, ax, y_colname, *, 
-        df=None, df_plotdata=None,
+        self, ax,
+        *, 
+        data=None, 
+        plotdata=None,
+
+        ys=None,
+        y_colname=None, 
+
         color_colname=None,
-        color_vals=None,
+        color_values=None,
         plot_kwargs=dict(),
+
+        draw_common=True, 
+        draw_common_kwargs=dict(),
     ):
         # kwargs handling
         plot_kwargs = (
             {
                 'c': 'black',
                 'marker': 'o',
+                'markersize': 0.3, 
             } | plot_kwargs
         )
 
         # main
-        if df_plotdata is None:
-            df_plotdata = self.prepare_plot_data(df)
+        #if df_plotdata is None:
+        #    df_plotdata = self.prepare_plot_data(df)
 
-        if df_plotdata is False:
-            return
+        #if df_plotdata is False:
+        #    return
 
-        if df_plotdata is not None:
-            xs = (df_plotdata['plot_start0s'] + (df_plotdata['plot_end0s'] - 1)) / 2
-            ys = df_plotdata[y_colname].to_numpy()
+        #if df_plotdata is not None:
+        xs = (plotdata['plot_start0s'] + (plotdata['plot_end0s'] - 1)) / 2
+        #xs, ys = np.broadcast_arrays(xs, ys)
 
-            if color_colname is not None:
-                plot_kwargs['c'] = df_plotdata[color_colname]
-            elif color_vals is not None:
-                plot_kwargs['c'] = color_vals
+        #if y_colname is None:
+        #    ys = np.repeat(y_val, len(xs))
+        #else:
+        #    ys = plotdata[y_colname]
 
-            if 'color' in plot_kwargs:
-                del plot_kwargs['color']
-            if 'markersize' in plot_kwargs:
-                plot_kwargs['s'] = plot_kwargs['markersize']
-                del plot_kwargs['markersize']
+        if color_colname is not None:
+            plot_kwargs['c'] = plotdata[color_colname]
+        elif color_values is not None:
+            plot_kwargs['c'] = color_values
 
-            ax.scatter(xs, ys, **plot_kwargs)
+        if 'color' in plot_kwargs:
+            del plot_kwargs['color']
+        if 'markersize' in plot_kwargs:
+            plot_kwargs['s'] = plot_kwargs['markersize']
+            del plot_kwargs['markersize']
 
+        ax.scatter(xs, ys, **plot_kwargs)
+
+    @draw_decorator
+    @deco.get_deco_num_set_differently(('ys', 'y_colname'), 1)
+    @deco.get_deco_num_set_differently(('bottom_values', 'bottom_colname'), 2, 'lt')
     def draw_bars(
-        self, ax, y_colname, *, 
-        df=None, df_plotdata=None,
+        self, ax, 
+        *, 
+        data=None, 
+        plotdata=None,
+
+        ys=None,
+        y_colname=None, 
+
+        bottom_values=None,
         bottom_colname=None,
+
         plot_kwargs=dict(),
+
+        draw_common=True, 
+        draw_common_kwargs=dict(),
     ):
         plot_kwargs = (
             dict(alpha=0.5, color='tab:blue')
             | plot_kwargs
         )
 
-        if df_plotdata is None:
-            df_plotdata = self.prepare_plot_data(df)
+        #if df_plotdata is None:
+        #    df_plotdata = self.prepare_plot_data(df)
 
-        if df_plotdata is False:
-            return
+        #if df_plotdata is False:
+        #    return
 
-        xs = (df_plotdata['plot_end0s'] + df_plotdata['plot_start0s']) / 2
-        widths = df_plotdata['plot_end0s'] - df_plotdata['plot_start0s']
-        heights = df_plotdata[y_colname]
-        if bottom_colname is None:
-            bottoms = 0 
+        xs = (plotdata['plot_end0s'] + plotdata['plot_start0s']) / 2
+        widths = plotdata['plot_end0s'] - plotdata['plot_start0s']
+        #heights = ys
+
+        if bottom_values is not None:
+            bottoms = bottom_values
+        elif bottom_colname is not None:
+            bottoms = plotdata[bottom_colname]
         else:
-            bottoms = df_plotdata[bottom_colname]
+            bottoms = 0 
 
-        ax.bar(xs, height=heights, width=widths, bottom=bottoms, **plot_kwargs)
+        ax.bar(xs, height=ys, width=widths, bottom=bottoms, **plot_kwargs)
 
+    @draw_decorator
+    @deco.get_deco_num_set_differently(('texts', 'text_colname'), 1)
+    def draw_texts(
+        self, ax, 
+        *,
+        data=None, 
+        plotdata=None,
+
+        ys=None,
+        y_colname=None, 
+
+        texts=None,
+        text_colname=None,
+
+        text_kwargs=dict(),
+
+        draw_common=True, 
+        draw_common_kwargs=dict(),
+    ):
+        default_text_kwargs = dict(size=8)
+        text_kwargs = default_text_kwargs | text_kwargs
+
+        # prepare text positions
+        xs = (plotdata['plot_start0s'] + (plotdata['plot_end0s'] - 1)) / 2
+        if ys is None:
+            ys = 1.05
+            transform = ax.transAxes
+        else:
+            transform = ax.transData
+
+        # prepare text values
+        if texts is None:
+            texts = plotdata[text_colname].to_numpy()
+        else:
+            texts = np.atleast_1d(texts)
+
+        xs, ys, texts = np.broadcast_arrays(xs, ys, texts)
+
+        # draw
+        for t, x, y in zip(texts, xs, ys):
+            ax.text(x, y, t, **text_kwargs)
+
+    @draw_decorator
     def draw_bgcolors(
-        self, 
-        ax, 
-        df=None, 
-        df_plotdata=None,
+        self, ax, 
+        *,
+        data=None, 
+        plotdata=None,
+
         ymins=None,
         ymaxs=None,
+
         colors='yellow',
         plot_kwargs=dict(),
+
+        draw_common=True, 
+        draw_common_kwargs=dict(),
     ):
         # setup plot_kwargs
         default_plot_kwargs = {
@@ -794,25 +968,24 @@ class GenomePlotter:
         default_plot_kwargs.update(plot_kwargs)
 
         # main
-        if df_plotdata is None:
-            df_plotdata = self.prepare_plot_data(df)
+        #if df_plotdata is None:
+        #    df_plotdata = self.prepare_plot_data(df)
 
-        if df_plotdata is False:
-            return
+        #if df_plotdata is False:
+        #    return
 
         # x
-        if df_plotdata.shape[0] > 1:
+        if plotdata.nrow > 1:
             _, xmins, xmaxs = self._merge_adjacent_data_new(
-                genome_xmins=df_plotdata['Start'], 
-                genome_xmaxs=df_plotdata['End'], 
-                plot_xmins=df_plotdata['plot_start0s'], 
-                plot_xmaxs=df_plotdata['plot_end0s'], 
+                genome_xmins=plotdata['Start'], 
+                genome_xmaxs=plotdata['End'], 
+                plot_xmins=plotdata['plot_start0s'], 
+                plot_xmaxs=plotdata['plot_end0s'], 
                 ys=None,
             )
         else:
-            row = df_plotdata.iloc[0, :]
-            xmins = np.atleast_1d(row['plot_start0s'])
-            xmaxs = np.atleast_1d(row['plot_end0s'])
+            xmins = np.atleast_1d(plotdata['plot_start0s'][0])
+            xmaxs = np.atleast_1d(plotdata['plot_end0s'][0])
 
         widths = xmaxs - xmins
 
@@ -854,109 +1027,17 @@ class GenomePlotter:
             )
         )
 
-    def draw_ideogram(self, ax):
-        cytoband_df = ucscdata.get_cytoband(self.refver, as_gr=False)
-        colors = [ucscdata.CYTOBAND_COLORMAP[x] for x in cytoband_df['Stain']]
-        self.draw_bgcolors(
-            ax=ax, 
-            df=cytoband_df, 
-            plot_kwargs=dict(alpha=1),
-            colors=colors,
-        )
 
-    def draw_centromeres(self, ax, ymins=None, ymaxs=None):
-        cytoband_gr = ucscdata.get_cytoband_gr(refver=self.refver, as_gr=True)
-        self.draw_bgcolors(
-            ax, 
-            df=cytoband_gr[cytoband_gr.Stain == 'acen'], 
-            #df=cytoband_gr[cytoband_gr.Stain.isin(['acen', 'gvar', 'stalk'])], 
-            ymins=ymins,
-            ymaxs=ymaxs,
-            colors='red',
-            plot_kwargs=dict(alpha=0.3, linewidth=0),
-        )
+    #####################################
+    # combinations of elemental drawers #
+    #####################################
 
-    def draw_centromeres_type2(self, ax):
-        cytoband_gr = ucscdata.get_cytoband_gr(refver=self.refver, as_gr=True)
-        mapping = {
-            'acen': 'red', 
-            'gvar': 'green', 
-            'stalk': 'blue',
-        }
-
-        def helper(bandname):
-            self.draw_bgcolors(
-                ax, 
-                df=cytoband_gr[cytoband_gr.Stain == bandname], 
-                colors=mapping[bandname],
-                plot_kwargs=dict(alpha=0.3, linewidth=0),
-            )
-
-        helper('acen')
-        helper('gvar')
-        helper('stalk')
-
-    def draw_grids(self, ax, ys, line_params=dict(), merge_same_chroms=True):
-        line_params = (
-            dict(color='black', linewidth=0.2, alpha=0.5)
-            | line_params
-        )
-        chroms, start0s, end0s = zip(
-            *self.cconv.get_chrom_borders(
-                merge_same_chroms=merge_same_chroms,
-            )
-        )
-        for y in ys:
-            ax.hlines(
-                np.repeat(y, len(start0s)), start0s, end0s, 
-                **line_params,
-            )
-
-    def draw_ax_common(
-        self, 
-        ax, 
-        n_xlabel=None,
-        split_spines=True,
-        merge_same_chroms=True,
-        chromlabel_kwargs=dict(), 
-        draw_chromlabel=True,
-    ):
-        self.set_xlim(ax)
-        ylims = ax.get_ylim()
-
-        if split_spines:
-            self.fit_spines_to_regions(
-                ax,
-                ylims=ylims,
-                draw_chromlabel=draw_chromlabel,
-                prefix_with_chr=True,
-                merge_same_chroms=merge_same_chroms,
-                chromlabel_kwargs=chromlabel_kwargs,
-            )
-
-        yticks = [
-            x for x in ax.get_yticks()
-            if (x > ylims[0]) and (x < ylims[1])
-        ]
-        self.draw_grids(
-            ax, 
-            ys=yticks, 
-            line_params=dict(), 
-            merge_same_chroms=merge_same_chroms,
-        )
-
-        self.draw_centromeres(ax, ymins=ylims[0], ymaxs=ylims[1])
-        #self.draw_centromeres_type2(ax)
-        if n_xlabel is not None:
-            self.draw_genomecoord_labels(ax, n=n_xlabel)
-        else:
-            ax.set_xticks([])
-
+    @draw_decorator
     def draw_features(
-        self, 
-        ax,
-        df=None,
-        df_plotdata=None,
+        self, ax,
+        *,
+        data=None,
+        plotdata=None,
 
         y_features=None,
         y_labels=None,
@@ -965,6 +1046,9 @@ class GenomePlotter:
 
         text_kwargs=dict(),
         line_kwargs=dict(),
+
+        draw_common=True, 
+        draw_common_kwargs=dict(),
     ):
         # setup plot_kwargs
         text_kwargs = (
@@ -977,11 +1061,10 @@ class GenomePlotter:
         )
 
         # make plotdata
-        if df_plotdata is None:
-            df_plotdata = self.prepare_plot_data(df)
-        if df_plotdata is False:
-            return
-
+        #if df_plotdata is None:
+        #    df_plotdata = self.prepare_plot_data(df)
+        #if df_plotdata is False:
+        #    return
 
         # main
         ylims = ax.get_ylim()
@@ -1000,26 +1083,29 @@ class GenomePlotter:
 #        else:
         self.draw_hlines(
             ax, 
-            y_val=y_features,
-            df_plotdata=df_plotdata, 
+            ys=y_features,
+            plotdata=plotdata, 
             offset=0,
             plot_kwargs=line_kwargs,
+            draw_common=False, 
         )
 
         # draw texts
         if draw_label:
-            assert 'name' in df_plotdata.columns
-            for name, subdf in df_plotdata.groupby('name'):
-                subdf = cnvmisc.sort_genome_df(subdf, refver=self.refver)
-                if subdf.shape[0] == 1:
-                    xmins = subdf['plot_start0s']
-                    xmaxs = subdf['plot_end0s']
+            assert 'name' in plotdata.columns
+            for name, subdf in plotdata.df.groupby('name'):
+                subgdf = plotdata.spawn(subdf)
+                subgdf.sort()
+                #subdf = cnvmisc.sort_genome_df(subdf, refver=self.refver)
+                if subgdf.nrow == 1:
+                    xmins = subgdf['plot_start0s']
+                    xmaxs = subgdf['plot_end0s']
                 else:
                     _, xmins, xmaxs = self._merge_adjacent_data_new(
-                        genome_xmins=subdf['Start'], 
-                        genome_xmaxs=subdf['End'], 
-                        plot_xmins=subdf['plot_start0s'], 
-                        plot_xmaxs=subdf['plot_end0s'], 
+                        genome_xmins=subgdf['Start'], 
+                        genome_xmaxs=subgdf['End'], 
+                        plot_xmins=subgdf['plot_start0s'], 
+                        plot_xmaxs=subgdf['plot_end0s'], 
                         ys=None,
                     )
                 text_xlist = 0.5 * (xmins + xmaxs - 1)
@@ -1032,47 +1118,91 @@ class GenomePlotter:
                         **text_kwargs,
                     )
 
-    def prepare_plot_data(self, df):
-        gr = cnvmisc.arg_into_gr(df)
-        isec_gr = gr.intersect(self.cconv.totalregion_gr_wogap).sort()
-        if isec_gr.empty:
-            return False
+    @draw_decorator
+    def draw_ideogram(
+        self, 
+        ax,
+        draw_common=True, 
+        draw_common_kwargs=dict(),
+    ):
+        cytoband_gdf = ucscdata.get_cytoband(self.refver)
+        colors = [ucscdata.CYTOBAND_COLORMAP[x] for x in cytoband_gdf['Stain']]
+        self.draw_bgcolors(
+            ax=ax, 
+            data=cytoband_gdf, 
+            plot_kwargs=dict(alpha=1),
+            colors=colors,
+            draw_common=False, 
+        )
 
-        result_start0s = list()
-        result_end0s = list()
-        ordered_chroms = [x[0] for x in itertools.groupby(isec_gr.Chromosome)]
-        for chrom in ordered_chroms:
-            subgr = isec_gr[chrom]
-            result_start0s.extend(
-                self.cconv.genomic_to_plot(chrom, subgr.Start)
-            )
-            result_end0s.extend(
-                self.cconv.genomic_to_plot(chrom, subgr.End - 1) + 1
-            )
+    @draw_decorator
+    def draw_centromeres(
+        self, 
+        ax, 
+        ymins=None, 
+        ymaxs=None,
+        draw_common=True, 
+        draw_common_kwargs=dict(),
+    ):
+        cytoband_gdf = ucscdata.get_cytoband(refver=self.refver)
+        self.draw_bgcolors(
+            ax, 
+            data=cytoband_gdf.loc[cytoband_gdf['Stain'] == 'acen', :],
+            #data=cytoband_gdf.loc[cytoband_gdf['Stain'].isin(['acen', 'gvar', 'stalk']), :],
+            ymins=ymins,
+            ymaxs=ymaxs,
+            colors='brown',
+            plot_kwargs=dict(alpha=0.3, linewidth=0),
+            draw_common=False, 
+        )
 
-        isec_gr.plot_start0s = result_start0s
-        isec_gr.plot_end0s = result_end0s
-
-        return isec_gr.df
-
-    def prepare_plot_data_old(self, df, nproc=None):
-        # create isec between total region and input data
-        isec_gr, subgrs_bychrom = self._isec_trim_data_df(df)
-
-        # Add "End_minus1" columns; "End" columns cannot be used for plot coordinate calculation
-        for chrom, subgr in subgrs_bychrom.items():
-            subgr.End_minus1 = subgr.End - 1
-
-        xmins = self._get_ordered_plot_coords(subgrs_bychrom, 'Start', nproc=nproc)
-        xmaxs_minus1 = self._get_ordered_plot_coords(subgrs_bychrom, 'End_minus1', nproc=nproc)
-        xmaxs = xmaxs_minus1 + 1
-
-        return {
-            'isec_gr': isec_gr,
-            'subgrs_bychrom': subgrs_bychrom,
-            'xmins': xmins,
-            'xmaxs': xmaxs,
+    @draw_decorator
+    def draw_centromeres_type2(
+        self, 
+        ax,
+        draw_common=True, 
+        draw_common_kwargs=dict(),
+    ):
+        cytoband_gdf = ucscdata.get_cytoband(refver=self.refver)
+        mapping = {
+            'acen': 'red', 
+            'gvar': 'green', 
+            'stalk': 'blue',
         }
+
+        def helper(bandname):
+            self.draw_bgcolors(
+                ax, 
+                data=cytoband_gdf[cytoband_gdf['Stain'] == bandname, :], 
+                colors=mapping[bandname],
+                plot_kwargs=dict(alpha=0.3, linewidth=0),
+                draw_common=False, 
+            )
+
+        helper('acen')
+        helper('gvar')
+        helper('stalk')
+
+
+
+#    def prepare_plot_data_old(self, df, nproc=None):
+#        # create isec between total region and input data
+#        isec_gr, subgrs_bychrom = self._isec_trim_data_df(df)
+#
+#        # Add "End_minus1" columns; "End" columns cannot be used for plot coordinate calculation
+#        for chrom, subgr in subgrs_bychrom.items():
+#            subgr.End_minus1 = subgr.End - 1
+#
+#        xmins = self._get_ordered_plot_coords(subgrs_bychrom, 'Start', nproc=nproc)
+#        xmaxs_minus1 = self._get_ordered_plot_coords(subgrs_bychrom, 'End_minus1', nproc=nproc)
+#        xmaxs = xmaxs_minus1 + 1
+#
+#        return {
+#            'isec_gr': isec_gr,
+#            'subgrs_bychrom': subgrs_bychrom,
+#            'xmins': xmins,
+#            'xmaxs': xmaxs,
+#        }
 
     ############################################
 
@@ -1114,87 +1244,87 @@ class GenomePlotter:
 
         return new_ys, new_plot_xmins, new_plot_xmaxs
 
-    @classmethod
-    def _merge_adjacent_data(cls, xmins, xmaxs, ys=None):
-        """Helper of draw_hlines"""
-        if ys is None:
-            ys = np.repeat(1, len(xmins))
+#    @classmethod
+#    def _merge_adjacent_data(cls, xmins, xmaxs, ys=None):
+#        """Helper of draw_hlines"""
+#        if ys is None:
+#            ys = np.repeat(1, len(xmins))
+#
+#        ys = np.array(ys)
+#        xmins = np.array(xmins)
+#        xmaxs = np.array(xmaxs)
+#
+#        flags = (ys[:-1] == ys[1:]) & (xmaxs[:-1] == xmins[1:])
+#        idx = 0
+#        indexes = list()
+#        if not flags[0]:
+#            indexes.append((0, 0))
+#
+#        for key, subiter in itertools.groupby(flags):
+#            len_val = len(tuple(subiter))
+#            if key:
+#                start = idx
+#                end = idx + len_val
+#                indexes.append((start, end))
+#                idx += len_val
+#            else:
+#                indexes.extend((k, k) for k in range(idx + 1, idx + len_val))
+#                idx += len_val
+#
+#        if not key:
+#            indexes.append((idx, idx))
+#
+#        new_ys = ys[[x[0] for x in indexes]]
+#        new_xmins = xmins[[x[0] for x in indexes]]
+#        new_xmaxs = xmaxs[[x[1] for x in indexes]]
+#
+#        return new_ys, new_xmins, new_xmaxs
 
-        ys = np.array(ys)
-        xmins = np.array(xmins)
-        xmaxs = np.array(xmaxs)
+#    def _isec_trim_data_df(self, df, asis=False):
+#        """helper of prepare_plot_data"""
+#        assert '_index' not in df.columns
+#
+#        gr = cnvmisc.arg_into_gr(df)
+#        if asis:
+#            isec_gr = gr
+#        else:
+#            isec_gr = gr.intersect(self.cconv.totalregion_gr)
+#
+#        isec_gr._index = list(range(isec_gr.df.shape[0]))
+#
+#        subgrs_bychrom = dict()
+#        for chrom in isec_gr.Chromosome.unique():
+#            subgrs_bychrom[chrom] = isec_gr[chrom]
+#
+#        return isec_gr, subgrs_bychrom
 
-        flags = (ys[:-1] == ys[1:]) & (xmaxs[:-1] == xmins[1:])
-        idx = 0
-        indexes = list()
-        if not flags[0]:
-            indexes.append((0, 0))
-
-        for key, subiter in itertools.groupby(flags):
-            len_val = len(tuple(subiter))
-            if key:
-                start = idx
-                end = idx + len_val
-                indexes.append((start, end))
-                idx += len_val
-            else:
-                indexes.extend((k, k) for k in range(idx + 1, idx + len_val))
-                idx += len_val
-
-        if not key:
-            indexes.append((idx, idx))
-
-        new_ys = ys[[x[0] for x in indexes]]
-        new_xmins = xmins[[x[0] for x in indexes]]
-        new_xmaxs = xmaxs[[x[1] for x in indexes]]
-
-        return new_ys, new_xmins, new_xmaxs
-
-    def _isec_trim_data_df(self, df, asis=False):
-        """helper of prepare_plot_data"""
-        assert '_index' not in df.columns
-
-        gr = cnvmisc.arg_into_gr(df)
-        if asis:
-            isec_gr = gr
-        else:
-            isec_gr = gr.intersect(self.cconv.totalregion_gr)
-
-        isec_gr._index = list(range(isec_gr.df.shape[0]))
-
-        subgrs_bychrom = dict()
-        for chrom in isec_gr.Chromosome.unique():
-            subgrs_bychrom[chrom] = isec_gr[chrom]
-
-        return isec_gr, subgrs_bychrom
-
-    def _get_ordered_plot_coords(self, subgrs_bychrom, pos0_colname, nproc=None):
-        """helper of prepare_plot_data"""
-        # Multiprocessing is slower than serial jobs!!
-#        with multiprocessing.Pool(nproc) as pool:
-#            result = pool.starmap(
-#                self.genomic_to_plot_with_indexes, 
-#                (
-#                    (chrom, subdf[pos0_colname], subdf['_index']) 
-#                    for chrom, subdf in subgrs_bychrom.items()
+#    def _get_ordered_plot_coords(self, subgrs_bychrom, pos0_colname, nproc=None):
+#        """helper of prepare_plot_data"""
+#        # Multiprocessing is slower than serial jobs!!
+##        with multiprocessing.Pool(nproc) as pool:
+##            result = pool.starmap(
+##                self.genomic_to_plot_with_indexes, 
+##                (
+##                    (chrom, subdf[pos0_colname], subdf['_index']) 
+##                    for chrom, subdf in subgrs_bychrom.items()
+##                )
+##            )
+#
+#        result = list()
+#        for chrom, subgr in subgrs_bychrom.items():
+#            result.append(
+#                self.cconv.genomic_to_plot_with_indexes(
+#                    chrom, getattr(subgr, pos0_colname), subgr._index
 #                )
 #            )
-
-        result = list()
-        for chrom, subgr in subgrs_bychrom.items():
-            result.append(
-                self.cconv.genomic_to_plot_with_indexes(
-                    chrom, getattr(subgr, pos0_colname), subgr._index
-                )
-            )
-
-        index_coord_pairs = itertools.chain.from_iterable(zip(*x) for x in result)
-        plot_coords = np.fromiter(
-            (x[1] for x in sorted(index_coord_pairs, key=operator.itemgetter(0))),
-            dtype=np.int_,
-        )
-
-        return plot_coords
+#
+#        index_coord_pairs = itertools.chain.from_iterable(zip(*x) for x in result)
+#        plot_coords = np.fromiter(
+#            (x[1] for x in sorted(index_coord_pairs, key=operator.itemgetter(0))),
+#            dtype=np.int_,
+#        )
+#
+#        return plot_coords
 
 #    def _get_ordered_plot_coords_woidx(self, subgrs_bychrom, pos0_colname):
 #        """helper of prepare_plot_data"""

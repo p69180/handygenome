@@ -2,6 +2,7 @@ import os
 import tempfile
 import shutil
 import subprocess
+import multiprocessing
 
 import pyranges as pr
 import pandas as pd
@@ -10,10 +11,8 @@ import handygenome
 import handygenome.deco as deco
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.logutils as logutils
-#import handygenome.genomedf as genomedf
-#from handygenome.cnv.cnvdf import GenomeDataFrame as GDF
-from handygenome.genomedf import GenomeDataFrame as GDF
-from handygenome.cnv.depth import DepthDataFrame as DepthDF
+from handygenome.genomedf.genomedf import GenomeDataFrame as GDF
+from handygenome.cnv.depth import DepthRawDataFrame as DepthRawDF
 import handygenome.tools as tools
 import handygenome.bameditor as bameditor
 
@@ -44,44 +43,124 @@ def get_mosdepth_args(
 
     return args
 
-@deco.get_deco_num_set_differently(('region_bed_path', 'region_gdf'), 1)
+
+@deco.get_deco_num_set_differently(('region_bed_path', 'region_gdf'), 2, how='lt')
 def run_mosdepth(
     bam_path, 
-    refver=None,
-    t=8, 
+    #refver=None,
+    t=1, 
+    nproc=1,
     use_median=False, 
+
     region_bed_path=None, 
     region_gdf=None, 
-    perbase=False,
+
+    window=None,
+
+    verbose=True,
     prefix='PREFIX'
+):
+    # set refver
+    #if refver is None:
+    refver = refgenome.infer_refver_bampath(bam_path)
+
+    # make bam index
+    bam_idx_path = bameditor.get_index_path(bam_path)
+    if bam_idx_path is None:
+        _ = pysam.index(bam_path)
+
+    region_gdf_list = run_mosdepth_prepare_region_gdfs(
+        region_bed_path=region_bed_path,
+        region_gdf=region_gdf,
+        window=window,
+        refver=refver,
+        n_split=nproc,
+    )
+
+    # run parallel jobs
+    tmpdir = tempfile.mkdtemp(dir=os.getcwd(), prefix='mosdepth_tmpdir_')
+    bam_basename = os.path.basename(bam_path)
+    if verbose:
+        logutils.log(f'Running mosdepth parallel jobs (bam: {bam_basename})', add_locstring=False)
+
+    args = (
+        (
+            bam_path, 
+            region_gdf,
+            refver,
+            t, 
+            use_median, 
+            prefix,
+            False,  # "verbose" argument
+            tmpdir,
+        )
+        for region_gdf in region_gdf_list
+    )
+    with multiprocessing.Pool(nproc) as pool:
+        pool_result = pool.starmap(run_mosdepth_base, args)
+
+    shutil.rmtree(tmpdir)
+
+    if verbose:
+        logutils.log(f'Finished mosdepth parallel jobs (bam: {bam_basename})', add_locstring=False)
+
+    result = DepthRawDF.concat(pool_result)
+
+    return result
+
+
+def run_mosdepth_prepare_region_gdfs(
+    region_bed_path,
+    region_gdf,
+    window,
+    refver,
+    n_split,
+):
+    region_is_given = (region_bed_path is not None) or (region_gdf is not None)
+    if region_is_given:
+        if region_bed_path is not None:
+            region_gdf = GDF.read_tsv(region_bed_path, refver)
+    else:
+        region_gdf = GDF.all_regions(refver, assembled_only=False)
+
+    if window is not None:
+        region_gdf = region_gdf.window(window)
+
+    region_gdf.sort()
+    region_gdf_list = region_gdf.equal_nrow_split(n=n_split)
+    return region_gdf_list
+
+
+#@deco.get_deco_num_set_differently(('region_bed_path', 'region_gdf'), 1)
+def run_mosdepth_base(
+    bam_path, 
+    region_gdf,
+    refver,
+    t=8, 
+    use_median=False, 
+    prefix='PREFIX',
+    verbose=False,
+    tmpdir_location=None,
 ):
     """- Input bam must be indexed.
     - region bed file: May be gzipped. May not have header row.
     """
     # make tmp directory
-    tmpdir = tempfile.mkdtemp(dir=os.getcwd(), prefix='mosdepth_tmpdir_')
-
-    # set refver
-    if refver is None:
-        refver = refgenome.infer_refver_bampath(bam_path)
+    if tmpdir_location is None:
+        tmpdir_location = os.getcwd()
+    tmpdir = tempfile.mkdtemp(dir=tmpdir_location, prefix='mosdepth_tmpdir_')
 
     # write region bed file
-    region_is_given = (region_bed_path is not None) or (region_gdf is not None)
-    if region_is_given:
-        if region_bed_path is not None:
-            region_gdf = GDF.read_tsv(region_bed_path, refver)
-        if perbase:
-            region_gdf = region_gdf.window(1)
-
+    if region_gdf is None:
+        mosdepth_input_bed_path = None
+    else:
         mosdepth_input_bed_path = os.path.join(tmpdir, 'region.bed')
-        region_gdf.df.iloc[:, :3].to_csv(
+        region_gdf.drop_annots().df.to_csv(
             mosdepth_input_bed_path, 
             sep='\t', 
             header=False, 
             index=False,
         )
-    else:
-        mosdepth_input_bed_path = None
 
     # prepare mosdepth input bam
     mosdepth_input_bam_path = os.path.join(tmpdir, 'mosdepth_input.bam')
@@ -100,7 +179,8 @@ def run_mosdepth(
 
     # run mosdepth
     bam_basename = os.path.basename(bam_path)
-    logutils.log(f'Running mosdepth (bam: {bam_basename})', add_locstring=False)
+    if verbose:
+        logutils.log(f'Running mosdepth (bam: {bam_basename})', add_locstring=False)
     mosdepth_args = get_mosdepth_args(
         prefix=os.path.join(outdir, prefix), 
         bam_path=mosdepth_input_bam_path, 
@@ -110,11 +190,12 @@ def run_mosdepth(
         bed_path=mosdepth_input_bed_path, 
     )
     p = subprocess.check_call(mosdepth_args)
-    logutils.log(f'Finished running mosdepth (bam: {bam_basename})', add_locstring=False)
+    if verbose:
+        logutils.log(f'Finished running mosdepth (bam: {bam_basename})', add_locstring=False)
 
     # load mosdepth outputs
     outfile_path = os.path.join(outdir, f'{prefix}.regions.bed.gz')
-    result_gdf = DepthDF.load_mosdepth(outfile_path, refver, use_median=use_median)
+    result_gdf = DepthRawDF.load_mosdepth(outfile_path, refver, use_median=use_median)
 
     # remove tmpdir
     shutil.rmtree(tmpdir)
@@ -220,12 +301,12 @@ def run_mosdepth_old(
 
     # load mosdepth outputs
     region_outfile_path = os.path.join(outdir, f'{prefix}.regions.bed.gz')
-    region_result_gdf = DepthDF.load_mosdepth(region_outfile_path, refver, use_median=use_median)
+    region_result_gdf = DepthRawDF.load_mosdepth(region_outfile_path, refver, use_median=use_median)
 
     # load mosdepth outputs - perbase
     perbase_outfile_path = os.path.join(outdir, f'{prefix}.per-base.bed.gz')
     if load_perbase:
-        perbase_result_gdf = DepthDF.load_mosdepth_perbase(perbase_outfile_path, refver)
+        perbase_result_gdf = DepthRawDF.load_mosdepth_perbase(perbase_outfile_path, refver)
         if region_is_given:
             perbase_result_gdf = perbase_result_gdf.intersect(region_gdf)
     else:

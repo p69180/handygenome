@@ -6,6 +6,8 @@ import signal
 
 import numpy as np
 
+import handygenome.tools as tools
+
 
 def make_errmsg(deconame, funcname):
     return (
@@ -272,11 +274,38 @@ def get_deco_atleast1d(names):
         def wrapper(*args, **kwargs):
             ba = sig.bind(*args, **kwargs)
             ba.apply_defaults()
-            argdict = ba.arguments
             for key in names:
-                argdict[key] = np.atleast_1d(argdict[key])
+                ba.arguments[key] = np.atleast_1d(ba.arguments[key])
 
-            return func(**argdict)
+            return func(*ba.args, **ba.kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+def get_deco_squeeze_atleast1d(names):
+    def decorator(func):
+        sig = inspect.signature(func)
+        if not set(names).issubset(sig.parameters.keys()):
+            raise Exception(
+                f'The names of parameters given to '
+                f'"get_deco_squeeze_atleast1d" function '
+                f'is not included in the parameter names of '
+                f'the function "{func.__name__}".')
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            ba = sig.bind(*args, **kwargs)
+            ba.apply_defaults()
+            for key in names:
+                ba.arguments[key] = np.atleast_1d(
+                    np.squeeze(
+                        ba.arguments[key]
+                    )
+                )
+
+            return func(*ba.args, **ba.kwargs)
 
         return wrapper
 
@@ -295,13 +324,12 @@ def get_deco_broadcast(names):
         def wrapper(*args, **kwargs):
             ba = sig.bind(*args, **kwargs)
             ba.apply_defaults()
-            argdict = ba.arguments
 
-            bc_args = np.broadcast_arrays(*[argdict[key] for key in names])
+            bc_args = np.broadcast_arrays(*[ba.arguments[key] for key in names])
             for key, newarg in zip(names, bc_args):
-                argdict[key] = newarg
+                ba.arguments[key] = newarg
 
-            return func(**argdict)
+            return func(*ba.args, **ba.kwargs)
 
         return wrapper
 
@@ -320,11 +348,10 @@ def get_deco_asarray(names):
         def wrapper(*args, **kwargs):
             ba = sig.bind(*args, **kwargs)
             ba.apply_defaults()
-            argdict = ba.arguments
             for key in names:
-                argdict[key] = np.asarray(argdict[key])
+                ba.arguments[key] = np.asarray(ba.arguments[key])
 
-            return func(**argdict)
+            return func(*ba.args, **ba.kwargs)
 
         return wrapper
 

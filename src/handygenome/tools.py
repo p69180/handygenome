@@ -5,12 +5,19 @@ import gzip
 import shutil
 import itertools
 import tempfile
+import collections
+import inspect
+import functools
+import math
 
 import numpy as np
+import pandas as pd
 import scipy.stats
 import scipy.signal
 import scipy.linalg
 import Bio.bgzf
+import matplotlib as mpl
+import matplotlib.pyplot as plt
 
 import handygenome.deco as deco
 import handygenome.logutils as logutils
@@ -245,7 +252,6 @@ def check_bgzipped(fname):
         return True
 
 
-#@deco.get_deco_arg_choices({'mode': ('rt', 'wt', 'a')})
 def openfile(fname, mode='rt'):
     patstring = r'[rwa][tb]'
     if not re.fullmatch(patstring, mode):
@@ -386,9 +392,9 @@ def get_rss(mode='total', unit='b'):
     return rss
 
 
-########################
-# multi-min, multi-max #
-########################
+#######################
+# iteration utilities #
+#######################
 
 def _multi_selector_base(sequence, comparing_func, key=None, with_target_val=False):
     sequence = list(sequence)
@@ -413,10 +419,16 @@ def multi_max(sequence, key=None, with_target_val=False):
     return _multi_selector_base(sequence, max, key=key, with_target_val=with_target_val)
 
 
+# https://stackoverflow.com/questions/480214/how-do-i-remove-duplicates-from-a-list-while-preserving-order
+def unique_keeporder(seq):
+    seen = set()
+    seen_add = seen.add
+    return [x for x in seq if not (x in seen or seen_add(x))]
 
-############################
-# itertools plus utilities #
-############################
+
+#########################################
+# utilities from itertools plus package #
+#########################################
 
 def pairwise(iterable):
     iterable = iter(iterable)
@@ -465,20 +477,55 @@ def grouper_Itertools_Recipes(iterable, n, *, incomplete='fill', fillvalue=None)
 # array handlers & mathematical ones #
 ######################################
 
+# Proposed by: Noyer282 (https://stackoverflow.com/a/40426159/7204581)
+# https://stackoverflow.com/questions/432112/is-there-a-numpy-function-to-return-the-first-index-of-something-in-an-array
+def array_index(arr, v):
+    assert arr.ndim == 1
+    return next((idx for idx, val in enumerate(arr) if val == v), None)
+
+
 def round_sig(num, n):
     """round 'num' with 'n' significant digits"""
 
     assert n > 0
-    from math import log10, floor
-    return round(num, -floor(log10(abs(num))) + (n-1))
+    return round(num, -math.floor(math.log10(abs(num))) + (n-1))
 
 
-def get_split_nums(total_length, num):
-    arrsp = np.array_split(np.zeros(total_length), num)
+def get_split_nums_byN(total_length, N):
+    arrsp = np.array_split(np.zeros(total_length), N)
     return np.fromiter(
         (x.shape[0] for x in arrsp if x.shape[0] != 0), 
         dtype=int,
     )
+
+
+def get_split_nums_byN_type2(total_length, N):
+    total_num = min(N, total_length)
+    q, r = divmod(total_length, total_num)
+    width1 = q + 1
+    num1 = r
+    width2 = q
+    num2 = total_num - r
+
+    return np.repeat([width1, width2], [num1, num2])
+
+
+def get_split_nums_bywidth(total_length, width):
+    width_raw = min(width, total_length)
+    q, r = divmod(total_length, width_raw)
+    if r == 0:
+        width = width_raw
+        num = q
+        result = np.repeat(width, num)
+    else:
+        q2, r2 = divmod(r, q)
+        width1 = width_raw + q2 + 1
+        num1 = r2
+        width2 = width_raw + q2
+        num2 = q - r2
+        result = np.repeat([width1, width2], [num1, num2])
+
+    return result
 
 
 def array_grouper(arr, omit_values=False):
@@ -605,13 +652,16 @@ def dirichlet_multinomial_rvs(n, alpha, rng=None):
     return result
 
 
-def get_nearest_integers(x):
+def get_nearest_integer_bounds(x, elevate=True):
     x = np.atleast_1d(x)
 
-    lower = np.floor(x)
-    upper = np.ceil(x)
-    same_ind = (upper == lower)
-    upper[same_ind] += 1
+    lower = np.floor(x).astype(int)
+    upper = np.ceil(x).astype(int)
+    same_indexes = (upper == lower)
+    if elevate:
+        upper[same_indexes] += 1
+    else:
+        lower[same_indexes] -= 1
 
     return upper, lower
 
@@ -654,13 +704,6 @@ def compare_coords(chrom1, pos1, chrom2, pos2, chromdict):
             return 1
 
 
-
-##########################################
-# Check if file is plain text or gzipped #
-##########################################
-
-    
-
 ##################################
 # temporary file path generation #
 ##################################
@@ -691,75 +734,24 @@ def get_tmpfile_path(prefix=None, suffix=None, dir=None, where=None, delete=Fals
     return path
 
 
-################
-# peak finding #
-################
+#####################
+# callable handling #
+#####################
 
-def find_hist_peaks(data, weights=None, bins=10, **kwargs):
-    find_peak_kwargs = (
-        {'height': (None, None)}
-        | kwargs
+def check_is_lambda(obj):
+    return (
+        callable(obj)
+        and (getattr(obj, '__name__') == '<lambda>')
     )
 
-    hist, bin_edges = np.histogram(
-        data, bins=bins, weights=weights, density=True,
-    )
-    bin_midpoints = 0.5 * (bin_edges[:-1] + bin_edges[1:])
 
-    peaks, peak_properties = scipy.signal.find_peaks(
-        hist, **find_peak_kwargs,
-    )
+##################
+# set operations #
+##################
 
-    if len(peaks) == 0:
-        return None
-    else:
-        return {
-            'peak_indexes': peaks,
-            'peak_xs': bin_midpoints[peaks],
-            'peak_ys': peak_properties['peak_heights'],
-            'peak_properties': peak_properties,
-            'bin_edges': bin_edges,
-            'bin_midpoints': bin_midpoints,
-            'hist': hist,
-        }
-
-
-def find_density_peaks(data, weights=None, xs=None, bw_method=None, **kwargs):
-    find_peak_kwargs = (
-        {'height': (None, None)}
-        | kwargs
-    )
-
-    try:
-        density = scipy.stats.gaussian_kde(
-            data, weights=weights, bw_method=bw_method,
-        )
-    except scipy.linalg.LinAlgError as exc:
-        if str(exc) == 'singular matrix':
-            logutils.log(
-                f'Density generation failed.', 
-                add_locstring=True, 
-                level='warn',
-            )
-            return None
-        else:
-            raise
-
-    data = np.asarray(data)
-    if isinstance(xs, int):
-        xs = np.linspace(data.min(), data.max(), xs)
-    ys = density(xs)
-
-    peaks, peak_properties = scipy.signal.find_peaks(ys, **find_peak_kwargs)
-    if len(peaks) == 0:
-        return None
-    else:
-        return {
-            'peak_indexes': peaks,
-            'peak_xs': xs[peaks],
-            'peak_ys': peak_properties['peak_heights'],
-            'peak_properties': peak_properties,
-            'density': density,
-        }
+def check_unique(seq):
+    seq = tuple(seq) 
+    seq_set = set(seq)
+    return len(seq) == len(seq_set)
 
 

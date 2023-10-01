@@ -22,12 +22,16 @@ import handygenome.tools as tools
 import handygenome.peakutils as peakutils
 import handygenome.logutils as logutils
 import handygenome.refgenome.refgenome as refgenome
+import handygenome.refgenome.refverfile as refverfile
+from handygenome.refgenome.refverfile import PARUnavailableError
 
 from handygenome.genomedf.genomedf import GenomeDataFrame as GDF
 from handygenome.cnv.depth import DepthRawDataFrame as DepthRawDF
 from handygenome.cnv.depth import DepthSegmentDataFrame as DepthSegDF
 from handygenome.cnv.baf import BAFRawDataFrame as BAFRawDF
 from handygenome.cnv.baf import BAFSegmentDataFrame as BAFSegDF
+#from handygenome.cnv.segment import SegmentDataFrame as SegDF
+from handygenome.cnv.cnvsegment import CNVSegmentDataFrame as CNVSegDF
 
 import handygenome.cnv.cncall as libcncall
 import handygenome.cnv.mosdepth as libmosdepth
@@ -38,9 +42,1417 @@ import handygenome.plot.genomeplot as libgenomeplot
 from handygenome.plot.genomeplot import GenomePlotter
 
 
-####################################
-# decorator for making plot method #
-####################################
+
+
+#############
+# CNVSample #
+#############
+
+class CNVSample:
+    default_window = {'panel': 100, 'wgs': 1000}
+    simple_attr_keys = (
+        'bam_path',
+        'vcf_path',
+        'sampleid',
+        'refver',
+        'is_female',
+        'mode',
+        'nproc',
+        'verbose',
+        'ploidy',
+        'genomeplotter_kwargs',
+    )
+    save_paths_basenames = {
+        'simple_attrs': 'simple_attrs.json',
+
+        # target region
+        'raw_target_region': 'raw_target_region.tsv.gz',
+
+        # raw data
+        'depth_rawdata': 'depth_rawdata.tsv.gz',
+        'baf_rawdata': 'baf_rawdata.tsv.gz',
+
+        # segment
+        'depth_segment': 'depth_segment.tsv.gz',
+        'baf_noedit_segment': 'baf_noedit_segment.tsv.gz',
+        'baf_edited_segment': 'baf_edited_segment.tsv.gz',
+        'baf_rmzero_noedit_segment': 'baf_rmzero_noedit_segment.tsv.gz',
+        'merged_segment': 'merged_segment.tsv.gz',
+    }
+
+    def __repr__(self):
+        return f'{self.__class__.__name__} object (sampleid:{self.simple_attrs["sampleid"]})'
+
+    def __getattr__(self, key):
+        #if key in self.__class__.simple_attr_keys:
+        if key in self.simple_attrs.keys():
+            return self.simple_attrs[key]
+        else:
+            super().__getattr__(key)
+
+    ##########
+    # logger #
+    ##########
+
+    def log(self, msg, verbose=None):
+        if verbose is None:
+            verbose = self.simple_attrs["verbose"]
+        if verbose:
+            logutils.log(f'CNVSample {self.simple_attrs["sampleid"]} - {msg}')
+
+    #############
+    # decorator #
+    #############
+
+    @staticmethod
+    def deco_sanitycheck_sampletype(func):
+        sig = inspect.signature(func)
+        assert 'sampletype' in sig.parameters.keys()
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            ba = sig.bind(*args, **kwargs)
+            ba.apply_defaults()
+            if ba.arguments['sampletype'] not in ('normal', 'tumor'):
+                raise Exception(f'"sampletype" argument must be either "normal" or "tumor".')
+
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    @staticmethod
+    def get_deco_logging(msg):
+        def decorator(func):
+            sig = inspect.signature(func)
+
+            @functools.wraps(func)
+            def wrapper(*args, **kwargs):
+                ba = sig.bind(*args, **kwargs)
+                ba.apply_defaults()
+
+                ba.arguments['self'].log('Beginning ' + msg)
+                result = func(*args, **kwargs)
+                ba.arguments['self'].log('Finished ' + msg)
+
+                return result
+
+            return wrapper
+
+        return decorator
+
+    @staticmethod
+    def deco_nproc(func):
+        sig = inspect.signature(func)
+        if 'nproc' not in sig.parameters.keys():
+            raise Exception(
+                f'Decorated plotter method does not have '
+                f'"nproc" parameter.'
+            )
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            ba = sig.bind(*args, **kwargs)
+            ba.apply_defaults()
+            if ba.arguments['nproc'] == 0:
+                ba.arguments['nproc'] = ba.arguments['self'].nproc
+
+            return func(*ba.args, **ba.kwargs)
+
+        return wrapper
+
+    @staticmethod
+    def deco_plotter(func):
+        sig = inspect.signature(func)
+        if 'genomeplotter_kwargs' not in sig.parameters.keys():
+            raise Exception(
+                f'Decorated plotter method does not have '
+                f'"genomeplotter_kwargs" parameter.'
+            )
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            ba = sig.bind(*args, **kwargs)
+            ba.apply_defaults()
+
+            if ba.arguments['genomeplotter_kwargs'] is not None:
+                cnvsample_obj = ba.arguments['self']
+                gplotter_kwargs = ba.arguments['genomeplotter_kwargs'].copy()
+
+                gplotter_kwargs['refver'] = cnvsample_obj.simple_attrs["refver"]
+                new_gplotter = GenomePlotter(**gplotter_kwargs)
+
+                old_gplotter = cnvsample_obj.reset_genomeplotter(new_gplotter)
+                result = func(*args, **kwargs)
+                cnvsample_obj.reset_genomeplotter(old_gplotter)
+            else:
+                result = func(*args, **kwargs)
+
+            return result
+
+        return wrapper
+
+    ###############
+    # initializer #
+    ###############
+
+    #def __del__(self):
+    #    del self.raw_target_region
+    #    for datatype, sampletype in itertools.product(
+    #        ['depth', 'baf'], ['normal', 'tumor'],
+    #    ):
+    #        del self.rawdata[datatype][sampletype]
+
+    @classmethod
+    @deco.get_deco_num_set_differently(
+        ('target_region_path', 'target_region_gdf'), 2, 'lt'
+    )
+    def from_files(
+        cls, 
+
+        *,
+
+        # required simple attrs
+        sampleid, 
+        refver,
+        is_female,
+        mode,
+
+        # depth
+        bam_path,
+
+        # baf
+        vcf_path=None,
+        vcf_sampleid=None,
+        bafdf=None,
+
+        # optional simple attrs
+        target_region_path=None,
+        target_region_gdf=None,
+
+        ploidy=2,
+        nproc=1,
+        genomeplotter_kwargs=dict(),
+        verbose=True,
+
+        # others
+        norm_method='plain',
+    ):
+        cls.init_sanitycheck(
+            mode, 
+            target_region_path,
+            target_region_gdf,
+            vcf_path,
+            vcf_sampleid,
+            bafdf,
+        )
+
+        result = cls()
+
+        # set simple attributes
+        result.simple_attrs = {
+            'bam_path': bam_path,
+            'vcf_path': vcf_path,
+            'vcf_sampleid': vcf_sampleid,
+            'sampleid': sampleid,
+            'refver': refver,
+            'is_female': is_female,
+            'mode': mode,
+            'nproc': nproc,
+            'verbose': verbose,
+            'ploidy': ploidy,
+            'genomeplotter_kwargs': genomeplotter_kwargs,
+        }
+
+        # initiate gdf data dict
+        result.init_gdfs()
+
+        # target region
+        result.load_raw_target_region(target_region_path, target_region_gdf)
+
+        # raw data
+        result.load_depth(bam_path)
+        #result.make_normalized_depth()
+        result.load_baf(vcf_path, vcf_sampleid, bafdf)
+
+        # genomeplotter
+        result.init_genomeplotter(**result.simple_attrs['genomeplotter_kwargs'])
+
+        # plotdata
+        result.plotdata_cache = dict()
+
+        return result
+
+    def init_gdfs(self):
+        self.gdfs = {
+            'raw_target_region': None,
+            'target_region': None,
+            'excluded_region': None,
+            'depth_rawdata': None,
+            'baf_rawdata': None,
+            'depth_segment': None,
+            'baf_noedit_segment': {baf_idx: None for baf_idx in self.get_baf_indexes()},
+            'baf_edited_segment': {baf_idx: None for baf_idx in self.get_baf_indexes()},
+            'baf_rmzero_noedit_segment': {baf_idx: None for baf_idx in self.get_baf_indexes()},
+            'merged_segment': None,
+        }
+
+
+    @staticmethod
+    def init_sanitycheck(
+        mode, 
+        target_region_path,
+        target_region_gdf,
+        vcf_path,
+        vcf_sampleid,
+        bafdf,
+    ):
+        assert mode in ('wgs', 'panel')
+        target_region_given = (
+            (target_region_path is not None)
+            or (target_region_gdf is not None)
+        )
+        if (mode == 'panel') and (not target_region_given):
+            raise Exception(f'target_region must be given when "mode" is "panel"')
+        elif (mode == 'wgs') and target_region_given:
+            raise Exception(f'target_region must not be given when "mode" is "wgs"')
+
+        # baf loading args
+        if not (
+            ((vcf_path is not None) and (vcf_sampleid is not None))
+            ^ (bafdf is not None)
+        ):
+            raise Exception(f'BAF loading argument usage: 1) "vcf_path" and "vcf_sampleid" ; 2) "bafdf"')
+
+    def load_raw_target_region(self, target_region_path, target_region_gdf):
+        # target_region
+        if target_region_path is not None:
+            raw_target_region = GDF.read_tsv(target_region_path).drop_annots()
+        elif target_region_gdf is not None:
+            assert isinstance(target_region_gdf, GDF)
+            raw_target_region = GDF.from_frame(
+                target_region_gdf.drop_annots().df,
+                refver=self.refver,
+            )
+        else:
+            raw_target_region = None
+
+        self.gdfs['raw_target_region'] = raw_target_region
+
+    @deco_nproc
+    def load_depth(self, bam_path, window=None, t=1, nproc=0):
+        self.log(f'Beginning making depth rawdata from bam file')
+
+        # prepare arguments
+        if self.simple_attrs["mode"] == 'wgs':
+            region_gdf = GDF.all_regions(self.refver, assembled_only=True)
+        elif self.simple_attrs["mode"] == 'panel':
+            region_gdf = self.gdfs['raw_target_region']
+
+        if window is None:
+            window = self.__class__.default_window[self.simple_attrs["mode"]]
+
+        # main
+        depth_gdf = libmosdepth.run_mosdepth(
+            bam_path, 
+            t=t, 
+            nproc=nproc,
+            use_median=False, 
+
+            region_gdf=region_gdf,
+
+            window=window,
+            verbose=self.simple_attrs['verbose'],
+        )
+        self.gdfs['depth_rawdata'] = depth_gdf
+
+        self.log(f'Finished making depth rawdata from bam file')
+
+    @deco_nproc
+    def load_baf(self, vcf_path, vcf_sampleid, bafdf, nproc=0):
+        if bafdf is None:
+            self.log(f'Beginning making BAF rawdata from vcf file')
+
+            bafdfs_bysample = libbaf.get_bafdfs_from_vcf(
+                vcf_path=vcf_path,
+                sampleids=vcf_sampleid,
+                n_allele=self.simple_attrs["ploidy"],
+                nproc=nproc,
+                exclude_other=False,
+            )
+            bafdf = bafdfs_bysample[vcf_sampleid]
+
+            self.log(f'Finished making BAF rawdata from vcf file')
+
+        bafdf = bafdf.remove_overlapping_rows()
+        if self.mode == 'panel':
+            bafdf = bafdf.intersect(self.get_raw_target_region())
+
+        self.gdfs['baf_rawdata'] = bafdf
+
+#        # set target_region
+#        self.set_target_region(sampleid, mode, target_region)
+#
+#        # normal mean ploidy
+#        self.set_normal_mean_ploidy(sampleid)
+#
+#        # load germline vcf
+#        if germline_vcf_path is not None:
+#            LOGGER_INFO.info('Loading tumor germline vcf')
+#            self.load_germline_vcf(
+#                sampleid=sampleid, 
+#                vcf_path=germline_vcf_path, 
+#                vcf_sampleid_tumor=vcf_sampleid_tumor,
+#                vcf_sampleid_normal=vcf_sampleid_normal,
+#                logging_lineno=50000,
+#                nproc=vcfload_nproc,
+#            )
+#        elif germline_vafdf_path is not None:
+#            LOGGER_INFO.info('Loading tumor germline vaf dataframe')
+#            self.load_germline_vafdf(sampleid, germline_vafdf_path)
+#
+#        #self.postprocess_bafdf(sampleid)
+#
+#        # postprocess depths
+#        self.postprocess_depth(sampleid, verbose=verbose, norm_method=norm_method)
+
+    #################
+    # genomeplotter #
+    #################
+
+    def init_genomeplotter(self, **kwargs):
+        self.genomeplotter = GenomePlotter(refver=self.simple_attrs["refver"], **kwargs)
+
+    def reset_genomeplotter(self, new_genomeplotter=None):
+        old_genomeplotter = self.genomeplotter
+
+        if new_genomeplotter is None:
+            new_genomeplotter = GenomePlotter(self.simple_attrs["refver"])
+        self.genomeplotter = new_genomeplotter
+
+        return old_genomeplotter
+
+    ##############
+    # properties #
+    ##############
+
+    ##############
+    # CN calling #
+    ##############
+
+    def add_clonal_solution_germline(self):
+        """Only for germline sample"""
+        cnv_seg_gdf = self.get_merged_segment()
+        clonal_CNt, clonal_Bt = libcncall.clonal_solution_from_germline(
+            cnv_seg_gdf, self.is_female, self.ploidy,
+        )
+        cnv_seg_gdf.assign_clonal_CN(clonal_CNt)
+        cnv_seg_gdf.assign_clonal_B(clonal_Bt)
+
+    #########################
+    # target region setting #
+    #########################
+
+    def set_excluded_region(self):
+        excluded_region_list = list()
+
+        # baf
+        for baf_seg_gdf in self.get_baf_edited_segment_dict().values():
+            bafseg_selector = baf_seg_gdf.get_filter()
+            baf_excl_region_gdf = baf_seg_gdf.drop_annots().loc[~bafseg_selector, :]
+            excluded_region_list.append(baf_excl_region_gdf)
+
+        # depth
+        depth_seg_gdf = self.get_depth_segment() 
+        depthseg_selector = depth_seg_gdf.get_filter()
+        depth_excl_region_gdf = depth_seg_gdf.drop_annots().loc[~depthseg_selector, :]
+        excluded_region_list.append(depth_excl_region_gdf)
+
+        # N region
+        Nregion_gdf = refverfile.get_Nregion_gdf(self.refver)
+        excluded_region_list.append(Nregion_gdf)
+        
+        # male Y PAR
+        if not self.is_female:
+            try:
+                par_gdf = refverfile.get_par_gdf(self.refver)
+            except PARUnavailableError:
+                pass
+            else:
+                y_chrom = self.chromdict.XY_names[1]
+                y_par_gdf = par_gdf.subset_chroms(y_chrom)
+                excluded_region_list.append(y_par_gdf)
+
+        # get union of all
+        excluded_region = functools.reduce(
+            lambda x, y: x.set_union(y), 
+            excluded_region_list,
+        )
+        self.gdfs['excluded_region'] = excluded_region
+
+    def set_target_region(self):
+        """Must be run after depth and baf segment processing"""
+
+        # make allregion
+        if self.mode == 'wgs':
+            allregion = GDF.all_regions(refver=self.refver, assembled_only=True)
+        elif mode == 'panel':
+            allregion = self.get_raw_target_region()
+
+        if (
+            self.is_female
+            and self.chromdict.check_has_XY()
+        ):
+            y_chrom = self.chromdict.XY_names[1]
+            selected_chroms = set(allregion.chroms).difference([y_chrom])
+            allregion = allregion.subset_chroms(selected_chroms)
+
+        # subtract excluded region
+        self.set_excluded_region()
+        target_region = allregion.subtract(self.get_excluded_region())
+        target_region.sort()
+
+        self.gdfs['target_region'] = target_region
+
+    def find_onecopy_depth(self):
+        return self.get_depth_segment().find_onecopy_depth(
+            self.is_female, self.ploidy,
+        )
+
+    def find_germline_intcopy_validbaf_region(self, factors=(0.3, 2)):
+        assert self.simple_attrs["mode"] == 'wgs'
+        assert self.get_depth_segment('normal') is not None
+        assert all(
+            (self.get_baf_segment('normal', baf_idx) is not None)
+            for baf_idx in self.get_baf_indexes()
+        )
+
+        depth_seg_gdf = self.get_depth_segment('normal').copy()
+        baf_seg_gdfs = self.get_baf_segment_dict('normal')
+
+        # onecopy depth
+        onecopy_depth = self.get_onecopy_depth(depth_seg_gdf)
+        depth_seg_gdf['onecopy_depth_ratio'] = (
+            depth_seg_gdf[DepthRawDF.norm_depth_colname]
+            / onecopy_depth
+        )
+
+        print(depth_seg_gdf)
+
+
+#        global_mean = np.average(
+#            upscaled_depth_df['mean_depth'], 
+#            weights=(upscaled_depth_df['End'] - upscaled_depth_df['Start']),
+#        )
+#        selector = segdf['depth_segment_mean'].between(
+#            global_mean * factors[0], 
+#            global_mean * factors[1], 
+#        )
+#        included_segments = segdf.loc[selector, :]
+#
+#        target_region_gr = pr.PyRanges(depth_df).drop().overlap(
+#            pr.PyRanges(included_segments)
+#        ).merge()
+#
+#        return target_region_gr
+
+
+    ####################
+    # pickle save/load #
+    ####################
+
+    def save_pickle(self, filepath):
+        if not filepath.endswith('.pickle'):
+            raise Exception(f'File name must end with ".pickle"')
+        
+        if os.path.exists(filepath):
+            logutils.log(f'Overwriting an existing file', level='warning')
+
+        with open(filepath, 'wb') as outfile:
+            pickle.dump(self, outfile)
+
+    @classmethod
+    def load_pickle(cls, filepath):
+        with open(filepath, 'rb') as infile:
+            return pickle.load(infile)
+
+    ######################
+    # textfile save/load #
+    ######################
+
+    def save_simple_attrs(self, topdir):
+        savepath = os.path.join(
+            topdir, 
+            self.__class__.save_paths_basenames['simple_attrs'],
+        )
+        with open(savepath, 'wt') as outfile:
+            json.dump(self.simple_attrs, outfile)
+
+    def load_simple_attrs(self, topdir):
+        savepath = os.path.join(
+            topdir, 
+            self.__class__.save_paths_basenames['simple_attrs'],
+        )
+        with open(savepath, 'rt') as infile:
+            self.simple_attrs = json.load(infile)
+
+    ###
+    
+    def save_nonbafidx_gdf(self, gdf_key, topdir):
+        gdf = self.gdfs[gdf_key]
+        if gdf is not None:
+            savepath = os.path.join(
+                topdir, 
+                self.__class__.save_paths_basenames[gdf_key],
+            )
+            gdf.write_tsv(savepath)
+
+    def load_nonbafidx_gdf(self, gdf_key, topdir, GDF_class):
+        savepath = os.path.join(
+            topdir, 
+            self.__class__.save_paths_basenames[gdf_key],
+        )
+        if os.path.exists(savepath):
+            self.gdfs[gdf_key] = GDF_class.read_tsv(savepath, self.simple_attrs["refver"])
+
+    ###
+
+    def save_bafidx_gdf(self, gdf_key, topdir):
+        for baf_idx in self.get_baf_indexes():
+            gdf = self.gdfs[gdf_key][baf_idx]
+            if gdf is not None:
+                basename = re.sub(
+                    '\.tsv\.gz$', 
+                    f'_{baf_idx}.tsv.gz', 
+                    self.__class__.save_paths_basenames[gdf_key],
+                )
+                savepath = os.path.join(topdir, basename)
+                gdf.write_tsv(savepath)
+
+    def load_bafidx_gdf(self, gdf_key, topdir, GDF_class):
+        for baf_idx in self.get_baf_indexes():
+            basename = re.sub(
+                '\.tsv\.gz$', 
+                f'_{baf_idx}.tsv.gz', 
+                self.__class__.save_paths_basenames[gdf_key],
+            )
+            savepath = os.path.join(topdir, basename)
+            if os.path.exists(savepath):
+                self.gdfs[gdf_key][baf_idx] = GDF_class.read_tsv(savepath, self.simple_attrs["refver"])
+
+    def save_tsv(self, topdir, force=False):
+        if os.path.exists(topdir):
+            if force:
+                shutil.rmtree(topdir)
+            else:
+                raise Exception(f'Output directory must not exist in advance')
+        os.mkdir(topdir)
+
+        self.log(f'Beginning saving tsv files')
+        
+        # simple attrs
+        self.save_simple_attrs(topdir)
+
+        # target region
+        self.save_nonbafidx_gdf('raw_target_region', topdir)
+
+        # raw data
+        self.save_nonbafidx_gdf('depth_rawdata', topdir)
+        self.save_nonbafidx_gdf('baf_rawdata', topdir)
+
+        # segment
+        self.save_nonbafidx_gdf('depth_segment', topdir)
+        self.save_bafidx_gdf('baf_noedit_segment', topdir)
+        self.save_bafidx_gdf('baf_edited_segment', topdir)
+        self.save_bafidx_gdf('baf_rmzero_noedit_segment', topdir)
+        self.save_nonbafidx_gdf('merged_segment', topdir)
+
+        self.log(f'Finished saving tsv files')
+
+    @classmethod
+    def load_tsv(cls, topdir):
+        result = cls()
+
+        # simple attrs
+        result.load_simple_attrs(topdir)
+
+        # initiate gdf data dict
+        result.init_gdfs()
+
+        # target region
+        result.load_simple_attrs(topdir)
+
+        # raw data
+        result.load_nonbafidx_gdf('depth_rawdata', topdir, DepthRawDF)
+        result.load_nonbafidx_gdf('baf_rawdata', topdir, BAFRawDF)
+
+        # segment
+        result.load_nonbafidx_gdf('depth_segment', topdir, DepthSegDF)
+        result.load_bafidx_gdf('baf_noedit_segment', topdir, BAFSegDF)
+        result.load_bafidx_gdf('baf_edited_segment', topdir, BAFSegDF)
+        result.load_bafidx_gdf('baf_rmzero_noedit_segment', topdir, BAFSegDF)
+        result.load_nonbafidx_gdf('merged_segment', topdir, CNVSegDF)
+
+        # genomeplotter
+        result.init_genomeplotter(**result.simple_attrs['genomeplotter_kwargs'])
+
+        # plotdata
+        result.plotdata_cache = dict()
+
+        return result
+            
+    ##############
+    # properties #
+    ##############
+
+    @property
+    def chromdict(self):
+        return refgenome.get_chromdict(self.simple_attrs["refver"])
+
+    #################
+    # data fetchers #
+    #################
+
+    def get_raw_target_region(self):
+        return self.gdfs['raw_target_region']
+
+    def get_target_region(self):
+        return self.gdfs['target_region']
+
+    def get_excluded_region(self):
+        return self.gdfs['excluded_region']
+
+    def get_depth_rawdata(self):
+        return self.gdfs['depth_rawdata']
+
+    def get_baf_rawdata(self, baf_idx, rmzero=False):
+        baf_raw_gdf = self.gdfs['baf_rawdata']
+        if baf_raw_gdf is None:
+            return None
+        else:
+            baf_raw_gdf = baf_raw_gdf.choose_annots(baf_idx)
+            if rmzero:
+                selector = baf_raw_gdf[baf_idx] > 0
+                baf_raw_gdf = baf_raw_gdf.loc[selector, :]
+
+            return baf_raw_gdf
+
+    def get_depth_segment(self):
+        return self.gdfs['depth_segment']
+
+    def get_baf_noedit_segment(self, baf_idx, rmzero=False):
+        segment_dict_key = ('baf_rmzero_noedit_segment' if rmzero else 'baf_noedit_segment')
+        result = self.gdfs[segment_dict_key][baf_idx]
+        return result
+
+    def get_baf_noedit_segment_dict(self, rmzero=False):
+        return {
+            baf_idx: self.get_baf_noedit_segment(baf_idx, rmzero=rmzero)
+            for baf_idx in self.get_baf_indexes()
+        }
+
+    def get_baf_edited_segment(self, baf_idx, rmzero=False):
+        segment_dict_key = 'baf_edited_segment'
+        result = self.gdfs[segment_dict_key][baf_idx]
+        return result
+
+    def get_baf_edited_segment_dict(self, rmzero=False):
+        return {
+            baf_idx: self.get_baf_edited_segment(baf_idx, rmzero=rmzero)
+            for baf_idx in self.get_baf_indexes()
+        }
+
+    def get_merged_segment(self):
+        return self.gdfs['merged_segment']
+
+    ##############################
+    # depth rawdata modification #
+    ##############################
+
+    @get_deco_logging(f'depth segmentation')
+    @deco_nproc
+    def make_depth_segment(self, rawdepth=False, nproc=0, **kwargs):
+        kwargs['nproc'] = nproc
+        depth_raw_gdf = self.get_depth_rawdata()
+        annot_colname = (
+            DepthRawDF.depth_colname
+            if rawdepth else
+            DepthRawDF.norm_depth_colname
+        )
+        self.gdfs['depth_segment'] = depth_raw_gdf.get_segment(
+            annot_colname=annot_colname,
+            **kwargs,
+        )
+
+    @get_deco_logging(f'depth segment modification')
+    @deco_nproc
+    def edit_depth_segment(self, nproc=0, readlength=151, MQ_cutoff=(40, None)):
+        self.make_normalized_depth()
+        self.add_MQ_to_depth_rawdata(readlength=readlength, nproc=nproc)
+        self.add_rawdata_to_depth_segment(rawdepth=False, nproc=nproc)
+        self.add_filter_to_depth_segment(MQ_cutoff=MQ_cutoff)
+
+    ###
+
+    def make_normalized_depth(self):
+        self.get_depth_rawdata().set_normalized_depth()
+
+    @get_deco_logging(f'MQ annotation to depth rawdata')
+    @deco_nproc
+    def add_MQ_to_depth_rawdata(self, readlength=151, nproc=0):
+        depth_rawdata = self.get_depth_rawdata()
+        if not depth_rawdata.check_has_MQ():
+            depth_rawdata.add_MQ(
+                bam_path=self.bam_path,
+                readlength=readlength,
+                nproc=nproc,
+                verbose=False,
+            )
+
+    @get_deco_logging(f'rawdata annotation to depth segment')
+    @deco_nproc
+    def add_rawdata_to_depth_segment(
+        self, rawdepth=False, nproc=0,
+    ):
+        depth_seg_gdf = self.get_depth_segment()
+        depth_raw_gdf = self.get_depth_rawdata()
+        depth_seg_gdf.add_rawdata_info(
+            depth_raw_gdf, 
+            merge_methods=['mean', 'std'],
+            rawdepth=rawdepth,
+            nproc=nproc,
+        )
+
+    def add_filter_to_depth_segment(self, MQ_cutoff=(40, None)):
+        self.get_depth_segment().add_filter(MQ_cutoff=MQ_cutoff)
+
+    ############################
+    # baf rawdata modification #
+    ############################
+
+    @get_deco_logging(f'BAF segmentation')
+    @deco_nproc
+    def make_baf_noedit_segment(self, nproc=0, rmzero=False, **kwargs):
+        kwargs['nproc'] = nproc
+        for baf_idx in self.get_baf_indexes():
+            self.log(f'Beginning {baf_idx}, rmzero={rmzero}')
+
+            baf_raw_gdf = self.get_baf_rawdata(baf_idx, rmzero=rmzero)
+            baf_seg_gdf = baf_raw_gdf.get_segment(baf_idx, **kwargs)
+            #baf_seg_gdf = baf_seg_gdf.fill_gaps(edit_first_last=(self.mode == 'wgs'))
+
+            segment_dict_key = ('baf_rmzero_noedit_segment' if rmzero else 'baf_noedit_segment')
+            self.gdfs[segment_dict_key][baf_idx] = baf_seg_gdf
+
+            self.log(f'Finished {baf_idx}, rmzero={rmzero}')
+
+    @deco_nproc
+    def add_rawdata_to_bafseg_base(
+        self, 
+        baf_seg_gdf, 
+        baf_raw_gdf, 
+        baf_idx,
+        distinfo_kwargs,
+        nproc=0,
+    ):
+        baf_seg_gdf.add_rawdata_info(
+            baf_raw_gdf, 
+            baf_idx,
+            distinfo_keys=['ndata', 'center', 'width', 'left_ips', 'right_ips'],
+            distinfo_kwargs=distinfo_kwargs,
+            merge_methods=['mean', 'std'],
+            nproc=nproc,
+        )
+        #return annotated_baf_seg_gdf
+
+    @get_deco_logging(f'rawdata annotation to baf segment')
+    @deco_nproc
+    def add_rawdata_to_baf_noedit_segment(self, nproc=0):
+        for baf_idx in self.get_baf_indexes():
+            self.add_rawdata_to_bafseg_base(
+                baf_seg_gdf=self.get_baf_noedit_segment(baf_idx), 
+                baf_raw_gdf=self.get_baf_rawdata(baf_idx), 
+                baf_idx=baf_idx,
+                distinfo_kwargs=dict(),
+                nproc=nproc,
+            )
+
+    @deco_nproc
+    @get_deco_logging(f'modifying BAF segment')
+    def make_baf_edited_segment(
+        self, 
+        rmzero=False, 
+        distinfo_kwargs=dict(),
+        nproc=0,
+
+        # low ndata merging
+        ndata_cutoff=30, 
+        merge_low_ndata=True,
+
+        # corrected baf cutoff
+        corrected_baf_cutoff=0.41,
+
+        # filtering
+        width_cutoff=None,
+        #center_cutoff=(0.4, np.inf),
+        center_cutoff=None,
+    ):
+        for baf_idx in self.get_baf_indexes():
+            logutils.log(f'Beginning job for baf index {baf_idx}')
+
+            baf_raw_gdf = self.get_baf_rawdata(baf_idx, rmzero=rmzero)
+
+            # 1. annotate with bafdistinfo
+            baf_edited_seg_gdf = self.get_baf_noedit_segment(baf_idx, rmzero=rmzero).copy()
+            self.add_rawdata_to_bafseg_base(
+                baf_seg_gdf=baf_edited_seg_gdf, 
+                baf_raw_gdf=baf_raw_gdf, 
+                baf_idx=baf_idx,
+                distinfo_kwargs=distinfo_kwargs,
+                nproc=nproc,
+            )
+
+            # 2. fill gap
+            baf_edited_seg_gdf = baf_edited_seg_gdf.fill_gaps(edit_first_last=(self.mode == 'wgs'))
+
+            # 3. merge low ndata segments
+            if merge_low_ndata:
+                logutils.log(f'Beginning merging low ndata segments')
+
+                cycle = 0
+                while True:
+                    cycle += 1
+                    logutils.log(f'Cycle {cycle}')
+
+                    # merge between low segments
+                    logutils.log(f'Beginning merging low ndata segments')
+                    baf_edited_seg_gdf = baf_edited_seg_gdf.merge_low_ndata_segments(
+                        cutoff=ndata_cutoff,
+                        nproc=nproc,
+                    )
+                    self.add_rawdata_to_bafseg_base(
+                        baf_seg_gdf=baf_edited_seg_gdf, 
+                        baf_raw_gdf=baf_raw_gdf, 
+                        baf_idx=baf_idx,
+                        distinfo_kwargs=distinfo_kwargs,
+                        nproc=nproc,
+                    )
+                    logutils.log(f'Finished merginig low ndata segments')
+
+                    # incorporate low segments into adjacent high segments
+                    logutils.log(f'Beginning incorporating into adjacent high ndata segments')
+                    baf_edited_seg_gdf = baf_edited_seg_gdf.incoporate_low_ndata_segments(
+                        cutoff=ndata_cutoff,
+                        nproc=nproc,
+                    )
+                    self.add_rawdata_to_bafseg_base(
+                        baf_seg_gdf=baf_edited_seg_gdf, 
+                        baf_raw_gdf=baf_raw_gdf, 
+                        baf_idx=baf_idx,
+                        distinfo_kwargs=distinfo_kwargs,
+                        nproc=nproc,
+                    )
+                    logutils.log(f'Finished incorporating into adjacent high ndata segments')
+
+                    if not np.isnan(baf_edited_seg_gdf.get_dist_ndata()).any():
+                        break
+
+                logutils.log(f'Finished merging low ndata segments')
+
+#            # 3. merge low ndata segments with themselves
+#            if merge_low_ndata:
+#                logutils.log(f'Beginning merging low ndata segments')
+#                baf_edited_seg_gdf = baf_edited_seg_gdf.merge_low_ndata_segments(
+#                    cutoff=ndata_cutoff,
+#                    nproc=nproc,
+#                )
+#                self.add_rawdata_to_bafseg_base(
+#                    baf_seg_gdf=baf_edited_seg_gdf, 
+#                    baf_raw_gdf=baf_raw_gdf, 
+#                    baf_idx=baf_idx,
+#                    distinfo_kwargs=distinfo_kwargs,
+#                    nproc=nproc,
+#                )
+#                logutils.log(f'Finished merginig low ndata segments')
+#
+#            # 4. merge remaining low ndata segments into adjacent high ndata segments
+#            if merge_low_ndata:
+#                logutils.log(f'Beginning incorporating into adjacent high ndata segments')
+#                baf_edited_seg_gdf = baf_edited_seg_gdf.incoporate_low_ndata_segments(
+#                    cutoff=ndata_cutoff,
+#                    nproc=nproc,
+#                )
+#                self.add_rawdata_to_bafseg_base(
+#                    baf_seg_gdf=baf_edited_seg_gdf, 
+#                    baf_raw_gdf=baf_raw_gdf, 
+#                    baf_idx=baf_idx,
+#                    distinfo_kwargs=distinfo_kwargs,
+#                    nproc=nproc,
+#                )
+#                logutils.log(f'Finished incorporating into adjacent high ndata segments')
+
+            # 4. add corrected baf column
+            baf_edited_seg_gdf.add_corrected_baf(cutoff=corrected_baf_cutoff)
+
+            # 5. add filter column
+            baf_edited_seg_gdf.add_filter(width_cutoff=width_cutoff, center_cutoff=center_cutoff)
+
+            # result
+            self.gdfs['baf_edited_segment'][baf_idx] = baf_edited_seg_gdf
+
+    #########################
+    # merged segment making #
+    #########################
+
+    @deco_nproc
+    @get_deco_logging(f'merging depth and baf segments')
+    def make_merged_segment(self, nproc=0):
+        depth_segdf = self.get_depth_segment()
+        baf_edited_segdf_dict = self.get_baf_edited_segment_dict()
+        sub_seg_gdfs = [depth_segdf] + list(baf_edited_segdf_dict.values())
+
+        merged_seg_gdf = CNVSegDF.from_segments(sub_seg_gdfs, nproc=nproc)
+        merged_seg_gdf = merged_seg_gdf.intersect(self.get_target_region())
+
+        cols_to_drop = (
+            [depth_segdf.get_filter_colname()]
+            + [x.get_filter_colname() for x in baf_edited_segdf_dict.values()]
+        )
+        merged_seg_gdf.drop_annots(cols_to_drop, inplace=True)
+
+        self.gdfs['merged_segment'] = merged_seg_gdf
+
+    ############
+    # plotdata #
+    ############
+
+    def make_upscaled_depth(self, binsize):
+        pass
+
+    def make_plotdata_base(self, data, cache_key=None):
+        #self.log(f'Beginning plotdata generation for {cache_key}')
+        plotdata = self.genomeplotter.cconv.prepare_plot_data(data)
+        #self.plotdata_cache[cache_key] = plotdata
+        #self.log(f'Finished plotdata generation for {cache_key}')
+
+        return plotdata
+
+    @get_deco_logging(f'making BAF rawdata plotdata')
+    def make_baf_rawdata_plotdata(self, rmzero=False):
+        plotdata_dict = dict()
+        for baf_idx in self.get_baf_indexes():
+            data = self.get_baf_rawdata(baf_idx, rmzero=rmzero)
+            #plotdata_key = f'{sampletype}_baf_raw_{baf_idx}'
+            plotdata_dict[baf_idx] = self.make_plotdata_base(data)
+
+        return plotdata_dict
+
+    @get_deco_logging(f'making BAF segment plotdata')
+    def make_baf_noedit_segment_plotdata(self, rmzero=False):
+        segment_dict_key = ('baf_rmzero_noedit_segment' if rmzero else 'baf_noedit_segment')
+        data_dict = self.gdfs[segment_dict_key]
+        plotdata_dict = dict()
+        for baf_idx, data in data_dict.items():
+            #plotdata_key = f'{sampletype}_baf_segment_{baf_idx}'
+            plotdata = self.make_plotdata_base(data)
+            plotdata_dict[baf_idx] = plotdata
+
+        return plotdata_dict
+
+    @get_deco_logging(f'making BAF segment plotdata')
+    def make_baf_edited_segment_plotdata(self, rmzero=False):
+        data_dict = self.gdfs['baf_edited_segment']
+        plotdata_dict = dict()
+        for baf_idx, data in data_dict.items():
+            #plotdata_key = f'{sampletype}_baf_segment_{baf_idx}'
+            plotdata = self.make_plotdata_base(data)
+            plotdata_dict[baf_idx] = plotdata
+
+        return plotdata_dict
+
+    @get_deco_logging(f'making depth rawdata plotdata')
+    def make_depth_rawdata_plotdata(self):
+        data = self.get_depth_rawdata()
+        #plotdata_key = f'{sampletype}_depth_raw'
+        return self.make_plotdata_base(data)
+
+    @get_deco_logging(f'making depth segment plotdata')
+    def make_depth_segment_plotdata(self):
+        data = self.get_depth_segment()
+        #plotdata_key = f'{sampletype}_depth_segment'
+        return self.make_plotdata_base(data)
+
+    @get_deco_logging(f'making merged segment plotdata')
+    def make_merged_segment_plotdata(self):
+        data = self.get_merged_segment()
+        #plotdata_key = f'{sampletype}_depth_segment'
+        return self.make_plotdata_base(data)
+
+    #########################
+    # HIGH level ax drawers #
+    #########################
+
+    @deco_plotter
+    def draw_depth_and_baf(
+        self,
+        axd=None,
+
+        # figure title - only works when figure object is not already created
+        title=None,
+        suptitle_kwargs=dict(),
+        subplots_kwargs=dict(),
+
+        # kwargs for low level drawers
+        draw_baf_ax_kwargs=dict(),
+        draw_depth_ax_kwargs=dict(),
+        draw_common_kwargs=dict(n_xlabel=20),
+
+        # drawing region configuration
+        genomeplotter_kwargs=None,
+    ):
+        subplots_kwargs = (
+            {
+                'figsize': (30, 12),
+                'gridspec_kw': {'hspace': 0.6},
+            }
+            | subplots_kwargs
+        )
+
+        if axd is None:
+            mosaic = (
+                [[baf_idx] for baf_idx in self.get_baf_indexes()]
+                + [['depth']]
+            )
+            fig, axd = plt.subplot_mosaic(mosaic, **subplots_kwargs)
+            if title is None:
+                title = self.get_default_title()
+            fig.suptitle(title, **suptitle_kwargs)
+        else:
+            fig = None
+
+        self.draw_depth_ax(axd['depth'], draw_common_kwargs=draw_common_kwargs, **draw_depth_ax_kwargs)
+        baf_axd_keys = set(axd.keys()).intersection(self.get_baf_indexes())
+        baf_axd = {k: axd[k] for k in baf_axd_keys}
+        self.draw_baf_ax(baf_axd, draw_common_kwargs=draw_common_kwargs, **draw_baf_ax_kwargs)
+
+        return fig, axd
+
+    ########################
+    # LOW level ax drawers #
+    ########################
+
+    @deco_plotter
+    def draw_baf_ax(
+        self, 
+        ax_dict=None, 
+
+        # whether to remove zero-baf points
+        rmzero=False,
+
+        # fig generation params
+        title=None,
+        suptitle_kwargs=dict(),
+        subplots_kwargs=dict(
+            figsize=(30, 5),
+        ),
+
+        # drawing kwargs
+        dot_kwargs=dict(),
+        line_segmean_kwargs=dict(),
+        line_corr_segmean_kwargs=dict(),
+        line_predict_kwargs=dict(),
+        line_predict_clonal_kwargs=dict(),
+
+        # segment drawing
+        draw_segment=True,
+        edited_segment=True,
+        segment_value_type='center',
+
+        # axes setting
+        ylabels=dict(),
+        ylabel_kwargs=dict(),
+        ymin=-0.1,
+        ymax=0.6,
+        draw_common_kwargs=dict(n_xlabel=20),
+
+        # drawing region configuration
+        genomeplotter_kwargs=None,
+    ):
+        """Args:
+            ax_dict: dict (keys: baf0, baf1, ... ; values: ax)
+            ylabels: dict (keys: baf0, baf1, ... ; values: label text)
+        """
+        if ax_dict is None:
+            fig, axs = plt.subplots(self.simple_attrs["ploidy"] - 1, 1, **subplots_kwargs)
+
+            ax_dict = dict()
+            for baf_idx, ax in zip(
+                self.get_baf_indexes(),
+                np.atleast_1d(axs),
+            ):
+                ax_dict[baf_idx] = ax
+
+            if title is None:
+                title = self.get_default_title()
+            fig.suptitle(title, **suptitle_kwargs)
+        else:
+            fig = None
+
+        # prepare plotdata
+        rawdata_plotdata_dict = self.make_baf_rawdata_plotdata(rmzero=rmzero)
+        if draw_segment:
+            if edited_segment:
+                segment_dict = self.get_baf_edited_segment_dict()
+                segment_plotdata_dict = self.make_baf_edited_segment_plotdata(rmzero=rmzero)
+            else:
+                segment_dict = self.get_baf_noedit_segment_dict()
+                segment_plotdata_dict = self.make_baf_noedit_segment_plotdata(rmzero=rmzero)
+
+        # handle kwargs
+        max_nrow = max(gdf.nrow for gdf in rawdata_plotdata_dict.values())
+        dot_kwargs = (
+            {
+                'color': 'black', 
+                'markersize': 0.3, 
+                'alpha': libgenomeplot.calc_dot_alpha_baf(max_nrow),
+            }
+            | dot_kwargs
+        )
+        line_segmean_kwargs = (
+            {'color': 'tab:blue', 'linewidth': 2, 'alpha': 0.8}
+            | line_segmean_kwargs
+        )
+        line_corr_segmean_kwargs = (
+            {'color': 'tab:green', 'linewidth': 2, 'alpha': 0.8}
+            | line_corr_segmean_kwargs
+        )
+
+        for baf_idx, ax in ax_dict.items():
+            # draw raw data
+            self.genomeplotter.draw_dots(
+                ax, 
+                plotdata=rawdata_plotdata_dict[baf_idx],
+                y_colname=baf_idx, 
+                plot_kwargs=dot_kwargs,
+                draw_common=False, 
+            )
+
+            # draw segment
+            if draw_segment:
+                y_colname = segment_dict[baf_idx].get_distinfo_colname(segment_value_type)
+                self.genomeplotter.draw_hlines(
+                    ax, 
+                    plotdata=segment_plotdata_dict[baf_idx],
+                    y_colname=y_colname, 
+                    plot_kwargs=line_segmean_kwargs,
+                    draw_common=False, 
+                )
+
+            # set axes styles
+            if baf_idx in ylabels.keys():
+                ylabel = ylabels[baf_idx]
+            else:
+                ylabel = f'BAF ({baf_idx})'
+            self.setup_yaxis(
+                ax, 
+                ylabel=ylabel, 
+                ylabel_kwargs=ylabel_kwargs, 
+                ymin=ymin, 
+                ymax=ymax,
+                yticks=np.round(np.arange(0, 0.6, 0.1), 1),
+            )
+            self.genomeplotter.draw_common(
+                ax, 
+                **draw_common_kwargs,
+            )
+
+            # draw excluded region
+            self.draw_excluded_region(ax)
+
+        return fig, ax_dict
+
+    @deco_plotter
+    def draw_depth_ax(
+        self, 
+        ax=None, 
+
+        # fig generation params
+        title=None,
+        suptitle_kwargs=dict(),
+        subplots_kwargs=dict(
+            figsize=(30, 5),
+        ),
+
+        # normalized vs raw depth
+        normalized=True,
+
+        # drawing kwargs
+        dot_kwargs=dict(),
+        line_segmean_kwargs=dict(),
+
+        # segment drawing
+        draw_segment=True,
+
+        # axes setting
+        ylabel=None,
+        ylabel_kwargs=dict(),
+        ymax=None,
+        ymin=None,
+        draw_common_kwargs=dict(n_xlabel=20),
+
+        # drawing region configuration
+        genomeplotter_kwargs=None,
+    ):
+        """Args:
+            ax_dict: dict (keys: index of baf (0, 1, ...) ; values: ax)
+            ylabels: dict (keys: index of baf (0, 1, ...) ; values: label text)
+        """
+        if ax is None:
+            fig, ax = plt.subplots(1, 1, **subplots_kwargs)
+            if title is None:
+                title = self.get_default_title()
+            fig.suptitle(title, **suptitle_kwargs)
+        else:
+            fig = None
+
+        # prepare plotdata
+        rawdata_plotdata = self.make_depth_rawdata_plotdata()
+        if draw_segment:
+            segment_plotdata = self.make_depth_segment_plotdata()
+
+        # set drawing parameters
+        dot_kwargs = (
+            {
+                'color': 'black', 
+                'markersize': 0.3, 
+                'alpha': libgenomeplot.calc_dot_alpha_baf(rawdata_plotdata.nrow),
+            }
+            | dot_kwargs
+        )
+        line_segmean_kwargs = (
+            {'color': 'tab:blue', 'linewidth': 2, 'alpha': 0.8}
+            | line_segmean_kwargs
+        )
+
+        # draw raw data
+        if normalized:
+            raw_y_colname = DepthRawDF.norm_depth_colname
+        else:
+            raw_y_colname = DepthRawDF.depth_colname
+
+        self.genomeplotter.draw_dots(
+            ax, 
+            plotdata=rawdata_plotdata,
+            y_colname=raw_y_colname, 
+            plot_kwargs=dot_kwargs,
+            draw_common=False, 
+        )
+
+        # draw segment
+        if draw_segment:
+            segment_y_colname = DepthSegDF.norm_depth_mean_colname
+            self.genomeplotter.draw_hlines(
+                ax, 
+                plotdata=segment_plotdata,
+                y_colname=segment_y_colname, 
+                plot_kwargs=line_segmean_kwargs,
+                draw_common=False, 
+            )
+
+        # set axes styles
+        if ylabel is None:
+            prefix = 'Normalized' if normalized else 'Raw'
+            ylabel = f'{prefix} Depth'
+        if ymax is None:
+            #ymax = np.nanmean(rawdata_plotdata[raw_y_colname]) * 2
+            ymax = np.nanquantile(rawdata_plotdata[raw_y_colname], 0.999)
+        if ymin is None:
+            ymin = -ymax * 0.01
+        yticks = np.round(
+            np.linspace(0, ymax, 10), 
+            (2 if normalized else 1),
+        )
+
+        self.setup_yaxis(
+            ax, 
+            ylabel=ylabel, 
+            ylabel_kwargs=ylabel_kwargs, 
+            ymin=ymin, 
+            ymax=ymax,
+            yticks=yticks,
+        )
+        self.genomeplotter.draw_common(
+            ax, 
+            **draw_common_kwargs,
+        )
+
+        # draw excluded region
+        self.draw_excluded_region(ax)
+
+        return fig, ax
+
+    def draw_excluded_region(self, ax):
+        self.genomeplotter.draw_bgcolors(
+            ax,
+            data=self.get_excluded_region(),
+            colors='magenta',
+            draw_common=False,
+        )
+
+    def draw_data_ax(self):
+        pass
+
+    def draw_solution_ax(self):
+        pass
+
+    ######################
+    # ax drawing helpers #
+    ######################
+
+    @classmethod
+    def setup_yaxis(
+        cls,
+        ax, 
+        ylabel=None, 
+        ylabel_kwargs=dict(), 
+        ymin=None, 
+        ymax=None,
+        yticks=None,
+    ):
+        if ylabel is not None:
+            ax.set_ylabel(ylabel, **ylabel_kwargs)
+        ax.set_ylim(ymin, ymax)
+        ax.set_yticks(yticks)
+        ax.set_yticklabels(yticks, size=cls.get_yticklabel_size(yticks))
+
+    @staticmethod
+    def get_yticklabel_size(yticks):
+        return min((200 /len(yticks)), 10)
+
+    def get_default_title(self):
+        sampleid = self.simple_attrs["sampleid"]
+        is_female = self.simple_attrs["is_female"]
+        return f'sampleid={sampleid}, is_female={is_female}'
+
+    def get_baf_indexes(self):
+        return libbaf.get_baf_indexes(self.simple_attrs["ploidy"])
+
+
+
+
+
+
+
+
+
+
+
+#########################################################################
+
+
+
+######################
+# CNV analyzer class #
+######################
 
 PLOTTER_DECORATOR_REGION_ARG_NAMES = (
     'region_chroms',
@@ -125,1114 +1537,6 @@ def plotter_decorator_core(
         fig, axd = basemethod(**kwargs)
 
     return fig, axd
-
-
-#############
-# CNVSample #
-#############
-
-class CNVSample:
-    default_window = {'panel': 100, 'wgs': 1000}
-    simple_attr_keys = (
-        'sampleid',
-        'refver',
-        'is_female',
-        'mode',
-        'load_nproc',
-        'segment_nproc',
-        'verbose',
-        'ploidy',
-        'genomeplotter_kwargs',
-    )
-    save_paths_basenames = {
-        'simple_attrs': 'simple_attrs.json',
-
-        # target region
-        'raw_target_region': 'raw_target_region.tsv.gz',
-
-        # raw data
-        'normal_depth_raw': 'normal_depth.tsv.gz',
-        'tumor_depth_raw': 'tumor_depth.tsv.gz',
-        'normal_baf_raw': 'normal_baf.tsv.gz',
-        'tumor_baf_raw': 'tumor_baf.tsv.gz',
-
-        # segment
-        'normal_depth_segment': 'normal_depth_segment.tsv.gz',
-        'tumor_depth_segment': 'tumor_depth_segment.tsv.gz',
-
-        'normal_baf_segment': 'normal_baf_segment.tsv.gz',
-        'tumor_baf_segment': 'tumor_baf_segment.tsv.gz',
-        'normal_baf_rmzero_segment': 'normal_baf_rmzero_segment.tsv.gz',
-        'tumor_baf_rmzero_segment': 'tumor_baf_rmzero_segment.tsv.gz',
-
-        'normal_merged_segment': 'normal_merged_segment.tsv.gz',
-        'tumor_merged_segment': 'tumor_merged_segment.tsv.gz',
-    }
-
-    #############
-    # decorator #
-    #############
-
-    @staticmethod
-    def deco_sanitycheck_sampletype(func):
-        sig = inspect.signature(func)
-        assert 'sampletype' in sig.parameters.keys()
-
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            ba = sig.bind(*args, **kwargs)
-            ba.apply_defaults()
-            if ba.arguments['sampletype'] not in ('normal', 'tumor'):
-                raise Exception(f'"sampletype" argument must be either "normal" or "tumor".')
-
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    @staticmethod
-    def deco_plotter(func):
-        sig = inspect.signature(func)
-        if 'genomeplotter_kwargs' not in sig.parameters.keys():
-            raise Exception(
-                f'Decorated plotter method does not have '
-                f'"genomeplotter_kwargs" parameter.'
-            )
-
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            ba = sig.bind(*args, **kwargs)
-            ba.apply_defaults()
-
-            if ba.arguments['genomeplotter_kwargs'] is not None:
-                cnvsample_obj = ba.arguments['self']
-                gplotter_kwargs = ba.arguments['genomeplotter_kwargs'].copy()
-
-                gplotter_kwargs['refver'] = cnvsample_obj.refver
-                new_gplotter = GenomePlotter(**gplotter_kwargs)
-
-                old_gplotter = cnvsample_obj.reset_genomeplotter(new_gplotter)
-                result = func(*args, **kwargs)
-                cnvsample_obj.reset_genomeplotter(old_gplotter)
-            else:
-                result = func(*args, **kwargs)
-
-            return result
-
-        return wrapper
-
-    ###############
-    # initializer #
-    ###############
-
-    #def __del__(self):
-    #    del self.raw_target_region
-    #    for datatype, sampletype in itertools.product(
-    #        ['depth', 'baf'], ['normal', 'tumor'],
-    #    ):
-    #        del self.rawdata[datatype][sampletype]
-
-    @classmethod
-    def from_files(
-        cls, 
-        sampleid, 
-        refver,
-        is_female,
-        mode,
-
-        *,
-
-        ploidy=2,
-
-        target_region=None,
-
-        normal_bam_path=None,
-        tumor_bam_path=None,
-
-        germline_vcf_path=None, 
-        tumor_sampleid=None,
-        normal_sampleid=None,
-
-        norm_method='plain',
-        load_nproc=1,
-        segment_nproc=1,
-        verbose=True,
-
-        genomeplotter_kwargs=dict(),
-    ):
-        """Args:
-            *_depth_path: mosdepth output file
-            germline_vcf_path: germline variant vcf
-            vcf_sampleids: tuple of (normal sample id, tumor sample id)
-        """
-        cls.sanitycheck(
-            mode, target_region, tumor_sampleid, normal_sampleid, germline_vcf_path,
-        )
-
-        result = cls()
-
-        # set simple attributes
-        result.sampleid = sampleid
-        result.refver = refgenome.standardize(refver)
-        result.is_female = is_female
-        result.mode = mode
-        result.load_nproc = load_nproc
-        result.segment_nproc = segment_nproc
-        result.verbose = verbose
-        result.ploidy = ploidy
-        result.genomeplotter_kwargs = genomeplotter_kwargs
-
-        # target region
-        result.raw_target_region = target_region
-
-        # raw data
-        result.init_rawdata()
-        if normal_bam_path is not None:
-            result.load_depth(normal_bam_path, 'normal')
-            result.make_normalized_depth('normal')
-
-        if tumor_bam_path is not None:
-            result.load_depth(tumor_bam_path, 'tumor')
-            result.make_normalized_depth('tumor')
-
-        if germline_vcf_path is not None:
-            result.load_baf(
-                germline_vcf_path,
-                tumor_sampleid,
-                normal_sampleid,
-            )
-
-        # segments
-        result.init_segment()
-
-        # genomeplotter
-        result.init_genomeplotter(**result.genomeplotter_kwargs)
-
-        # plotdata
-        result.plotdata_cache = dict()
-
-        return result
-
-    def init_rawdata(self):
-        self.rawdata = dict()
-        self.rawdata['depth'] = {'normal': None, 'tumor': None}
-        self.rawdata['baf'] = {'normal': None, 'tumor': None}
-
-    def init_segment(self):
-        self.segment = dict()
-
-        self.segment['depth'] = {'normal': None, 'tumor': None}
-
-        self.segment['baf'] = {
-            'normal': {baf_idx: None for baf_idx in self.get_baf_indexes()},
-            'tumor': {baf_idx: None for baf_idx in self.get_baf_indexes()},
-        }
-        self.segment['baf_rmzero'] = {
-            'normal': {baf_idx: None for baf_idx in self.get_baf_indexes()},
-            'tumor': {baf_idx: None for baf_idx in self.get_baf_indexes()},
-        }
-
-        self.segment['merged'] = {'normal': None, 'tumor': None}
-
-    def _iter_keys(self):
-        for datatype, sampletype in itertools.product(['depth', 'baf'], ['normal', 'tumor']):
-            yield datatype, sampletype
-
-#        # set target_region
-#        self.set_target_region(sampleid, mode, target_region)
-#
-#        # normal mean ploidy
-#        self.set_normal_mean_ploidy(sampleid)
-#
-#        # load germline vcf
-#        if germline_vcf_path is not None:
-#            LOGGER_INFO.info('Loading tumor germline vcf')
-#            self.load_germline_vcf(
-#                sampleid=sampleid, 
-#                vcf_path=germline_vcf_path, 
-#                vcf_sampleid_tumor=vcf_sampleid_tumor,
-#                vcf_sampleid_normal=vcf_sampleid_normal,
-#                logging_lineno=50000,
-#                nproc=vcfload_nproc,
-#            )
-#        elif germline_vafdf_path is not None:
-#            LOGGER_INFO.info('Loading tumor germline vaf dataframe')
-#            self.load_germline_vafdf(sampleid, germline_vafdf_path)
-#
-#        #self.postprocess_bafdf(sampleid)
-#
-#        # postprocess depths
-#        self.postprocess_depth(sampleid, verbose=verbose, norm_method=norm_method)
-
-    #################
-    # genomeplotter #
-    #################
-
-    def init_genomeplotter(self, **kwargs):
-        self.genomeplotter = GenomePlotter(refver=self.refver, **kwargs)
-
-    def reset_genomeplotter(self, new_genomeplotter=None):
-        old_genomeplotter = self.genomeplotter
-
-        if new_genomeplotter is None:
-            new_genomeplotter = GenomePlotter(self.refver)
-        self.genomeplotter = new_genomeplotter
-
-        return old_genomeplotter
-
-    @property
-    def gplotter(self):
-        return self.genomeplotter
-
-    #########################
-    # target region setting #
-    #########################
-
-    def set_target_region(self):
-        if self.mode == 'wgs':
-            if 'normal' in self.depths.keys():
-                target_region = self.find_germline_copyneutral_region(
-                    sampleid, factors=(0.8, 1.2),
-                )
-            else:
-                target_region = self.chromdict.to_gdf(assembled_only=True)
-        elif mode == 'panel':
-            target_region = self.target_region_arg.drop_annots()
-
-        # exclude y if female
-        if self.is_female:
-            y_chrom = self.chromdict.XY_names[1]
-            selector = target_region['Chromosome'] != y_chrom
-            target_region = target_region.loc[selector, :]
-
-        # merge & sort
-        target_region = target_region.merge()
-        target_region.sort()
-
-        # result
-        self.target_region = target_region
-
-    def get_onecopy_depth(self, depth_seg_gdf=None):
-        if depth_seg_gdf is None:
-            depth_seg_gdf = self.get_depth_segment('normal').copy()
-
-        if not self.is_female:
-            selector = np.isin(depth_seg_gdf.chromosomes, self.chromdict.XY_names)
-            depth_seg_gdf.loc[selector, DepthRawDF.normalized_depth_colname] *= 2
-
-        # select copy-neutral depth segments
-        data = depth_seg_gdf[DepthRawDF.normalized_depth_colname]
-        peakresult = peakutils.find_density_peaks(
-            data,
-            weights=depth_seg_gdf.lengths,
-            limit=(np.quantile(data, 0.01), np.quantile(data, 0.99)),
-            bw_method=0.01,
-        )
-        modal_depth = peakresult['peak_xs'][np.argmax(peakresult['peak_ys'])]
-        onecopy_depth = modal_depth / self.ploidy
-
-        return onecopy_depth
-
-    def find_germline_intcopy_validbaf_region(self, factors=(0.3, 2)):
-        assert self.mode == 'wgs'
-        assert self.get_depth_segment('normal') is not None
-        assert all(
-            (self.get_baf_segment('normal', baf_idx) is not None)
-            for baf_idx in self.get_baf_indexes()
-        )
-
-        depth_seg_gdf = self.get_depth_segment('normal').copy()
-        baf_seg_gdfs = self.get_baf_segment_dict('normal')
-
-        # onecopy depth
-        onecopy_depth = self.get_onecopy_depth(depth_seg_gdf)
-        depth_seg_gdf['onecopy_depth_ratio'] = (
-            depth_seg_gdf[DepthRawDF.normalized_depth_colname]
-            / onecopy_depth
-        )
-
-        print(depth_seg_gdf)
-
-
-#        global_mean = np.average(
-#            upscaled_depth_df['mean_depth'], 
-#            weights=(upscaled_depth_df['End'] - upscaled_depth_df['Start']),
-#        )
-#        selector = segdf['depth_segment_mean'].between(
-#            global_mean * factors[0], 
-#            global_mean * factors[1], 
-#        )
-#        included_segments = segdf.loc[selector, :]
-#
-#        target_region_gr = pr.PyRanges(depth_df).drop().overlap(
-#            pr.PyRanges(included_segments)
-#        ).merge()
-#
-#        return target_region_gr
-
-    @staticmethod
-    def sanitycheck(
-        mode, target_region, tumor_sampleid, normal_sampleid, germline_vcf_path,
-    ):
-        # target_region
-        assert mode in ('wgs', 'panel')
-        if (mode == 'panel') and (target_region is None):
-            raise Exception(f'"target_region" must be given when "mode" is "panel"')
-        elif (mode == 'wgs') and (target_region is not None):
-            raise Exception(f'"target_region" must not be given when "mode" is "wgs"')
-
-        if target_region is not None:
-            assert isinstance(target_region, GDF)
-
-        # germline VCF file arguments
-        if germline_vcf_path is None:
-            raise Exception(f'"germline_vcf_path" must be given.')
-        if tumor_sampleid is None:
-            raise Exception(f'"tumor_sampleid" must be given.')
-        if (mode == 'wgs') and (normal_sampleid is None):
-            raise Exception(f'"normal_sampleid" must be given when "mode" is "wgs"')
-
-    @deco_sanitycheck_sampletype
-    def load_depth(self, bam_path, sampletype, window=None, t=1):
-        if self.verbose:
-            logutils.log(f'Loading {sampletype} depth - running mosdepth')
-
-        # prepare arguments
-        if self.mode == 'wgs':
-            region_gdf = None
-        elif self.mode == 'panel':
-            region_gdf = self.raw_target_region
-        if window is None:
-            window = self.__class__.default_window[self.mode]
-
-        # main
-        depth_gdf = libmosdepth.run_mosdepth(
-            bam_path, 
-            t=t, 
-            nproc=self.load_nproc,
-            use_median=False, 
-
-            region_gdf=region_gdf,
-
-            window=window,
-            verbose=True,
-        )
-
-        self.rawdata['depth'][sampletype] = depth_gdf
-
-    def load_depth_old(
-        self, 
-        bam_path, 
-        depth_path, 
-        depth_gdf, 
-        sampletype,
-    ):
-        assert sampletype in ('tumor', 'normal')
-
-        if bam_path is not None:
-            logutils.log(f'Loading {sampletype} depth - running mosdepth')
-            depth_gdf = libmosdepth.run_mosdepth(
-                bam_path, 
-                t=8, 
-                use_median=False, 
-                region_bed_path=None, 
-                region_gdf=(
-                    None
-                    if self.mode == 'wgs' else
-                    self.target_region
-                ), 
-                window_size=self.default_binsize, 
-                load_perbase=False,
-            )
-        elif depth_path is not None:
-            logutils.log(f'Loading {sampletype} depth - reading mosdepth output file')
-            depth_gdf = DepthGDF.load_mosdepth(
-                depth_path, refver=self.refver, use_median=False,
-            )
-        elif depth_gdf is not None:
-            logutils.log(f'Loading {sampletype} depth - using the given depth dataframe')
-            assert isinstance(depth_gdf, DepthGDF)
-
-        # bam_path, depth_path, depth_gdf arguments may be all None (in normal sample) 
-        if depth_gdf is not None:
-            self.depths[sampletype] = depth_gdf
-
-    def load_baf(
-        self,
-        germline_vcf_path,
-        tumor_sampleid,
-        normal_sampleid,
-    ):
-        if self.verbose:
-            logutils.log('Loading germline vcf')
-
-        vcf_samples = [
-            x for x in (tumor_sampleid, normal_sampleid)
-            if x is not None
-        ]
-
-        bafdfs_bysample = libbaf.get_bafdfs_from_vcf(
-            vcf_path=germline_vcf_path,
-            sampleids=vcf_samples,
-            n_allele=self.ploidy,
-            nproc=self.load_nproc,
-            exclude_other=False,
-        )
-
-        if tumor_sampleid is not None:
-            self.rawdata['baf']['tumor'] = bafdfs_bysample[tumor_sampleid]
-            self.rawdata['baf']['tumor'].remove_overlapping_rows()
-        if normal_sampleid is not None:
-            self.rawdata['baf']['normal'] = bafdfs_bysample[normal_sampleid]
-            self.rawdata['baf']['normal'].remove_overlapping_rows()
-
-    #############
-    # save/load #
-    #############
-
-    @classmethod
-    @deco_sanitycheck_sampletype
-    def get_baf_segment_path(cls, sampletype, baf_idx, topdir):
-        basename = re.sub(
-            '\.tsv\.gz$', 
-            f'_{baf_idx}.tsv.gz', 
-            cls.save_paths_basenames[f'{sampletype}_baf_segment'],
-        )
-        return os.path.join(topdir, basename)
-
-    def save_pickle(self, filepath):
-        if not filepath.endswith('.pickle'):
-            raise Exception(f'File name must end with ".pickle"')
-        
-        if os.path.exists(filepath):
-            logutils.log(f'Overwriting an existing file', level='warning')
-
-        with open(filepath, 'wb') as outfile:
-            pickle.dump(self, outfile)
-
-    @classmethod
-    def load_pickle(cls, filepath):
-        with open(filepath, 'rb') as infile:
-            return pickle.load(infile)
-
-    def save_tsv(self, topdir, force=False):
-        if os.path.exists(topdir):
-            if force:
-                shutil.rmtree(topdir)
-            else:
-                raise Exception(f'Output directory must not exist in advance')
-        os.mkdir(topdir)
-
-        if self.verbose:
-            logutils.log(f'Beginning saving tsv files')
-
-        # set paths
-        save_paths = {
-            key: os.path.join(topdir, val) 
-            for key, val in self.__class__.save_paths_basenames.items()
-        }
-        
-        # simple attrs
-        simple_attrs = dict()
-        for key in self.__class__.simple_attr_keys:
-            simple_attrs[key] = getattr(self, key)
-        with open(save_paths['simple_attrs'], 'wt') as outfile:
-            json.dump(simple_attrs, outfile)
-
-        # target region
-        if self.raw_target_region is not None:
-            self.raw_target_region.write_tsv(save_paths['raw_target_region'])
-
-        # raw data
-        for datatype, sampletype in itertools.product(
-            ['depth', 'baf'], ['normal', 'tumor'],
-        ):
-            data_gdf = self.rawdata[datatype][sampletype]
-            if data_gdf is not None:
-                savepath = save_paths[f'{sampletype}_{datatype}_raw']
-                data_gdf.write_tsv(savepath)
-
-        # segment
-        for datatype, sampletype in itertools.product(
-            ['depth', 'baf', 'baf_rmzero', 'merged'], 
-            ['normal', 'tumor'],
-        ):
-            if datatype in ['baf', 'baf_rmzero']:
-                for baf_idx in self.get_baf_indexes():
-                    data_gdf = self.segment[datatype][sampletype][baf_idx]
-                    if data_gdf is not None:
-                        savepath = self.get_baf_segment_path(sampletype, baf_idx, topdir)
-                        data_gdf.write_tsv(savepath)
-            else:
-                data_gdf = self.segment[datatype][sampletype]
-                if data_gdf is not None:
-                    savepath = save_paths[f'{sampletype}_{datatype}_segment']
-                    data_gdf.write_tsv(savepath)
-
-        if self.verbose:
-            logutils.log(f'Finished saving tsv files')
-
-    @classmethod
-    def load_tsv(cls, topdir):
-        save_paths = {
-            key: os.path.join(topdir, val) 
-            for key, val in cls.save_paths_basenames.items()
-        }
-        result = cls()
-
-        # simple attrs
-        with open(save_paths['simple_attrs'], 'rt') as infile:
-            simple_attrs = json.load(infile)
-        for key, val in simple_attrs.items():
-            setattr(result, key, val)
-
-        # target region
-        result.raw_target_region = None
-        if os.path.exists(save_paths['raw_target_region']):
-            result.raw_target_region = GDF.read_tsv(save_paths['raw_target_region'], result.refver)
-
-        # raw data
-        result.init_rawdata()
-        for datatype, sampletype in itertools.product(
-            ['depth', 'baf'], 
-            ['normal', 'tumor'],
-        ):
-            filepath = save_paths[f'{sampletype}_{datatype}_raw']
-            if os.path.exists(filepath):
-                if datatype == 'depth':
-                    result.rawdata[datatype][sampletype] = DepthRawDF.read_tsv(filepath, result.refver)
-                elif datatype == 'baf':
-                    result.rawdata[datatype][sampletype] = BAFRawDF.read_tsv(
-                        filepath, result.refver
-                    )
-
-        # segments
-        result.init_segment()
-        for datatype, sampletype in itertools.product(
-            ['depth', 'baf', 'baf_rmzero', 'merged'], 
-            ['normal', 'tumor'],
-        ):
-            if datatype in ['baf', 'baf_rmzero']:
-                for baf_idx in result.get_baf_indexes():
-                    filepath = cls.get_baf_segment_path(sampletype, baf_idx, topdir)
-                    if os.path.exists(filepath):
-                        result.segment[datatype][sampletype][baf_idx] = (
-                            BAFSegDF.read_tsv(filepath, result.refver)
-                        )
-            else:
-                filepath = save_paths[f'{sampletype}_{datatype}_segment']
-                if os.path.exists(filepath):
-                    result.segment[datatype][sampletype] = (
-                        GDF.read_tsv(filepath, result.refver)
-                    )
-
-        # genomeplotter
-        result.init_genomeplotter(**result.genomeplotter_kwargs)
-
-        # plotdata
-        result.plotdata_cache = dict()
-
-        return result
-
-            
-    ##############
-    # properties #
-    ##############
-
-    @property
-    def chromdict(self):
-        return refgenome.get_chromdict(self.refver)
-
-    #################
-    # data fetchers #
-    #################
-
-    @deco_sanitycheck_sampletype
-    def get_depth_rawdata(self, sampletype):
-        result = self.rawdata['depth'][sampletype]
-        assert isinstance(result, DepthRawDF)
-        return result
-
-    @deco_sanitycheck_sampletype
-    def get_baf_rawdata(self, sampletype, baf_idx, rmzero=True):
-        baf_raw_gdf = self.rawdata['baf'][sampletype]
-        baf_raw_gdf = baf_raw_gdf.choose_annots(baf_idx)
-        if rmzero:
-            selector = baf_raw_gdf[baf_idx] > 0
-            baf_raw_gdf = baf_raw_gdf.loc[selector, :]
-
-        assert isinstance(baf_raw_gdf, BAFRawDF)
-
-        return baf_raw_gdf
-
-    @deco_sanitycheck_sampletype
-    def get_depth_segment(self, sampletype):
-        result = self.segment['depth'][sampletype]
-        assert isinstance(result, DepthSegDF)
-        return result
-
-    @deco_sanitycheck_sampletype
-    def get_baf_segment(self, sampletype, baf_idx, rmzero=True):
-        segment_dict_key = ('baf_rmzero' if rmzero else 'baf')
-        result = self.segment[segment_dict_key][sampletype][baf_idx]
-        assert isinstance(result, BAFSegDF)
-        return self.segment[segment_dict_key][sampletype][baf_idx]
-
-    @deco_sanitycheck_sampletype
-    def get_baf_segment_dict(self, sampletype, rmzero=True):
-        return {
-            baf_idx: self.get_baf_segment(sampletype, baf_idx, rmzero=rmzero)
-            for baf_idx in self.get_baf_indexes()
-        }
-
-    @deco_sanitycheck_sampletype
-    def get_merged_segment(self, sampletype):
-        return self.segment['merged'][sampletype][baf_idx]
-
-    #########################
-    # raw data modification #
-    #########################
-
-    @deco_sanitycheck_sampletype
-    def make_normalized_depth(self, sampletype):
-        self.rawdata['depth'][sampletype].set_normalized_depth()
-
-    @deco_sanitycheck_sampletype
-    def make_depth_segment(self, sampletype, rawdepth=False, **kwargs):
-        kwargs = {'nproc': self.segment_nproc} | kwargs
-
-        if self.verbose:
-            logutils.log(f'Beginning {sampletype} sample segmentation')
-
-        depth_raw_gdf = self.get_depth_rawdata(sampletype)
-        self.segment['depth'][sampletype] = depth_raw_gdf.get_segment(
-            annot_colname=DepthRawDF.normalized_depth_colname,
-            **kwargs,
-        )
-        if self.verbose:
-            logutils.log(f'Finished {sampletype} sample segmentation')
-
-    @deco_sanitycheck_sampletype
-    def make_baf_segment(self, sampletype, rmzero=False, **kwargs):
-        kwargs = {'nproc': self.segment_nproc} | kwargs
-
-        for baf_idx in self.get_baf_indexes():
-            if self.verbose:
-                logutils.log(
-                    f'Beginning {sampletype} sample {baf_idx} '
-                    f'segmentation (rmzero={rmzero})'
-                )
-
-            baf_raw_gdf = self.get_baf_rawdata(sampletype, baf_idx, rmzero=rmzero)
-            segment_dict_key = ('baf_rmzero' if rmzero else 'baf')
-            self.segment[segment_dict_key][sampletype][baf_idx] = (
-                baf_raw_gdf.get_segment(
-                    annot_colname=baf_idx,
-                    **kwargs,
-                )
-            )
-            if self.verbose:
-                logutils.log(
-                    f'Finished {sampletype} sample {baf_idx} '
-                    f'segmentation (rmzero={rmzero})'
-                )
-
-    ############
-    # plotdata #
-    ############
-
-    def make_upscaled_depth(self, binsize):
-        pass
-
-    def make_plotdata_base(self, data, cache_key):
-        if self.verbose:
-            logutils.log(f'Beginning plotdata generation for {cache_key}')
-        plotdata = self.genomeplotter.cconv.prepare_plot_data(data)
-        #self.plotdata_cache[cache_key] = plotdata
-        if self.verbose:
-            logutils.log(f'Finished plotdata generation for {cache_key}')
-
-        return plotdata
-
-    @deco_sanitycheck_sampletype
-    def make_baf_raw_plotdata(self, sampletype, rmzero=False):
-        plotdata_dict = dict()
-        for baf_idx in self.get_baf_indexes():
-            data = self.get_baf_rawdata(sampletype, baf_idx, rmzero=rmzero)
-            plotdata_key = f'{sampletype}_baf_raw_{baf_idx}'
-            plotdata_dict[baf_idx] = self.make_plotdata_base(data, plotdata_key)
-
-        return plotdata_dict
-
-    @deco_sanitycheck_sampletype
-    def make_baf_segment_plotdata(self, sampletype, rmzero=False):
-        segment_dict_key = ('baf_rmzero' if rmzero else 'baf')
-        data_dict = self.segment[segment_dict_key][sampletype]
-        plotdata_dict = dict()
-        for baf_idx, data in data_dict.items():
-            plotdata_key = f'{sampletype}_baf_segment_{baf_idx}'
-            plotdata = self.make_plotdata_base(data, plotdata_key)
-            plotdata_dict[baf_idx] = plotdata
-
-        return plotdata_dict
-
-    #def get_baf_raw_plotdata(self, sampletype):
-    #    assert sampletype in ('normal', 'tumor')
-    #    plotdata_key = f'{sampletype}_baf_raw'
-    #    return self.plotdata[plotdata_key]
-
-    @deco_sanitycheck_sampletype
-    def make_depth_raw_plotdata(self, sampletype, binsize=None):
-        data = self.rawdata['depth'][sampletype]
-        plotdata_key = f'{sampletype}_depth_raw'
-        return self.make_plotdata_base(data, plotdata_key)
-
-    @deco_sanitycheck_sampletype
-    def make_depth_segment_plotdata(self, sampletype):
-        data = self.segment['depth'][sampletype]
-        plotdata_key = f'{sampletype}_depth_segment'
-        return self.make_plotdata_base(data, plotdata_key)
-
-    #def get_depth_raw_plotdata(self, sampletype):
-    #    assert sampletype in ('normal', 'tumor')
-    #    plotdata_key = f'{sampletype}_depth_raw'
-    #    return self.plotdata[plotdata_key]
-
-    #########################
-    # HIGH level ax drawers #
-    #########################
-
-    @deco_plotter
-    @deco_sanitycheck_sampletype
-    def draw_depth_and_baf(
-        self,
-        sampletype,
-        axd=None,
-
-        # figure title - only works when figure object is not already created
-        title=None,
-        suptitle_kwargs=dict(),
-        subplots_kwargs=dict(),
-
-        # kwargs for low level drawers
-        draw_baf_ax_kwargs=dict(),
-        draw_depth_ax_kwargs=dict(),
-        draw_common_kwargs=dict(n_xlabel=20),
-
-        # drawing region configuration
-        genomeplotter_kwargs=None,
-    ):
-        subplots_kwargs = (
-            {
-                'figsize': (30, 12),
-                'gridspec_kw': {'hspace': 0.6},
-            }
-            | subplots_kwargs
-        )
-
-        if axd is None:
-            mosaic = (
-                [[baf_idx] for baf_idx in self.get_baf_indexes()]
-                + [['depth']]
-            )
-            fig, axd = plt.subplot_mosaic(mosaic, **subplots_kwargs)
-            if title is None:
-                title = self.get_default_title()
-            fig.suptitle(title, **suptitle_kwargs)
-        else:
-            fig = None
-
-        self.draw_depth_ax(sampletype, axd['depth'], draw_common_kwargs=draw_common_kwargs, **draw_depth_ax_kwargs)
-        baf_axd_keys = set(axd.keys()).intersection(self.get_baf_indexes())
-        baf_axd = {k: axd[k] for k in baf_axd_keys}
-        self.draw_baf_ax(sampletype, baf_axd, draw_common_kwargs=draw_common_kwargs, **draw_baf_ax_kwargs)
-
-        return fig, axd
-
-    ########################
-    # LOW level ax drawers #
-    ########################
-
-    @deco_plotter
-    @deco_sanitycheck_sampletype
-    def draw_baf_ax(
-        self, 
-        sampletype,
-        ax_dict=None, 
-
-        # whether to remove zero-baf points
-        rmzero=True,
-
-        # fig generation params
-        title=None,
-        suptitle_kwargs=dict(),
-        subplots_kwargs=dict(
-            figsize=(30, 5),
-        ),
-
-        # drawing kwargs
-        dot_kwargs=dict(),
-        line_segmean_kwargs=dict(),
-        line_corr_segmean_kwargs=dict(),
-        line_predict_kwargs=dict(),
-        line_predict_clonal_kwargs=dict(),
-
-        # segment drawing
-        draw_segment=True,
-
-        # axes setting
-        ylabels=dict(),
-        ylabel_kwargs=dict(),
-        draw_common_kwargs=dict(n_xlabel=20),
-
-        # drawing region configuration
-        genomeplotter_kwargs=None,
-    ):
-        """Args:
-            ax_dict: dict (keys: baf0, baf1, ... ; values: ax)
-            ylabels: dict (keys: baf0, baf1, ... ; values: label text)
-        """
-        if ax_dict is None:
-            fig, axs = plt.subplots(self.ploidy - 1, 1, **subplots_kwargs)
-
-            ax_dict = dict()
-            for baf_idx, ax in zip(
-                self.get_baf_indexes(),
-                np.atleast_1d(axs),
-            ):
-                ax_dict[baf_idx] = ax
-
-            if title is None:
-                title = self.get_default_title()
-            fig.suptitle(title, **suptitle_kwargs)
-        else:
-            fig = None
-
-        # prepare plotdata
-        plotdata_dict = self.make_baf_raw_plotdata(sampletype, rmzero=rmzero)
-        max_nrow = max(gdf.nrow for gdf in plotdata_dict.values())
-        if draw_segment:
-            segment_plotdata_dict = self.make_baf_segment_plotdata(
-                sampletype,
-                rmzero=rmzero,
-            )
-
-        # handle kwargs
-        dot_kwargs = (
-            {
-                'color': 'black', 
-                'markersize': 0.3, 
-                'alpha': libgenomeplot.calc_dot_alpha_baf(max_nrow),
-            }
-            | dot_kwargs
-        )
-        line_segmean_kwargs = (
-            {'color': 'tab:blue', 'linewidth': 2, 'alpha': 0.8}
-            | line_segmean_kwargs
-        )
-        line_corr_segmean_kwargs = (
-            {'color': 'tab:green', 'linewidth': 2, 'alpha': 0.8}
-            | line_corr_segmean_kwargs
-        )
-
-        for baf_idx, ax in ax_dict.items():
-            # draw raw data
-            self.genomeplotter.draw_dots(
-                ax, 
-                plotdata=plotdata_dict[baf_idx],
-                y_colname=baf_idx, 
-                plot_kwargs=dot_kwargs,
-                draw_common=False, 
-            )
-
-            # draw segment
-            if draw_segment:
-                self.genomeplotter.draw_hlines(
-                    ax, 
-                    plotdata=segment_plotdata_dict[baf_idx],
-                    y_colname=baf_idx, 
-                    plot_kwargs=line_segmean_kwargs,
-                    draw_common=False, 
-                )
-
-            # set axes styles
-            if baf_idx in ylabels.keys():
-                ylabel = ylabels[baf_idx]
-            else:
-                ylabel = f'{sampletype} - {baf_idx}'
-            self.setup_yaxis(
-                ax, 
-                ylabel=ylabel, 
-                ylabel_kwargs=ylabel_kwargs, 
-                ymin=-0.02, 
-                ymax=0.52,
-                yticks=np.round(np.arange(0, 0.6, 0.1), 1),
-            )
-            self.genomeplotter.draw_common(
-                ax, 
-                **draw_common_kwargs,
-            )
-
-        return fig, ax_dict
-
-    @deco_plotter
-    @deco_sanitycheck_sampletype
-    def draw_depth_ax(
-        self, 
-        sampletype,
-        ax=None, 
-
-        # fig generation params
-        title=None,
-        suptitle_kwargs=dict(),
-        subplots_kwargs=dict(
-            figsize=(30, 5),
-        ),
-
-        # normalized vs raw depth
-        normalized=True,
-
-        # drawing kwargs
-        dot_kwargs=dict(),
-        line_segmean_kwargs=dict(),
-
-        # segment drawing
-        draw_segment=True,
-
-        # axes setting
-        ylabel=None,
-        ylabel_kwargs=dict(),
-        ymax=None,
-        ymin=None,
-        draw_common_kwargs=dict(n_xlabel=20),
-
-        # drawing region configuration
-        genomeplotter_kwargs=None,
-    ):
-        """Args:
-            ax_dict: dict (keys: index of baf (0, 1, ...) ; values: ax)
-            ylabels: dict (keys: index of baf (0, 1, ...) ; values: label text)
-        """
-        if ax is None:
-            fig, ax = plt.subplots(1, 1, **subplots_kwargs)
-            if title is None:
-                title = self.get_default_title()
-            fig.suptitle(title, **suptitle_kwargs)
-        else:
-            fig = None
-
-        # prepare plotdata
-        rawdata_plotdata = self.make_depth_raw_plotdata(sampletype)
-        if draw_segment:
-            segment_plotdata = self.make_depth_segment_plotdata(sampletype)
-
-        # set drawing parameters
-        dot_kwargs = (
-            {
-                'color': 'black', 
-                'markersize': 0.3, 
-                'alpha': libgenomeplot.calc_dot_alpha_baf(rawdata_plotdata.nrow),
-            }
-            | dot_kwargs
-        )
-        line_segmean_kwargs = (
-            {'color': 'tab:blue', 'linewidth': 2, 'alpha': 0.8}
-            | line_segmean_kwargs
-        )
-
-        # draw raw data
-        if normalized:
-            raw_y_colname = DepthRawDF.normalized_depth_colname
-        else:
-            raw_y_colname = DepthRawDF.depth_colname
-
-        self.genomeplotter.draw_dots(
-            ax, 
-            plotdata=rawdata_plotdata,
-            y_colname=raw_y_colname, 
-            plot_kwargs=dot_kwargs,
-            draw_common=False, 
-        )
-
-        # draw segment
-        if draw_segment:
-            segment_y_colname = DepthRawDF.normalized_depth_colname
-            self.genomeplotter.draw_hlines(
-                ax, 
-                plotdata=segment_plotdata,
-                y_colname=segment_y_colname, 
-                plot_kwargs=line_segmean_kwargs,
-                draw_common=False, 
-            )
-
-        # set axes styles
-        if ylabel is None:
-            mid = 'normalized' if normalized else 'raw'
-            ylabel = f'{sampletype} - {mid} depth'
-        if ymax is None:
-            #ymax = np.nanmean(rawdata_plotdata[raw_y_colname]) * 2
-            ymax = np.nanquantile(rawdata_plotdata[raw_y_colname], 0.999)
-        if ymin is None:
-            ymin = -ymax * 0.01
-        yticks = np.round(
-            np.linspace(0, ymax, 10), 
-            (2 if normalized else 1),
-        )
-
-        self.setup_yaxis(
-            ax, 
-            ylabel=ylabel, 
-            ylabel_kwargs=ylabel_kwargs, 
-            ymin=ymin, 
-            ymax=ymax,
-            yticks=yticks,
-        )
-        self.genomeplotter.draw_common(
-            ax, 
-            **draw_common_kwargs,
-        )
-
-        return fig, ax
-
-    def draw_data_ax(self):
-        pass
-
-    def draw_solution_ax(self):
-        pass
-
-    ######################
-    # ax drawing helpers #
-    ######################
-
-    @classmethod
-    def setup_yaxis(
-        cls,
-        ax, 
-        ylabel=None, 
-        ylabel_kwargs=dict(), 
-        ymin=None, 
-        ymax=None,
-        yticks=None,
-    ):
-        if ylabel is not None:
-            ax.set_ylabel(ylabel, **ylabel_kwargs)
-        ax.set_ylim(ymin, ymax)
-        ax.set_yticks(yticks)
-        ax.set_yticklabels(yticks, size=cls.get_yticklabel_size(yticks))
-
-    @staticmethod
-    def get_yticklabel_size(yticks):
-        return min((200 /len(yticks)), 10)
-
-    def get_default_title(self):
-        return f'sampleid={self.sampleid}, is_female={self.is_female}'
-
-    def get_baf_indexes(self):
-        return libbaf.get_baf_indexes(self.ploidy)
-
-
-######################
-# CNV analyzer class #
-######################
 
 class CNVPlotter:
     def __init__(

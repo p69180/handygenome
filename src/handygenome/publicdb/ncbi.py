@@ -308,6 +308,7 @@ class RefseqGenomePaths:
     def get_refver_details(
         self, refver, species,
         retry_count=None, retry_interval=5, timeout=60,
+        force_update=False,
     ):
         if (refver not in self.refver_details):
             self.set_refver_details(
@@ -325,7 +326,8 @@ class RefseqGenomePaths:
     def get_url(self, refver, species, key, force_update):
         if force_update:
             self.initialize(force_update=True)
-        path = self.get_refver_details(refver, species)[key]
+        refver_details = self.get_refver_details(refver, species, force_update=force_update)
+        path = refver_details[key]
         return f'https://{URL_AUTHORITY}{path}'
 
     def get_fasta_url(self, refver, species, force_update=False):

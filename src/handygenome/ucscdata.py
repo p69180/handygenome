@@ -10,6 +10,7 @@ import handygenome
 import handygenome.network as network
 import handygenome.cnv.misc as cnvmisc
 import handygenome.refgenome.refgenome as refgenome
+from handygenome.genomedf.genomedf import GenomeDataFrame as GDF
 
 
 URL_BASE = 'https://api.genome.ucsc.edu'
@@ -59,7 +60,7 @@ def get_refver_aliases():
     return result
 
 
-def standardize_refver(refver):
+def standardize_refver_ucscapi(refver):
     for standard, aliases in get_refver_aliases().items():
         if refver in aliases:
             return standard
@@ -67,7 +68,7 @@ def standardize_refver(refver):
 
 
 def list_tracks(refver):
-    refver = standardize_refver(refver)
+    refver = standardize_refver_ucscapi(refver)
     raw = network.http_get(f'{URL_BASE}/list/tracks?genome={refver}')
     return sorted(raw[refver].keys())
 
@@ -84,41 +85,49 @@ def rename_hg19_cytoband(cytoband_df):
     return result
 
 
-def get_cytoband_from_ucsc_api(refver, rename_hg19=True, as_gr=True):
-    refver = standardize_refver(refver)
-    if 'cytoBand' not in list_tracks(refver):
+#def get_cytoband_from_ucsc_api(refver, rename_hg19=True, as_gr=True):
+def get_cytoband_from_ucsc_api(refver):
+    ucsc_refver = standardize_refver_ucscapi(refver)
+    if 'cytoBand' not in list_tracks(ucsc_refver):
         raise Exception(f'"cytoBand" is not available for this reference genome.')
 
     raw = network.http_get(
-        f'{URL_BASE}/getData/track?genome={refver};track=cytoBand'
+        f'{URL_BASE}/getData/track?genome={ucsc_refver};track=cytoBand'
     )
     data = list()
     for dic in itertools.chain.from_iterable(raw['cytoBand'].values()):
         data.append(
             (dic['chrom'], dic['chromStart'], dic['chromEnd'], dic['name'], dic['gieStain'])
         )
-
-    chroms, starts, ends, names, stains = zip(*data)
-    result = pd.DataFrame.from_dict(
-        {
-            'Chromosome': chroms,
-            'Start': starts,
-            'End': ends,
-            'Name': names,
-            'Stain': stains,
-        }
+    df = pd.DataFrame.from_records(
+        data, columns=['Chromosome', 'Start', 'End', 'Name', 'Stain'],
     )
-    if (refver == 'hg19') and rename_hg19:
-        result = rename_hg19_cytoband(result)
 
-    result = cnvmisc.sort_genome_df(result, refver=refver)
-    if as_gr:
-        result = pr.PyRanges(result)
+    # remove chromosome names absent from chrom converter
+    chromconv = refgenome.get_chrom_converter(refver)
+    valid_indexes = df['Chromosome'].isin(tuple(chromconv.keys()))
+    df = df.loc[valid_indexes, :]
+    df['Chromosome'] = df['Chromosome'].apply(lambda x: chromconv[x])
+
+    # remove chromosome names absent from chromdict
+    chromdict = refgenome.get_chromdict(refver)
+    valid_indexes = df['Chromosome'].isin(tuple(chromdict.keys()))
+    df = df.loc[valid_indexes, :]
+
+    result = GDF.from_frame(df, refver=refver)
+    result.sort()
+    #if (refver == 'hg19') and rename_hg19:
+    #    result = rename_hg19_cytoband(result)
+
+    #result = cnvmisc.sort_genome_df(result, refver=refver)
+    #if as_gr:
+    #    result = pr.PyRanges(result)
 
     return result
 
 
 def get_cytoband_path(refver):
+    refver = refgenome.standardize(refver)
     return os.path.join(CYTOBAND_DIR, f'{refver}.tsv.gz')
 
 
@@ -131,24 +140,18 @@ def write_cytoband(cytoband_df, refver):
     )
 
 
-def get_cytoband(refver, as_gr=True):
+def get_cytoband(refver):
     cytoband_path = get_cytoband_path(refver)
     if not os.path.exists(cytoband_path):
-        cytoband_df = get_cytoband_from_ucsc_api(refver, rename_hg19=True, as_gr=False)
-        write_cytoband(cytoband_df, refver)
+        cytoband_gdf = get_cytoband_from_ucsc_api(refver)
+        cytoband_gdf.write_tsv(cytoband_path)
+        #write_cytoband(cytoband_df, refver)
     else:
-        cytoband_df = pd.read_csv(
-            cytoband_path,
-            sep='\t',
-            header=0,
-            dtype={'Chromosome': str, 'Start': int, 'End': int, 'Name': str, 'Stain': str},
+        cytoband_gdf = GDF.read_tsv(
+            cytoband_path, refver, dtype={'Name': 'string', 'Stain': 'string'},
         )
 
-    result = cytoband_df
-    if as_gr:
-        result = pr.PyRanges(result)
-
-    return result
+    return cytoband_gdf
         
 
 get_cytoband_gr = get_cytoband

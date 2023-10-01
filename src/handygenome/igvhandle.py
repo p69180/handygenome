@@ -24,13 +24,16 @@ class IGVHandle:
     def new(self):
         self.cmd('new')
         
-    def goto(self, loci, width=200):
-        assert isinstance(loci, (list, tuple)), f'"loci" argument must be a list'
-
+    def goto(self, *args, width=200):
         cmd_src = list()
-        for locus in loci:
+        for locus in args:
             if isinstance(locus, tuple):
-                cmd_src.append(f'{locus[0]}:{locus[1] - width}-{locus[2] + width}')
+                if len(locus) == 3:
+                    cmd_src.append(f'{locus[0]}:{locus[1] - width}-{locus[2] + width}')
+                elif len(locus) == 2:
+                    cmd_src.append(f'{locus[0]}:{locus[1] - width}-{locus[1] + width}')
+                else:
+                    raise Exception(f'Argument of type "tuple" must be of length 2 or 3.')
             elif isinstance(locus, str):
                 locus_sp = locus.split(':')
                 chrom = locus_sp[0]
@@ -60,7 +63,7 @@ class IGVHandle:
                 cmd_src.append(f'{chrom2}:{start2}-{end2}')
             else:
                 raise Exception(
-                    f'Entries of "loci" must be a str, tuple, Vcfspec, or Breakends.'
+                    f'Arguments must be a str, tuple, Vcfspec, or Breakends.'
                 )
 
         self.cmd(f'goto {" ".join(cmd_src)}')

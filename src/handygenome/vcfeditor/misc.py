@@ -1,11 +1,16 @@
 import os
 import gzip
+import multiprocessing
+import itertools
 
 import pysam
 import numpy as np
 
+import handygenome.tools as tools
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.interval as libinterval
+import handygenome.logutils as logutils
+from handygenome.genomedf.genomedf import GenomeDataFrame as GDF
 
 
 # pysam VariantFile mode related ones
@@ -94,6 +99,91 @@ def make_index(vcf_path):
     return index_filename
 
 
+###################################################
+# VCF position extraction and fetch - new version #
+###################################################
+
+'''pysam.VariantFile.fetch regards span of a VCF record as an interval:
+start0 = POS - 1
+end0 = start0 + len(REF)
+'''
+
+def get_vcf_positions_new(vcf_path, split=None, nproc=1):
+    if split is None:
+        split = nproc * 10
+
+    refver = refgenome.infer_refver_vcfpath(vcf_path)
+    if not check_has_index(vcf_path):
+        make_index(vcf_path) 
+
+    allregion_gdf = GDF.all_regions(refver, assembled_only=False)
+    allregion_split = allregion_gdf.equal_length_split(n=split)
+
+    with multiprocessing.Pool(nproc) as pool:
+        args = (
+            (vcf_path, gdf) 
+            for gdf in allregion_split
+        )
+        pool_result = pool.starmap(
+            get_vcf_positions_new_target,
+            args,
+        )
+
+    all_vr_intervals = list(itertools.chain.from_iterable(pool_result))
+    chroms, start0s, end0s = zip(*all_vr_intervals)
+    result_gdf = GDF.from_data(refver=refver, chroms=chroms, start0s=start0s, end0s=end0s)
+    result_gdf = result_gdf.merge()
+
+    return result_gdf
+
+
+def get_vcf_positions_new_target(vcf_path, gdf):
+    result = list()
+    with pysam.VariantFile(vcf_path) as vcf:
+        for chrom, start0, end0 in gdf.iter_coords():
+            for vr in vcf.fetch(chrom, start0, end0):
+                result.append(
+                    (vr.chrom, vr.pos - 1, vr.pos - 1 + len(vr.ref))
+                )
+    return result
+
+
+def get_vcf_fetchregions_new(vcf_path, n, nproc=1):
+    refver = refgenome.infer_refver_vcfpath(vcf_path)
+    position_gdf = get_vcf_positions_new(vcf_path, nproc=nproc)
+    fetchregion_gdfs = list()
+    for subgdf in position_gdf.equal_nrow_split(n=n):
+        chrom_left = subgdf.chromosomes[0]
+        start0_left = subgdf.starts[0]
+        chrom_right = subgdf.chromosomes[-1]
+        end0_right = subgdf.ends[-1]
+        fetchregion_gdfs.append(
+            GDF.from_margins(
+                refver, chrom_left, start0_left, chrom_right, end0_right,
+            )
+        )
+
+    return fetchregion_gdfs
+
+
+def get_vr_fetcher_new(vcf, refver, chrom=None, start0=None, end0=None):
+    if chrom is None:
+        for vr in vcf.fetch():
+            yield vr
+    else:
+        if start0 is None:
+            start0 = 0
+        if end0 is None:
+            end0 = refgenome.get_chromdict(refver)[chrom]
+        
+        for vr in vcf.fetch(contig=chrom, start=start0, stop=end0):
+            yield vr
+
+
+###################################################
+# VCF position extraction and fetch - old version #
+###################################################
+
 def get_vcf_positions(vcf_path, as_iter=False, verbose=False):
     """Returns:
         as_iter==True: A list of tuples (chrom, start0, end0) of each variant record
@@ -162,15 +252,6 @@ def get_vcf_fetchregions(vcf_path, n, refver, verbose=False):
     return result
 
 
-def get_vcf_lineno(vcf_path, verbose=False):
-    is_vcf, comp, is_bgzf = get_vcf_format(vcf_path)
-    if is_vcf:
-        line_iter = get_line_iter(vcf_path, comp, verbose)
-        return count_iterator(line_iter)
-    else:  # BCF
-        return get_vcf_lineno_pysam(vcf_path)
-
-
 def get_vr_fetcher(vcf, refver, chrom=None, start0=None, end0=None, respect_refregion=False):
     if chrom is None:
         for vr in vcf.fetch():
@@ -206,7 +287,18 @@ def get_vr_fetcher(vcf, refver, chrom=None, start0=None, end0=None, respect_refr
             if check_vr_inclusion(vr, chrom, start0, end0):
                 yield vr
 
-###
+#################
+# miscellaneous #
+#################
+
+def get_vcf_lineno(vcf_path, verbose=False):
+    is_vcf, comp, is_bgzf = get_vcf_format(vcf_path)
+    if is_vcf:
+        line_iter = get_line_iter(vcf_path, comp, verbose)
+        return count_iterator(line_iter)
+    else:  # BCF
+        return get_vcf_lineno_pysam(vcf_path)
+
 
 def count_iterator(iterator):
     idx = -1

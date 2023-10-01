@@ -5,7 +5,6 @@ import rpy2.robjects as ro
 from rpy2.robjects.packages import importr
 from rpy2.robjects import pandas2ri
 
-#from handygenome.genomedf import GenomeDataFrame as GDF
 
 '''rpy2 package seems to utilize 'root' logger. 
 In logutils module, when 'root' logger is used, ("log_old" function), rpy2 emits some log messages.
