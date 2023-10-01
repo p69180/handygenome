@@ -11,8 +11,8 @@ copyright = '2023, Ji-Hyung Park'
 author = 'Ji-Hyung Park'
 
 import handygenome
-release = handygenome.__version__
-version = handygenome.__version__
+release = '0.4.5'
+version = '0.4.5'
 #try:
 #    import handygenome
 #    release = handygenome.__version__
