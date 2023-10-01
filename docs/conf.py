@@ -10,13 +10,16 @@ project = 'handygenome'
 copyright = '2023, Ji-Hyung Park'
 author = 'Ji-Hyung Park'
 
-try:
-    import handygenome
-    release = handygenome.__version__
-    version = handygenome.__version__
-except:
-    release = '0.4.0'
-    version = '0.4.0'
+import handygenome
+release = handygenome.__version__
+version = handygenome.__version__
+#try:
+#    import handygenome
+#    release = handygenome.__version__
+#    version = handygenome.__version__
+#except:
+#    release = '0.4.0'
+#    version = '0.4.0'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
