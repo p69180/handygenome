@@ -10,8 +10,8 @@ project = 'handygenome'
 copyright = '2023, Ji-Hyung Park'
 author = 'Ji-Hyung Park'
 
-release = '0.4.5'
-version = '0.4.5'
+release = '0.4.6'
+version = '0.4.6'
 #try:
 #    import handygenome
 #    release = handygenome.__version__
