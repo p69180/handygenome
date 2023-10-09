@@ -13,21 +13,46 @@ DEFAULT_DTYPES = {
 }
 
 
-def hash_gr(gr):
-    #df_for_hash = pd.concat([getattr(gr, x) for x in gr.columns], axis=1)
-    assert not gr.empty
-
-    df_for_hash = gr.df
-    df_for_hash.sort_values(COMMON_COLUMNS, inplace=True)
-    df_for_hash.reset_index(drop=True, inplace=True)
-    return hash_pandas_object(df_for_hash, index=False)
-
-
 def hash_df(df):
+    """Ordering of columns and rows does not matter"""
     assert set(COMMON_COLUMNS).issubset(df.columns)
-    df_for_hash = df.sort_values(COMMON_COLUMNS, inplace=False)
+    sorted_columns = sorted(df.columns)
+    df_for_hash = df.loc[:, sorted_columns]
+    df_for_hash = df_for_hash.sort_values(COMMON_COLUMNS, inplace=False)
     df_for_hash.reset_index(drop=True, inplace=True)
     return hash_pandas_object(df_for_hash, index=False)
+
+
+def hash_gr(gr):
+    assert not gr.empty
+    return hash_df(gr.df)
+
+
+def order_df(df, columns):
+    return (
+        df
+        .loc[:, columns]
+        .sort_values(COMMON_COLUMNS, inplace=False)
+        .reset_index(drop=True, inplace=False)
+    )
+
+
+def compare_two_dfs(df1, df2):
+    assert set(COMMON_COLUMNS).issubset(df1.columns)
+    assert set(COMMON_COLUMNS).issubset(df2.columns)
+
+    df1_columns = sorted(df1.columns)
+    df2_columns = sorted(df2.columns)
+    if df1_columns != df2_columns:
+        return False
+    columns = df1_columns
+
+    if df1.shape != df2.shape:
+        return False
+
+    df1_ordered = order_df(df1, columns)
+    df2_ordered = order_df(df2, columns)
+    return (hash_pandas_object(df1_ordered) == hash_pandas_object(df2_ordered)).to_numpy().all()
 
 
 def check_duplicate_coords(df):

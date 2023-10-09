@@ -110,8 +110,8 @@ def make_regionfiles(args, regions_dir):
     regionfile_path_list = list()
     if args.refver is not None:
         chromdict = common.ChromDict(refver=refver)
-    elif args.fasta_path is not None:
-        chromdict = common.ChromDict(fasta_path=fasta_path)
+    #elif args.fasta_path is not None:
+    #    chromdict = common.ChromDict(fasta_path=fasta_path)
 
     merged_intvlist = workflow.get_merged_intervals_from_args(args)
     split_intvlists = merged_intvlist.get_split_interval_lists(

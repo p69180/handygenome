@@ -11,6 +11,7 @@ import pysam
 import numpy as np
 import scipy.stats
 
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.logutils as logutils
 import handygenome.workflow as workflow
 import handygenome.annotation.annotitem as annotitem
@@ -121,103 +122,6 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         countonly=False,
         include_mNM_items=False,
     ):
-        def allele_means(data):
-            return dict(
-                (
-                    alleleclass, 
-                    np.nan if len(values) == 0 else np.mean(values),
-                )
-                for (alleleclass, values) in data.items()
-            )
-
-        def allele_medians(data):
-            return dict(
-                (
-                    alleleclass, 
-                    np.nan if len(values) == 0 else np.median(values),
-                ) 
-                for (alleleclass, values) in data.items()
-            )
-
-        def varpos_kstest(data):
-            summary = dict()
-            for alleleclass, values in data.items():
-                if len(values) == 0:
-                    pval = np.nan
-                else:
-                    pval = scipy.stats.kstest(values, ZERO_ONE_UNIFORM.cdf).pvalue
-                summary[alleleclass] = pval
-
-            return summary
-
-        def handle_orient(data, mode):
-            summary = dict()
-            for alleleclass, values in data.items():
-                if len(values) == 0:
-                    summary[alleleclass] = np.nan
-                else:
-                    counter = collections.Counter(values)
-                    if mode == 'pairorient':
-                        x = (counter['f1r2'], counter['f2r1'])
-                    elif mode == 'readorient':
-                        x = (counter['f'], counter['r'])
-                    summary[alleleclass] = scipy.stats.binom_test(x, p=0.5, alternative='two-sided')
-
-            return summary
-
-        def handle_mNM(
-            data, 
-            rppcounts_dict, 
-            rpp_range0_dict, 
-            recurrence_cutoff_fraction,
-            recurrence_cutoff_denominator,
-        ):
-            summary_without_recurrence = dict()
-            summary_only_recurrence = dict()
-            mNMitems_norecur = dict()
-            mNMitems_recur = dict()
-            for alleleclass, values in data.items():    
-                # set values
-                mNM_count_sum_with_recurrence = 0
-                mNM_count_sum_without_recurrence = 0
-
-                mNMitems_norecur[alleleclass] = list()
-                mNMitems_recur[alleleclass] = list()
-
-                if len(values) > 0:
-                    counter = collections.Counter(values)
-                    for key, val in counter.items():
-                        refpos0 = key[0]
-                        relevant_rppcount = sum(
-                            any((refpos0 in x) for x in range0_list)
-                            for range0_list in rpp_range0_dict[alleleclass]
-                        )
-                        if relevant_rppcount == 0:
-                            raise Exception(
-                                f'The number of relevant rpp is 0. mNM element: {key}'
-                            )
-
-                        if (
-                            (val / relevant_rppcount) >= recurrence_cutoff_fraction and
-                            relevant_rppcount >= recurrence_cutoff_denominator
-                        ):  # This means a recurrent MM
-                            mNM_count_sum_with_recurrence += 1
-                            mNMitems_recur[alleleclass].append(key)
-                        else:
-                            mNM_count_sum_without_recurrence += 1
-                            mNMitems_norecur[alleleclass].append(key)
-
-                # summarize
-                if rppcounts_dict[alleleclass] == 0:
-                    summary_without_recurrence[alleleclass] = np.nan
-                else:
-                    summary_without_recurrence[alleleclass] = (
-                        mNM_count_sum_without_recurrence / rppcounts_dict[alleleclass]
-                    )
-                summary_only_recurrence[alleleclass] = mNM_count_sum_with_recurrence
-
-            return summary_without_recurrence, summary_only_recurrence, mNMitems_norecur, mNMitems_recur
-
         # main
         result = cls(is_missing=False)
         result.is_invalid = False
@@ -236,16 +140,21 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         result['rppcounts'] = readstats_data['count'].copy()
 
         if not countonly:
-            result['mean_BQs'] = allele_means(readstats_data['BQ'])
-            result['median_BQs'] = allele_medians(readstats_data['BQ'])
+            result['mean_BQs'] = cls.allele_means(readstats_data['BQ'])
+            result['median_BQs'] = cls.allele_medians(readstats_data['BQ'])
 
-            result['mean_MQs'] = allele_means(readstats_data['MQ'])
-            result['median_MQs'] = allele_medians(readstats_data['MQ'])
+            result['mean_MQs'] = cls.allele_means(readstats_data['MQ'])
+            result['median_MQs'] = cls.allele_medians(readstats_data['MQ'])
 
-            result['mean_cliplens'] = allele_means(readstats_data['cliplen'])
-            result['median_cliplens'] = allele_medians(readstats_data['cliplen'])
+            result['mean_cliplens'] = cls.allele_means(readstats_data['cliplen'])
+            result['median_cliplens'] = cls.allele_medians(readstats_data['cliplen'])
 
-            result['mNM'], result['recurrent_mNM'], mNMitems_norecur, mNMitems_recur = handle_mNM(
+            (
+                result['mNM'], 
+                result['recurrent_mNM'], 
+                mNMitems_norecur, 
+                mNMitems_recur,
+            ) = cls.handle_mNM(
                 readstats_data['mNM'], 
                 readstats_data['count'], 
                 readstats_data['rpp_range0'], 
@@ -256,12 +165,33 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
                 result['mNM_items'] = mNMitems_norecur
                 result['recurrent_mNM_items'] = mNMitems_recur
 
-            result['pairorient_pvalues'] = handle_orient(readstats_data['pairorient'], mode='pairorient')
-            result['readorient_pvalues'] = handle_orient(readstats_data['readorient'], mode='pairorient')
+            result['pairorient_pvalues'] = cls.handle_orient(readstats_data['pairorient'], mode='pairorient')
+            result['readorient_pvalues'] = cls.handle_orient(readstats_data['readorient'], mode='pairorient')
 
-            result['varpos_uniform_pvalues'] = varpos_kstest(readstats_data['pos0_left_fraction'])
-            result['mean_varpos_fractions'] = allele_means(readstats_data['pos0_left_fraction'])
-            result['median_varpos_fractions'] = allele_medians(readstats_data['pos0_left_fraction'])
+            result['varpos_uniform_pvalues'] = cls.varpos_kstest(
+                readstats_data['pos0_left_fraction']
+            )
+            result['mean_varpos_fractions'] = cls.allele_means(readstats_data['pos0_left_fraction'])
+            result['median_varpos_fractions'] = cls.allele_medians(readstats_data['pos0_left_fraction'])
+
+        return result
+
+    @classmethod
+    def from_custom_countonly(cls, vcfspec, counts):
+        result = cls(is_missing=False)
+        result.is_invalid = False
+        result.vcfspec = vcfspec
+        result.fasta = refgenome.get_fasta(vcfspec.refver)
+        result.chromdict = refgenome.get_chromdict(vcfspec.refver)
+
+        result['rppcounts'] = dict()
+        result['rppcounts']['softclip_overlap'] = 0
+        for alleleclass in vcfspec.get_alleleclasses():  # this includes -1
+            try:
+                n_read = counts[alleleclass]
+            except KeyError:
+                n_read = 0
+            result['rppcounts'][alleleclass] = n_read
 
         return result
 
@@ -313,8 +243,124 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
 
         return result
 
+    ####################################
+    # helpers of "from_readstats_data" #
+    ####################################
+
+    @staticmethod
+    def allele_means(data):
+        return dict(
+            (
+                alleleclass, 
+                np.nan if len(values) == 0 else np.mean(values),
+            )
+            for (alleleclass, values) in data.items()
+        )
+
+    @staticmethod
+    def allele_medians(data):
+        return dict(
+            (
+                alleleclass, 
+                np.nan if len(values) == 0 else np.median(values),
+            ) 
+            for (alleleclass, values) in data.items()
+        )
+
+    @staticmethod
+    def varpos_kstest(data):
+        summary = dict()
+        for alleleclass, values in data.items():
+            if len(values) == 0:
+                pval = np.nan
+            else:
+                pval = scipy.stats.kstest(values, ZERO_ONE_UNIFORM.cdf).pvalue
+            summary[alleleclass] = pval
+
+        return summary
+
+    @staticmethod
+    def handle_orient(data, mode):
+        summary = dict()
+        for alleleclass, values in data.items():
+            if len(values) == 0:
+                summary[alleleclass] = np.nan
+            else:
+                counter = collections.Counter(values)
+                if mode == 'pairorient':
+                    x = (counter['f1r2'], counter['f2r1'])
+                elif mode == 'readorient':
+                    x = (counter['f'], counter['r'])
+                summary[alleleclass] = scipy.stats.binom_test(x, p=0.5, alternative='two-sided')
+
+        return summary
+
+    @staticmethod
+    def handle_mNM(
+        data, 
+        rppcounts_dict, 
+        rpp_range0_dict, 
+        recurrence_cutoff_fraction,
+        recurrence_cutoff_denominator,
+    ):
+        summary_without_recurrence = dict()
+        summary_only_recurrence = dict()
+        mNMitems_norecur = dict()
+        mNMitems_recur = dict()
+        for alleleclass, values in data.items():    
+            # set values
+            mNM_count_sum_with_recurrence = 0
+            mNM_count_sum_without_recurrence = 0
+
+            mNMitems_norecur[alleleclass] = list()
+            mNMitems_recur[alleleclass] = list()
+
+            if len(values) > 0:
+                counter = collections.Counter(values)
+                for key, val in counter.items():
+                    refpos0 = key[0]
+                    relevant_rppcount = sum(
+                        any((refpos0 in x) for x in range0_list)
+                        for range0_list in rpp_range0_dict[alleleclass]
+                    )
+                    if relevant_rppcount == 0:
+                        raise Exception(
+                            f'The number of relevant rpp is 0. mNM element: {key}'
+                        )
+
+                    if (
+                        ((val / relevant_rppcount) >= recurrence_cutoff_fraction)
+                        and (relevant_rppcount >= recurrence_cutoff_denominator)
+                    ):  # This means a recurrent MM
+                        mNM_count_sum_with_recurrence += 1
+                        mNMitems_recur[alleleclass].append(key)
+                    else:
+                        mNM_count_sum_without_recurrence += 1
+                        mNMitems_norecur[alleleclass].append(key)
+
+            # summarize
+            if rppcounts_dict[alleleclass] == 0:
+                summary_without_recurrence[alleleclass] = np.nan
+            else:
+                summary_without_recurrence[alleleclass] = (
+                    mNM_count_sum_without_recurrence / rppcounts_dict[alleleclass]
+                )
+            summary_only_recurrence[alleleclass] = mNM_count_sum_with_recurrence
+
+        return (
+            summary_without_recurrence, 
+            summary_only_recurrence, 
+            mNMitems_norecur, 
+            mNMitems_recur,
+        )
+
+
     #def write(self, vr, sampleid):
     #    return self.write_base(vr, sampleid)
+
+    #############
+    # utilities #
+    #############
 
     def get_allele_indexes_average(self, key, allele_indexes=None):
         assert key != 'rppcounts'
@@ -360,6 +406,20 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
                 return self['rppcounts'][alleleclass] / total_rppcount
             except KeyError:
                 raise AlleleclassError(f'Invalid alleleclass')
+
+    def get_vafs(self, n_allele, exclude_other=False):
+        total_rppcount = self.get_total_rppcount(exclude_other=exclude_other)
+        if total_rppcount == 0:
+            return np.repeat(np.nan, n_allele)
+        else:
+            data = list()
+            for alleleclass in range(n_allele):
+                try:
+                    vaf = self['rppcounts'][alleleclass] / total_rppcount
+                except KeyError:
+                    vaf = np.nan
+                data.append(vaf)
+            return np.array(data)
 
     def get_sorted_vafs(self, exclude_other=True, reverse=True):
         vafs = list()
@@ -624,7 +684,7 @@ def rpplist_to_readstats_data_countonly(
     rpplist, vcfspec, flanklen=liballeleinfo.DEFAULT_FLANKLEN,
 ):
     # initialize
-    alleleclass_keys = vcfspec.get_alleleclasses()
+    alleleclass_keys = vcfspec.get_alleleclasses()  # this includes -1
     data = dict()
     data['count'] = {x: 0 for x in alleleclass_keys}
     data['count']['softclip_overlap'] = 0

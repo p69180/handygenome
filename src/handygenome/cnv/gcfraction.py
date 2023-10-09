@@ -26,7 +26,7 @@ os.makedirs(GCDATA_DIR, exist_ok=True)
 # making and saving gc fraction bigwig files
 
 def write_gcfile(outfile_path, fasta, binsize=100):
-    chromdict = refgenome.ChromDict(fasta=fasta)
+    chromdict = refgenome.ChromDict.from_fasta(fasta)
     bin_gr = chromdict.to_gr().window(binsize)
     gc_df = bin_gr.df
     gc_df['GC'] = calculate_gcvals(

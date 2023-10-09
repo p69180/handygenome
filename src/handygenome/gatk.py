@@ -1,18 +1,33 @@
 import os
 import shutil
+import shutil
 import subprocess
 import tempfile
 import re
 
 import pysam
+import numpy as np
+import pandas as pd
 
 import handygenome
 import handygenome.workflow as workflow
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.variant.variantplus as variantplus
+from handygenome.variant.vcfspec import Vcfspec
 import handygenome.bameditor as bameditor
+from handygenome.annotation.readstats import ReadStats, ReadStatsSampledict
 
 
-GATK = os.path.join(handygenome.DIRS['externals'], 'gatk_wrapper.sh')
+def get_gatk_path():
+    result = shutil.which('gatk')
+    if result is None:
+        result = os.path.join(handygenome.DIRS['scripts'], 'gatk_wrapper.sh')
+    return result
+
+GATK = get_gatk_path()
+
+
+###########
 
 
 def run_haplotypecaller(fasta_path, infile_path, outfile_path, tmpdir=None, 
@@ -146,3 +161,38 @@ def split_realigned_bam(realigned_bam_path):
         for rg in readgroups
     }
     return split_bams
+
+
+##########################
+
+
+def edit_haplotypecaller_output(infile_path, outfile_path, mode='wz'):
+    assert outfile_path.endswith('.vcf.gz')
+
+    infile = pysam.VariantFile(infile_path)
+    outfile_hdr = infile.header.copy()
+    ReadStatsSampledict.add_meta(outfile_hdr)
+    outfile = pysam.VariantFile(outfile_path, mode=mode, header=outfile_hdr)
+
+    refver = refgenome.infer_refver_vcfheader(outfile_hdr)
+    for vr in infile.fetch():
+        # make new vr
+        new_vr = vr.copy()
+
+        # make ReadStatsSampledict and write to the new vr
+        vcfspec = Vcfspec.from_vr(new_vr, refver=refver)
+        readstatsdict = ReadStatsSampledict()
+        for sid in vr.samples.keys():
+            AD = vr.samples[sid]['AD']
+            readstatsdict[sid] = ReadStats.from_custom_countonly(
+                vcfspec, 
+                {0: AD[0], 1: AD[1]},
+            )
+        readstatsdict.write(new_vr)
+
+        # write the new vr to new vcf
+        outfile.write(new_vr)
+            
+    infile.close()
+    outfile.close()
+

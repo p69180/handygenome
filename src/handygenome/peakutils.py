@@ -1,4 +1,5 @@
 import collections
+import functools
 
 import numpy as np
 import pandas as pd
@@ -72,6 +73,72 @@ class PeaksBase(collections.UserDict):
         result = self.__class__(srcdict)
         return result
 
+    @classmethod
+    def merge_two(cls, left, right):
+        srcdict = dict()
+
+        # first level value
+        for key in (
+            #'peak_indexes',
+            'peak_xs',
+            'peak_ys',
+            'ndata',
+        ):
+            srcdict[key] = list()
+            for peakobj in (left, right):
+                if key in peakobj:
+                    srcdict[key].extend(peakobj[key])
+
+        # second level
+        for key in (
+            'peak_properties',
+            'xcoord_values',
+        ):
+            srcdict[key] = dict()
+            for peakobj in (left, right):
+                if key in peakobj:
+                    for subkey, subval in peakobj[key].items():
+                        srcdict[key].setdefault(subkey, list())
+                        srcdict[key][subkey].extend(subval)
+
+        result = cls(srcdict)
+        return result
+
+    @classmethod
+    def merge(cls, *args):
+        peakobj_list = list(args)
+        srcdict = dict()
+
+        # first level value
+        for key in (
+            #'peak_indexes',
+            'peak_xs',
+            'peak_ys',
+            'ndata',
+        ):
+            srcdict[key] = list()
+            for peakobj in peakobj_list:
+                if key in peakobj:
+                    srcdict[key].extend(peakobj[key])
+            srcdict[key] = np.array(srcdict[key])
+
+        # second level
+        for key in (
+            'peak_properties',
+            'xcoord_values',
+        ):
+            srcdict[key] = dict()
+            for peakobj in peakobj_list:
+                if key in peakobj:
+                    for subkey, subval in peakobj[key].items():
+                        srcdict[key].setdefault(subkey, list())
+                        srcdict[key][subkey].extend(subval)
+            for subkey in tuple(srcdict[key].keys()):
+                srcdict[key][subkey] = np.array(srcdict[key][subkey])
+
+        result = cls(srcdict)
+        return result
+
     #def get_highest_peak_index(self):
     #    max_peak_idx = np.argmax(self['peak_properties']['peak_heights'])
     #    return self['peak_indexes'][max_peak_idx]
@@ -110,7 +177,11 @@ class PeaksBase(collections.UserDict):
     def filter_ndata(self, n):
         self.subset(self['ndata'] >= n)
 
-    def plot_common(self, ax, peakline_kwargs, draw_ndata=False):
+    def plot_peakinfo(
+        self, ax, peakline_kwargs, draw_ndata=False, 
+        draw_peak_positions=True,
+        annotate_kwargs=dict(),
+    ):
         height_cutoff = self.get_height_cutoff()
         if height_cutoff is not None: 
             ax.axhline(height_cutoff, color='green', lw=2, alpha=0.4)
@@ -126,6 +197,64 @@ class PeaksBase(collections.UserDict):
             y = ylim[1] + 0.05 * (ylim[1] - ylim[0])
             for (x, ndata) in zip(self['peak_xs'], self['ndata']):
                 ax.text(x, y, str(ndata), va='center', ha='left', rotation=90)
+
+        if draw_peak_positions:
+            annotate_kwargs = (
+                dict(
+                    va='bottom', ha='center', size=8,
+                    arrowprops=dict(arrowstyle='-', color='black', linewidth=0.5),
+                )
+                | annotate_kwargs
+            )
+            xtext_list = np.linspace(*ax.get_xlim(), self.npeaks, endpoint=True)
+            for x, xtext in zip(self['peak_xs'], xtext_list):
+                #ax.axvline(x, color='black', linewidth=0.5)
+                ax.annotate(
+                    round(x, 3), 
+                    #(ax.get_xlim()[1], y),
+                    (x, ax.get_ylim()[1]),
+                    xytext=(xtext, ax.get_ylim()[1] * 1.1),
+                    annotation_clip=False,
+                    **annotate_kwargs,
+                )
+
+    def plot_peakinfo_lying(
+        self, ax, peakline_kwargs, draw_ndata=False,
+        draw_peak_positions=True,
+        annotate_kwargs=dict(),
+    ):
+        height_cutoff = self.get_height_cutoff()
+        if height_cutoff is not None: 
+            ax.axvline(height_cutoff, color='green', lw=2, alpha=0.4)
+
+        for y in self['peak_xs']:
+            ax.axhline(y, **peakline_kwargs)
+
+        if draw_ndata:
+            xlim = ax.get_xlim()
+            x = xlim[1] + 0.05 * (xlim[1] - xlim[0])
+            for (y, ndata) in zip(self['peak_xs'], self['ndata']):
+                ax.text(x, y, str(ndata), va='center', ha='left', rotation=0)
+
+        if draw_peak_positions:
+            annotate_kwargs = (
+                dict(
+                    va='center', ha='left', size=8,
+                    arrowprops=dict(arrowstyle='-', color='black', linewidth=0.5),
+                )
+                | annotate_kwargs
+            )
+            ytext_list = np.linspace(*ax.get_ylim(), self.npeaks, endpoint=True)
+            xlim = ax.get_xlim()
+            for y, ytext in zip(self['peak_xs'], ytext_list):
+                #ax.axhline(y, color='black', linewidth=0.5)
+                ax.annotate(
+                    round(y, 3), 
+                    (xlim[1], y),
+                    xytext=(xlim[1] * 1.1, ytext),
+                    annotation_clip=False,
+                    **annotate_kwargs,
+                )
 
     def postprocess(self, reltoheight=None):
         if reltoheight is not None:
@@ -265,6 +394,7 @@ class HistPeaks(PeaksBase):
         ax=None, 
         peakline_kwargs=dict(),
         bar_kwargs=dict(),
+        omit_peakline=False,
     ):
         peakline_kwargs = (
             {'lw': 0.5, 'color': 'blue'}
@@ -285,7 +415,40 @@ class HistPeaks(PeaksBase):
         width = np.diff(self['bin_edges'])
         ax.bar(x, height, width, align='edge', **bar_kwargs)
 
-        self.plot_common(ax, peakline_kwargs)
+        if not omit_peakline:
+            self.plot_peakinfo(ax, peakline_kwargs)
+
+        return fig, ax
+
+    def plot_lying(
+        self,
+        figsize=None, 
+        ax=None, 
+        peakline_kwargs=dict(),
+        bar_kwargs=dict(),
+        omit_peakline=False,
+    ):
+        peakline_kwargs = (
+            {'lw': 0.5, 'color': 'blue'}
+            | peakline_kwargs
+        )
+        bar_kwargs = (
+            {'fill': 'tab:blue'}
+            | bar_kwargs
+        )
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = None
+
+        y = self['bin_edges'][:-1]
+        width = self['hist']
+        height = np.diff(self['bin_edges'])
+        ax.barh(y, width, height=height, align='edge', **bar_kwargs)
+
+        if not omit_peakline:
+            self.plot_peakinfo_lying(ax, peakline_kwargs)
 
         return fig, ax
 
@@ -297,6 +460,7 @@ class DensityPeaks(PeaksBase):
         ax=None, 
         peakline_kwargs=dict(),
         plot_kwargs=dict(),
+        omit_peakline=False,
     ):
         peakline_kwargs = (
             {'lw': 0.5, 'color': 'red'}
@@ -314,7 +478,36 @@ class DensityPeaks(PeaksBase):
 
         ax.plot(self['xs'], self['ys'], **plot_kwargs)
 
-        self.plot_common(ax, peakline_kwargs)
+        if not omit_peakline:
+            self.plot_peakinfo(ax, peakline_kwargs)
+
+        return fig, ax
+
+    def plot_lying(
+        self,
+        figsize=None, 
+        ax=None, 
+        peakline_kwargs=dict(),
+        plot_kwargs=dict(),
+        omit_peakline=False,
+    ):
+        peakline_kwargs = (
+            {'lw': 0.5, 'color': 'red'}
+            | peakline_kwargs
+        )
+        plot_kwargs = (
+            {'color': 'tab:red'}
+            | plot_kwargs
+        )
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = None
+
+        ax.plot(self['ys'], self['xs'], **plot_kwargs)
+        if not omit_peakline:
+            self.plot_peakinfo_lying(ax, peakline_kwargs)
 
         return fig, ax
 
@@ -470,13 +663,25 @@ def findpeaks_arghandler(data, weights, limit, find_peaks_kwargs):
 def draw_peaks(
     data=None, 
 
+    ax=None,
+
+    weights=None, 
+    limit=None, 
+    reltoheight=None,
+    inverse=False,
+
+    omit_hist=False,
+    omit_hist_peakline=True,
     omit_density=False,
+    omit_density_peakline=False,
 
     histpeaks=None,
     densitypeaks=None,
 
     hist_kwargs=dict(),
     density_kwargs=dict(), 
+
+    lying=False,
 ):
     # set kwargs
     hist_kwargs = (
@@ -488,8 +693,14 @@ def draw_peaks(
         | density_kwargs
     )
 
+    for dic in (hist_kwargs, density_kwargs):
+        dic['weights'] = weights
+        dic['limit'] = limit
+        dic['reltoheight'] = reltoheight
+        dic['inverse'] = inverse
+
     # main
-    if histpeaks is None:
+    if (histpeaks is None) and (not omit_hist):
         histpeaks = find_hist_peaks(data, **hist_kwargs)
     if (densitypeaks is None) and (not omit_density):
         try:
@@ -497,13 +708,32 @@ def draw_peaks(
         except DensityGenerationFailure:
             omit_density = True
 
-    fig, ax = plt.subplots()
-    histpeaks.plot(
-        ax=ax, 
-    )
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.figure
+
+    if not omit_hist:
+        if lying:
+            histpeaks.plot_lying(
+                ax=ax, 
+                omit_peakline=omit_hist_peakline,
+            )
+        else:
+            histpeaks.plot(
+                ax=ax, 
+                omit_peakline=omit_hist_peakline,
+            )
     if not omit_density:
-        densitypeaks.plot(
-            ax=ax, 
-        )
+        if lying:
+            densitypeaks.plot_lying(
+                ax=ax, 
+                omit_peakline=omit_density_peakline,
+            )
+        else:
+            densitypeaks.plot(
+                ax=ax, 
+                omit_peakline=omit_density_peakline,
+            )
 
     return fig, ax

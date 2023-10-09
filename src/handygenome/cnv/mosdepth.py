@@ -50,6 +50,7 @@ def run_mosdepth(
     #refver=None,
     t=1, 
     nproc=1,
+    split_width=500,
     use_median=False, 
 
     region_bed_path=None, 
@@ -74,7 +75,7 @@ def run_mosdepth(
         region_gdf=region_gdf,
         window=window,
         refver=refver,
-        n_split=nproc,
+        split_width=split_width,
     )
 
     # run parallel jobs
@@ -114,7 +115,7 @@ def run_mosdepth_prepare_region_gdfs(
     region_gdf,
     window,
     refver,
-    n_split,
+    split_width,
 ):
     region_is_given = (region_bed_path is not None) or (region_gdf is not None)
     if region_is_given:
@@ -127,7 +128,7 @@ def run_mosdepth_prepare_region_gdfs(
         region_gdf = region_gdf.window(window)
 
     region_gdf.sort()
-    region_gdf_list = region_gdf.equal_nrow_split(n=n_split)
+    region_gdf_list = region_gdf.equal_nrow_split(width=split_width)
     return region_gdf_list
 
 

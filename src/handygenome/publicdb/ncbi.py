@@ -119,7 +119,8 @@ class RefseqGenomePaths:
         self.initialize(force_update=force_update)
 
     def __del__(self):
-        self.save_cache()
+        #self.save_cache()
+        pass
 
     def initialize(self, force_update=False):
         if force_update:

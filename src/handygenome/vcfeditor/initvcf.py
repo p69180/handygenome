@@ -129,3 +129,4 @@ def create_vr(chromdict, *, vcfspec=None, end=None, samples=None, vcfheader=None
         vr.stop = end
 
     return vr
+

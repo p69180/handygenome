@@ -32,12 +32,12 @@ RESERVED_COLNAMES = [
 ]
 
 
-def split_left_gdf(gdf, width=1000):
-    partial_left_gdf_list = list()
-    for chrom, subgdf in gdf.group_bychrom(sort=True).items():
-        partial_left_gdf_list.extend(subgdf.equal_nrow_split(width=width))
-
-    return partial_left_gdf_list
+#def split_left_gdf(gdf, width=1000):
+#    partial_left_gdf_list = list()
+#    for chrom, subgdf in gdf.group_bychrom(sort=True).items():
+#        partial_left_gdf_list.extend(subgdf.equal_nrow_split(width=width))
+#
+#    return partial_left_gdf_list
 
 
 def targetfunc(partial_left_gdf, right_gdf, join_kwargs):

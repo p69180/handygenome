@@ -19,24 +19,25 @@ from matplotlib.patches import Rectangle
 
 import handygenome
 import handygenome.tools as tools
+import handygenome.logutils as logutils
 import handygenome.refgenome.refgenome as refgenome
-import handygenome.pyranges_helper as pyranges_helper
-import handygenome.cnv.misc as cnvmisc
-import handygenome.cnv.rcopynumber as rcopynumber
-import handygenome.cnv.mosdepth as libmosdepth
-import handygenome.variant.variantplus as variantplus
-import handygenome.cnv.gcfraction as libgcfraction
+#import handygenome.pyranges_helper as pyranges_helper
+#import handygenome.cnv.misc as cnvmisc
+#import handygenome.cnv.rcopynumber as rcopynumber
+#import handygenome.cnv.mosdepth as libmosdepth
+#import handygenome.variant.variantplus as variantplus
+#import handygenome.cnv.gcfraction as libgcfraction
 import handygenome.deco as deco
-import handygenome.workflow as workflow
+#import handygenome.workflow as workflow
 import handygenome.ucscdata as ucscdata
-import handygenome.cnv.baf as libbaf
+#import handygenome.cnv.baf as libbaf
 
-import handygenome.genomedf.genomedf as libgenomedf
+#import handygenome.genomedf.genomedf as libgenomedf
 from handygenome.genomedf.genomedf import GenomeDataFrame as GDF
 
 
-LOGGER_INFO = workflow.get_debugging_logger(verbose=False)
-LOGGER_DEBUG = workflow.get_debugging_logger(verbose=True)
+#LOGGER_INFO = workflow.get_debugging_logger(verbose=False)
+#LOGGER_DEBUG = workflow.get_debugging_logger(verbose=True)
 DOT_ALPHA_CONST = 0.01 / 3e6
 
 
@@ -101,12 +102,12 @@ def calc_dot_alpha_old(
 ####################
 
 
-def check_is_allregion(region_gr, refver):
-    """checks if allregion_gr is included within region_gr"""
-    region_gr = cnvmisc.arg_into_gr(region_gr)
-    allregion_gr = refgenome.get_chromdict(refver).to_gr(assembled_only=True, as_gr=True)
-    isec_gr = allregion_gr.intersect(region_gr)
-    return (isec_gr[[]].sort().df == allregion_gr[[]].sort().df).all(axis=None)
+#def check_is_allregion(region_gr, refver):
+#    """checks if allregion_gr is included within region_gr"""
+#    region_gr = cnvmisc.arg_into_gr(region_gr)
+#    allregion_gr = refgenome.get_chromdict(refver).to_gr(assembled_only=True, as_gr=True)
+#    isec_gr = allregion_gr.intersect(region_gr)
+#    return (isec_gr[[]].sort().df == allregion_gr[[]].sort().df).all(axis=None)
 
 
 # decorator for making plot method
@@ -197,16 +198,43 @@ def check_is_allregion(region_gr, refver):
 #    return fig, axd
 
 
+@deco.get_deco_atleast1d(['pos0_list'])
+def genomic_to_plot(chromwise_params, chrom, pos0_list):
+    if chrom not in chromwise_params.keys():
+        raise Exception(f'Input "chrom" argument is not included in the plotting region.')
+
+    pos0_list = pos0_list[:, np.newaxis]
+    params = chromwise_params[chrom]
+
+    contains = np.logical_and(
+        (pos0_list >= params['start0']), (pos0_list < params['end0'])
+    )
+    pos0s_indexes, intv_indexes = np.where(contains)
+        # np.ndarray composed of the indexes of the containing intervals
+        # identical intervals can appear many times
+    within_region_offsets = (
+        params['plot_region_length'][intv_indexes]
+        * (
+            (pos0_list[pos0s_indexes, 0] - params['start0'][intv_indexes]) 
+            / params['raw_region_length'][intv_indexes]
+        )
+    )
+    return params['plot_region_start_offset'][intv_indexes] + within_region_offsets
+
+
 class CoordinateConverter:
     def __init__(
         self, 
         refver, 
+
         chroms=None, 
         start0s=None, 
         end0s=None, 
         weights=1,
-        region_gaps=0.1,
+
         region_gdf=None, 
+
+        region_gaps=0.1,
     ):
         """Args:
             region_gaps: fraction of sum of gap lengths over plotting region lengths
@@ -216,7 +244,9 @@ class CoordinateConverter:
 
         # input region_gdf sanitycheck
         if region_gdf is not None:
-            assert 'weight' in region_gdf.annot_cols
+            region_gdf = region_gdf.copy()
+            if 'weight' not in region_gdf.annot_cols:
+                region_gdf['weight'] = weights
 
         # set region_gaps
         #if region_gaps is None:
@@ -366,29 +396,10 @@ class CoordinateConverter:
         return (start0, end0)
 
     def genomic_to_plot(self, chrom, pos0_list):
-        if chrom not in self.chromwise_params.keys():
-            raise Exception(f'Input "chrom" argument is not included in the plotting region.')
-
-        pos0_list = np.array(pos0_list)[:, np.newaxis]
-        params = self.chromwise_params[chrom]
-
-        contains = np.logical_and(
-            (pos0_list >= params['start0']), (pos0_list < params['end0'])
-        )
-        pos0s_indexes, intv_indexes = np.where(contains)
-            # np.ndarray composed of the indexes of the containing intervals
-            # identical intervals can appear many times
-        within_region_offsets = (
-            params['plot_region_length'][intv_indexes]
-            * (
-                (pos0_list[pos0s_indexes, 0] - params['start0'][intv_indexes]) 
-                / params['raw_region_length'][intv_indexes]
-            )
-        )
-        return params['plot_region_start_offset'][intv_indexes] + within_region_offsets
+        return genomic_to_plot(self.chromwise_params, chrom, pos0_list)
 
     def genomic_to_plot_with_indexes(self, chrom, pos0_list, indexes):
-        plot_coords = self.genomic_to_plot(chrom, pos0_list)
+        plot_coords = genomic_to_plot(self.chromwise_params, chrom, pos0_list)
         return (indexes, plot_coords)
 
     def plot_to_genomic(self, plotcoord_list):
@@ -465,7 +476,10 @@ class CoordinateConverter:
     # plotdata generation #
     #######################
 
-    def prepare_plot_data(self, data):
+    def make_plotdata_old(self, data, log_suffix=None):
+        if log_suffix is not None:
+            logutils.log(f'Beginning plotdata generation{log_suffix}')
+
         #assert isinstance(data, GDF)
         isec_gdf = data.intersect(self.totalregion_gdf_wogap)
         if isec_gdf.is_empty:
@@ -476,25 +490,90 @@ class CoordinateConverter:
         result_start0s = list()
         result_end0s = list()
         ordered_chroms = tools.unique_keeporder(isec_gdf.chromosomes)
+
         for chrom in ordered_chroms:
             subgdf = isec_gdf.subset_chroms(chrom)
             result_start0s.extend(
-                self.genomic_to_plot(chrom, subgdf.starts)
+                genomic_to_plot(self.chromwise_params, chrom, subgdf.starts)
             )
             result_end0s.extend(
-                self.genomic_to_plot(chrom, subgdf.ends - 1) + 1
+                genomic_to_plot(self.chromwise_params, chrom, subgdf.ends - 1) + 1
             )
 
         isec_gdf['plot_start0s'] = result_start0s
         isec_gdf['plot_end0s'] = result_end0s
 
+        if log_suffix is not None:
+            logutils.log(f'Finished plotdata generation{log_suffix}')
+
         return isec_gdf
+
+    @staticmethod
+    def make_plotdata_targetfunc(partial_isec_gdf, chromwise_params):
+        chrom = partial_isec_gdf.chroms[0]
+        plot_start0s = genomic_to_plot(chromwise_params, chrom, partial_isec_gdf.start0s)
+        plot_end0s = genomic_to_plot(chromwise_params, chrom, partial_isec_gdf.end0s - 1) + 1
+        return plot_start0s, plot_end0s
+
+    def make_plotdata(self, data, log_suffix=None, nproc=1, split_width=10000):
+        if log_suffix is not None:
+            logutils.log(f'Beginning plotdata generation{log_suffix} (nproc={nproc})')
+
+        #assert isinstance(data, GDF)
+        if log_suffix is not None:
+            logutils.log(f'Beginning intersection')
+        isec_gdf = data.intersect(self.totalregion_gdf_wogap, nproc=nproc)
+        if log_suffix is not None:
+            logutils.log(f'Finished intersection')
+
+        if isec_gdf.is_empty:
+            return False
+
+        if log_suffix is not None:
+            logutils.log(f'Beginning plot coordinate calculation')
+
+        isec_gdf.sort()
+        isec_gdf_splits = isec_gdf.equal_nrow_split_keepchrom(width=split_width)
+
+        args = ((gdf, self.chromwise_params) for gdf in isec_gdf_splits)
+        with multiprocessing.Pool(nproc) as pool:
+            mp_result = pool.starmap(self.make_plotdata_targetfunc, args)
+
+        plot_start0s, plot_end0s = zip(*mp_result)
+        plot_start0s = np.concatenate(plot_start0s)
+        plot_end0s = np.concatenate(plot_end0s)
+
+        isec_gdf['plot_start0s'] = plot_start0s
+        isec_gdf['plot_end0s'] = plot_end0s
+
+        if log_suffix is not None:
+            logutils.log(f'Finished plot coordinate calculation')
+
+        if log_suffix is not None:
+            logutils.log(f'Finished plotdata generation{log_suffix} (nproc={nproc})')
+
+        return isec_gdf
+
+    prepare_plot_data = make_plotdata
 
 
 class GenomePlotter:
     def __init__(self, refver, **kwargs):
         self.refver = refver
         self.cconv = CoordinateConverter(refver, **kwargs)
+
+    def make_plotdata(self, data, log_suffix=None, nproc=1, split_width=1000):
+        return self.cconv.make_plotdata(data, log_suffix=log_suffix, nproc=nproc, split_width=split_width)
+
+    def genomic_to_plot(self, chrom, pos0_list):
+        return self.cconv.genomic_to_plot(chrom, pos0_list)
+
+    @property
+    def region_gdf(self):
+        return self.cconv.totalregion_gdf_wogap
+
+    def get_intersect(self, gdf):
+        return gdf.intersect(self.region_gdf)
 
     #############################
     # common drawer & decorator #
@@ -561,10 +640,14 @@ class GenomePlotter:
                 ('plotdata' in ba.arguments)
                 and ('data' in ba.arguments)
             ):
+                assert set(['log_suffix', 'nproc']).issubset(ba.arguments.keys())
+                
                 if ba.arguments['plotdata'] is None:
                     gplotter = ba.arguments['self']
-                    ba.arguments['plotdata'] = gplotter.cconv.prepare_plot_data(
-                        ba.arguments['data']
+                    ba.arguments['plotdata'] = gplotter.cconv.make_plotdata(
+                        ba.arguments['data'],
+                        log_suffix=ba.arguments['log_suffix'], 
+                        nproc=ba.arguments['nproc'], 
                     )
                     del ba.arguments['data']
                 if ba.arguments['plotdata'] is False:
@@ -729,13 +812,16 @@ class GenomePlotter:
         self, 
         ax, 
         *, 
+
         data=None, 
         plotdata=None, 
+        nproc=1,
+        log_suffix=None,
 
         ys=None,
         y_colname=None, 
 
-        offset=0,
+        offset=None,
         plot_kwargs=dict(),
 
         draw_common=True, 
@@ -745,19 +831,9 @@ class GenomePlotter:
             dict()
             | plot_kwargs
         )
-
-        #if plotdata is None:
-        #    plotdata = self.prepare_plot_data(data)
-
-        #if plotdata is False:
-        #    return
-
         # draw data
-        ys = ys + offset
-        #if y_colname is None:
-        #    ys = np.repeat(y_val, plotdata.nrow) + offset
-        #else:
-        #    ys = plotdata[y_colname] + offset
+        if offset is not None:
+            ys = ys + offset
 
         if plotdata.nrow > 1:
             ys, xmins, xmaxs = self._merge_adjacent_data_new(
@@ -780,6 +856,8 @@ class GenomePlotter:
         *, 
         data=None, 
         plotdata=None,
+        nproc=1,
+        log_suffix=None,
 
         ys=None,
         y_colname=None, 
@@ -809,6 +887,8 @@ class GenomePlotter:
         *, 
         data=None, 
         plotdata=None,
+        nproc=1,
+        log_suffix=None,
 
         ys=None,
         y_colname=None, 
@@ -830,21 +910,7 @@ class GenomePlotter:
         )
 
         # main
-        #if df_plotdata is None:
-        #    df_plotdata = self.prepare_plot_data(df)
-
-        #if df_plotdata is False:
-        #    return
-
-        #if df_plotdata is not None:
         xs = (plotdata['plot_start0s'] + (plotdata['plot_end0s'] - 1)) / 2
-        #xs, ys = np.broadcast_arrays(xs, ys)
-
-        #if y_colname is None:
-        #    ys = np.repeat(y_val, len(xs))
-        #else:
-        #    ys = plotdata[y_colname]
-
         if color_colname is not None:
             plot_kwargs['c'] = plotdata[color_colname]
         elif color_values is not None:
@@ -866,6 +932,8 @@ class GenomePlotter:
         *, 
         data=None, 
         plotdata=None,
+        nproc=1,
+        log_suffix=None,
 
         ys=None,
         y_colname=None, 
@@ -883,15 +951,8 @@ class GenomePlotter:
             | plot_kwargs
         )
 
-        #if df_plotdata is None:
-        #    df_plotdata = self.prepare_plot_data(df)
-
-        #if df_plotdata is False:
-        #    return
-
         xs = (plotdata['plot_end0s'] + plotdata['plot_start0s']) / 2
         widths = plotdata['plot_end0s'] - plotdata['plot_start0s']
-        #heights = ys
 
         if bottom_values is not None:
             bottoms = bottom_values
@@ -909,6 +970,8 @@ class GenomePlotter:
         *,
         data=None, 
         plotdata=None,
+        nproc=1,
+        log_suffix=None,
 
         ys=None,
         y_colname=None, 
@@ -950,30 +1013,19 @@ class GenomePlotter:
         *,
         data=None, 
         plotdata=None,
+        nproc=1,
+        log_suffix=None,
 
         ymins=None,
         ymaxs=None,
 
         colors='yellow',
-        plot_kwargs=dict(),
+        #plot_kwargs=dict(),
+        rect_kwargs=dict(),
 
         draw_common=True, 
         draw_common_kwargs=dict(),
     ):
-        # setup plot_kwargs
-        default_plot_kwargs = {
-            'alpha': 0.1,
-            'zorder': 0,
-        }
-        default_plot_kwargs.update(plot_kwargs)
-
-        # main
-        #if df_plotdata is None:
-        #    df_plotdata = self.prepare_plot_data(df)
-
-        #if df_plotdata is False:
-        #    return
-
         # x
         if plotdata.nrow > 1:
             _, xmins, xmaxs = self._merge_adjacent_data_new(
@@ -1004,28 +1056,44 @@ class GenomePlotter:
         heights = ymaxs - ymins
 
         # color
-        if np.isscalar(colors):
-            match_original = False
-            default_plot_kwargs['color'] = colors
-        else:
-            match_original = True
+        colors = np.broadcast_to(colors, widths.shape)
+
+        # setup rect_kwargs
+        default_rect_kwargs = {'alpha': 0.1, 'zorder': 0}
 
         # final
-        boxes = [
-            Rectangle((xm, ym), width=w, height=h)
-            for (xm, w, ym, h) in zip(xmins, widths, ymins, heights)
-        ]
-        if match_original:
-            for col, box in zip(colors, boxes):
-                box.set(color=col)
-
-        ax.add_collection(
-            PatchCollection(
-                boxes, 
-                match_original=match_original, 
-                **default_plot_kwargs,
+        for (xm, w, ym, h, col) in zip(xmins, widths, ymins, heights, colors):
+            this_rect_kwargs = (
+                default_rect_kwargs
+                | {'facecolor': col, 'edgecolor': col} 
+                | rect_kwargs
             )
-        )
+            rect = Rectangle((xm, ym), width=w, height=h, **this_rect_kwargs)
+            ax.add_patch(rect)
+
+#        # color
+#        if np.isscalar(colors):
+#            match_original = False
+#            default_plot_kwargs['color'] = colors
+#        else:
+#            match_original = True
+#
+#        # final
+#        boxes = [
+#            Rectangle((xm, ym), width=w, height=h)
+#            for (xm, w, ym, h) in zip(xmins, widths, ymins, heights)
+#        ]
+#        if match_original:
+#            for col, box in zip(colors, boxes):
+#                box.set(color=col)
+#
+#        ax.add_collection(
+#            PatchCollection(
+#                boxes, 
+#                match_original=match_original, 
+#                **default_plot_kwargs,
+#            )
+#        )
 
 
     #####################################
@@ -1038,6 +1106,8 @@ class GenomePlotter:
         *,
         data=None,
         plotdata=None,
+        nproc=1,
+        log_suffix=None,
 
         y_features=None,
         y_labels=None,
@@ -1059,12 +1129,6 @@ class GenomePlotter:
             dict(linewidth=2, color='black')
             | line_kwargs
         )
-
-        # make plotdata
-        #if df_plotdata is None:
-        #    df_plotdata = self.prepare_plot_data(df)
-        #if df_plotdata is False:
-        #    return
 
         # main
         ylims = ax.get_ylim()
@@ -1130,7 +1194,7 @@ class GenomePlotter:
         self.draw_bgcolors(
             ax=ax, 
             data=cytoband_gdf, 
-            plot_kwargs=dict(alpha=1),
+            rect_kwargs=dict(alpha=1),
             colors=colors,
             draw_common=False, 
         )
@@ -1151,8 +1215,8 @@ class GenomePlotter:
             #data=cytoband_gdf.loc[cytoband_gdf['Stain'].isin(['acen', 'gvar', 'stalk']), :],
             ymins=ymins,
             ymaxs=ymaxs,
-            colors='brown',
-            plot_kwargs=dict(alpha=0.3, linewidth=0),
+            colors='red',
+            rect_kwargs=dict(alpha=0.3, fill=None, hatch='//'),
             draw_common=False, 
         )
 
@@ -1175,7 +1239,7 @@ class GenomePlotter:
                 ax, 
                 data=cytoband_gdf[cytoband_gdf['Stain'] == bandname, :], 
                 colors=mapping[bandname],
-                plot_kwargs=dict(alpha=0.3, linewidth=0),
+                rect_kwargs=dict(alpha=0.3, linewidth=0),
                 draw_common=False, 
             )
 

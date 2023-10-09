@@ -1173,6 +1173,10 @@ def standardize_refver(refver):
 standardize = standardize_refver
 
 
+def compare_refvers(refver1, refver2):
+    return standardize(refver1) == standardize(refver2)
+
+
 def deco_standardize(func):
     sig = inspect.signature(func)
     if 'refver' not in sig.parameters.keys():

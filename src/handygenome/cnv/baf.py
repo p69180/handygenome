@@ -24,8 +24,12 @@ from handygenome.peakutils import HistPeaks, DensityPeaks, DensityGenerationFail
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.variant.variantplus as libvp
 from handygenome.variant.variantplus import VCFDataFrame
-from handygenome.genomedf.genomedf import GenomeDataFrame 
-from handygenome.cnv.segment import SegmentDataFrame
+from handygenome.genomedf.genomedf import GenomeDataFrame, SegmentDataFrame
+import handygenome.plot.misc as plotmisc
+
+
+BAFINDEX_PAT_STRING = '(?P<bafindex_prefix>baf)(?P<num>[0-9]+)'
+BAFINDEX_PAT = re.compile(BAFINDEX_PAT_STRING)
 
 
 ##############
@@ -69,7 +73,21 @@ def get_baf_from_vaf(vafs):
 
 def get_baf_indexes(ploidy):
     assert ploidy >= 2
-    return [f'baf{x}' for x in range(ploidy - 1)]
+    result = [f'baf{x}' for x in range(ploidy - 1)]
+    assert all((BAFINDEX_PAT.fullmatch(x) is not None) for x in result)
+    return result
+
+
+def get_bafindex_number(baf_index):
+    return int(BAFINDEX_PAT.fullmatch(baf_index).group('num'))
+
+
+def check_valid_bafindex(baf_index):
+    return (BAFINDEX_PAT.fullmatch(baf_index) is not None)
+
+
+def decal_baf(bafs):
+    return np.concatenate([bafs, 1 - bafs])
 
 
 ###################
@@ -121,6 +139,74 @@ class BAFRawDataFrame(GenomeDataFrame):
         seg = super().get_segment(*args, baf_idx, **kwargs)
         return BAFSegmentDataFrame.from_frame(seg.df, refver=self.refver)
 
+    def draw(
+        self,
+        baf_idx,
+        ax=None,
+        genomeplotter=None,
+
+        frac=None,
+        plotdata=None,
+
+        # fig generation params
+        title=None,
+        suptitle_kwargs=dict(),
+        subplots_kwargs=dict(),
+
+        # drawing kwargs
+        plot_kwargs=dict(),
+
+        # axes setting
+        setup_axes=True,
+        ylabel=False,
+        ylabel_prefix='',
+        ylabel_kwargs=dict(),
+        ymax=False,
+        ymin=False,
+        yticks=False,
+        draw_common_kwargs=dict(),
+        rotate_chromlabel=None,
+
+        # multicore plotdata generation
+        nproc=1,
+        log_suffix=None,
+    ):
+        if ylabel is False:
+            ylabel = f'BAF ({baf_idx})'
+        if ymax is False:
+            ymax = 0.6
+        if ymin is False:
+            ymin = -0.1
+        if yticks is False:
+            yticks = np.round(np.arange(0, 0.6, 0.1), 1)
+
+        fig, ax, genomeplotter = self.draw_dots(
+            y_colname=baf_idx,
+            ax=ax,
+            genomeplotter=genomeplotter,
+            frac=frac,
+            plotdata=plotdata,
+
+            title=title,
+            suptitle_kwargs=suptitle_kwargs,
+            subplots_kwargs=subplots_kwargs,
+
+            plot_kwargs=plot_kwargs,
+
+            setup_axes=setup_axes,
+            ylabel=ylabel,
+            ylabel_prefix=ylabel_prefix,
+            ylabel_kwargs=ylabel_kwargs,
+            ymax=ymax,
+            ymin=ymin,
+            yticks=yticks,
+            draw_common_kwargs=draw_common_kwargs,
+            rotate_chromlabel=rotate_chromlabel,
+
+            nproc=nproc,
+            log_suffix=' (BAF raw data)',
+        )
+
 
 @deco.get_deco_atleast1d(['sampleids'])
 def get_bafdfs_from_vcf(
@@ -147,7 +233,7 @@ def get_bafdfs_from_vcf(
 
 
 def get_bafdfs_from_vafdf(vafdf):
-    assert isinstance(vafdf, VCFDataFrame)
+    assert isinstance(vafdf, VCFDataFrame), f'Invalid input object type: {type(vafdf)}'
 
     vaf_formatkeys = [f'{x}_vaf' for x in vafdf.allele_columns]
     result = dict()
@@ -201,7 +287,7 @@ class BAFSegmentDataFrame(SegmentDataFrame):
 
         return baf_strings.pop()
 
-    def get_distinfo_colname(self, key):
+    def get_distinfo_colname(self, key, baf_index=None):
         assert key in (
             'ndata', 
             'center', 
@@ -211,24 +297,33 @@ class BAFSegmentDataFrame(SegmentDataFrame):
             'left_ips',
             'right_ips',
         )
-        prefix = self.get_baf_index() + self.__class__.distinfo_suffix
+
+        if baf_index is None:
+            baf_index = self.get_baf_index()
+        prefix = baf_index + self.__class__.distinfo_suffix
         return prefix + '_' + key
 
-    def get_corrected_baf_colname(self):
-        return self.get_baf_index() + self.__class__.corrected_baf_suffix
+    def drop_distinfo(self):
+        cols_to_drop = [x for x in self.columns if self.__class__.distinfo_suffix in x]
+        return self.drop_annots(cols_to_drop)
 
-    ##################
-    # column getters #
-    ##################
+    def get_corrected_baf_colname(self, baf_index=None):
+        if baf_index is None:
+            baf_index = self.get_baf_index()
+        return baf_index + self.__class__.corrected_baf_suffix
 
-    def get_dist_center(self):
-        return self[self.get_distinfo_colname('center')]
+    ########################
+    # column value getters #
+    ########################
 
-    def get_dist_ndata(self):
-        return self[self.get_distinfo_colname('ndata')]
+    def get_dist_center(self, baf_index=None):
+        return self[self.get_distinfo_colname('center', baf_index=baf_index)]
 
-    def get_corrected_baf(self):
-        return self[self.get_corrected_baf_colname()]
+    def get_dist_ndata(self, baf_index=None):
+        return self[self.get_distinfo_colname('ndata', baf_index=baf_index)]
+
+    def get_corrected_baf(self, baf_index=None):
+        return self[self.get_corrected_baf_colname(baf_index=baf_index)]
 
     #############
     # modifiers #
@@ -259,7 +354,7 @@ class BAFSegmentDataFrame(SegmentDataFrame):
             nproc=nproc,
         )
 
-        joined_df = joined_gdf._df
+        joined_df = joined_gdf.df
         bafdistinfo_key = str(baf_idx) + self.__class__.distinfo_suffix
         bafdistinfo_list = joined_df[bafdistinfo_key]
         for key in distinfo_keys:
@@ -279,10 +374,10 @@ class BAFSegmentDataFrame(SegmentDataFrame):
     def add_corrected_baf(self, cutoff=0.41):
         centers = self.get_dist_center()
         centers[centers > cutoff] = 0.5
-        self[self.get_corrected_baf_colname()] = centers
+        self[self.get_corrected_baf_colname(baf_index=None)] = centers
 
     def merge_low_ndata_segments(self, cutoff=30, nproc=1):
-        ndata_colname = self.get_distinfo_colname('ndata')
+        ndata_colname = self.get_distinfo_colname('ndata', baf_index=None)
         return super().merge_low_ndata_segments(
             ndata_colname=ndata_colname, 
             cutoff=cutoff, 
@@ -290,7 +385,7 @@ class BAFSegmentDataFrame(SegmentDataFrame):
         )
 
     def incoporate_low_ndata_segments(self, cutoff=30, nproc=1):
-        ndata_colname = self.get_distinfo_colname('ndata')
+        ndata_colname = self.get_distinfo_colname('ndata', baf_index=None)
         return super().incoporate_low_ndata_segments(
             ndata_colname=ndata_colname, 
             cutoff=cutoff,
@@ -302,8 +397,8 @@ class BAFSegmentDataFrame(SegmentDataFrame):
         return f'{baf_index}_selected'
 
     def add_filter(self, width_cutoff=None, center_cutoff=(0.4, None)):
-        width_colname = self.get_distinfo_colname('width')
-        center_colname = self.get_distinfo_colname('center')
+        width_colname = self.get_distinfo_colname('width', baf_index=None)
+        center_colname = self.get_distinfo_colname('center', baf_index=None)
 
         width_values = self[width_colname]
         width_selector = self.filter_helper(width_values, width_cutoff)
@@ -317,6 +412,73 @@ class BAFSegmentDataFrame(SegmentDataFrame):
 
     def get_filter(self):
         return self[self.get_filter_colname()]
+
+    def draw(
+        self,
+        ax=None,
+        genomeplotter=None,
+        plotdata=None,
+
+        # fig generation params
+        subplots_kwargs=dict(),
+
+        # drawing kwargs
+        plot_kwargs=dict(),
+
+        # axes setting
+        setup_axes=True,
+        ylabel=False,
+        ylabel_prefix='',
+        ylabel_kwargs=dict(),
+        ymax=False,
+        ymin=False,
+        yticks=False,
+        draw_common_kwargs=dict(),
+        rotate_chromlabel=None,
+        title=None,
+        suptitle_kwargs=dict(),
+
+        # multicore plotdata generation
+        nproc=1,
+        log_suffix=None,
+    ):
+        y_colname = self.get_distinfo_colname('center', baf_index=self.get_baf_index())
+        #y_colname = self.get_corrected_baf_colname()
+        if ylabel is False:
+            ylabel = f'BAF peak center ({self.get_baf_index()})'
+            #ylabel = f'Corrected BAF ({self.get_baf_index()})'
+        if ymax is False:
+            ymax = 0.6
+        if ymin is False:
+            ymin = -0.1
+        if yticks is False:
+            yticks = np.round(np.arange(0, 0.6, 0.1), 1)
+
+        fig, ax, genomeplotter = self.draw_hlines(
+            y_colname=y_colname,
+            ax=ax,
+            genomeplotter=genomeplotter,
+            plotdata=plotdata,
+
+            title=title,
+            suptitle_kwargs=suptitle_kwargs,
+            subplots_kwargs=subplots_kwargs,
+
+            plot_kwargs=plot_kwargs,
+
+            setup_axes=setup_axes,
+            ylabel=ylabel,
+            ylabel_prefix=ylabel_prefix,
+            ylabel_kwargs=ylabel_kwargs,
+            ymax=ymax,
+            ymin=ymin,
+            yticks=yticks,
+            draw_common_kwargs=draw_common_kwargs,
+            rotate_chromlabel=rotate_chromlabel,
+
+            nproc=nproc,
+            log_suffix=' (BAF segment)',
+        )
 
 
 #############################################################
@@ -424,9 +586,10 @@ def get_bafdistinfo(
 
     decal=False,
 
-    bw_method=None,
-    xs=np.linspace(-0.05, 0.55, 121, endpoint=True),
-    bins=np.linspace(-0.05, 0.55, 31, endpoint=True),
+    #bw_method=None,
+    bw_method=0.05,
+    xs=None,
+    bins=None,
     reltoheight=None, 
 
     hist=False,
@@ -435,7 +598,18 @@ def get_bafdistinfo(
     **kwargs,
 ):
     if decal:
-        bafs = np.concatenate([bafs, 1 - bafs])
+        bafs = decal_baf(bafs)
+
+    if xs is None:
+        if decal:
+            xs = np.arange(-0.05, 1.05, 0.001)
+        else:
+            xs = np.arange(-0.05, 0.55, 0.001)
+    if bins is None:
+        if decal:
+            bins = np.arange(0, 1.005, 0.005)
+        else:
+            bins = np.arange(0, 0.505, 0.005)
 
     if hist:
         peakresult = peakutils.find_hist_peaks(
@@ -455,7 +629,7 @@ def get_bafdistinfo(
 
     if decal:
         peakresult.undecal(0.5)
-    peakresult = peakresult.remove_contained_peaks()
+    #peakresult = peakresult.remove_contained_peaks()
     bafdistinfo = make_result_new(peakresult, reltoheight)
 
     if return_peakresult:

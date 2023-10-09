@@ -112,14 +112,14 @@ def get_vep_args(infile_path, outfile_path, fasta_path, species, assembly,
 
 
 def run_vep_with_vcfspec(vcfspec, refver, distance=DEFAULT_DISTANCE):
-    chromdict = refgenome.ChromDict(refver = refver)
+    chromdict = refgenome.ChromDict(refver=refver)
     vr = initvcf.create_vr(chromdict=chromdict, vcfspec=vcfspec)
 
     return run_vep_with_vr(vr, refver, distance)
 
 
 def run_vep_with_interval(interval, refver, distance=DEFAULT_DISTANCE):
-    chromdict = refgenome.ChromDict(refver = refver)
+    chromdict = refgenome.ChromDict(refver=refver)
     vcfspec = libvcfspec.Vcfspec(interval.chrom, interval.start0, 'N', ['<DEL>'])
     while True:
         vr = initvcf.create_vr(chromdict=chromdict, vcfspec=vcfspec, 

@@ -275,7 +275,12 @@ def get_deco_atleast1d(names):
             ba = sig.bind(*args, **kwargs)
             ba.apply_defaults()
             for key in names:
-                ba.arguments[key] = np.atleast_1d(ba.arguments[key])
+                old = ba.arguments[key]
+                if np.isscalar(old):
+                    new = np.atleast_1d(old)
+                else:
+                    new = np.atleast_1d(tuple(old))
+                ba.arguments[key] = new
 
             return func(*ba.args, **ba.kwargs)
 

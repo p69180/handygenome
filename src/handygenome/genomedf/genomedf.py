@@ -10,6 +10,8 @@ import functools
 import pandas as pd
 import numpy as np
 import pyranges as pr
+import matplotlib as mpl
+import matplotlib.pyplot as plt
 
 import handygenome.deco as deco
 import handygenome.refgenome.refgenome as refgenome
@@ -17,6 +19,8 @@ import handygenome.tools as tools
 import handygenome.logutils as logutils
 import handygenome.cnv.rdnacopy as rdnacopy
 
+
+import handygenome.plot.misc as plotmisc
 import handygenome.genomedf.genomedf_utils as genomedf_utils
 import handygenome.genomedf.genomedf_methods as genomedf_methods
 
@@ -176,12 +180,20 @@ class NotBinnedError(Exception):
 #########################
 
 class GenomeDataFrame:
-    ########
-    # repr #
-    ########
+    ###########
+    # dunders #
+    ###########
 
     def __repr__(self):
         return f'<{self.__class__.__name__} object>\n{repr(self.df)}'
+
+    def __del__(self):
+        del self._df
+        del self._gr
+
+    def __eq__(self, other):
+        #assert isinstance(other, self.__class__), f'{self.__class__}, {other.__class__}'
+        return genomedf_utils.compare_two_dfs(self.df, other.df)
 
     ################
     # constructors #
@@ -195,10 +207,6 @@ class GenomeDataFrame:
         self._gr_lastaccess = datetime.datetime.fromtimestamp(0)
         self._sorted = False
         #self._columns = None
-
-    def __del__(self):
-        del self._df
-        del self._gr
 
     def spawn(self, frame, **kwargs):
         result = self.__class__(self.refver, **kwargs)
@@ -594,15 +602,13 @@ class GenomeDataFrame:
             return (gr_is_empty == df_is_empty)
 
         # both gr and df are not empty
-        if set(self._gr.columns) != set(self._df.columns):
+        gr_columns = sorted(self._gr.columns)
+        df_columns = sorted(self._df.columns)
+        if gr_columns != df_columns:
             return False
-        else:
-            df_for_hash = self._df.loc[:, self._gr.columns]  # make column orders the same
-            return (
-                genomedf_utils.hash_gr(self._gr) 
-                == genomedf_utils.hash_df(df_for_hash)
-            ).to_numpy().all()  
-                # It is faster (~2.5 us vs ~13 us) to convert into numpy and then do .all()
+
+        df_from_gr = self._gr.df
+        return genomedf_utils.compare_two_dfs(df_from_gr, self._df)
 
     def get_newer_frame(self):
         if self.check_gr_is_newer():
@@ -619,6 +625,8 @@ class GenomeDataFrame:
     EXCLUDED_PYRANGES_METHODS = [
         'lengths',
         'assign',
+        'intersect',
+        'sample',
     ]
 
     def _pyranges_method_adapter_alone(methodname):
@@ -637,16 +645,16 @@ class GenomeDataFrame:
 
     def _pyranges_method_adapter_other(methodname):
         def new_method(self, other, *args, **kwargs):
-            if isinstance(other, pr.PyRanges):
-                other_gr = other
-            elif isinstance(other, GenomeDataFrame):
-                other_gr = other.gr
-            else:
-                raise Exception(
-                    f'"other" must be either PyRanges or GenomeDataFrame object. The type of "other" is: {type(other)}'
-                )
+#            if isinstance(other, pr.PyRanges):
+#                other_gr = other
+#            elif isinstance(other, GenomeDataFrame):
+#                other_gr = other.gr
+#            else:
+#                raise Exception(
+#                    f'"other" must be either PyRanges or GenomeDataFrame object. The type of "other" is: {type(other)}'
+#                )
 
-            result_gr = getattr(self.gr, methodname)(other_gr, *args, **kwargs)
+            result_gr = getattr(self.gr, methodname)(other.gr, *args, **kwargs)
 
             if result_gr.empty:
                 return self.__class__.init_empty(
@@ -676,6 +684,39 @@ class GenomeDataFrame:
         else:
             mthd = _pyranges_method_adapter_alone(key)
             exec(f'{key} = mthd')
+
+    #############
+    # intersect #
+    #############
+    
+    @staticmethod
+    def intersect_targetfunc(left, right):
+        if (
+            (right.nrow == 1)
+            and (right.start0s[0] == 0)
+            and (right.end0s[-1] == left.chromdict[right.chroms[0]])
+        ):
+            return left
+        else:
+            return left.spawn(left.gr.intersect(right.gr))
+
+    def intersect(self, other, nproc=1):
+        #assert isinstance(other, GenomeDataFrame)
+        common_chroms = set(self.chroms).intersection(other.chroms)
+        left = self.subset_chroms(common_chroms)
+        right = other.subset_chroms(common_chroms)
+
+        left_bychrom = left.group_bychrom(sort=True)
+        right_bychrom = right.group_bychrom(sort=True)
+
+        args = (
+            (left_bychrom[chrom], right_bychrom[chrom])
+            for chrom in common_chroms
+        )
+        with multiprocessing.Pool(nproc) as pool:
+            mp_result = pool.starmap(self.intersect_targetfunc, args)
+
+        return self.__class__.concat(mp_result)
 
     ###########################################
     # adaptations of pandas DataFrame methods #
@@ -735,6 +776,7 @@ class GenomeDataFrame:
     for mthdname in (
         'rename',
         'assign',
+        'sample',
     ):
         new_mthd = dataframe_method_adaptor(mthdname)
         exec(f'{mthdname} = new_mthd')
@@ -781,9 +823,12 @@ class GenomeDataFrame:
     def get_midpoints(self):
         return np.floor((self.start0s + self.end0s - 1) / 2).astype(int)
 
+    def get_lengths(self):
+        return self.end0s - self.start0s
+
     @property
     def lengths(self):
-        return self.end0s - self.start0s
+        return self.get_lengths()
 
     @property
     def lengths_cumsum(self):
@@ -804,6 +849,12 @@ class GenomeDataFrame:
             return False
         else:
             return genomedf_utils.check_duplicate_coords(self.df)
+
+    def get_coordinate_array(self):
+        return np.stack(
+            [self.chromosome_indexes, self.start0s, self.end0s],
+            axis=1,
+        ).astype(int)
 
     ##############################
     # basic dataframe attributes #
@@ -981,8 +1032,8 @@ class GenomeDataFrame:
         elif how == 'gr':
             return {key: subgdf.gr for key, subgdf in result_asgdf.items()}
 
+    @deco.get_deco_atleast1d(['chromlist'])
     def get_chrom_selector(self, chromlist, as_indexes=False):
-        chromlist = np.atleast_1d(chromlist)
         selector = np.isin(self.chromosomes, chromlist)
         if as_indexes:
             return np.nonzero(selector)[0]
@@ -1028,6 +1079,13 @@ class GenomeDataFrame:
         #for start_idx, end_idx in tools.pairwise(indexes):
         #    result.append(self.iloc[start_idx:end_idx, :])
 
+        return result
+
+    @deco.get_deco_num_set_differently(('n', 'width'), 1)
+    def equal_nrow_split_keepchrom(self, *, n=None, width=None, sort=True):
+        result = list()
+        for chrom, subgdf in self.group_bychrom(sort=sort).items():
+            result.extend(subgdf.equal_nrow_split(n=n, width=width))
         return result
 
     @deco.get_deco_num_set_differently(('n', 'width'), 1)
@@ -1184,6 +1242,7 @@ class GenomeDataFrame:
         cls,
         gdf, 
         annot_colname,
+        drop_annots=False,
         N_colname='N',
         smoothing=False, 
         smooth_kwargs=dict(), 
@@ -1229,6 +1288,9 @@ class GenomeDataFrame:
                 N_colname: compact_seg_gdf['N'],
             }
         )
+        if drop_annots:
+            result = result.drop_annots()
+
         return result
 
     def get_segment(
@@ -1237,6 +1299,7 @@ class GenomeDataFrame:
         nproc=1,
         split_width=1000,
 
+        drop_annots=False,
         N_colname='N',
         smoothing=False, 
         verbose=False, 
@@ -1248,23 +1311,21 @@ class GenomeDataFrame:
         if verbose:
             logutils.log(f'Beginning segmentation')
 
-        #grouper = self.chroms  # this may be more divided by cytoband features
-        #grouped_gdfs = list(
-        #    self.spawn(val) 
-        #    for (key, val) in self.df.groupby(grouper, sort=False)
-        #)
-
+        # sort
         self.sort()
-        grouped_bychrom = self.group_bychrom(sort=False)
-        grouped_gdfs = list()
-        for chrom, subgdf in grouped_bychrom.items():
-            grouped_gdfs.extend(subgdf.equal_nrow_split(width=split_width))
 
+        # subset gdf into non-nan region
+        notnan_selector = np.logical_not(np.isnan(self[annot_colname]))
+        notnan_self = self.loc[notnan_selector, :]
+
+        # make split inputs
+        grouped_gdfs = notnan_self.equal_nrow_split_keepchrom(width=split_width, sort=False)
         with multiprocessing.Pool(nproc) as pool:
             args = (
                 (
                     gdf, 
                     annot_colname,
+                    drop_annots,
                     N_colname,
                     smoothing,
                     smooth_kwargs,
@@ -1274,7 +1335,7 @@ class GenomeDataFrame:
             )
             pool_result = pool.starmap(GenomeDataFrame.get_segment_base, args)
 
-        result = GenomeDataFrame.concat(pool_result)
+        result = SegmentDataFrame.concat(pool_result)
         result.sort()
 
         if verbose:
@@ -1302,7 +1363,7 @@ class GenomeDataFrame:
         omit_N=False,
         find_nearest=False,
 
-        split_width=3000,
+        split_width=10000,
         nproc=1,
     ):
         join_kwargs = dict(
@@ -1327,7 +1388,8 @@ class GenomeDataFrame:
         ):
             return genomedf_methods.join_base(self, other, **join_kwargs)
         else:
-            partial_left_gdf_list = genomedf_methods.split_left_gdf(self, width=split_width)
+            partial_left_gdf_list = self.equal_nrow_split_keepchrom(width=split_width)
+            #genomedf_methods.split_left_gdf(self, width=split_width)
             with multiprocessing.Pool(nproc) as pool:
                 args = (
                     (partial_left_gdf, other, join_kwargs)
@@ -1336,6 +1398,26 @@ class GenomeDataFrame:
                 mp_result = pool.starmap(genomedf_methods.targetfunc, args)
 
             return self.__class__.concat(mp_result)
+
+    #############################
+    # overlapping row selection #
+    #############################
+
+    def get_overlap_selector(self, other):
+        self_gr = self.gr
+        other_gr = other.gr
+
+        joined_gr = self_gr.join(other_gr, how='left')
+        dedup_df = joined_gr.df.drop_duplicates(['Chromosome', 'Start', 'End'])
+
+        joined_gdf = self.spawn(dedup_df)
+        joined_gdf.sort()
+
+        #assert joined_gdf.iloc[:, :3] == self.iloc[:, :3]
+
+        selector = (joined_gdf['Start_b'] != -1)
+        return selector
+
 
     ###########
     # binning #
@@ -1446,7 +1528,9 @@ class GenomeDataFrame:
 
         old_binsize = self.get_binsize()
         if size <= old_binsize:
-            raise Exception(f'New bin size ({size}) must be greater than the old bin size ({old_binsize})')
+            raise Exception(
+                f'New bin size ({size}) must be greater than the old bin size ({old_binsize})'
+            )
 
         dtypes = self.df.dtypes
         annotcols_numeric = list()
@@ -1545,6 +1629,321 @@ class GenomeDataFrame:
         )
         return result
 
+    @staticmethod
+    def filter_helper(values, cutoff, include=False):
+        if cutoff is None:
+            selector = True
+        else:
+            assert len(cutoff) == 2
+            if cutoff[1] is None:
+                selector1 = True
+            else:
+                if include:
+                    selector1 = (values <= cutoff[1])
+                else:
+                    selector1 = (values < cutoff[1])
+
+            if cutoff[0] is None:
+                selector2 = True
+            else:
+                if include:
+                    selector2 = (values >= cutoff[0])
+                else:
+                    selector2 = (values > cutoff[0])
+
+            selector = np.logical_and(selector1, selector2)
+
+        return selector
+
+    ############
+    # plotting #
+    ############
+
+    def get_default_genomeplotter(self):
+        from handygenome.plot.genomeplot import GenomePlotter
+        return GenomePlotter(self.refver)
+    
+    def draw_preprocess(
+        self, 
+        y_colname,
+        ax,
+        genomeplotter,
+        frac,
+
+        # fig generation params
+        subplots_kwargs,
+
+        # logging
+        log_suffix,
+        nproc,
+
+        # pre-generated plotdata
+        plotdata,
+    ):
+
+        # fig/ax handling
+        ax_is_given = (ax is not None)
+        if ax_is_given:
+            fig = ax.figure
+        else:
+            subplots_kwargs = (
+                {'figsize': (30, 5)}
+                | subplots_kwargs
+            )
+            fig, ax = plt.subplots(1, 1, **subplots_kwargs)
+
+        # prepare genomeplotter
+        if genomeplotter is None:
+            genomeplotter = self.get_default_genomeplotter()
+
+        # prepare plotdata
+        if plotdata is None:
+            data = self.choose_annots(y_colname)
+            if frac is not None:
+                data = data.sample(frac=frac)
+            plotdata = genomeplotter.make_plotdata(
+                data, 
+                log_suffix=log_suffix,
+                nproc=nproc,
+            )
+
+        return fig, ax, genomeplotter, plotdata
+
+    def draw_axessetup(
+        self, 
+        ax,
+        genomeplotter,
+
+        # y axes setting
+        ylabel,
+        ylabel_prefix,
+        ylabel_kwargs,
+        ymax,
+        ymin,
+        yticks,
+
+        # draw common
+        draw_common_kwargs,
+        rotate_chromlabel,
+
+        # figure suptitle
+        fig,
+        title,
+        suptitle_kwargs,
+    ):
+        # ylabel
+        if ylabel is not None:
+            ylabel = ylabel_prefix + ylabel
+            ax.set_ylabel(ylabel, **ylabel_kwargs)
+
+        # yticks
+        if yticks is False:
+            yticks = None
+        if yticks is not None:
+            ax.set_yticks(yticks)
+            ax.set_yticklabels(
+                yticks, 
+                size=plotmisc.get_yticklabel_size(len(yticks)),
+            )
+
+        # ymin, ymax
+        if ymin is False:
+            ymin = None
+        if ymax is False:
+            ymax = None
+        ax.set_ylim(ymin, ymax)
+
+        # draw_common
+        draw_common_kwargs = (
+            {'n_xlabel': 20}
+            | draw_common_kwargs
+        )
+
+        if rotate_chromlabel is not None:
+            draw_common_kwargs.setdefault('chromlabel_kwargs', dict())
+            draw_common_kwargs['chromlabel_kwargs'] |= {'rotation': rotate_chromlabel}
+
+        genomeplotter.draw_common(ax, **draw_common_kwargs)
+
+        # figure suptitle
+        if title is not None:
+            plotmisc.draw_suptitle(fig, title, **suptitle_kwargs)
+
+    def draw_dots(
+        self, 
+        y_colname,
+        ax=None, 
+        genomeplotter=None,
+        frac=None,
+
+        # fig generation params
+        title=None,
+        suptitle_kwargs=dict(),
+        subplots_kwargs=dict(),
+
+        # drawing kwargs
+        plot_kwargs=dict(),
+
+        # axes setting
+        setup_axes=True,
+        ylabel=None,
+        ylabel_prefix='',
+        ylabel_kwargs=dict(),
+        ymax=False,
+        ymin=False,
+        yticks=None,
+        draw_common_kwargs=dict(),
+        rotate_chromlabel=None,
+
+        # pre-generated plotdata
+        plotdata=None,
+
+        # multicore plotdata generation
+        nproc=1,
+        log_suffix=None,
+    ):
+        fig, ax, genomeplotter, plotdata = self.draw_preprocess(
+            y_colname,
+            ax,
+            genomeplotter,
+            frac,
+            subplots_kwargs,
+            log_suffix,
+            nproc,
+            plotdata,
+        )
+
+        # drawing parameters
+        import handygenome.plot.genomeplot as libgenomeplot
+        plot_kwargs = (
+            {
+                'color': 'black', 
+                'markersize': 0.3, 
+                'alpha': libgenomeplot.calc_dot_alpha_baf(plotdata.nrow),
+            }
+            | plot_kwargs
+        )
+
+        # do drawing
+        genomeplotter.draw_dots(
+            ax,
+            plotdata=plotdata,
+            y_colname=y_colname,
+            plot_kwargs=plot_kwargs,
+            draw_common=False,
+            log_suffix=log_suffix,
+        )
+
+        if setup_axes:
+            default_ymin, default_ymax = plotmisc.get_boxplot_range(plotdata[y_colname])
+            if ymin is False:
+                ymin = default_ymin
+            if ymax is False:
+                ymax = default_ymax
+            self.draw_axessetup(
+                ax,
+                genomeplotter,
+                ylabel,
+                ylabel_prefix,
+                ylabel_kwargs,
+                ymax,
+                ymin,
+                yticks,
+                draw_common_kwargs,
+                rotate_chromlabel,
+                fig,
+                title,
+                suptitle_kwargs,
+            )
+
+        return fig, ax, genomeplotter
+
+    def draw_hlines(
+        self, 
+        y_colname,
+        ax=None, 
+        genomeplotter=None,
+        offset=None,
+
+        # fig generation params
+        title=None,
+        suptitle_kwargs=dict(),
+        subplots_kwargs=dict(),
+
+        # drawing kwargs
+        plot_kwargs=dict(),
+
+        # axes setting
+        setup_axes=True,
+        ylabel=None,
+        ylabel_prefix='',
+        ylabel_kwargs=dict(),
+        ymax=False,
+        ymin=False,
+        yticks=None,
+        draw_common_kwargs=dict(),
+        rotate_chromlabel=None,
+
+        # pre-generated plotdata
+        plotdata=None,
+
+        # multicore plotdata generation
+        nproc=1,
+        log_suffix=None,
+    ):
+        frac = None
+        fig, ax, genomeplotter, plotdata = self.draw_preprocess(
+            y_colname,
+            ax,
+            genomeplotter,
+            frac,
+            subplots_kwargs,
+            log_suffix,
+            nproc,
+            plotdata,
+        )
+
+        # drawing parameters
+        plot_kwargs = (
+            {'color': 'tab:blue', 'linewidth': 2, 'alpha': 1}
+            | plot_kwargs
+        )
+
+        # do drawing
+        genomeplotter.draw_hlines(
+            ax,
+            offset=offset,
+            plotdata=plotdata,
+            y_colname=y_colname,
+            plot_kwargs=plot_kwargs,
+            draw_common=False,
+            log_suffix=log_suffix,
+        )
+
+        if setup_axes:
+            default_ymin, default_ymax = plotmisc.get_boxplot_range(plotdata[y_colname])
+            if ymin is False:
+                ymin = default_ymin
+            if ymax is False:
+                ymax = default_ymax
+            self.draw_axessetup(
+                ax,
+                genomeplotter,
+                ylabel,
+                ylabel_prefix,
+                ylabel_kwargs,
+                ymax,
+                ymin,
+                yticks,
+                draw_common_kwargs,
+                rotate_chromlabel,
+                fig,
+                title,
+                suptitle_kwargs,
+            )
+
+        return fig, ax, genomeplotter
+
 
 class GenomeDataFrameLoc:
     def __init__(self, gdf):
@@ -1574,5 +1973,177 @@ class GenomeDataFrameILoc:
 
     def __setitem__(self, key, val):
         self.gdf.df.iloc.__setitem__(key, val)
+
+
+####################
+# SegmentDataFrame #
+####################
+
+class SegmentDataFrame(GenomeDataFrame):
+
+    #################################
+    # merging of low ndata segments #
+    #################################
+
+    @staticmethod
+    def merge_low_ndata_segments_targetfunc(subgdf, ndata_colname, cutoff=30):
+        high_ndata_selector = (subgdf[ndata_colname] >= cutoff)
+        high_ndata_selector_numeric = high_ndata_selector.astype(int)
+
+        if high_ndata_selector.all():
+            new_start0s = subgdf.start0s
+            new_end0s = subgdf.end0s
+            new_chroms = subgdf.chroms
+        else:
+            # make grouper
+            cumsum = np.cumsum(high_ndata_selector_numeric)
+            diff = np.diff(np.insert(high_ndata_selector_numeric, 0, 1))
+            low_ndata_zone_starts = np.nonzero(diff == -1)[0]
+
+            N = len(high_ndata_selector)
+            offsets = functools.reduce(
+                np.add, 
+                [np.repeat([0, 1], [x, N - x]) for x in low_ndata_zone_starts]
+            )
+            grouper = cumsum + offsets
+
+            # do groupby and filtering
+            start_groupby = subgdf.df['Start'].groupby(grouper, sort=False)
+            end_groupby = subgdf.df['End'].groupby(grouper, sort=False)
+
+            new_start0s = start_groupby.first().to_numpy()
+            new_end0s = end_groupby.last().to_numpy()
+            new_chroms = np.repeat(subgdf.chroms[0], len(new_end0s))
+
+        return new_chroms, new_start0s, new_end0s
+
+    def merge_low_ndata_segments(self, ndata_colname, cutoff=30, nproc=1):
+        assert ndata_colname in self.columns
+
+        bychrom = self.group_bychrom(sort=True)
+        args = ((subgdf, ndata_colname, cutoff) for subgdf in bychrom.values())
+        with multiprocessing.Pool(nproc) as pool:
+            mp_result = pool.starmap(
+                self.__class__.merge_low_ndata_segments_targetfunc, 
+                args,
+            )
+
+        result_chroms, result_start0s, result_end0s = zip(*mp_result)
+        result_chroms = np.concatenate(result_chroms)
+        result_start0s = np.concatenate(result_start0s)
+        result_end0s = np.concatenate(result_end0s)
+
+        result = self.spawn_from_data(
+            chroms=result_chroms,
+            start0s=result_start0s,
+            end0s=result_end0s,
+        )
+        return result
+
+    @staticmethod
+    def incoporate_low_ndata_segments_targetfunc(subgdf, ndata_colname, chrom_length, cutoff=30):
+        start0s = subgdf.start0s
+        end0s = subgdf.end0s
+        ndata_array = subgdf[ndata_colname]
+        high_ndata_selector = (ndata_array >= cutoff)
+        low_ndata_selector = np.logical_not(high_ndata_selector)
+
+        # 1. remove low ndata segments at borders
+        if low_ndata_selector[0]:  # the first segment is with low ndata
+            start0s = np.delete(start0s, 0)
+            end0s = np.delete(end0s, 0)
+            ndata_array = np.delete(ndata_array, 0)
+            high_ndata_selector = np.delete(high_ndata_selector, 0)
+            low_ndata_selector = np.delete(low_ndata_selector, 0)
+
+            start0s[0] = 0
+
+        if low_ndata_selector[-1]:  # the last segment is with low ndata
+            start0s = np.delete(start0s, -1)
+            end0s = np.delete(end0s, -1)
+            ndata_array = np.delete(ndata_array, -1)
+            high_ndata_selector = np.delete(high_ndata_selector, -1)
+            low_ndata_selector = np.delete(low_ndata_selector, -1)
+
+            #end0s[-1] = self.chromdict[subgdf.chroms[0]]
+            end0s[-1] = chrom_length
+
+        # 2. handle intervening low ndata segment
+        if low_ndata_selector.any():
+            low_ndata_indexes = np.nonzero(low_ndata_selector)[0]
+            low_ndata_midpoints = np.floor(
+                (start0s[low_ndata_indexes] + end0s[low_ndata_indexes] - 1) / 2
+            ).astype(int)
+
+            before_indexes = low_ndata_indexes - 1
+            end0s[before_indexes] = low_ndata_midpoints
+
+            after_indexes = low_ndata_indexes + 1
+            start0s[after_indexes] = low_ndata_midpoints
+
+        # 3. result
+        new_start0s = start0s[high_ndata_selector]
+        new_end0s = end0s[high_ndata_selector]
+        new_chroms = np.repeat(subgdf.chroms[0], len(new_start0s))
+
+        return new_chroms, new_start0s, new_end0s
+
+    def incoporate_low_ndata_segments(self, ndata_colname, cutoff=30, nproc=1):
+        assert ndata_colname in self.columns
+
+        bychrom = self.group_bychrom(sort=True)
+        subgdf_list = list(bychrom.values())
+        chrom_length_list = [self.chromdict[x.chroms[0]] for x in subgdf_list]
+        args = (
+            (subgdf, ndata_colname, chrom_length, cutoff)
+            for (subgdf, chrom_length) in zip(subgdf_list, chrom_length_list)
+        )
+        with multiprocessing.Pool(nproc) as pool:
+            mp_result = pool.starmap(
+                self.__class__.incoporate_low_ndata_segments_targetfunc, 
+                args,
+            )
+
+        result_chroms, result_start0s, result_end0s = zip(*mp_result)
+        result_chroms = np.concatenate(result_chroms)
+        result_start0s = np.concatenate(result_start0s)
+        result_end0s = np.concatenate(result_end0s)
+
+        result = self.spawn_from_data(
+            chroms=result_chroms,
+            start0s=result_start0s,
+            end0s=result_end0s,
+        )
+        return result
+
+
+#######################################
+# module level functions handling gdf #
+#######################################
+
+def gdf_iterator_preprocess(gdf_iterator):
+    gdf_list = list(gdf_iterator)
+    assert len(gdf_list) > 0
+
+    refvers = set(x.refver for x in gdf_list)
+    if len(refvers) != 1:
+        raise Exception(f'Reference versions differ: {refvers}')
+    refver = refvers.pop()
+
+    return gdf_list, refver
+
+
+def concat(gdf_iterator):
+    gdf_list, refver = gdf_iterator_preprocess(gdf_iterator)
+    new_df = pd.concat([x.df for x in gdf_list], axis=0)
+    return GenomeDataFrame.from_frame(new_df, refver)
+
+
+def union(gdf_iterator):
+    gdf_list, refver = gdf_iterator_preprocess(gdf_iterator)
+    return functools.reduce(
+        lambda x, y: x.set_union(y), 
+        gdf_list,
+    )
 
 

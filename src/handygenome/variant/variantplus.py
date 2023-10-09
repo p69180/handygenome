@@ -42,7 +42,7 @@ import handygenome.annotation.readstats as libreadstats
 from handygenome.annotation.readstats import AlleleclassError
 import handygenome.variant.vcfspec as libvcfspec
 import handygenome.vcfeditor.indexing as indexing
-import handygenome.cnv.misc as cnvmisc
+#import handygenome.cnv.misc as cnvmisc
 from handygenome.variant.filter import FilterResultInfo, FilterResultFormat
 import handygenome.variant.ponbams as libponbams
 import handygenome.vcfeditor.misc as vcfmisc
@@ -740,18 +740,10 @@ class VariantPlus:
 
     @deco.get_deco_atleast1d(['sampleids'])
     def get_vafs(self, sampleids, n_allele=2, exclude_other=False):
-        result = {sid: list() for sid in sampleids}
+        result = dict()
         for sid in sampleids:
             readstats = self.readstats_dict[sid]
-            for allele_idx in range(n_allele):
-                try:
-                    vaf = readstats.get_vaf(
-                        alleleclass=allele_idx, 
-                        exclude_other=exclude_other,
-                    )
-                except AlleleclassError:
-                    vaf = np.nan
-                result[sid].append(vaf)
+            result[sid] = readstats.get_vafs(n_allele, exclude_other=exclude_other)
         return result
 
     def get_vaf(self, sampleid, allele_index=1, exclude_other=False, ndigits=None):
@@ -2206,7 +2198,13 @@ def get_vafdf(
     # get VCF fetch regions for each parallel job
     if verbose:
         logutils.log(f'Extracting vcf position information') 
-    fetchregion_gdf_list = vcfmisc.get_vcf_fetchregions_new(vcf_path, n=nproc, nproc=nproc)
+
+    num_split = nproc * 10
+    fetchregion_gdf_list = vcfmisc.get_vcf_fetchregions_new(
+        vcf_path, 
+        n=num_split, 
+        nproc=nproc,
+    )
 
     # run multiprocess jobs
     args = (

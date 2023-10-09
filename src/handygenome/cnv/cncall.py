@@ -2,6 +2,7 @@ import inspect
 import os
 import collections
 import functools
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -12,6 +13,7 @@ import handygenome.refgenome.refgenome as refgenome
 from handygenome.refgenome.refgenome import NoXYError
 import handygenome.refgenome.refverfile as refverfile
 import handygenome.genomedf.genomedf as libgenomedf
+import handygenome.cnv.baf as libbaf
 from handygenome.genomedf.genomedf import GenomeDataFrame as GDF
 
 
@@ -97,11 +99,15 @@ def check_haploid(is_female, chrom):
 # germline sample solution #
 ############################
 
+@functools.cache
 def get_default_CNg_Bg_diploid(refver, is_female):
     """Assumptions
         1) X, Y is sex chromosome
         2) Male has one copy of each sex chromosomes
         3) pseudoautosomal region is available
+    Results:
+        CN: 0 in female Y, male Y PAR
+        B: 0 where CN is 0 or 1
     """
     chromdict = refgenome.get_chromdict(refver)
     autosomal_chroms = [
@@ -131,19 +137,19 @@ def get_default_CNg_Bg_diploid(refver, is_female):
         sex_gdf.loc[is_X, DEFAULT_CNG_COLNAME] = float(2)
         sex_gdf.loc[is_X, DEFAULT_BG_COLNAME] = float(1)
         sex_gdf.loc[~is_X, DEFAULT_CNG_COLNAME] = float(0)
-        sex_gdf.loc[~is_X, DEFAULT_BG_COLNAME] = np.nan
+        sex_gdf.loc[~is_X, DEFAULT_BG_COLNAME] = float(0)
     else:
         all_sex_gdf = all_chrom_gdf.subset_chroms([X_chrom, Y_chrom])
         nonpar_sex_gdf = all_sex_gdf.subtract(par_gdf)
         nonpar_sex_gdf[DEFAULT_CNG_COLNAME] = float(1)
-        nonpar_sex_gdf[DEFAULT_BG_COLNAME] = np.nan
+        nonpar_sex_gdf[DEFAULT_BG_COLNAME] = float(0)
 
         par_sex_gdf = par_gdf.copy()
         is_X = (par_sex_gdf['Chromosome'] == X_chrom)
         par_sex_gdf.loc[is_X, DEFAULT_CNG_COLNAME] = float(2)
         par_sex_gdf.loc[is_X, DEFAULT_BG_COLNAME] = float(1)
         par_sex_gdf.loc[~is_X, DEFAULT_CNG_COLNAME] = float(0)
-        par_sex_gdf.loc[~is_X, DEFAULT_BG_COLNAME] = np.nan
+        par_sex_gdf.loc[~is_X, DEFAULT_BG_COLNAME] = float(0)
 
         sex_gdf = GDF.concat([nonpar_sex_gdf, par_sex_gdf])
 
@@ -153,13 +159,48 @@ def get_default_CNg_Bg_diploid(refver, is_female):
     return result
 
 
-def clonal_solution_from_germline(cnv_seg_gdf, is_female, ploidy):
-    # add default CNg and Bg
+def add_default_CNg_Bg(gdf, is_female, inplace=True, nproc=1):
+    if DEFAULT_CNG_COLNAME not in gdf.columns:
+        CNg_Bg_gdf = get_default_CNg_Bg_diploid(gdf.refver, is_female)
+        annotated_gdf = gdf.join(
+            CNg_Bg_gdf, 
+            how='left',
+            right_gdf_cols=[DEFAULT_CNG_COLNAME, DEFAULT_BG_COLNAME],
+            merge='longest',
+            overlapping_length=True,
+            omit_N=True,
+            suffixes={'longest': ''},
+            nproc=nproc,
+        )
+        if inplace:
+            gdf.assign_df(annotated_gdf.df)
+        else:
+            return annotated_gdf
+    else:
+        if inplace:
+            pass
+        else:
+            return gdf
+
+
+def get_default_CNg(seg_gdf, is_female, nproc=1):
+    if DEFAULT_CNG_COLNAME not in seg_gdf.columns:
+        add_default_CNg_Bg(seg_gdf, is_female, inplace=True, nproc=nproc)
+    return seg_gdf[DEFAULT_CNG_COLNAME]
+
+
+def get_default_Bg(seg_gdf, is_female, nproc=1):
+    if DEFAULT_BG_COLNAME not in seg_gdf.columns:
+        add_default_CNg_Bg(seg_gdf, is_female, inplace=True, nproc=nproc)
+    return seg_gdf[DEFAULT_BG_COLNAME]
+
+
+def clonal_solution_from_germline(cnv_seg_gdf, is_female, ploidy, nproc=1):
     cnv_seg_gdf_copy = cnv_seg_gdf.copy()
 
     # find clonal CNt
     onecopy_depth = cnv_seg_gdf_copy.find_onecopy_depth(is_female, ploidy)
-    K = get_K_from_onecopy_depth(onecopy_depth)
+    K = get_K_from_onecopy_depth_germline(onecopy_depth)
     clonal_CNt = find_clonal_CNt(
         corrected_depth=cnv_seg_gdf_copy.norm_depth_mean, 
         cellularity=1, 
@@ -167,25 +208,51 @@ def clonal_solution_from_germline(cnv_seg_gdf, is_female, ploidy):
         CNg=None, 
     )
 
-    # find clonal B
-    B_isnan_selector = np.isnan(cnv_seg_gdf_copy.get_default_Bg(is_female))
-    B_notnan_selector = ~B_isnan_selector
+    # replace CNt with 0 where default germline CN is 0
+    try:
+        default_CNg = get_default_CNg(cnv_seg_gdf_copy, is_female, nproc=nproc)
+    except DefaultCNgUnavailableError:
+        pass
+    else:
+        clonal_CNt[(default_CNg == 0)] = 0
 
-    clonal_Bt = np.empty(cnv_seg_gdf_copy.nrow, dtype=float)
-    clonal_Bt[B_isnan_selector] = np.nan
+    # find clonal B for each baf index
+    try:
+        default_Bg = get_default_Bg(cnv_seg_gdf_copy, is_female)
+        #B_isnan_selector = np.isnan(
+        #    get_default_Bg(cnv_seg_gdf_copy, is_female)
+        #)
+    except DefaultCNgUnavailableError:
+        invalid_B_selector = np.repeat(False, cnv_seg_gdf_copy.nrow)
+        #B_isnan_selector = np.repeat(False, cnv_seg_gdf_copy.nrow)
+    else:
+        invalid_B_selector = (default_Bg == 0)
+        #np.repeat(False, cnv_seg_gdf_copy.nrow)
+    valid_B_selector = np.logical_not(invalid_B_selector)
+    #B_notnan_selector = np.logical_not(B_isnan_selector)
 
-    relevant_bafs = cnv_seg_gdf_copy.get_corrected_baf()[B_notnan_selector]
-    assert not np.isnan(relevant_bafs).any()
-    clonal_Bt[B_notnan_selector] = find_clonal_Bt(
-        baf=relevant_bafs, 
-        CNt=clonal_CNt[B_notnan_selector], 
-        cellularity=1, 
-        CNg=None, 
-        Bg=None,
-    )
+    clonal_Bt = np.empty((cnv_seg_gdf_copy.nrow, ploidy - 1), dtype=float)
+    clonal_Bt[invalid_B_selector, :] = 0
+
+    relevant_CNt = clonal_CNt[valid_B_selector]
+    for idx, baf_index in enumerate(libbaf.get_baf_indexes(ploidy)):
+        relevant_bafs = cnv_seg_gdf_copy.get_corrected_baf(baf_index)[valid_B_selector]
+        #assert not np.isnan(relevant_bafs).any()  
+            # this may be nan in non-assembled chroms like GL* where baf rawdata is unavailable
+        clonal_Bt[valid_B_selector, idx] = find_clonal_Bt(
+            baf=relevant_bafs, 
+            CNt=relevant_CNt, 
+            cellularity=1, 
+            CNg=None, 
+            Bg=None,
+        )
 
     return clonal_CNt, clonal_Bt
 
+
+################################
+# non-germline sample solution #
+################################
 
 def solution_from_targetsample():
     average_CNt = depth_seg_gdf.norm_depth / onecopy_depth
@@ -208,6 +275,40 @@ def solution_from_targetsample():
     return depth_seg_gdf
 
 
+###########
+# helpers #
+###########
+
+def get_deco_CNg_Bg(CNg_fillvalue, Bg_fillvalue):
+    def decorator(func):
+        sig = inspect.signature(func)
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            ba = sig.bind(*args, **kwargs)
+            ba.apply_defaults()
+            if 'CNg' in ba.arguments:
+                old_val = ba.arguments['CNg']
+                if old_val is not None:
+                    new_val = old_val.copy()
+                    new_val[np.isnan(new_val)] = CNg_fillvalue
+                    ba.arguments['CNg'] = new_val
+            if 'Bg' in ba.arguments:
+                old_val = ba.arguments['Bg']
+                if old_val is not None:
+                    new_val = old_val.copy()
+                    new_val[np.isnan(new_val)] = Bg_fillvalue
+                    ba.arguments['Bg'] = new_val
+
+            return func(*ba.args, **ba.kwargs)
+
+        return wrapper
+
+    return decorator
+
+    
+
+@get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
 @deco_cellularity_sanitycheck
 def find_clonal_CNt(corrected_depth, cellularity, K, CNg=None):
     """Assume 'corrected_depth' is corrected so that position-dependent bias has been removed.
@@ -220,9 +321,11 @@ def find_clonal_CNt(corrected_depth, cellularity, K, CNg=None):
         (corrected_depth / K) - (CNg * (1 - cellularity)) = CNt * cellularity
         CNt = ( (corrected_depth / K) - (CNg * (1 - cellularity)) ) / cellularity
     """
-    if (cellularity != 1) and (CNg is None):
+    CNg_given = (CNg is not None)
+    if (cellularity != 1) and (not CNg_given):
         raise Exception(f'When cellularity is not 1, "CNg" must be given.')
 
+    # main
     if cellularity == 1:
         CNt = (corrected_depth / K)
     else:
@@ -231,10 +334,15 @@ def find_clonal_CNt(corrected_depth, cellularity, K, CNg=None):
             - (CNg * (1 - cellularity))
         ) / cellularity
 
-    CNt = np.rint(CNt)
+    # correction
+    CNt = np.clip(np.rint(CNt), 0, None)
+    if CNg_given:
+        CNt[CNg == 0] = 0
+
     return CNt
 
 
+@get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
 @deco_cellularity_sanitycheck
 def find_clonal_Bt(baf, CNt, cellularity, CNg=None, Bg=None):
     """
@@ -259,28 +367,44 @@ def find_clonal_Bt(baf, CNt, cellularity, CNg=None, Bg=None):
             - (Bg * (1 / cellularity - 1))
         )
     """
-
+    # sanitycheck
+    CNg_given = (CNg is not None)
+    Bg_given = (Bg is not None)
     if (
         (cellularity != 1) 
         and (
-            (CNg is None)
-            or (Bg is None)
+            (not CNg_given) or (not Bg_given)
         )
     ):
         raise Exception(f'When cellularity is not 1, "CNg" and "Bg" must be given.')
 
+    # main
     c = (1 / cellularity) - 1
     if c == 0:
         Bt = baf * CNt 
     else:
         Bt = (baf * (CNt + CNg * c)) - (Bg * c)
 
-    Bt = np.rint(Bt)
-    Bt = np.clip(Bt, 0, np.floor(CNt / 2))
+    # correction
+    Bt = np.clip(np.rint(Bt), 0, np.floor(CNt / 2))
+    if CNg_given or Bg_given:
+        if CNg_given:
+            zero_selector_CNg = (CNg == 0)
+        else:
+            zero_selector_CNg = np.repeat(False, len(CNg))
+
+        if Bg_given:
+            zero_selector_Bg = (Bg == 0)
+        else:
+            zero_selector_Bg = np.repeat(False, len(Bg))
+
+        zero_selector = np.logical_or(zero_selector_CNg, zero_selector_Bg)
+        Bt[zero_selector] = 0
+
     return Bt
 
 
-def get_K_from_onecopy_depth(onecopy_depth):
+def get_K_from_onecopy_depth_germline(onecopy_depth):
     """Only make sense with germline wgs sample
 
     derivation:
@@ -290,6 +414,64 @@ def get_K_from_onecopy_depth(onecopy_depth):
         K = onecopy_depth / 1
     """
     return onecopy_depth
+
+
+@get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
+def find_K_and_cellularity(*, depth1, CNt1, CNg1, depth2, CNt2, CNg2):
+    """Assume 'depth1' and 'depth2' are corrected so that position-dependent bias has been removed.
+
+    derivation:
+        assume depth1, depth2, K are all nonzero
+
+        depth1 = K * (CNg1 * (1 - cellularity) + CNt1 * cellularity)
+        depth2 = K * (CNg2 * (1 - cellularity) + CNt2 * cellularity)
+        ------------------------------------------------------------
+        depth1 = K * (CNg1 * (1 - cellularity) + CNt1 * cellularity)
+        1 / K = (1 / depth1) * (CNg1 + cellularity * (CNt1 - CNg1))
+        1 / K = (1 / depth2) * (CNg2 + cellularity * (CNt2 - CNg2))
+        ------------------------------------------------------------
+        (1 / depth1) * (CNg1 + cellularity * (CNt1 - CNg1)) = (1 / depth2) * (CNg2 + cellularity * (CNt2 - CNg2))
+        depth2 * (CNg1 + cellularity * (CNt1 - CNg1)) = depth1 * (CNg2 + cellularity * (CNt2 - CNg2))
+        depth2 * cellularity * (CNt1 - CNg1) - depth1 * cellularity * (CNt2 - CNg2) = depth1 * CNg2 - depth2 * CNg1
+        cellularity * (depth2 * (CNt1 - CNg1) - depth1 * (CNt2 - CNg2)) = depth1 * CNg2 - depth2 * CNg1
+        cellularity = (
+            (depth1 * CNg2 - depth2 * CNg1)
+            / (depth2 * (CNt1 - CNg1) - depth1 * (CNt2 - CNg2))
+        )
+        ------------------------------------------------------------
+        K = 1 / ((1 / depth1) * (CNg1 + cellularity * (CNt1 - CNg1)))
+    """
+    # cellularity
+    cellularity_numer = depth1 * CNg2 - depth2 * CNg1
+    cellularity_denom = depth2 * (CNt1 - CNg1) - depth1 * (CNt2 - CNg2)
+    if cellularity_denom == 0:
+        raise Exception(f'Invalid input value combination: cellularity denominator becomes zero')
+
+    cellularity = cellularity_numer / cellularity_denom
+
+    # K
+    K_inverse = (1 / depth1) * (CNg1 + cellularity * (CNt1 - CNg1))
+    if K_inverse == 0:
+        raise Exception(f'Invalid input value combination: inverse of K becomes zero')
+    K = 1 / K_inverse
+
+    return K, cellularity
+
+
+@get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
+def get_predicted_depth(CNt, CNg, cellularity, K):
+    return K * (CNg * (1 - cellularity) + CNt * cellularity)
+
+
+@get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
+def get_predicted_baf(CNt, Bt, CNg, Bg, cellularity):
+    """Where CNt == 0 and CNg == 0, result is np.nan"""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        return (
+            (Bt * cellularity + Bg * (1 - cellularity))
+            / (CNt * cellularity + CNg * (1 - cellularity))
+        )
 
 
 #####################################

@@ -8,7 +8,7 @@ import pyranges as pr
 
 import handygenome
 import handygenome.network as network
-import handygenome.cnv.misc as cnvmisc
+#import handygenome.cnv.misc as cnvmisc
 import handygenome.refgenome.refgenome as refgenome
 from handygenome.genomedf.genomedf import GenomeDataFrame as GDF
 
