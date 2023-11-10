@@ -20,8 +20,13 @@ import handygenome.cnv.rdnacopy as rdnacopy
 
 import handygenome.genomedf.genomedf_utils as genomedf_utils
 
+# https://pandas.pydata.org/pandas-docs/stable/user_guide/groupby.html#built-in-aggregation-methods
 
-MERGETYPES_SIMPLEAGG = ['mean', 'std', 'first', 'last', 'max', 'min', 'median', 'skew']
+MERGETYPES_SIMPLEAGG = [
+    'mean', 'std', 'var',
+    'first', 'last', 'max', 'min', 
+    'median', 'skew',
+]
 MERGETYPES_WEIGHTED_SIMPLEAGG = ['weighted_mean']
 MERGETYPES_BYLENGTH = ['longest', 'shortest']
 RESERVED_COLNAMES = [
@@ -463,6 +468,8 @@ def merge_right_simpleagg(
         merged_right = groupby_obj.mean()
     elif mergetype == 'std':
         merged_right = groupby_obj.std(ddof=ddof)
+    elif mergetype == 'var':
+        merged_right = groupby_obj.var(ddof=ddof)
     elif mergetype == 'max':
         merged_right = groupby_obj.max()
     elif mergetype == 'min':

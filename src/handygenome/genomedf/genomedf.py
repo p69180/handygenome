@@ -6,6 +6,7 @@ import itertools
 import contextlib
 import multiprocessing
 import functools
+import warnings
 
 import pandas as pd
 import numpy as np
@@ -18,7 +19,6 @@ import handygenome.refgenome.refgenome as refgenome
 import handygenome.tools as tools
 import handygenome.logutils as logutils
 import handygenome.cnv.rdnacopy as rdnacopy
-
 
 import handygenome.plot.misc as plotmisc
 import handygenome.genomedf.genomedf_utils as genomedf_utils
@@ -180,6 +180,31 @@ class NotBinnedError(Exception):
 #########################
 
 class GenomeDataFrame:
+    COMMON_COLUMNS = genomedf_utils.COMMON_COLUMNS
+    DEFAULT_DTYPES = {
+        'Chromosome': 'string', 
+        'Start': int, 
+        'End': int,
+    }
+
+    ##################
+    # astype handler #
+    ##################
+
+    @staticmethod
+    def convert_dtypes_dict(dtypes_dict, df):
+        result = dict()
+        for key, val in dtypes_dict.items():
+            if isinstance(key, str):
+                if key in df.columns:
+                    result[key] = val
+            elif isinstance(key, re.Pattern):
+                for x in df.columns:
+                    mat = key.fullmatch(x)
+                    if mat is not None:
+                        result[x] = val
+        return result
+
     ###########
     # dunders #
     ###########
@@ -219,12 +244,12 @@ class GenomeDataFrame:
 
     @classmethod
     def init_empty(cls, refver, annot_cols=tuple()):
-        columns = genomedf_utils.COMMON_COLUMNS + list(annot_cols)
+        columns = cls.COMMON_COLUMNS + list(annot_cols)
         df = pd.DataFrame([], columns=columns)
         return cls.from_frame(df, refver)
 
     def spawn_empty(self, annot_cols=tuple()):
-        columns = genomedf_utils.COMMON_COLUMNS + list(annot_cols)
+        columns = cls.COMMON_COLUMNS + list(annot_cols)
         df = pd.DataFrame([], columns=columns)
         return self.spawn(df)
 
@@ -238,7 +263,10 @@ class GenomeDataFrame:
             raise Exception(f'Reference versions differ: {refvers}')
         refver = refvers.pop()
 
-        new_df = pd.concat([x.df for x in gdf_list], axis=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', FutureWarning)
+            new_df = pd.concat([x.df for x in gdf_list], axis=0)
+
         return cls.from_frame(new_df, refver)
 
     @classmethod
@@ -274,7 +302,7 @@ class GenomeDataFrame:
 
     @classmethod
     def from_records(cls, records, refver, annot_cols=tuple()):
-        columns = genomedf_utils.COMMON_COLUMNS + list(annot_cols)
+        columns = cls.COMMON_COLUMNS + list(annot_cols)
         df_source = dict()
         for key, val in itertools.zip_longest(columns, zip(*records), fillvalue=None):
             if (key is None) or (val is None):
@@ -381,7 +409,9 @@ class GenomeDataFrame:
             )
 
         if (not has_header) and (annot_cols is None):
-            result = pr.read_bed(filename)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', FutureWarning)
+                result = pr.read_bed(filename)
         else:
             if has_header:
                 if annot_cols is None:
@@ -391,11 +421,11 @@ class GenomeDataFrame:
                 else:
                     skiprows = 1
                     header = None
-                    names = genomedf_utils.COMMON_COLUMNS + list(annot_cols)
+                    names = cls.COMMON_COLUMNS + list(annot_cols)
             else:
                 skiprows = 0
                 header = None
-                names = genomedf_utils.COMMON_COLUMNS + list(annot_cols)
+                names = cls.COMMON_COLUMNS + list(annot_cols)
 
             dtype = (
                 {'Chromosome': 'string', 'Start': int, 'End': int}
@@ -453,8 +483,8 @@ class GenomeDataFrame:
 
     @classmethod
     def sanitycheck_df(cls, df):
-        if not set(genomedf_utils.COMMON_COLUMNS).issubset(df.columns):
-            raise Exception(f'Required columns: {genomedf_utils.COMMON_COLUMNS}')
+        if not set(cls.COMMON_COLUMNS).issubset(df.columns):
+            raise Exception(f'Required columns: {cls.COMMON_COLUMNS}')
 
         assert (df['End'] > df['Start']).all()  # this works with 0-row DataFrame
 
@@ -465,18 +495,17 @@ class GenomeDataFrame:
         # all processes work for 0-row dataframe
 
         # dtype setting
-        astype_arg = genomedf_utils.DEFAULT_DTYPES | dtype
-        astype_arg = {
-            key: val for key, val in astype_arg.items()
-            if key in df.columns
-        }
+        astype_arg = cls.DEFAULT_DTYPES | dtype
+        astype_arg = cls.convert_dtypes_dict(astype_arg, df)
         df = df.astype(astype_arg)
 
         # column reordering
-        new_cols = genomedf_utils.COMMON_COLUMNS + [
-            x for x in df.columns if x not in genomedf_utils.COMMON_COLUMNS
-        ]
-            # df.columns.difference(genomedf_utils.COMMON_COLUMNS).to_list() -> does not preserve ordering
+        new_cols = sorted(
+            df.columns, 
+            key=(lambda x: x in cls.COMMON_COLUMNS), 
+            reverse=True,
+        )
+            # df.columns.difference(cls.COMMON_COLUMNS).to_list() -> does not preserve ordering
         df = df.loc[:, new_cols]
 
         # remove index
@@ -542,21 +571,24 @@ class GenomeDataFrame:
     # helpers of df, gr #
     #####################
 
-    @staticmethod
-    def make_empty_df():
-        result = pd.DataFrame([], columns=genomedf_utils.COMMON_COLUMNS)
-        result = result.astype(genomedf_utils.DEFAULT_DTYPES)
+    @classmethod
+    def make_empty_df(cls):
+        result = pd.DataFrame([], columns=cls.COMMON_COLUMNS)
+        astype_arg = cls.convert_dtypes_dict(cls.DEFAULT_DTYPES, result)
+        result = result.astype(astype_arg)
         return result
 
     def set_gr_from_df(self):
         assert self._df is not None
-        self._gr = pr.PyRanges(self._df, int64=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', FutureWarning)
+            self._gr = pr.PyRanges(self._df, int64=True)
 
     def set_df_from_gr(self):
         assert self._gr is not None
         if self._gr.empty:
             if self._df is None:
-                self._df = self.make_empty_df()
+                self._df = self.__class__.make_empty_df()
             else:
                 self._df = self.df.iloc[[], :]
         else:
@@ -645,15 +677,6 @@ class GenomeDataFrame:
 
     def _pyranges_method_adapter_other(methodname):
         def new_method(self, other, *args, **kwargs):
-#            if isinstance(other, pr.PyRanges):
-#                other_gr = other
-#            elif isinstance(other, GenomeDataFrame):
-#                other_gr = other.gr
-#            else:
-#                raise Exception(
-#                    f'"other" must be either PyRanges or GenomeDataFrame object. The type of "other" is: {type(other)}'
-#                )
-
             result_gr = getattr(self.gr, methodname)(other.gr, *args, **kwargs)
 
             if result_gr.empty:
@@ -700,23 +723,27 @@ class GenomeDataFrame:
         else:
             return left.spawn(left.gr.intersect(right.gr))
 
-    def intersect(self, other, nproc=1):
+    def intersect(self, other, nproc=1, nomulti=True):
         #assert isinstance(other, GenomeDataFrame)
-        common_chroms = set(self.chroms).intersection(other.chroms)
-        left = self.subset_chroms(common_chroms)
-        right = other.subset_chroms(common_chroms)
 
-        left_bychrom = left.group_bychrom(sort=True)
-        right_bychrom = right.group_bychrom(sort=True)
+        if nomulti:
+            return self.__class__.from_frame(self.gr.intersect(other.gr), refver=self.refver)
+        else:
+            common_chroms = set(self.chroms).intersection(other.chroms)
+            left = self.subset_chroms(common_chroms)
+            right = other.subset_chroms(common_chroms)
 
-        args = (
-            (left_bychrom[chrom], right_bychrom[chrom])
-            for chrom in common_chroms
-        )
-        with multiprocessing.Pool(nproc) as pool:
-            mp_result = pool.starmap(self.intersect_targetfunc, args)
+            left_bychrom = left.group_bychrom(sort=True)
+            right_bychrom = right.group_bychrom(sort=True)
 
-        return self.__class__.concat(mp_result)
+            args = (
+                (left_bychrom[chrom], right_bychrom[chrom])
+                for chrom in common_chroms
+            )
+            with multiprocessing.Pool(nproc) as pool:
+                mp_result = pool.starmap(self.intersect_targetfunc, args)
+
+            return self.__class__.concat(mp_result)
 
     ###########################################
     # adaptations of pandas DataFrame methods #
@@ -774,7 +801,7 @@ class GenomeDataFrame:
         return new_method
 
     for mthdname in (
-        'rename',
+        #'rename',
         'assign',
         'sample',
     ):
@@ -834,6 +861,12 @@ class GenomeDataFrame:
     def lengths_cumsum(self):
         return np.cumsum(self.lengths)
 
+    def get_lwavg(self, annot_colname):
+        """length-weighted average"""
+        values = self[annot_colname]
+        lengths = self.get_lengths()
+        return tools.nanaverage(values, lengths)
+
     def check_self_overlap(self):
         if self.is_empty:
             return False
@@ -855,6 +888,9 @@ class GenomeDataFrame:
             [self.chromosome_indexes, self.start0s, self.end0s],
             axis=1,
         ).astype(int)
+
+    def iter_coords(self):
+        return zip(self.chroms, self.start0s, self.end0s)
 
     ##############################
     # basic dataframe attributes #
@@ -894,36 +930,56 @@ class GenomeDataFrame:
     @property
     def columns(self):
         if self.is_empty:
-            return list(genomedf_utils.COMMON_COLUMNS)  # Chromosome, Start, End
+            return list(self.__class__.COMMON_COLUMNS)  # Chromosome, Start, End
         else:
             return self.get_newer_frame().columns.to_list()
 
     @property
-    def annot_cols(self):
-        return self.df.columns.drop(genomedf_utils.COMMON_COLUMNS).to_list()
+    def nonannot_columns(self):
+        return list(self.__class__.COMMON_COLUMNS)
+
+    nonannot_cols = nonannot_columns
+
+    @property
+    def annot_columns(self):
+        return self.df.columns.drop(self.nonannot_cols).to_list()
+
+    annot_cols = annot_columns
 
     def choose_annots(self, annot_columns):
         annot_columns = np.atleast_1d(annot_columns)
-        assert not set(annot_columns).intersection(genomedf_utils.COMMON_COLUMNS)
-        return self.loc[:, genomedf_utils.COMMON_COLUMNS + list(annot_columns)]
+        assert not set(annot_columns).intersection(self.nonannot_columns)
+        return self.loc[:, self.nonannot_columns + list(annot_columns)]
 
+    @deco.get_deco_atleast1d(['columns'], keep_none=True)
     def drop_annots(self, columns=None, inplace=False):
         if columns is None:
-            if inplace:
-                self.assign_df(self.df.iloc[:, :3])
-            else:
-                return self.iloc[:, :3]
-        else:
-            columns = np.atleast_1d(columns)
-            columns = set(columns).intersection(self.columns)
-            #assert set(columns).issubset(self.columns)
+            columns = self.annot_columns
 
-            self_df = self.df
-            if inplace:
-                self_df.drop(columns, axis=1, inplace=True)
-                self.assign_df(self_df)
-            else:
-                return self.spawn(self_df.drop(columns, axis=1, inplace=False))
+        assert not set(columns).intersection(self.nonannot_columns)
+        columns = set(columns).intersection(self.columns)
+        self_df = self.df
+        if inplace:
+            self_df.drop(columns, axis=1, inplace=True)
+            self.assign_df(self_df)
+        else:
+            return self.spawn(self_df.drop(columns, axis=1, inplace=False))
+
+    def rename(self, rename_dict, inplace=False):
+        new_df = self.df.rename(rename_dict, axis=1)
+        if inplace:
+            self.assign_df(new_df)
+            return None
+        else:
+            return self.spawn(new_df)
+
+    def add_suffix(self, suffix, inplace=False):
+        rename_dict = {x: x + suffix for x in self.annot_columns}      
+        return self.rename(rename_dict, inplace=inplace)
+
+    def add_prefix(self, prefix, inplace=False):
+        rename_dict = {x: prefix + x for x in self.annot_columns}      
+        return self.rename(rename_dict, inplace=inplace)
 
     ##################
     # set operations #
@@ -1005,6 +1061,34 @@ class GenomeDataFrame:
     def subset_chroms(self, chromlist):
         return self.iloc[self.get_chrom_selector(chromlist, as_indexes=True), :]
 
+    choose_chroms = subset_chroms
+
+    def subset_regions(self, region_gdf):
+        assert self.refver == region_gdf.refver
+
+        full_len_flag_start = (region_gdf.start0s == 0)
+        full_len_flag_end = (
+            region_gdf.end0s 
+            == np.fromiter(
+                map(region_gdf.chromdict.__getitem__, region_gdf.chroms),
+                dtype=int,
+            )
+        )
+        full_len_flag = np.logical_and(full_len_flag_start, full_len_flag_end)
+
+        full_len_chroms = region_gdf.chroms[full_len_flag]
+        non_full_len_subgdf = region_gdf.loc[~full_len_flag, :]
+
+        result_gdfs = list()
+        result_gdfs.append(self.subset_chroms(full_len_chroms))
+        for chrom, start0, end0 in non_full_len_subgdf.iter_coords():
+            result_gdfs.append(self.subset(chrom, start0, end0))
+
+        return self.__class__.concat(result_gdfs)
+
+    def drop_chroms(self, chromlist):
+        return self.iloc[self.get_chrom_selector(chromlist, as_indexes=True, inverse=True), :]
+
     ########################
     # groupers & iterators #
     ########################
@@ -1033,8 +1117,11 @@ class GenomeDataFrame:
             return {key: subgdf.gr for key, subgdf in result_asgdf.items()}
 
     @deco.get_deco_atleast1d(['chromlist'])
-    def get_chrom_selector(self, chromlist, as_indexes=False):
+    def get_chrom_selector(self, chromlist, as_indexes=False, inverse=False):
         selector = np.isin(self.chromosomes, chromlist)
+        if inverse:
+            selector = np.logical_not(selector)
+
         if as_indexes:
             return np.nonzero(selector)[0]
         else:
@@ -1268,20 +1355,21 @@ class GenomeDataFrame:
             smooth_kwargs=smooth_kwargs, 
             segment_kwargs=segment_kwargs,
         )
-        compact_seg_gdf = gdf.spawn(compact_seg_df)
+        #compact_seg_gdf = gdf.spawn(compact_seg_df)
+        compact_seg_gdf = SegmentDataFrame.from_frame(compact_seg_df, refver=gdf.refver)
 
         # recover noncompact coordinates
         noncompact_start0s, noncompact_end0s = genomedf_utils.uncompact_coords(
-            compact_seg_gdf.starts, 
-            compact_seg_gdf.ends, 
+            compact_seg_gdf.start0s, 
+            compact_seg_gdf.end0s, 
             decoder,
         )
 
         # make result
-        result = GenomeDataFrame.from_data(
+        result = SegmentDataFrame.from_data(
             refver=gdf.refver,
             **{
-                'chroms': compact_seg_gdf.chromosomes,
+                'chroms': compact_seg_gdf.chroms,
                 'start0s': noncompact_start0s,
                 'end0s': noncompact_end0s,
                 annot_colname: compact_seg_gdf['value'],
@@ -1661,7 +1749,13 @@ class GenomeDataFrame:
 
     def get_default_genomeplotter(self):
         from handygenome.plot.genomeplot import GenomePlotter
-        return GenomePlotter(self.refver)
+        self_bychrom = self.group_bychrom(sort=False)
+        kwargs = {'chroms': list(), 'start0s': list(), 'end0s': list(), 'refver': self.refver}
+        for chrom, subgdf in self_bychrom.items():
+            kwargs['chroms'].append(chrom)
+            kwargs['start0s'].append(subgdf.start0s.min())
+            kwargs['end0s'].append(subgdf.end0s.max())
+        return GenomePlotter(**kwargs)
     
     def draw_preprocess(
         self, 
@@ -1676,6 +1770,7 @@ class GenomeDataFrame:
         # logging
         log_suffix,
         nproc,
+        verbose,
 
         # pre-generated plotdata
         plotdata,
@@ -1698,13 +1793,18 @@ class GenomeDataFrame:
 
         # prepare plotdata
         if plotdata is None:
-            data = self.choose_annots(y_colname)
+            if y_colname is None:
+                data = self
+            else:
+                data = self.choose_annots(y_colname)
+
             if frac is not None:
                 data = data.sample(frac=frac)
             plotdata = genomeplotter.make_plotdata(
                 data, 
                 log_suffix=log_suffix,
                 nproc=nproc,
+                verbose=verbose,
             )
 
         return fig, ax, genomeplotter, plotdata
@@ -1800,17 +1900,19 @@ class GenomeDataFrame:
 
         # multicore plotdata generation
         nproc=1,
-        log_suffix=None,
+        log_suffix='',
+        verbose=True,
     ):
         fig, ax, genomeplotter, plotdata = self.draw_preprocess(
-            y_colname,
-            ax,
-            genomeplotter,
-            frac,
-            subplots_kwargs,
-            log_suffix,
-            nproc,
-            plotdata,
+            y_colname=y_colname,
+            ax=ax,
+            genomeplotter=genomeplotter,
+            frac=frac,
+            subplots_kwargs=subplots_kwargs,
+            log_suffix=log_suffix,
+            nproc=nproc,
+            verbose=verbose,
+            plotdata=plotdata,
         )
 
         # drawing parameters
@@ -1831,7 +1933,6 @@ class GenomeDataFrame:
             y_colname=y_colname,
             plot_kwargs=plot_kwargs,
             draw_common=False,
-            log_suffix=log_suffix,
         )
 
         if setup_axes:
@@ -1841,22 +1942,22 @@ class GenomeDataFrame:
             if ymax is False:
                 ymax = default_ymax
             self.draw_axessetup(
-                ax,
-                genomeplotter,
-                ylabel,
-                ylabel_prefix,
-                ylabel_kwargs,
-                ymax,
-                ymin,
-                yticks,
-                draw_common_kwargs,
-                rotate_chromlabel,
-                fig,
-                title,
-                suptitle_kwargs,
+                ax=ax,
+                genomeplotter=genomeplotter,
+                ylabel=ylabel,
+                ylabel_prefix=ylabel_prefix,
+                ylabel_kwargs=ylabel_kwargs,
+                ymax=ymax,
+                ymin=ymin,
+                yticks=yticks,
+                draw_common_kwargs=draw_common_kwargs,
+                rotate_chromlabel=rotate_chromlabel,
+                fig=fig,
+                title=title,
+                suptitle_kwargs=suptitle_kwargs,
             )
 
-        return fig, ax, genomeplotter
+        return fig, ax, genomeplotter, plotdata
 
     def draw_hlines(
         self, 
@@ -1864,6 +1965,95 @@ class GenomeDataFrame:
         ax=None, 
         genomeplotter=None,
         offset=None,
+
+        # fig generation params
+        subplots_kwargs=dict(),
+
+        # drawing kwargs
+        plot_kwargs=dict(),
+
+        # axes setting
+        setup_axes=True,
+        ylabel=None,
+        ylabel_prefix='',
+        ylabel_kwargs=dict(),
+        ymax=False,
+        ymin=False,
+        yticks=None,
+        draw_common_kwargs=dict(),
+        rotate_chromlabel=None,
+        title=None,
+        suptitle_kwargs=dict(),
+
+        # pre-generated plotdata
+        plotdata=None,
+
+        # multicore plotdata generation
+        nproc=1,
+        log_suffix='',
+        verbose=True,
+    ):
+        fig, ax, genomeplotter, plotdata = self.draw_preprocess(
+            y_colname=y_colname,
+            ax=ax,
+            genomeplotter=genomeplotter,
+            frac=None,
+            subplots_kwargs=subplots_kwargs,
+            log_suffix=log_suffix,
+            nproc=nproc,
+            verbose=verbose,
+            plotdata=plotdata,
+        )
+
+        # drawing parameters
+        plot_kwargs = (
+            {'color': 'tab:blue', 'linewidth': 2, 'alpha': 1}
+            | plot_kwargs
+        )
+
+        # do drawing
+        genomeplotter.draw_hlines(
+            ax,
+            offset=offset,
+            plotdata=plotdata,
+            y_colname=y_colname,
+            plot_kwargs=plot_kwargs,
+            draw_common=False,
+        )
+
+        if setup_axes:
+            default_ymin, default_ymax = plotmisc.get_boxplot_range(plotdata[y_colname])
+            if ymin is False:
+                ymin = default_ymin
+            if ymax is False:
+                ymax = default_ymax
+            self.draw_axessetup(
+                ax=ax,
+                genomeplotter=genomeplotter,
+                ylabel=ylabel,
+                ylabel_prefix=ylabel_prefix,
+                ylabel_kwargs=ylabel_kwargs,
+                ymax=ymax,
+                ymin=ymin,
+                yticks=yticks,
+                draw_common_kwargs=draw_common_kwargs,
+                rotate_chromlabel=rotate_chromlabel,
+                fig=fig,
+                title=title,
+                suptitle_kwargs=suptitle_kwargs,
+            )
+
+        return fig, ax, genomeplotter, plotdata
+
+    def draw_boxes(
+        self, 
+
+        ymin_colname=None,
+        ymax_colname=None,
+        color_colname=None,
+
+        ax=None, 
+        genomeplotter=None,
 
         # fig generation params
         title=None,
@@ -1889,60 +2079,77 @@ class GenomeDataFrame:
 
         # multicore plotdata generation
         nproc=1,
-        log_suffix=None,
+        log_suffix='',
+        verbose=True,
     ):
-        frac = None
+        y_colnames = [
+            x for x in [ymin_colname, ymax_colname, color_colname] 
+            if x is not None
+        ]
+        if len(y_colnames) == 0:
+            y_colnames = None
+
         fig, ax, genomeplotter, plotdata = self.draw_preprocess(
-            y_colname,
-            ax,
-            genomeplotter,
-            frac,
-            subplots_kwargs,
-            log_suffix,
-            nproc,
-            plotdata,
+            y_colname=y_colnames,
+            ax=ax,
+            genomeplotter=genomeplotter,
+            frac=None,
+            subplots_kwargs=subplots_kwargs,
+            log_suffix=log_suffix,
+            nproc=nproc,
+            verbose=verbose,
+            plotdata=plotdata,
         )
 
         # drawing parameters
         plot_kwargs = (
-            {'color': 'tab:blue', 'linewidth': 2, 'alpha': 1}
+            {'alpha': 0.1, 'zorder': 0}
             | plot_kwargs
         )
+        if ymin_colname is None:
+            ymins = None
+        else:
+            ymins = plotdata[ymin_colname]
+        if ymax_colname is None:
+            ymaxs = None
+        else:
+            ymaxs = plotdata[ymax_colname]
+        if color_colname is None:
+            colors = None
+        else:
+            colors = plotdata[color_colname]
 
         # do drawing
-        genomeplotter.draw_hlines(
+        genomeplotter.draw_boxes(
             ax,
-            offset=offset,
             plotdata=plotdata,
-            y_colname=y_colname,
-            plot_kwargs=plot_kwargs,
+
+            ymins=ymins,
+            ymaxs=ymaxs,
+            colors=colors,
+
+            rect_kwargs=plot_kwargs,
             draw_common=False,
-            log_suffix=log_suffix,
         )
 
         if setup_axes:
-            default_ymin, default_ymax = plotmisc.get_boxplot_range(plotdata[y_colname])
-            if ymin is False:
-                ymin = default_ymin
-            if ymax is False:
-                ymax = default_ymax
             self.draw_axessetup(
-                ax,
-                genomeplotter,
-                ylabel,
-                ylabel_prefix,
-                ylabel_kwargs,
-                ymax,
-                ymin,
-                yticks,
-                draw_common_kwargs,
-                rotate_chromlabel,
-                fig,
-                title,
-                suptitle_kwargs,
+                ax=ax,
+                genomeplotter=genomeplotter,
+                ylabel=ylabel,
+                ylabel_prefix=ylabel_prefix,
+                ylabel_kwargs=ylabel_kwargs,
+                ymax=ymax,
+                ymin=ymin,
+                yticks=yticks,
+                draw_common_kwargs=draw_common_kwargs,
+                rotate_chromlabel=rotate_chromlabel,
+                fig=fig,
+                title=title,
+                suptitle_kwargs=suptitle_kwargs,
             )
 
-        return fig, ax, genomeplotter
+        return fig, ax, genomeplotter, plotdata
 
 
 class GenomeDataFrameLoc:

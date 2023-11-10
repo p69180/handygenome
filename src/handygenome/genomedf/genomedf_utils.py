@@ -6,11 +6,11 @@ import handygenome.tools as tools
 
 
 COMMON_COLUMNS = ['Chromosome', 'Start', 'End']
-DEFAULT_DTYPES = {
-    'Chromosome': 'string', 
-    'Start': int, 
-    'End': int,
-}
+#DEFAULT_DTYPES = {
+#    'Chromosome': 'string', 
+#    'Start': int, 
+#    'End': int,
+#}
 
 
 def hash_df(df):

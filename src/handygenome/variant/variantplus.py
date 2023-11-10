@@ -1788,9 +1788,6 @@ class VariantPlusList(list):
                 {'Start': int, 'End': int, 'POS': int}
             )
     
-    @staticmethod
-    def vafdf_allele_columns(num):
-        return ['REF'] + [f'ALT{x + 1}' for x in range(num - 1)]
 
     @deco.get_deco_atleast1d(['sampleids'])
     def get_vafdf(
@@ -1851,8 +1848,8 @@ class VariantPlusList(list):
             starts.append(vp.vcfspec.pos0)
             ends.append(vp.vcfspec.end0)
 
-            for allele_idx, sublist in enumerate(alleles):
-                sublist.append(vp.get_allele(allele_idx))
+            for allele_idx, alleles_sublist in enumerate(alleles):
+                alleles_sublist.append(vp.get_allele(allele_idx))
 
             for sid, this_vaf_list in this_vafs.items():
                 for vaflist, vafval in zip(vafs[sid], this_vaf_list):
@@ -1872,9 +1869,9 @@ class VariantPlusList(list):
             data.append(pos1s)
             columns_lv2.append('POS')
 
-            allele_colnames = self.vafdf_allele_columns(n_allele)
-            for colname, sublist in zip(allele_colnames, alleles):
-                data.append(sublist)
+            allele_colnames = get_vafdf_allele_columns(n_allele)
+            for colname, alleles_sublist in zip(allele_colnames, alleles):
+                data.append(alleles_sublist)
                 columns_lv2.append(colname)
 
             for sid in sampleids:
@@ -1898,7 +1895,7 @@ class VariantPlusList(list):
             data['start0s'] = starts
             data['end0s'] = ends
 
-            allele_colnames = self.vafdf_allele_columns(n_allele)
+            allele_colnames = get_vafdf_allele_columns(n_allele)
             for colname, sublist in zip(allele_colnames, alleles):
                 data[colname] = sublist
             for sid in sampleids:
@@ -2056,11 +2053,163 @@ class VariantPlusList(list):
 # vcfdf #
 #########
 
-class VCFDataFrame(GenomeDataFrame):
-    COMMON_COLUMNS = (
-        list(genomedf_utils.COMMON_COLUMNS) 
-        + ['REF', 'ALT1']
+def get_vafdf_allele_columns(num):
+    return ['REF'] + [f'ALT{x + 1}' for x in range(num - 1)]
+
+
+class VariantDataFrame(GenomeDataFrame):
+    COMMON_ALLELE_COLUMNS = ['REF', 'ALT1']
+    COMMON_COLUMNS = GenomeDataFrame.COMMON_COLUMNS + COMMON_ALLELE_COLUMNS
+    ALLELE_COLNAME_PAT = re.compile('(REF|ALT[1-9][0-9]*)')
+
+    DEFAULT_DTYPES = (
+        GenomeDataFrame.DEFAULT_DTYPES
+        | {
+            'REF': 'string',
+            re.compile('ALT[1-9][0-9]*'): 'string',
+        }
     )
+
+    @property
+    def POS(self):
+        return self['Start'] + 1
+
+    @staticmethod
+    def allele_column_sortkey(colname):
+        if colname == 'REF':
+            return 0
+        else:
+            return int(re.sub('^ALT', '', colname))
+
+    @property
+    def allele_columns(self):
+        result = [
+            x for x in self.columns
+            if self.__class__.ALLELE_COLNAME_PAT.fullmatch(x)
+        ]
+        result.sort(key=self.allele_column_sortkey)
+        return result
+
+    @property
+    def vaf_columns(self):
+        result = [x for x in self.columns if x.endswith('_vaf')]
+        result.sort(
+            key=(lambda x:
+                self.allele_column_sortkey(re.sub('_vaf$', '', x))
+            )
+        )
+        return result
+
+    @property
+    def nonannot_columns(self):
+        return list(GenomeDataFrame.COMMON_COLUMNS) + self.allele_columns
+
+    @property
+    def num_alleles(self):
+        return len(self.allele_columns)
+
+    def get_var_indexed_df(self):
+        index_cols = ['Chromosome', 'Start'] + self.allele_columns
+        result = self.df.set_index(index_cols)
+        result.drop('End', axis=1, inplace=True)
+        return result
+
+    @classmethod
+    def from_var_indexed_df(cls, df, refver):
+        index_columns = df.index.names
+        assert set(['Chromosome', 'Start']).issubset(index_columns)
+        non_coord_cols = set(index_columns).difference(['Chromosome', 'Start'])
+        assert all(
+            cls.ALLELE_COLNAME_PAT.fullmatch(x) 
+            for x in non_coord_cols
+        )
+        assert set(cls.COMMON_ALLELE_COLUMNS).issubset(non_coord_cols)
+
+        new_df = df.reset_index()
+        new_df['End'] = new_df['Start'] + new_df['REF'].str.len()
+
+        return cls.from_frame(new_df, refver=refver)
+
+    def variant_join(self, other, how='left', nproc=1):
+        self_varidx_df = self.get_var_indexed_df()
+        other_varidx_df = other.get_var_indexed_df()
+        joined_df = self_varidx_df.join(other_varidx_df, how=how)
+        return self.__class__.from_var_indexed_df(joined_df, refver=self.refver)
+
+    @classmethod
+    def variant_union(cls, gdfs, nproc=1, num_split=30):
+        assert len(gdfs) >= 2
+        assert len(set(x.refver for x in gdfs)) == 1
+        assert len(set(x.num_alleles for x in gdfs)) == 1
+
+        logutils.log(f'Splitting input gdfs')
+        #gdfs_bychrom = [x.group_bychrom(sort=False) for x in gdfs]
+        with multiprocessing.Pool(nproc) as pool:
+            gdfs_bychrom = pool.map(cls.split_input_gdfs_targetfunc2, gdfs)
+
+        logutils.log(f'Joining split gdfs')
+        split_args = list()
+        all_chroms = set(
+            itertools.chain.from_iterable(x.keys() for x in gdfs_bychrom)
+        )
+        for chrom in all_chroms:
+            sublist = list()
+            for x in gdfs_bychrom:
+                if chrom in x:
+                    sublist.append(x[chrom])
+            split_args.append(sublist)
+
+        with multiprocessing.Pool(nproc) as pool:
+            mp_result = pool.map(cls.variant_union_base, split_args)
+
+        result = cls.concat(mp_result)
+        result.sort()
+        return result
+
+    @classmethod
+    def variant_union_old(cls, gdfs, nproc=1, num_split=30):
+        assert len(gdfs) >= 2
+        assert len(set(x.refver for x in gdfs)) == 1
+        assert len(set(x.num_alleles for x in gdfs)) == 1
+
+        logutils.log(f'Splitting input gdfs')
+        refver = gdfs[0].refver
+        split_allregion_gdf = (
+            GenomeDataFrame.all_regions(refver, assembled_only=True)
+            .equal_length_split(n=num_split)
+        )
+        with multiprocessing.Pool(nproc) as pool:
+            args = (
+                (gdfs, region_gdf)
+                for region_gdf in split_allregion_gdf
+            )
+            split_input_gdfs = pool.starmap(cls.split_input_gdfs_targetfunc, args)
+
+        logutils.log(f'Joining split gdfs')
+        with multiprocessing.Pool(nproc) as pool:
+            mp_result = pool.map(cls.variant_union_base, split_input_gdfs)
+        result = cls.concat(mp_result)
+        result.sort()
+        return result
+
+    @staticmethod
+    def split_input_gdfs_targetfunc(gdfs, region_gdf):
+        return list(x.subset_regions(region_gdf) for x in gdfs)
+
+    @staticmethod
+    def split_input_gdfs_targetfunc2(gdf):
+        return gdf.group_bychrom(sort=False)
+
+    @classmethod
+    def variant_union_base(cls, gdfs):
+        var_indexed_df_list = [x.get_var_indexed_df() for x in gdfs]
+        union_df = var_indexed_df_list[0].join(var_indexed_df_list[1:], how='outer')
+        result = cls.from_var_indexed_df(union_df, refver=gdfs[0].refver)
+        result.sort()
+        return result
+
+
+class VCFDataFrame(VariantDataFrame):
     SAMPLEID_SEP = ':::'
 
     ##############
@@ -2068,19 +2217,8 @@ class VCFDataFrame(GenomeDataFrame):
     ##############
 
     @property
-    def POS(self):
-        return self['Start'] + 1
-
-    @property
     def nonannot_columns(self):
         return self.colname_getter(self.colnamefilter_nonannot)
-
-    @property
-    def allele_columns(self):
-        return [
-            x for x in self.nonannot_columns 
-            if x not in genomedf_utils.COMMON_COLUMNS
-        ]
 
     @property
     def info_columns(self):
@@ -2186,6 +2324,7 @@ def get_vafdf(
     sampleids, 
     n_allele=2,
     nproc=1,
+    num_split=200,
     exclude_other=False,
     prop=None,
     vpfilter=None,
@@ -2199,7 +2338,7 @@ def get_vafdf(
     if verbose:
         logutils.log(f'Extracting vcf position information') 
 
-    num_split = nproc * 10
+    #num_split = nproc * 10
     fetchregion_gdf_list = vcfmisc.get_vcf_fetchregions_new(
         vcf_path, 
         n=num_split, 

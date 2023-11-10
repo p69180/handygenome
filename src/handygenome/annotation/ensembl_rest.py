@@ -127,6 +127,7 @@ def vep(
     with_CADD=True, with_Phenotypes=False, with_canonical=True, 
     with_mane=True, with_miRNA=False, with_numbers=True, 
     with_protein=True, with_ccds=True, with_hgvs=True,
+    spliceai=2,
 ):
     if hgvsg is None:
         if vcfspec is None: 
@@ -147,6 +148,7 @@ def vep(
         'protein' : int(with_protein),
         'ccds' : int(with_ccds),
         'hgvs' : int(with_hgvs),
+        'SpliceAI': spliceai,
     }
     if with_Phenotypes:
         # Adding 'Phenotypes' to params results in phenotype annotation

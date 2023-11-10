@@ -3,7 +3,6 @@ import functools
 
 import pandas as pd
 import numpy as np
-import pyranges as pr
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pysam
@@ -11,8 +10,8 @@ import pysam
 import handygenome.peakutils as peakutils
 import handygenome.logutils as logutils
 from handygenome.genomedf.genomedf import GenomeDataFrame, SegmentDataFrame
-import handygenome.cnv.cncall as cncall
-from handygenome.cnv.cncall import DefaultCNgUnavailableError
+import handygenome.cnv.cnvcall as cnvcall
+from handygenome.cnv.cnvcall import DefaultCNgUnavailableError
 import handygenome.plot.misc as plotmisc
 from handygenome.peakutils import NoPeakError
 
@@ -96,9 +95,24 @@ class DepthRawDataFrame(GenomeDataFrame):
     # segmentation #
     ################
 
-    def get_segment(self, *args, **kwargs):
-        seg = super().get_segment(*args, **kwargs)
-        return DepthSegmentDataFrame.from_frame(seg.df, refver=self.refver)
+    def get_segment(self, target_region=None, rawdepth=False, nproc=1, **kwargs):
+        annot_colname = (
+            self.__class__.depth_colname
+            if rawdepth else
+            self.__class__.norm_depth_colname
+        )
+        seg_gdf = super().get_segment(
+            annot_colname=annot_colname,
+            drop_annots=True,
+            nproc=nproc, 
+            **kwargs,
+        )
+        seg_gdf = DepthSegmentDataFrame.from_frame(seg_gdf.df, refver=self.refver)
+        seg_gdf = seg_gdf.fill_gaps(edit_first_last=True)
+        if target_region is not None:
+            seg_gdf = seg_gdf.intersect(target_region, nproc=nproc)
+
+        return seg_gdf
 
     ##############
     # properties #
@@ -240,7 +254,7 @@ class DepthRawDataFrame(GenomeDataFrame):
 
         # multicore plotdata generation
         nproc=1,
-        log_suffix=None,
+        verbose=True,
     ):
         # parameter setup by depth type 
         default_ylabel, y_colname = self.get_colname_ylabel(depthtype)
@@ -253,7 +267,7 @@ class DepthRawDataFrame(GenomeDataFrame):
         if (ymin is False) and (depthtype != 'raw'):
             ymin = 0
 
-        fig, ax, genomeplotter = self.draw_dots(
+        fig, ax, genomeplotter, plotdata = self.draw_dots(
             y_colname=y_colname,
             ax=ax,
             genomeplotter=genomeplotter,
@@ -278,6 +292,7 @@ class DepthRawDataFrame(GenomeDataFrame):
             plotdata=plotdata,
             nproc=nproc,
             log_suffix=' (Depth raw data)',
+            verbose=verbose,
         )
 
         return fig, ax
@@ -311,7 +326,7 @@ class DepthRawDataFrame(GenomeDataFrame):
 
         # multicore plotdata generation
         nproc=1,
-        log_suffix=None,
+        verbose=True,
     ):
         y_colname = self.__class__.MQ_colname
 
@@ -325,7 +340,7 @@ class DepthRawDataFrame(GenomeDataFrame):
         if yticks is False:
             yticks = np.arange(0, 80, 10).astype(int)
 
-        fig, ax, genomeplotter = self.draw_dots(
+        fig, ax, genomeplotter, plotdata = self.draw_dots(
             y_colname=y_colname,
             ax=ax,
             genomeplotter=genomeplotter,
@@ -350,6 +365,7 @@ class DepthRawDataFrame(GenomeDataFrame):
             plotdata=plotdata,
             nproc=nproc,
             log_suffix=' (Mapping quality raw data)',
+            verbose=verbose,
         )
 
         return fig, ax
@@ -371,6 +387,9 @@ def make_MQ_array(bam_path, chroms, start0s, end0s, verbose=False):
 
 
 class DepthSegmentDataFrame(SegmentDataFrame):
+    depth_mean_colname = DepthRawDataFrame.depth_colname + '_mean'
+    depth_std_colname = DepthRawDataFrame.depth_colname + '_std'
+
     norm_depth_mean_colname = DepthRawDataFrame.norm_depth_colname + '_mean'
     norm_depth_std_colname = DepthRawDataFrame.norm_depth_colname + '_std'
 
@@ -392,9 +411,12 @@ class DepthSegmentDataFrame(SegmentDataFrame):
     def corrected_depth_mean(self):
         return self[self.__class__.corrected_norm_depth_mean_colname]
 
-    def find_onecopy_depth(self, is_female, ploidy):
+    def check_has_corrected_depth(self):
+        return self.__class__.corrected_norm_depth_mean_colname in self.columns
+
+    def find_onecopy_depth(self, is_female, ploidy, peak=False):
         try:
-            default_CNg = cncall.get_default_CNg(self, is_female)
+            default_CNg = cnvcall.get_default_CNg(self, is_female)
         except DefaultCNgUnavailableError:
             data = self.norm_depth_mean
             weights = self.lengths
@@ -410,14 +432,17 @@ class DepthSegmentDataFrame(SegmentDataFrame):
             weights = self.lengths[valid_selector]
 
         # select copy-neutral depth segments
-        peakresult = peakutils.find_density_peaks(
-            data,
-            weights=weights,
-            xs=np.arange(0, 2, 0.01),
-            bw_method=0.005,
-        )
-        modal_depth = peakresult['peak_xs'][np.argmax(peakresult['peak_ys'])]
-        onecopy_depth = modal_depth / ploidy
+        if peak:
+            peakresult = peakutils.find_density_peaks(
+                data,
+                weights=weights,
+                xs=np.arange(0, 2, 0.01),
+                bw_method=0.005,
+            )
+            modal_depth = peakresult['peak_xs'][np.argmax(peakresult['peak_ys'])]
+            onecopy_depth = modal_depth / ploidy
+        else:
+            onecopy_depth = np.average(data, weights=weights) / ploidy
 
         return onecopy_depth
 
@@ -489,7 +514,8 @@ class DepthSegmentDataFrame(SegmentDataFrame):
         plotdata=None,
 
         chromwise_peaks=False,
-        chromwise_peaks_kwargs=dict(),
+        chromwise_peaks_density_kwargs=dict(),
+        chromwise_peaks_line_kwargs=dict(),
         chromwise_peaks_fullspan=True,
 
         # fig generation params
@@ -513,7 +539,7 @@ class DepthSegmentDataFrame(SegmentDataFrame):
 
         # multicore plotdata generation
         nproc=1,
-        log_suffix=None,
+        verbose=True,
     ):
         # parameter setup by depth type 
         default_ylabel, y_colname = self.get_colname_ylabel(depthtype)
@@ -537,7 +563,11 @@ class DepthSegmentDataFrame(SegmentDataFrame):
         #if yticks is False:
         #    yticks = np.round(np.linspace(0, ymax, 10), 2)
 
-        fig, ax, genomeplotter = self.draw_hlines(
+        plot_kwargs = (
+            dict(alpha=1)
+            | plot_kwargs
+        )
+        fig, ax, genomeplotter, plotdata = self.draw_hlines(
             y_colname=y_colname,
             ax=ax,
             genomeplotter=genomeplotter,
@@ -561,6 +591,7 @@ class DepthSegmentDataFrame(SegmentDataFrame):
             plotdata=plotdata,
             nproc=nproc,
             log_suffix=' (Depth segment)',
+            verbose=verbose,
         )
 
         if chromwise_peaks:
@@ -570,13 +601,15 @@ class DepthSegmentDataFrame(SegmentDataFrame):
                     prominence=(1, None), 
                     bw_method=0.05,
                     xs=np.arange(0, ax.get_ylim()[1], 0.01),
-                ) | chromwise_peaks_kwargs
+                ) | chromwise_peaks_density_kwargs
             )
             plotregion_chroms = set(genomeplotter.region_gdf.chroms)
-            peakline_kwargs = dict(
-                alpha=0.5,
-                linewidth=0.8,
-                color='orange',
+            peakline_kwargs = (
+                dict(
+                    alpha=0.5,
+                    linewidth=0.8,
+                    color='orange',
+                ) | chromwise_peaks_line_kwargs
             )
 
             # calculate peakresults
@@ -651,7 +684,7 @@ class DepthSegmentDataFrame(SegmentDataFrame):
 
         # multicore plotdata generation
         nproc=1,
-        log_suffix=None,
+        verbose=True,
     ):
         y_colname = self.__class__.MQ_mean_colname
 
@@ -665,7 +698,7 @@ class DepthSegmentDataFrame(SegmentDataFrame):
         if yticks is False:
             yticks = np.arange(0, 80, 10).astype(int)
 
-        fig, ax, genomeplotter = self.draw_hlines(
+        fig, ax, genomeplotter, plotdata = self.draw_hlines(
             y_colname=y_colname,
             ax=ax,
             genomeplotter=genomeplotter,
@@ -689,6 +722,7 @@ class DepthSegmentDataFrame(SegmentDataFrame):
             plotdata=plotdata,
             nproc=nproc,
             log_suffix=' (Mapping quality segment)',
+            verbose=verbose,
         )
 
         return fig, ax

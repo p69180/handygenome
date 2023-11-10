@@ -260,7 +260,7 @@ def args_into_array(func):
     return wrapper
 
 
-def get_deco_atleast1d(names):
+def get_deco_atleast1d(names, keep_none=True):
     def decorator(func):
         sig = inspect.signature(func)
         if not set(names).issubset(sig.parameters.keys()):
@@ -276,7 +276,12 @@ def get_deco_atleast1d(names):
             ba.apply_defaults()
             for key in names:
                 old = ba.arguments[key]
-                if np.isscalar(old):
+                if old is None:
+                    if keep_none:
+                        new = old
+                    else:
+                        new = np.atleast_1d(old)
+                elif np.isscalar(old):
                     new = np.atleast_1d(old)
                 else:
                     new = np.atleast_1d(tuple(old))

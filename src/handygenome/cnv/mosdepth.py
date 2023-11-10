@@ -4,7 +4,6 @@ import shutil
 import subprocess
 import multiprocessing
 
-import pyranges as pr
 import pandas as pd
 
 import handygenome

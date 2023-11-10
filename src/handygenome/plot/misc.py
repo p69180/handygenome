@@ -61,3 +61,24 @@ def get_boxplot_range(data):
     return ymin, ymax
 
 
+def qqplot(data1, data2, q=np.arange(0, 1.01, 0.01), ax=None):
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.figure
+
+    quantiles1 = np.quantile(data1, q)
+    quantiles2 = np.quantile(data2, q)
+    ax.plot(quantiles1, quantiles2, linestyle='', marker='o', markersize=4, zorder=1)
+    ax.set_title('QQ plot')
+
+    new_min = min(ax.get_xlim()[0], ax.get_ylim()[0])
+    new_max = max(ax.get_xlim()[1], ax.get_ylim()[1])
+    ax.set_xlim(new_min, new_max)
+    ax.set_ylim(new_min, new_max)
+    ax.set_aspect('equal')
+    ax.axline((new_min, new_min), slope=1, color='black', zorder=0, linewidth=0.5)
+
+    return fig, ax
+
+

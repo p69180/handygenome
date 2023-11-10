@@ -23,8 +23,8 @@ import handygenome.deco as deco
 import handygenome.logutils as logutils
 
 
-PAT_INT = re.compile('-?[0-9]+')
-PAT_FLOAT = re.compile('(-?[0-9]+\.[0-9]+)|(-?[0-9]+(\.[0-9]+)?e-?[0-9]+)')
+PAT_INT = re.compile(r'-?[0-9]+')
+PAT_FLOAT = re.compile(r'(-?[0-9]+\.[0-9]+)|(-?[0-9]+(\.[0-9]+)?e-?[0-9]+)')
 
 
 #####################
@@ -577,6 +577,13 @@ def nanaverage(values, weights):
     return np.average(new_values, weights=new_weights)
 
 
+def nanargmin(arr, axis, keepdims=False):
+    arrcp = arr.copy()
+    isnan = np.isnan(arrcp).all(axis=axis)
+    arrcp[isnan] = 0
+    return np.nanargmin(arrcp, axis, keepdims=keepdims)
+
+
 def get_ranks(arr):
     ranks = scipy.stats.rankdata(data, method='max')
     return ranks / len(ranks)
@@ -614,7 +621,7 @@ def median_mad(values):
     return np.median(np.abs(values - np.median(values)))
 
 
-def get_diffmean(values, weights=None):
+def get_combination_diffs(values, weights=None):
     assert values.ndim == 1
 
     if weights is None:
@@ -623,10 +630,15 @@ def get_diffmean(values, weights=None):
         assert weights.shape == values.shape
 
     indexes = np.triu_indices(values.shape[0], k=1)
-    diffs = values[indexes[0]] - values[indexes[1]]
+    diffs = np.abs(values[indexes[0]] - values[indexes[1]])
     diff_weights = weights[indexes[0]] + weights[indexes[1]]
 
-    return np.average(np.abs(diffs), weights=diff_weights)
+    return diffs, diff_weights
+
+
+def get_combination_diffmean(values, weights=None):
+    diffs, diff_weights = get_combination_diffs(values, weights=weights)
+    return np.average(diffs, weights=diff_weights)
 
 
 def dirichlet_multinomial_rvs(n, alpha, rng=None):
@@ -664,6 +676,20 @@ def get_nearest_integer_bounds(x, elevate=True):
         lower[same_indexes] -= 1
 
     return upper, lower
+
+
+def digitize(array, bins):
+    hist, bin_edges = np.histogram(array, bins=bins)
+    bin_mids = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    return np.repeat(bin_mids, hist)
+
+
+def digitize_type2(arr, bins=None, start=None, stop=None, step=None):
+    if bins is None:
+        bins = np.arange(start, stop + (2 * step), step)
+    bin_indexes = np.digitize(arr, bins=bins, right=False) - 1
+    bin_mids = 0.5 * (bins[:-1] + bins[1:])
+    return bin_mids[bin_indexes]
 
 
 ##############################

@@ -108,10 +108,7 @@ start0 = POS - 1
 end0 = start0 + len(REF)
 '''
 
-def get_vcf_positions_new(vcf_path, split=None, nproc=1):
-    if split is None:
-        split = nproc * 10
-
+def get_vcf_positions_new(vcf_path, split=100, nproc=1):
     refver = refgenome.infer_refver_vcfpath(vcf_path)
     if not check_has_index(vcf_path):
         make_index(vcf_path) 

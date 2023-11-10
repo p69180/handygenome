@@ -4,6 +4,7 @@ import pickle
 import itertools
 import collections
 import functools
+import operator
 
 import numpy as np
 import pandas as pd
@@ -23,9 +24,11 @@ import handygenome.peakutils as peakutils
 from handygenome.peakutils import HistPeaks, DensityPeaks, DensityGenerationFailure, NoPeakError
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.variant.variantplus as libvp
-from handygenome.variant.variantplus import VCFDataFrame
+from handygenome.variant.variantplus import VCFDataFrame, VariantDataFrame
 from handygenome.genomedf.genomedf import GenomeDataFrame, SegmentDataFrame
 import handygenome.plot.misc as plotmisc
+import handygenome.cnv.cnvcall as cnvcall
+#import handygenome.cnv.bafsimul as bafsimul
 
 
 BAFINDEX_PAT_STRING = '(?P<bafindex_prefix>baf)(?P<num>[0-9]+)'
@@ -94,7 +97,16 @@ def decal_baf(bafs):
 # BAFRawDataFrame #
 ###################
 
-class BAFRawDataFrame(GenomeDataFrame):
+class BAFRawDataFrame(VariantDataFrame):
+    is_het_colname = 'is_het'
+
+    def get_baf_indexes(self):
+        return get_baf_indexes(self.num_alleles)
+
+    ###############
+    # sanitycheck #
+    ###############
+
     def remove_overlapping_rows_slow(self):
         new_df = (
             self.cluster().df
@@ -122,24 +134,244 @@ class BAFRawDataFrame(GenomeDataFrame):
             filtered_subgdfs.append(subgdf)
 
         new_gdf = GenomeDataFrame.concat(filtered_subgdfs)
-        return self.spawn(new_gdf.df)
+        self.assign_df(new_gdf.df)
+        self.sort()
+
+    ########################
+    # normalize VAF values #
+    ########################
+
+    def fit_vaf_sum_to_one(self, inplace=True):
+        vaf_array = self[self.vaf_columns]
+        vaf_sums = vaf_array.sum(axis=1)
+        edited_vafs = vaf_array / vaf_sums[:, np.newaxis]
+        if inplace:
+            self[self.vaf_columns] = edited_vafs
+        return edited_vafs
+
+    def divide_with_REF_vaf(self):
+        vaf_array = self[self.vaf_columns]
+        oddsratio_array = vaf_array / vaf_array[:, 0][:, np.newaxis]
+        self[self.vaf_columns] = oddsratio_array
+
+    #######################################
+    # create baf columns from vaf columns #
+    #######################################
+
+    def add_baf(self, fit_self_vafs=False):
+        vafs = self.fit_vaf_sum_to_one(inplace=fit_self_vafs)
+        bafs = get_baf_from_vaf(vafs)
+        for col_idx, baf_idx in enumerate(self.get_baf_indexes()):
+            self[baf_idx] = bafs[:, col_idx]
+
+    ##################
+    # hetalt marking #
+    ##################
+
+    def add_baf_hetalt_flag(self, cutoff=0.15):
+        """Args:
+            cutoff: If maximum VAF value is greater than (1 - cutoff) value, regarded as homalt
+        """
+        vaf_array = self.fit_vaf_sum_to_one(inplace=False)
+        max_vafs = vaf_array.max(axis=1)
+        is_het = (max_vafs < (1 - cutoff))
+        self[self.__class__.is_het_colname] = is_het
+
+    def add_baf_hetalt_flag_pairednormal(self, germline_baf_rawdata):
+        self.sort()
+        germline_baf_rawdata.sort()
+        assert (
+            self.get_coordinate_array()
+            == germline_baf_rawdata.get_coordinate_array()
+        ).all()
+        
+        germline_baf_rawdata.add_baf_hetalt_flag()
+        ishet_colname = self.__class__.is_het_colname
+        self[ishet_colname] = germline_baf_rawdata[ishet_colname]
+
+    def subset_hetalt(self):
+        """Args:
+            cutoff: If maximum VAF value is greater than (1 - cutoff) value, regarded as homalt
+        """
+        return self.loc[self[self.__class__.is_het_colname], :]
+
+    ##########
+    # others #
+    ##########
 
     @property
     def baf_columns(self):
         """baf0 comes first, the baf1, then baf2, ..."""
         result = [x for x in self.columns if re.fullmatch(r'baf[0-9]+', x)]
-        result.sort(key=(lambda x: int(x[3:])))  # baf0, baf1, baf2, ...
+        result.sort(
+            key=(
+                lambda x: int(re.sub('^baf', '', x))
+            )
+        )  # baf0, baf1, baf2, ...
         return result
 
     def get_baf_array(self):
         """baf0 is on the left"""
         return self.df.loc[:, self.baf_columns].to_numpy()
 
-    def get_segment(self, baf_idx, *args, **kwargs):
-        seg = super().get_segment(*args, baf_idx, **kwargs)
-        return BAFSegmentDataFrame.from_frame(seg.df, refver=self.refver)
+    ###########################################
+    # filtering rows which are invalid as baf #
+    ###########################################
 
-    def draw(
+    def remove_invalid_vaf_rows(self):
+        vaf_array = self[self.vaf_columns]
+        invalid_selector = functools.reduce(
+            np.logical_or,
+            [
+                (vaf_array.sum(axis=1) < 0.9), 
+                (vaf_array == 0).any(axis=1),
+            ],
+        )
+        return self.loc[~invalid_selector, :]
+
+    def remove_germline_loh_region(self, germline_CN_gdf=None, is_female=None, nproc=1):
+        if germline_CN_gdf is None:
+            assert is_female is not None
+            assert len(self.get_baf_indexes()) == 1  # ploidy == 2
+            invalid_selector = (
+                cnvcall.get_default_Bg(self, is_female, nproc) 
+                == 0
+            )
+            result = self.loc[~invalid_selector, :]
+        else:
+            clonal_B_list = [
+                germline_CN_gdf.get_clonal_B(baf_index, germline=False) 
+                for baf_index in self.get_baf_indexes()
+            ]
+            invalid_selector = functools.reduce(np.logical_or, [(x == 0) for x in clonal_B_list])
+            invalid_CN_gdf = germline_CN_gdf.loc[invalid_selector, :]
+            result = self.subtract(invalid_CN_gdf)
+
+        return result
+
+    def keep_equal_germline_allelecopy_region(self, germline_CN_gdf=None, is_female=None, nproc=1):
+        if germline_CN_gdf is None:
+            assert is_female is not None
+            assert len(self.get_baf_indexes()) == 1  # ploidy == 2
+            default_Bg = cnvcall.get_default_Bg(self, is_female, nproc)
+            default_Ag = cnvcall.get_default_CNg(self, is_female, nproc) - default_Bg
+            valid_selector = np.logical_and(
+                (default_Bg == default_Ag),
+                (default_Bg != 0),
+            )
+            result = self.loc[valid_selector, :]
+        else:
+            clonal_CN = germline_CN_gdf.get_clonal_CN(germline=False)
+            clonal_B_list = [
+                germline_CN_gdf.get_clonal_B(baf_index, germline=False) 
+                for baf_index in self.get_baf_indexes()
+            ]
+            clonal_A = clonal_CN - functools.reduce(operator.add, clonal_B_list)
+
+            valid_selector = functools.reduce(
+                np.logical_and, 
+                [(clonal_A == x) for x in clonal_B_list],
+            )
+            valid_selector = np.logical_and(
+                valid_selector,
+                (clonal_A != 0),
+            )
+            valid_CN_gdf = germline_CN_gdf.loc[valid_selector, :]
+            result = self.intersect(valid_CN_gdf, nproc=nproc)
+
+        return result
+
+    def filter_valid_bafs(
+        self, germline_CN_gdf=None, is_female=None, remove_loh=True, nproc=1,
+        verbose=False,
+    ):
+        """Keeps only rows adequate for making BAF segment"""
+        #1
+        if verbose:
+            logutils.log(f'Removing rows where sum of VAFs are too low OR any of VAF is 0')
+        result = self.remove_invalid_vaf_rows()
+        #2
+        if remove_loh:
+            if verbose:
+                logutils.log(f'Removing regions where any germline B copy number is 0')
+            result = result.remove_germline_loh_region(
+                germline_CN_gdf=germline_CN_gdf, 
+                is_female=is_female, 
+                nproc=nproc,
+            )
+        #3
+        if verbose:
+            logutils.log(f'Keeping only hetalt positions')
+        result = result.subset_hetalt()
+
+        return result
+
+    def get_segment_dict(
+        self, 
+        target_region=None, 
+
+        germline_baf_rawdata=None,
+
+        germline_CN_gdf=None, 
+        is_female=None,
+
+        return_filtered_rawdata=False,
+
+        nproc=1, 
+        **kwargs,
+    ):
+        """* Use "germline_CN_gdf" with germline sample
+        * Only use hetalt positions
+        """
+        result = dict()
+
+        germline_is_given = (germline_baf_rawdata is not None)
+        remove_loh = (
+            (germline_CN_gdf is not None)
+            or (is_female is not None)
+        )
+
+        # add hetalt flag
+        if germline_is_given:
+            self.add_baf_hetalt_flag_pairednormal(germline_baf_rawdata)
+        else:
+            self.add_baf_hetalt_flag()
+
+        # filter
+        filtered_self = self.filter_valid_bafs(
+            germline_CN_gdf=germline_CN_gdf, 
+            is_female=is_female, 
+            remove_loh=remove_loh,
+            nproc=nproc,
+            verbose=True,
+        )
+
+        # main
+        for baf_index in get_baf_indexes(self.num_alleles):
+            seg_gdf = filtered_self.get_segment(
+                annot_colname=baf_index,
+                drop_annots=True,
+                nproc=nproc,
+            )
+            seg_gdf = BAFSegmentDataFrame.from_frame(seg_gdf.df, refver=self.refver)
+            seg_gdf = seg_gdf.fill_gaps(edit_first_last=True)
+            if target_region is not None:
+                seg_gdf = seg_gdf.intersect(target_region, nproc=nproc)
+
+            seg_gdf.add_rawdata_info_simple(
+                filtered_self, 
+                baf_index,
+                merge_methods=['mean', 'std'],
+                nproc=nproc,
+            )
+            result[baf_index] = seg_gdf
+
+        if return_filtered_rawdata:
+            return result, filtered_self
+        else:
+            return result
+
+    def draw_baf(
         self,
         baf_idx,
         ax=None,
@@ -169,18 +401,18 @@ class BAFRawDataFrame(GenomeDataFrame):
 
         # multicore plotdata generation
         nproc=1,
-        log_suffix=None,
+        verbose=True,
     ):
         if ylabel is False:
             ylabel = f'BAF ({baf_idx})'
         if ymax is False:
-            ymax = 0.6
+            ymax = 0.52
         if ymin is False:
-            ymin = -0.1
+            ymin = -0.02
         if yticks is False:
             yticks = np.round(np.arange(0, 0.6, 0.1), 1)
 
-        fig, ax, genomeplotter = self.draw_dots(
+        fig, ax, genomeplotter, plotdata = self.draw_dots(
             y_colname=baf_idx,
             ax=ax,
             genomeplotter=genomeplotter,
@@ -205,6 +437,7 @@ class BAFRawDataFrame(GenomeDataFrame):
 
             nproc=nproc,
             log_suffix=' (BAF raw data)',
+            verbose=verbose,
         )
 
 
@@ -233,7 +466,7 @@ def get_bafdfs_from_vcf(
 
 
 def get_bafdfs_from_vafdf(vafdf):
-    assert isinstance(vafdf, VCFDataFrame), f'Invalid input object type: {type(vafdf)}'
+    #assert isinstance(vafdf, VCFDataFrame), f'Invalid input object type: {type(vafdf)}'
 
     vaf_formatkeys = [f'{x}_vaf' for x in vafdf.allele_columns]
     result = dict()
@@ -245,14 +478,21 @@ def get_bafdfs_from_vafdf(vafdf):
         src_data['chroms'] = vafdf.chromosomes
         src_data['start0s'] = vafdf.starts
         src_data['end0s'] = vafdf.ends
+        for colname in vafdf.allele_columns:
+            src_data[colname] = vafdf[colname]
 
-        ploidy = bafs.shape[1] + 1
-        for col_idx, baf_idx in enumerate(get_baf_indexes(ploidy)):
-        #for idx in range(bafs.shape[1]):
-            #baf_colname = f'baf{idx}'
-            src_data[baf_idx] = bafs[:, col_idx]
+        # assign vaf columns
+        vafs = vafdf.get_format(sid, vaf_formatkeys).to_numpy()
+        for colname, values in zip(vaf_formatkeys, np.swapaxes(vafs, 0, 1)):
+            src_data[colname] = values
 
-        result[sid] = BAFRawDataFrame.from_data(refver=vafdf.refver, **src_data)
+        # make BAFRawDataFrame
+        baf_gdf = BAFRawDataFrame.from_data(refver=vafdf.refver, **src_data)
+        # make baf columns
+        baf_gdf.add_baf(fit_self_vafs=False)
+
+        # result
+        result[sid] = baf_gdf
 
     return result
 
@@ -264,6 +504,7 @@ def get_bafdfs_from_vafdf(vafdf):
 class BAFSegmentDataFrame(SegmentDataFrame):
     distinfo_suffix = '_distinfo'
     corrected_baf_suffix = '_corrected'
+    baf_mean_color = 'tab:blue'
 
     #@property
     #def baf_colname(self):
@@ -287,6 +528,14 @@ class BAFSegmentDataFrame(SegmentDataFrame):
 
         return baf_strings.pop()
 
+    def get_baf_mean_colname(self, baf_index=None):
+        if baf_index is None:
+            baf_index = self.get_baf_index()
+        return baf_index + '_mean'
+
+    def get_baf_mean(self, baf_index=None):
+        return self[self.get_baf_mean_colname(baf_index=baf_index)]
+
     def get_distinfo_colname(self, key, baf_index=None):
         assert key in (
             'ndata', 
@@ -303,14 +552,17 @@ class BAFSegmentDataFrame(SegmentDataFrame):
         prefix = baf_index + self.__class__.distinfo_suffix
         return prefix + '_' + key
 
-    def drop_distinfo(self):
-        cols_to_drop = [x for x in self.columns if self.__class__.distinfo_suffix in x]
-        return self.drop_annots(cols_to_drop)
+    #def drop_distinfo(self):
+    #    cols_to_drop = [x for x in self.columns if self.__class__.distinfo_suffix in x]
+    #    return self.drop_annots(cols_to_drop)
 
     def get_corrected_baf_colname(self, baf_index=None):
         if baf_index is None:
             baf_index = self.get_baf_index()
         return baf_index + self.__class__.corrected_baf_suffix
+
+    def get_corrected_baf(self, baf_index=None):
+        return self[self.get_corrected_baf_colname(baf_index=baf_index)]
 
     ########################
     # column value getters #
@@ -328,6 +580,22 @@ class BAFSegmentDataFrame(SegmentDataFrame):
     #############
     # modifiers #
     #############
+
+    def add_rawdata_info_simple(
+        self, 
+        baf_rawdata_gdf, 
+        baf_index,
+        merge_methods=['mean', 'std'],
+        nproc=1,
+    ):
+        joined_gdf = self.drop_annots().join(
+            baf_rawdata_gdf,
+            right_gdf_cols=baf_index,
+            how='left',
+            merge=merge_methods,
+            nproc=nproc,
+        )
+        self.assign_frame(joined_gdf.df)
 
     @deco.get_deco_atleast1d(['distinfo_keys'])
     def add_rawdata_info(
@@ -369,9 +637,8 @@ class BAFSegmentDataFrame(SegmentDataFrame):
         joined_df.drop(bafdistinfo_key, axis=1, inplace=True)
 
         self.assign_frame(joined_df)
-        #return self.spawn(joined_df)
 
-    def add_corrected_baf(self, cutoff=0.41):
+    def add_corrected_baf_simple(self, cutoff=0.41):
         centers = self.get_dist_center()
         centers[centers > cutoff] = 0.5
         self[self.get_corrected_baf_colname(baf_index=None)] = centers
@@ -413,7 +680,7 @@ class BAFSegmentDataFrame(SegmentDataFrame):
     def get_filter(self):
         return self[self.get_filter_colname()]
 
-    def draw(
+    def draw_baf(
         self,
         ax=None,
         genomeplotter=None,
@@ -440,31 +707,31 @@ class BAFSegmentDataFrame(SegmentDataFrame):
 
         # multicore plotdata generation
         nproc=1,
-        log_suffix=None,
+        verbose=True,
     ):
-        y_colname = self.get_distinfo_colname('center', baf_index=self.get_baf_index())
-        #y_colname = self.get_corrected_baf_colname()
         if ylabel is False:
-            ylabel = f'BAF peak center ({self.get_baf_index()})'
+            ylabel = f'BAF mean ({self.get_baf_index()})'
             #ylabel = f'Corrected BAF ({self.get_baf_index()})'
         if ymax is False:
-            ymax = 0.6
+            ymax = 0.52
         if ymin is False:
-            ymin = -0.1
+            ymin = -0.02
         if yticks is False:
             yticks = np.round(np.arange(0, 0.6, 0.1), 1)
 
-        fig, ax, genomeplotter = self.draw_hlines(
-            y_colname=y_colname,
+        y_colname_mean = self.get_baf_mean_colname()
+        fig, ax, genomeplotter, plotdata = self.draw_hlines(
+            y_colname=y_colname_mean,
             ax=ax,
             genomeplotter=genomeplotter,
             plotdata=plotdata,
 
-            title=title,
-            suptitle_kwargs=suptitle_kwargs,
             subplots_kwargs=subplots_kwargs,
 
-            plot_kwargs=plot_kwargs,
+            plot_kwargs=(
+                {'color': self.__class__.baf_mean_color}
+                | plot_kwargs
+            ),
 
             setup_axes=setup_axes,
             ylabel=ylabel,
@@ -475,9 +742,12 @@ class BAFSegmentDataFrame(SegmentDataFrame):
             yticks=yticks,
             draw_common_kwargs=draw_common_kwargs,
             rotate_chromlabel=rotate_chromlabel,
+            title=title,
+            suptitle_kwargs=suptitle_kwargs,
 
             nproc=nproc,
             log_suffix=' (BAF segment)',
+            verbose=verbose,
         )
 
 
@@ -606,10 +876,11 @@ def get_bafdistinfo(
         else:
             xs = np.arange(-0.05, 0.55, 0.001)
     if bins is None:
+        step = 0.01
         if decal:
-            bins = np.arange(0, 1.005, 0.005)
+            bins = np.arange(0, 1 + step, step)
         else:
-            bins = np.arange(0, 0.505, 0.005)
+            bins = np.arange(0, 0.5 + step, step)
 
     if hist:
         peakresult = peakutils.find_hist_peaks(
@@ -668,6 +939,7 @@ def bafdistinfo_aggfunc(
 def draw_bafarray_breadth(
     bafs,
 
+    ax=None,
     distinfo_kwargs=dict(), 
     draw_peak_kwargs=dict(),
 
@@ -709,6 +981,7 @@ def draw_bafarray_breadth(
     # draw plot
     fig, ax = peakutils.draw_peaks(
         bafs, 
+        ax=ax,
         histpeaks=hist_peakresult, 
         densitypeaks=density_peakresult, 
         omit_density=(density_peakresult is None),

@@ -31,13 +31,15 @@ from handygenome.refgenome.refverfile import PARUnavailableError
 import handygenome.genomedf.genomedf as libgdf
 from handygenome.genomedf.genomedf import GenomeDataFrame as GDF
 import handygenome.cnv.depth as libdepth
+from handygenome.variant.variantplus import VariantDataFrame
 from handygenome.cnv.depth import DepthRawDataFrame as DepthRawDF
 from handygenome.cnv.depth import DepthSegmentDataFrame as DepthSegDF
 from handygenome.cnv.baf import BAFRawDataFrame as BAFRawDF
 from handygenome.cnv.baf import BAFSegmentDataFrame as BAFSegDF
 from handygenome.cnv.cnvsegment import CNVSegmentDataFrame as CNVSegDF
 
-import handygenome.cnv.cncall as cncall
+import handygenome.cnv.cnvcall as cnvcall
+from handygenome.cnv.cnvcall import KCError
 import handygenome.cnv.mosdepth as libmosdepth
 import handygenome.cnv.baf as libbaf
 import handygenome.cnv.bafcorrection as bafcorrection
@@ -72,24 +74,48 @@ def deco_nproc(func):
     return wrapper
 
 
+def get_deco_logging(msg):
+    def decorator(func):
+        sig = inspect.signature(func)
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            ba = sig.bind(*args, **kwargs)
+            ba.apply_defaults()
+
+            if hasattr(ba.arguments['self'], 'log'):
+                logfunc = ba.arguments['self'].log
+            else:
+                logfunc = logutils.log
+
+            logfunc('Beginning ' + msg)
+            result = func(*args, **kwargs)
+            logfunc('Finished ' + msg)
+
+            return result
+
+        return wrapper
+
+    return decorator
+
+
+##################
+# common methods #
+##################
+
+def getattr_base(obj, key):
+    if key in obj.simple_attrs.keys():
+        return obj.simple_attrs[key]
+    else:
+        return super(obj.__class__, obj).__getattribute__(key)
+
+
 #############
 # CNVSample #
 #############
 
 class CNVSample:
     default_window = {'panel': 100, 'wgs': 1000}
-#    simple_attr_keys = (
-#        'bam_path',
-#        'vcf_path',
-#        'sampleid',
-#        'refver',
-#        'is_female',
-#        'mode',
-#        'nproc',
-#        'verbose',
-#        'ploidy',
-#        'genomeplotter_kwargs',
-#    )
     save_paths_basenames = {
         'simple_attrs': 'simple_attrs.json',
 
@@ -101,12 +127,16 @@ class CNVSample:
         # raw data
         'depth_rawdata': 'depth_rawdata.tsv.gz',
         'baf_rawdata': 'baf_rawdata.tsv.gz',
+        #'baf_hetalt_rawdata': 'baf_hetalt_rawdata.tsv.gz',
 
         # segment
         'depth_segment': 'depth_segment.tsv.gz',
+
+        'baf_segment': 'baf_segment.tsv.gz',
         'baf_noedit_segment': 'baf_noedit_segment.tsv.gz',
         'baf_edited_segment': 'baf_edited_segment.tsv.gz',
         'baf_rmzero_noedit_segment': 'baf_rmzero_noedit_segment.tsv.gz',
+
         'merged_segment': 'merged_segment.tsv.gz',
     }
     gdf_types = {
@@ -116,22 +146,46 @@ class CNVSample:
 
         'depth_rawdata': DepthRawDF,
         'baf_rawdata': BAFRawDF,
+        'filtered_baf_rawdata': BAFRawDF,
+        #'baf_hetalt_rawdata': BAFRawDF,
 
         'depth_segment': DepthSegDF,
+
+        'baf_segment': BAFSegDF,
         'baf_noedit_segment': BAFSegDF,
         'baf_edited_segment': BAFSegDF,
         'baf_rmzero_noedit_segment': BAFSegDF,
+
         'merged_segment': CNVSegDF,
+    }
+    corrected_gdf_types = {
+        'depth_rawdata': DepthRawDF,
+        'depth_segment': DepthSegDF,
+        'depth_excluded_region': GDF,
+
+        'baf_rawdata': BAFRawDF,
+        'filtered_baf_rawdata': BAFRawDF,
+
+        'merged_segment': CNVSegDF,
+    }
+    corrected_gdf_types_bafidx = {
+        'baf_segment': BAFSegDF,
     }
 
     def __repr__(self):
         return f'{self.__class__.__name__} object (sampleid: {self.simple_attrs["sampleid"]})'
 
     def __getattr__(self, key):
-        if key in self.simple_attrs.keys():
-            return self.simple_attrs[key]
-        else:
-            super().__getattr__(key)
+        return getattr_base(self, key)
+
+#    def __getattr__(self, key):
+#        if key in self.simple_attrs.keys():
+#            return self.simple_attrs[key]
+#        else:
+#            try:
+#                super().__getattr__(key)
+#            except AttributeError:
+#                raise AttributeError(f'{repr(self.__class__)} object has no attribute {repr(key)}')
 
     ##########
     # logger #
@@ -162,27 +216,6 @@ class CNVSample:
             return func(*args, **kwargs)
 
         return wrapper
-
-    @staticmethod
-    def get_deco_logging(msg):
-        def decorator(func):
-            sig = inspect.signature(func)
-
-            @functools.wraps(func)
-            def wrapper(*args, **kwargs):
-                ba = sig.bind(*args, **kwargs)
-                ba.apply_defaults()
-
-                ba.arguments['self'].log('Beginning ' + msg)
-                result = func(*args, **kwargs)
-                ba.arguments['self'].log('Finished ' + msg)
-
-                return result
-
-            return wrapper
-
-        return decorator
-
 
     @staticmethod
     def deco_plotter(func):
@@ -299,11 +332,14 @@ class CNVSample:
         result.set_genomeplotter_kwargs(genomeplotter_kwargs)
         result.init_genomeplotter(**result.simple_attrs['genomeplotter_kwargs'])
 
-
         # raw data
         result.load_depth(bam_path)
         if bafinfo_given:
-            result.load_baf(vcf_path, vcf_sampleid, bafdf)
+            result.load_baf(
+                vcf_path=vcf_path, 
+                vcf_sampleid=vcf_sampleid, 
+                bafdf=bafdf,
+            )
 
         # plotdata
         result.plotdata_cache = dict()
@@ -318,8 +354,10 @@ class CNVSample:
 
             'depth_rawdata': None,
             'baf_rawdata': None,
+            'filtered_baf_rawdata': None,
 
             'depth_segment': None,
+            'baf_segment': {baf_idx: None for baf_idx in self.get_baf_indexes()},
             'baf_noedit_segment': {baf_idx: None for baf_idx in self.get_baf_indexes()},
             'baf_edited_segment': {baf_idx: None for baf_idx in self.get_baf_indexes()},
             'baf_rmzero_noedit_segment': {baf_idx: None for baf_idx in self.get_baf_indexes()},
@@ -421,7 +459,7 @@ class CNVSample:
         self.log(f'Finished making depth rawdata from bam file')
 
     @deco_nproc
-    def load_baf(self, vcf_path, vcf_sampleid, bafdf, nproc=0):
+    def load_baf(self, vcf_path=None, vcf_sampleid=None, bafdf=None, nproc=0):
         if bafdf is None:
             self.log(f'Beginning making BAF rawdata from vcf file')
 
@@ -436,9 +474,10 @@ class CNVSample:
 
             self.log(f'Finished making BAF rawdata from vcf file')
 
-        bafdf = bafdf.remove_overlapping_rows()
+        bafdf.remove_overlapping_rows()
         if self.mode == 'panel':
             bafdf = bafdf.intersect(self.get_raw_target_region())
+            bafdf.sort()
 
         self.gdfs['baf_rawdata'] = bafdf
 
@@ -476,52 +515,48 @@ class CNVSample:
         skip_depth_segment=False,
     ):
         """For germline sample"""
-        #assert self.is_germline
+        assert self.is_germline
+
         if self.check_nobias():
             assert self.check_bafinfo_exists()
 
         # depth
-        if self.is_germline:
-            if self.check_nobias():  # depth segmentation can be done only in this case
-                if not skip_depth_segment:
-                    self.make_depth_segment(nproc=nproc)
-                    self.add_rawdata_to_depth_segment(rawdepth=False, nproc=nproc)
-                self.add_filter_to_depth_segment(
-                    MQ_cutoff=MQ_cutoff_wgs, 
-                    norm_depth_cutoff=norm_depth_cutoff_wgs,
-                )
-            else:
-                self.add_filter_to_depth_rawdata(
-                    MQ_cutoff=MQ_cutoff_panel, 
-                    norm_depth_cutoff=norm_depth_cutoff_panel,
-                    raw_depth_cutoff=raw_depth_cutoff_panel,
-                )
+        if self.check_nobias():  # depth segmentation can be done only in this case
+            if not skip_depth_segment:
+                self.make_depth_segment(nproc=nproc)
+                #self.add_rawdata_to_depth_segment(rawdepth=False, nproc=nproc)
+            self.add_filter_to_depth_segment(
+                MQ_cutoff=MQ_cutoff_wgs, 
+                norm_depth_cutoff=norm_depth_cutoff_wgs,
+            )
         else:
-            pass  # no need to make depth segment or add filter with non-germline sample
+            self.get_depth_rawdata().add_filter(
+                MQ_cutoff=MQ_cutoff_panel, 
+                norm_depth_cutoff=norm_depth_cutoff_panel, 
+                raw_depth_cutoff=raw_depth_cutoff_panel,
+            )
+#                self.add_filter_to_depth_rawdata(
+#                    MQ_cutoff=MQ_cutoff_panel, 
+#                    norm_depth_cutoff=norm_depth_cutoff_panel,
+#                    raw_depth_cutoff=raw_depth_cutoff_panel,
+#                )
 
         # baf
         if self.check_bafinfo_exists():
-            if not skip_baf_noedit_segment:
-                self.make_baf_noedit_segment(nproc=nproc)
-            self.make_baf_edited_segment(
-                nproc=nproc,
-                ndata_cutoff=ndata_cutoff, 
-                merge_low_ndata=None,
-                corrected_baf_cutoff=corrected_baf_cutoff,
-            )
+            self.make_baf_segment(nproc=nproc)
+
+#            if not skip_baf_noedit_segment:
+#                self.make_baf_noedit_segment(nproc=nproc)
+#            self.make_baf_edited_segment(
+#                nproc=nproc,
+#                ndata_cutoff=ndata_cutoff, 
+#                merge_low_ndata=None,
+#                corrected_baf_cutoff=corrected_baf_cutoff,
+#            )
 
         # cnv segment and germline solution
-        if self.is_germline:
-            if self.check_nobias():
-                self.make_merged_segment(nproc=nproc)
-                self.add_clonal_solution_to_germline_sample()
-            else:
-                pass
-        else:
-            pass
-
-        if self.is_germline:
-            self.set_target_region()
+        if self.check_nobias():
+            self.make_merged_segment(nproc=nproc)
 
     #################
     # genomeplotter #
@@ -543,76 +578,65 @@ class CNVSample:
     # CN calling (solution) #
     #########################
 
-    def add_clonal_solution_to_germline_sample(self):
-        """Only for non-biased germline sample"""
-        assert self.is_germline
-        assert self.check_nobias()
+    #def add_clonal_solution_to_germline_sample(self):
+    #    """Only for non-biased germline sample"""
+    #    assert self.is_germline
+    #    assert self.check_nobias()
+#
+#        cnv_seg_gdf = self.get_merged_segment()
+#        cnv_seg_gdf.add_clonal_solution_germline(self.is_female, self.ploidy)
 
-        cnv_seg_gdf = self.get_merged_segment()
-        clonal_CNt, clonal_Bt = cncall.clonal_solution_from_germline(
-            cnv_seg_gdf, self.is_female, self.ploidy,
-        )
-        cnv_seg_gdf.assign_clonal_CN(clonal_CNt)
-        for idx, baf_index in enumerate(self.get_baf_indexes()):
-            cnv_seg_gdf.assign_clonal_B(clonal_Bt[:, idx], baf_index)
-
-    def add_clonal_solution_to_corrected_depth_segment(self, *, corrector_id, cellularity, K):
+    def add_clonal_solution_to_corrected_sample(self, *, corrector_id, cellularity, K):
         """merged segment for the corrector id must be annotated with germline CN
         with 'add_gCN_to_corrected_merged_segment' method of CNVManager object
         """
         merged_segment = self.get_merged_segment(corrector_id=corrector_id)
-
-        # CNt
-        CNt = cncall.find_clonal_CNt(
-            corrected_depth=merged_segment.corrected_depth_mean,
-            cellularity=cellularity,
-            K=K,
-            CNg=merged_segment.get_clonal_CN(germline=True),
-        )
-        merged_segment.assign_clonal_CN(data=CNt, germline=False)
-
-        # Bt
-        for baf_index in self.get_baf_indexes():
-            Bt = cncall.find_clonal_Bt(
-                baf=merged_segment.get_corrected_baf(baf_index),
-                CNt=merged_segment.get_clonal_CN(germline=False),
-                cellularity=cellularity,
-                CNg=merged_segment.get_clonal_CN(germline=True),
-                Bg=merged_segment.get_clonal_B(baf_index, germline=True),
-            )
-            merged_segment.assign_clonal_B(data=Bt, baf_index=baf_index, germline=False)
-
-        # predicted depth and baf
-        predicted_depth = cncall.get_predicted_depth(
-            CNt=merged_segment.get_clonal_CN(germline=False),
-            CNg=merged_segment.get_clonal_CN(germline=True),
-            cellularity=cellularity,
-            K=K,
-        )
-        merged_segment.assign_predicted_depth(predicted_depth)
-
-        for baf_index in self.get_baf_indexes():
-            predicted_baf = cncall.get_predicted_baf(
-                CNt=merged_segment.get_clonal_CN(germline=False),
-                Bt=merged_segment.get_clonal_B(baf_index=baf_index, germline=False),
-                CNg=merged_segment.get_clonal_CN(germline=True),
-                Bg=merged_segment.get_clonal_B(baf_index=baf_index, germline=True),
-                cellularity=cellularity,
-            )
-            merged_segment.assign_predicted_baf(predicted_baf, baf_index=baf_index)
+        merged_segment.add_clonal_solution_corrected_depth(cellularity=cellularity, K=K)
 
         # save cellularity, K, mean ploidy
         corrected_gdfs = self.corrected_gdfs[corrector_id]
         corrected_gdfs['cellularity'] = cellularity
         corrected_gdfs['K'] = K
-        corrected_gdfs['ploidy'] = self.find_average_ploidy(corrector_id)
+        corrected_gdfs['ploidy'] = merged_segment.get_average_ploidy()
 
-    def find_average_ploidy(self, corrector_id):
+    def test_solution_fitnesses(self, corrector_id, *, lowest_depth, delta_depth, CNg, ncand=10):
+        """Arguments:
+            lowest_depth: Must be the depth value of the lowest depth cluster
+            ncand: The number of candidate CNt at the level corresponding to 'lowest_depth' value (CNt candidates become 0, 1, 2, ..., ncand)
+        """
+        all_data = list()
+
+        # calculate fitness for each CNt candidate
         merged_segment = self.get_merged_segment(corrector_id=corrector_id)
-        excluded_region = self.get_corrected_depth_excluded_region(corrector_id=corrector_id)
-        valid_merged_segment = merged_segment.subtract(excluded_region)
-        result = np.average(valid_merged_segment.get_clonal_CN(), weights=valid_merged_segment.lengths)
-        return result
+        for CNt in range(ncand):
+            try:
+                K, cellularity = cnvcall.find_Kc_withdelta(
+                    depth=lowest_depth, 
+                    CNt=CNt, 
+                    CNg=CNg, 
+                    delta_depth=delta_depth,
+                )
+            except KCError:
+                continue
+            else:
+                merged_segment.add_clonal_solution_corrected_depth(cellularity=cellularity, K=K)
+                fitness = merged_segment.get_Bt_fitness()
+                all_data.append({'CNt': CNt, 'K': K, 'cellularity': cellularity, 'fitness': fitness})
+
+        merged_segment.drop_solution_columns()
+
+        # find best solution
+        best_dict = min(all_data, key=(lambda x: x['fitness']))
+
+        return best_dict, all_data
+            
+    def drop_solution(self, corrector_id):
+        self.get_merged_segment(corrector_id=corrector_id).drop_solution_columns()
+
+        corrected_gdfs = self.corrected_gdfs[corrector_id]
+        corrected_gdfs['cellularity'] = None
+        corrected_gdfs['K'] = None
+        corrected_gdfs['ploidy'] = None
 
     #########################
     # target region setting #
@@ -656,7 +680,7 @@ class CNVSample:
         else:
             self.add_default_CNg_Bg_to_depth_rawdata()
             depth_rawdata = self.get_depth_rawdata()
-            selector = depth_rawdata[cncall.DEFAULT_CNG_COLNAME] == 0
+            selector = depth_rawdata[cnvcall.DEFAULT_CNG_COLNAME] == 0
             CN0_region_gdf = depth_rawdata.loc[selector, :].drop_annots()
         excluded_region_list.append(CN0_region_gdf)
 
@@ -713,25 +737,24 @@ class CNVSample:
             self.is_female, self.ploidy,
         )
 
-    def find_germline_intcopy_validbaf_region(self, factors=(0.3, 2)):
-        assert self.simple_attrs["mode"] == 'wgs'
-        assert self.get_depth_segment('normal') is not None
-        assert all(
-            (self.get_baf_segment('normal', baf_idx) is not None)
-            for baf_idx in self.get_baf_indexes()
-        )
-
-        depth_seg_gdf = self.get_depth_segment('normal').copy()
-        baf_seg_gdfs = self.get_baf_segment_dict('normal')
-
-        # onecopy depth
-        onecopy_depth = self.get_onecopy_depth(depth_seg_gdf)
-        depth_seg_gdf['onecopy_depth_ratio'] = (
-            depth_seg_gdf[DepthRawDF.norm_depth_colname]
-            / onecopy_depth
-        )
-
-        print(depth_seg_gdf)
+#    def find_germline_intcopy_validbaf_region(self, factors=(0.3, 2)):
+#        assert self.simple_attrs["mode"] == 'wgs'
+#        assert self.get_depth_segment('normal') is not None
+#        assert all(
+#            (self.get_baf_segment('normal', baf_idx) is not None)
+#            for baf_idx in self.get_baf_indexes()
+#        )
+#
+#        depth_seg_gdf = self.get_depth_segment('normal').copy()
+#        baf_seg_gdfs = self.get_baf_segment_dict('normal')
+#
+#        # onecopy depth
+#        onecopy_depth = self.get_onecopy_depth(depth_seg_gdf)
+#        depth_seg_gdf['onecopy_depth_ratio'] = (
+#            depth_seg_gdf[DepthRawDF.norm_depth_colname]
+#            / onecopy_depth
+#        )
+#
 
 
 #        global_mean = np.average(
@@ -790,22 +813,23 @@ class CNVSample:
                 pickle.dump(gdf.df, outfile)
 
     def save_bafidx_gdf_aspickle(self, gdf_key, topdir):
-        for baf_idx in self.get_baf_indexes():
-            gdf = self.gdfs[gdf_key][baf_idx]
-            if gdf is not None:
-                basename = re.sub(
-                    '\.tsv\.gz$', 
-                    f'_{baf_idx}.tsv.gz', 
-                    self.__class__.save_paths_basenames[gdf_key],
-                )
-                assert basename.endswith('.tsv.gz')
-                pkl_basename = re.sub(r'\.tsv\.gz$', '.pickle', basename)
+        if gdf_key in self.gdfs:
+            for baf_idx in self.get_baf_indexes():
+                gdf = self.gdfs[gdf_key][baf_idx]
+                if gdf is not None:
+                    basename = re.sub(
+                        r'\.tsv\.gz$', 
+                        f'_{baf_idx}.tsv.gz', 
+                        self.__class__.save_paths_basenames[gdf_key],
+                    )
+                    assert basename.endswith('.tsv.gz')
+                    pkl_basename = re.sub(r'\.tsv\.gz$', '.pickle', basename)
 
-                savepath = os.path.join(topdir, pkl_basename)
-                with open(savepath, 'wb') as outfile:
-                    pickle.dump(gdf.df, outfile)
+                    savepath = os.path.join(topdir, pkl_basename)
+                    with open(savepath, 'wb') as outfile:
+                        pickle.dump(gdf.df, outfile)
 
-    def load_nonbafidx_gdf_aspickle(self, gdf_key, topdir, GDF_class):
+    def load_nonbafidx_gdf_aspickle(self, gdf_key, topdir):
         basename = self.__class__.save_paths_basenames[gdf_key]
         assert basename.endswith('.tsv.gz')
         pkl_basename = re.sub(r'\.tsv\.gz$', '.pickle', basename)
@@ -814,12 +838,13 @@ class CNVSample:
         if os.path.exists(savepath):
             with open(savepath, 'rb') as infile:
                 df = pickle.load(infile)
-            self.gdfs[gdf_key] = GDF_class.from_frame(df, refver=self.refver)
+            gdf_type = self.__class__.gdf_types[gdf_key]
+            self.gdfs[gdf_key] = gdf_type.from_frame(df, refver=self.refver)
 
-    def load_bafidx_gdf_aspickle(self, gdf_key, topdir, GDF_class):
+    def load_bafidx_gdf_aspickle(self, gdf_key, topdir):
         for baf_idx in self.get_baf_indexes():
             basename = re.sub(
-                '\.tsv\.gz$', 
+                r'\.tsv\.gz$', 
                 f'_{baf_idx}.tsv.gz', 
                 self.__class__.save_paths_basenames[gdf_key],
             )
@@ -830,15 +855,26 @@ class CNVSample:
             if os.path.exists(savepath):
                 with open(savepath, 'rb') as infile:
                     df = pickle.load(infile)
-                self.gdfs[gdf_key][baf_idx] = GDF_class.from_frame(df, refver=self.refver)
+                gdf_type = self.__class__.gdf_types[gdf_key]
+                self.gdfs[gdf_key][baf_idx] = gdf_type.from_frame(df, refver=self.refver)
 
     def save_corrected_gdfs(self, corrector_id, savepath):
         saved_dict = self.corrected_gdfs[corrector_id].copy()
 
-        saved_dict['depth_rawdata'] = saved_dict['depth_rawdata'].df
-        saved_dict['depth_segment'] = saved_dict['depth_segment'].df
-        saved_dict['depth_excluded_region'] = saved_dict['depth_excluded_region'].df
-        saved_dict['merged_segment'] = saved_dict['merged_segment'].df
+        for key in self.__class__.corrected_gdf_types.keys():
+            if key not in saved_dict:
+                continue
+            if saved_dict[key] is None:
+                continue
+
+            saved_dict[key] = saved_dict[key].df
+
+        for key in self.__class__.corrected_gdf_types_bafidx.keys():
+            if key not in saved_dict:
+                continue
+            subdic = saved_dict[key]
+            for subkey in tuple(subdic.keys()):
+                subdic[subkey] = subdic[subkey].df
 
         with open(savepath, 'wb') as outfile:
             pickle.dump(saved_dict, outfile)
@@ -847,10 +883,20 @@ class CNVSample:
         with open(savepath, 'rb') as infile:
             corrected_gdfs = pickle.load(infile)
 
-        corrected_gdfs['depth_rawdata'] = DepthRawDF.from_frame(corrected_gdfs['depth_rawdata'], refver=self.refver)
-        corrected_gdfs['depth_segment'] = DepthSegDF.from_frame(corrected_gdfs['depth_segment'], refver=self.refver)
-        corrected_gdfs['depth_excluded_region'] = GDF.from_frame(corrected_gdfs['depth_excluded_region'], refver=self.refver)
-        corrected_gdfs['merged_segment'] = CNVSegDF.from_frame(corrected_gdfs['merged_segment'], refver=self.refver)
+        for key, gdf_type in self.__class__.corrected_gdf_types.items():
+            if key not in corrected_gdfs:
+                continue
+            if corrected_gdfs[key] is None:
+                continue
+            if not isinstance(corrected_gdfs[key], GDF):
+                corrected_gdfs[key] = gdf_type.from_frame(corrected_gdfs[key], refver=self.refver)
+
+        for key, gdf_type in self.__class__.corrected_gdf_types_bafidx.items():
+            if key not in corrected_gdfs:
+                continue
+            subdic = corrected_gdfs[key]
+            for subkey in tuple(subdic.keys()):
+                subdic[subkey] = gdf_type.from_frame(subdic[subkey], refver=self.refver)
 
         self.corrected_gdfs[corrected_gdfs['id']] = corrected_gdfs
 
@@ -875,9 +921,11 @@ class CNVSample:
         # raw data
         self.save_nonbafidx_gdf_aspickle('depth_rawdata', topdir)
         self.save_nonbafidx_gdf_aspickle('baf_rawdata', topdir)
+        #self.save_nonbafidx_gdf_aspickle('baf_hetalt_rawdata', topdir)
 
         # segment
         self.save_nonbafidx_gdf_aspickle('depth_segment', topdir)
+        self.save_bafidx_gdf_aspickle('baf_segment', topdir)
         self.save_bafidx_gdf_aspickle('baf_noedit_segment', topdir)
         self.save_bafidx_gdf_aspickle('baf_edited_segment', topdir)
         self.save_bafidx_gdf_aspickle('baf_rmzero_noedit_segment', topdir)
@@ -906,20 +954,22 @@ class CNVSample:
         result.init_gdfs()
 
         # target region
-        result.load_nonbafidx_gdf_aspickle('raw_target_region', topdir, GDF)
-        result.load_nonbafidx_gdf_aspickle('target_region', topdir, GDF)
-        result.load_nonbafidx_gdf_aspickle('excluded_region', topdir, GDF)
+        result.load_nonbafidx_gdf_aspickle('raw_target_region', topdir)
+        result.load_nonbafidx_gdf_aspickle('target_region', topdir)
+        result.load_nonbafidx_gdf_aspickle('excluded_region', topdir)
 
         # raw data
-        result.load_nonbafidx_gdf_aspickle('depth_rawdata', topdir, DepthRawDF)
-        result.load_nonbafidx_gdf_aspickle('baf_rawdata', topdir, BAFRawDF)
+        result.load_nonbafidx_gdf_aspickle('depth_rawdata', topdir)
+        result.load_nonbafidx_gdf_aspickle('baf_rawdata', topdir)
+        #result.load_nonbafidx_gdf_aspickle('baf_hetalt_rawdata', topdir)
 
         # segment
-        result.load_nonbafidx_gdf_aspickle('depth_segment', topdir, DepthSegDF)
-        result.load_bafidx_gdf_aspickle('baf_noedit_segment', topdir, BAFSegDF)
-        result.load_bafidx_gdf_aspickle('baf_edited_segment', topdir, BAFSegDF)
-        result.load_bafidx_gdf_aspickle('baf_rmzero_noedit_segment', topdir, BAFSegDF)
-        result.load_nonbafidx_gdf_aspickle('merged_segment', topdir, CNVSegDF)
+        result.load_nonbafidx_gdf_aspickle('depth_segment', topdir)
+        result.load_bafidx_gdf_aspickle('baf_segment', topdir)
+        result.load_bafidx_gdf_aspickle('baf_noedit_segment', topdir)
+        result.load_bafidx_gdf_aspickle('baf_edited_segment', topdir)
+        result.load_bafidx_gdf_aspickle('baf_rmzero_noedit_segment', topdir)
+        result.load_nonbafidx_gdf_aspickle('merged_segment', topdir)
 
         # corrected_gdfs
         cgdfs_dir = os.path.join(topdir, 'corrected_gdfs')
@@ -1022,7 +1072,7 @@ class CNVSample:
             gdf = self.gdfs[gdf_key][baf_idx]
             if gdf is not None:
                 basename = re.sub(
-                    '\.tsv\.gz$', 
+                    r'\.tsv\.gz$', 
                     f'_{baf_idx}.tsv.gz', 
                     self.__class__.save_paths_basenames[gdf_key],
                 )
@@ -1032,7 +1082,7 @@ class CNVSample:
     def load_bafidx_gdf(self, gdf_key, topdir, GDF_class):
         for baf_idx in self.get_baf_indexes():
             basename = re.sub(
-                '\.tsv\.gz$', 
+                r'\.tsv\.gz$', 
                 f'_{baf_idx}.tsv.gz', 
                 self.__class__.save_paths_basenames[gdf_key],
             )
@@ -1126,8 +1176,8 @@ class CNVSample:
     def get_target_region(self):
         return self.gdfs['target_region']
 
-    def get_excluded_region(self):
-        return self.gdfs['excluded_region']
+    #def get_excluded_region(self):
+    #    return self.gdfs['excluded_region']
 
     def get_depth_rawdata(self, corrector_id=None):
         if corrector_id is not None:
@@ -1135,23 +1185,45 @@ class CNVSample:
         else:
             return self.gdfs['depth_rawdata']
 
-    def get_baf_rawdata(self, baf_idx, rmzero=False):
-        baf_raw_gdf = self.gdfs['baf_rawdata']
+    def get_baf_rawdata(self, corrector_id=None, baf_idx=None, rmzero=False):
+        if corrector_id is None:
+            baf_raw_gdf = self.gdfs['baf_rawdata']
+        else:
+            baf_raw_gdf = self.corrected_gdfs[corrector_id]['baf_rawdata']
+
         if baf_raw_gdf is None:
             return None
         else:
-            baf_raw_gdf = baf_raw_gdf.choose_annots(baf_idx)
-            if rmzero:
-                selector = baf_raw_gdf[baf_idx] > 0
-                baf_raw_gdf = baf_raw_gdf.loc[selector, :]
+            if baf_idx is None:
+                return baf_raw_gdf
+            else:
+                baf_raw_gdf = baf_raw_gdf.choose_annots(baf_idx)
+                if rmzero:
+                    selector = baf_raw_gdf[baf_idx] > 0
+                    baf_raw_gdf = baf_raw_gdf.loc[selector, :]
 
-            return baf_raw_gdf
+                return baf_raw_gdf
+
+    def get_filtered_baf_rawdata(self, corrector_id=None):
+        if corrector_id is None:
+            return self.gdfs['filtered_baf_rawdata']
+        else:
+            return self.corrected_gdfs[corrector_id]['filtered_baf_rawdata']
 
     def get_depth_segment(self, corrector_id=None):
         if corrector_id is not None:
             return self.corrected_gdfs[corrector_id]['depth_segment']
         else:
             return self.gdfs['depth_segment']
+
+    def get_baf_segment_dict(self, corrector_id=None):
+        if corrector_id is None:
+            return self.gdfs['baf_segment']
+        else:
+            return self.corrected_gdfs[corrector_id]['baf_segment']
+
+    def get_baf_segment(self, baf_idx, corrector_id=None):
+        return self.get_baf_segment_dict(corrector_id)[baf_idx]
 
     def get_baf_noedit_segment(self, baf_idx, rmzero=False):
         segment_dict_key = ('baf_rmzero_noedit_segment' if rmzero else 'baf_noedit_segment')
@@ -1181,6 +1253,21 @@ class CNVSample:
         else:
             return self.corrected_gdfs[corrector_id]['merged_segment']
 
+    def get_K(self, corrector_id):
+        return self.corrected_gdfs[corrector_id]['K']
+
+    def get_cellularity(self, corrector_id):
+        return self.corrected_gdfs[corrector_id]['cellularity']
+
+    def get_ploidy(self, corrector_id):
+        return self.corrected_gdfs[corrector_id]['ploidy']
+
+    def get_solution_params(self, corrector_id):
+        return {
+            key: self.corrected_gdfs[corrector_id][key]
+            for key in ['K', 'cellularity', 'ploidy']
+        }
+
     ###########################
     # depth data modification #
     ###########################
@@ -1200,47 +1287,61 @@ class CNVSample:
     @get_deco_logging(f'default germline CN/B annotation to depth rawdata')
     @deco_nproc
     def add_default_CNg_Bg_to_depth_rawdata(self, nproc=0):
-        cncall.add_default_CNg_Bg(
+        cnvcall.add_default_CNg_Bg(
             gdf=self.get_depth_rawdata(),
             is_female=self.is_female,
             inplace=True,
             nproc=nproc,
         )
 
-    def make_depth_segment_base(self, depth_rawdata, annot_colname, nproc, **kwargs):
-        depth_segment = depth_rawdata.get_segment(
-            annot_colname=annot_colname,
-            drop_annots=True,
-            nproc=nproc,
-            **kwargs,
-        )
-      
-        # fill gaps (when annotation values contain nan, segments may be gapped)
-        depth_segment = depth_segment.fill_gaps(edit_first_last=True)
-
-        # trim into target region
-        raw_target_region = self.get_raw_target_region()
-        if raw_target_region is not None:
-            depth_segment = depth_segment.intersect(raw_target_region, nproc=nproc)
-
-        return depth_segment
+#    def make_depth_segment_base(self, depth_rawdata, annot_colname, nproc, **kwargs):
+#        depth_segment = depth_rawdata.get_segment(
+#            annot_colname=annot_colname,
+#            drop_annots=True,
+#            nproc=nproc,
+#            **kwargs,
+#        )
+#      
+#        # fill gaps (when annotation values contain nan, segments may be gapped)
+#        depth_segment = depth_segment.fill_gaps(edit_first_last=True)
+#
+#        # trim into target region
+#        raw_target_region = self.get_raw_target_region()
+#        if raw_target_region is not None:
+#            depth_segment = depth_segment.intersect(raw_target_region, nproc=nproc)
+#
+#        return depth_segment
 
     @get_deco_logging(f'depth segmentation')
     @deco_nproc
-    def make_depth_segment(self, rawdepth=False, nproc=0, **kwargs):
+    def make_depth_segment(self, nproc=0, **kwargs):
         depth_rawdata = self.get_depth_rawdata()
-        annot_colname = (
-            DepthRawDF.depth_colname
-            if rawdepth else
-            DepthRawDF.norm_depth_colname
+        depth_segment = depth_rawdata.get_segment(
+            target_region=self.get_raw_target_region(),
+            rawdepth=False,
+            nproc=nproc,
         )
-        depth_segment = self.make_depth_segment_base(
-            depth_rawdata=depth_rawdata, 
-            annot_colname=annot_colname, 
-            nproc=nproc, 
-            **kwargs,
+        depth_segment.add_rawdata_info(
+            depth_rawdata, 
+            merge_methods=['mean', 'std'],
+            rawdepth=False,
+            nproc=nproc,
         )
         self.gdfs['depth_segment'] = depth_segment
+
+#        depth_rawdata = self.get_depth_rawdata()
+#        annot_colname = (
+#            DepthRawDF.depth_colname
+#            if rawdepth else
+#            DepthRawDF.norm_depth_colname
+#        )
+#        depth_segment = self.make_depth_segment_base(
+#            depth_rawdata=depth_rawdata, 
+#            annot_colname=annot_colname, 
+#            nproc=nproc, 
+#            **kwargs,
+#        )
+#        self.gdfs['depth_segment'] = depth_segment
 
 #    @get_deco_logging(f'depth segment modification')
 #    @deco_nproc
@@ -1255,43 +1356,61 @@ class CNVSample:
     #def make_normalized_depth(self):
     #    self.get_depth_rawdata().set_normalized_depth()
 
-    @get_deco_logging(f'rawdata annotation to depth segment')
-    @deco_nproc
-    def add_rawdata_to_depth_segment(
-        self, rawdepth=False, nproc=0,
-    ):
-        depth_seg_gdf = self.get_depth_segment()
-        depth_raw_gdf = self.get_depth_rawdata()
-        depth_seg_gdf.add_rawdata_info(
-            depth_raw_gdf, 
-            merge_methods=['mean', 'std'],
-            rawdepth=rawdepth,
-            nproc=nproc,
-        )
+#    @get_deco_logging(f'rawdata annotation to depth segment')
+#    @deco_nproc
+#    def add_rawdata_to_depth_segment(
+#        self, rawdepth=False, nproc=0,
+#    ):
+#        depth_seg_gdf = self.get_depth_segment()
+#        depth_raw_gdf = self.get_depth_rawdata()
+#        depth_seg_gdf.add_rawdata_info(
+#            depth_raw_gdf, 
+#            merge_methods=['mean', 'std'],
+#            rawdepth=rawdepth,
+#            nproc=nproc,
+#        )
 
-    def add_filter_to_depth_rawdata_base(self, depth_rawdata, MQ_cutoff, norm_depth_cutoff, raw_depth_cutoff):
-        depth_rawdata.add_filter(
-            MQ_cutoff=MQ_cutoff, 
-            norm_depth_cutoff=norm_depth_cutoff, 
-            raw_depth_cutoff=raw_depth_cutoff,
-        )
+#    def add_filter_to_depth_rawdata_base(self, depth_rawdata, MQ_cutoff, norm_depth_cutoff, raw_depth_cutoff):
+#        depth_rawdata.add_filter(
+#            MQ_cutoff=MQ_cutoff, 
+#            norm_depth_cutoff=norm_depth_cutoff, 
+#            raw_depth_cutoff=raw_depth_cutoff,
+#        )
 
-    @get_deco_logging(f'filter addition to depth rawdata')
-    def add_filter_to_depth_rawdata(self, MQ_cutoff=(40, None), norm_depth_cutoff=(0, None), raw_depth_cutoff=(0, None)):
-        self.add_filter_to_depth_rawdata_base(
-            depth_rawdata=self.get_depth_rawdata(), 
-            MQ_cutoff=MQ_cutoff, 
-            norm_depth_cutoff=norm_depth_cutoff, 
-            raw_depth_cutoff=raw_depth_cutoff,
-        )
+#    @get_deco_logging(f'filter addition to depth rawdata')
+#    def add_filter_to_depth_rawdata(self, MQ_cutoff=(40, None), norm_depth_cutoff=(0, None), raw_depth_cutoff=(0, None)):
+#        self.add_filter_to_depth_rawdata_base(
+#            depth_rawdata=self.get_depth_rawdata(), 
+#            MQ_cutoff=MQ_cutoff, 
+#            norm_depth_cutoff=norm_depth_cutoff, 
+#            raw_depth_cutoff=raw_depth_cutoff,
+#        )
 
     @get_deco_logging(f'filter addition to depth segment')
     def add_filter_to_depth_segment(self, MQ_cutoff=(40, None), norm_depth_cutoff=(0, None)):
         self.get_depth_segment().add_filter(MQ_cutoff=MQ_cutoff, norm_depth_cutoff=norm_depth_cutoff)
 
+    def make_upscaled_depth(self, binsize):
+        pass
+
     #########################
     # baf data modification #
     #########################
+
+    @get_deco_logging(f'BAF segmentation')
+    @deco_nproc
+    def make_baf_segment(self, nproc=0):
+        assert self.is_germline
+        self.gdfs['baf_segment'] = self.get_baf_rawdata().get_segment_dict(
+            target_region=self.get_raw_target_region(), 
+
+            germline_baf_rawdata=None,
+
+            germline_CN_gdf=None, 
+            is_female=None,
+
+            nproc=nproc,
+        )
 
     @get_deco_logging(f'BAF segmentation')
     @deco_nproc
@@ -1300,7 +1419,7 @@ class CNVSample:
             self.log(f'Beginning {baf_idx}, rmzero={rmzero}')
 
             # 1. make segment
-            baf_raw_gdf = self.get_baf_rawdata(baf_idx, rmzero=rmzero)
+            baf_raw_gdf = self.get_baf_rawdata(baf_idx=baf_idx, rmzero=rmzero)
             baf_seg_gdf = baf_raw_gdf.get_segment(baf_idx, drop_annots=True, nproc=nproc)
 
             # 2. add rawdata
@@ -1382,7 +1501,7 @@ class CNVSample:
         for baf_idx in self.get_baf_indexes():
             logutils.log(f'Beginning job for baf index {baf_idx}')
 
-            baf_raw_gdf = self.get_baf_rawdata(baf_idx, rmzero=rmzero)
+            baf_raw_gdf = self.get_baf_rawdata(baf_idx=baf_idx, rmzero=rmzero)
 
             # 2. fill gap
             baf_edited_seg_gdf = self.get_baf_noedit_segment(baf_idx, rmzero=rmzero).copy()  # this is annotated with rawdata
@@ -1436,7 +1555,7 @@ class CNVSample:
                 logutils.log(f'Finished handling of low ndata segments')
 
             # 4. add corrected baf column
-            baf_edited_seg_gdf.add_corrected_baf(cutoff=corrected_baf_cutoff)
+            baf_edited_seg_gdf.add_corrected_baf_simple(cutoff=corrected_baf_cutoff)
 
             # 5. add filter column
             baf_edited_seg_gdf.add_filter(width_cutoff=width_cutoff, center_cutoff=center_cutoff)
@@ -1451,13 +1570,16 @@ class CNVSample:
     @deco_nproc
     @get_deco_logging(f'merging depth and baf segments')
     def make_merged_segment(self, nproc=0):
+        assert self.is_germline
+        
         if not self.check_bafinfo_exists():
             logutils.log(f'Making merged segment without BAF information', level='warning')
 
         depth_segdf = self.get_depth_segment()
         if self.check_bafinfo_exists():
-            baf_edited_segdf_dict = self.get_baf_edited_segment_dict()
-            sub_seg_gdfs = [depth_segdf] + list(baf_edited_segdf_dict.values())
+            #baf_edited_segdf_dict = self.get_baf_edited_segment_dict()
+            #sub_seg_gdfs = [depth_segdf] + list(baf_edited_segdf_dict.values())
+            sub_seg_gdfs = [depth_segdf] + list(self.get_baf_segment_dict().values())
         else:
             sub_seg_gdfs = [depth_segdf]
 
@@ -1466,7 +1588,8 @@ class CNVSample:
         if self.check_bafinfo_exists():
             cols_to_drop = (
                 [DepthSegDF.filter_colname]
-                + [x.get_filter_colname() for x in baf_edited_segdf_dict.values()]
+                #+ [x.get_filter_colname() for x in baf_edited_segdf_dict.values()]
+                + [x.get_filter_colname() for x in self.get_baf_segment_dict().values()]
             )
         else:
             cols_to_drop = [DepthSegDF.filter_colname]
@@ -1477,12 +1600,16 @@ class CNVSample:
         if raw_target_region is not None:
             merged_seg_gdf = merged_seg_gdf.intersect(raw_target_region, nproc=nproc)
 
+        # add germline solution
+        merged_seg_gdf.add_clonal_solution_germline(self.is_female, self.ploidy)
+        #self.add_clonal_solution_to_germline_sample()
+
         self.gdfs['merged_segment'] = merged_seg_gdf
 
     #@get_deco_logging(f'default germline CN/B annotation to merged segment')
     #@deco_nproc
     #def add_default_CNg_Bg_to_merged_segment(self, nproc=0):
-    #    cncall.add_default_CNg_Bg(
+    #    cnvcall.add_default_CNg_Bg(
     #        gdf=self.get_merged_segment(),
     #        is_female=self.is_female,
     #        inplace=True,
@@ -1499,6 +1626,14 @@ class CNVSample:
             'cellularity': None,
             'K': None,
             'ploidy': None,
+
+            'depth_rawdata': None,
+            'depth_segment': None,
+            'depth_excluded_region': None,
+
+            'baf_rawdata': None,
+            'filtered_baf_rawdata': None,
+            'baf_segment': None,
         }
 
     @deco_nproc
@@ -1523,14 +1658,15 @@ class CNVSample:
         corrector_depth = corrector_gdf.norm_depth
         corrector_depth[corrector_depth == 0] = np.nan  # corrector depth may contain zeros (e.g. leading N region where CN call is not 0)
         corrected_norm_depth = corrected_depth_rawdata.norm_depth / corrector_depth
-        corrected_depth_rawdata[DepthRawDF.corrected_norm_depth_colname] = corrected_norm_depth
+        #corrected_depth_rawdata[DepthRawDF.corrected_norm_depth_colname] = corrected_norm_depth
+        corrected_depth_rawdata[DepthRawDF.norm_depth_colname] = corrected_norm_depth
 
         # 3. make segment from corrected norm depth
         self.log(f'Corrected data "{corrector_id}" - Making depth segment')
-        corrected_depth_segment = self.make_depth_segment_base(
-            depth_rawdata=corrected_depth_rawdata, 
-            annot_colname=DepthRawDF.corrected_norm_depth_colname, 
-            nproc=nproc, 
+        corrected_depth_segment = corrected_depth_rawdata.get_segment(
+            target_region=self.get_raw_target_region(),
+            rawdepth=False,
+            nproc=nproc,
         )
 
         # 4. add rawdata information to segment
@@ -1543,75 +1679,156 @@ class CNVSample:
 
         # 5. extract excluded region
         self.log(f'Corrected data "{corrector_id}" - Creating excluded region from depth rawdata')
-        self.add_filter_to_depth_rawdata_base(
-            depth_rawdata=corrected_depth_rawdata, 
+        corrected_depth_rawdata.add_filter(
             MQ_cutoff=MQ_cutoff, 
             norm_depth_cutoff=norm_depth_cutoff, 
             raw_depth_cutoff=raw_depth_cutoff,
         )
+
+        #self.add_filter_to_depth_rawdata_base(
+        #    depth_rawdata=corrected_depth_rawdata, 
+        #    MQ_cutoff=MQ_cutoff, 
+        #    norm_depth_cutoff=norm_depth_cutoff, 
+        #    raw_depth_cutoff=raw_depth_cutoff,
+        #)
+
         excl_selector = np.logical_not(corrected_depth_rawdata.get_filter())
         excluded_region = corrected_depth_rawdata.drop_annots().loc[excl_selector, :]
         excluded_region = excluded_region.merge()
 
         # 6. assign
-        corrected_gdfs = self.corrected_gdfs[corrector_id]
-        corrected_gdfs['depth_rawdata'] = corrected_depth_rawdata
-        corrected_gdfs['depth_segment'] = corrected_depth_segment
-        corrected_gdfs['depth_excluded_region'] = excluded_region
+        self.corrected_gdfs.setdefault(corrector_id, dict())
+        self.corrected_gdfs[corrector_id]['depth_rawdata'] = corrected_depth_rawdata
+        self.corrected_gdfs[corrector_id]['depth_segment'] = corrected_depth_segment
+        self.corrected_gdfs[corrector_id]['depth_excluded_region'] = excluded_region
 
-#    @deco_nproc
-#    def make_corrected_gdfs_depth_old(
-#        self, 
-#        corrector_id, 
-#        corrector_gdf, 
-#        corrector_excluded_region,
-#        nproc=0,
-#    ):
-#        depth_rawdata = self.get_depth_rawdata()
-#        # 1. subtract excluded region
-#        corrected_depth_rawdata = depth_rawdata.subtract(corrector_excluded_region)
-#
-#        # sanitycheck
-#        assert corrected_depth_rawdata.drop_annots() == corrector_gdf.drop_annots()
-#        assert not (corrector_gdf.norm_depth == 0).any()
-#
-#        # 2. add corrected norm depth
-#        corrected_norm_depth = corrected_depth_rawdata.norm_depth / corrector_gdf.norm_depth
-#        corrected_depth_rawdata[DepthRawDF.corrected_norm_depth_colname] = corrected_norm_depth
-#
-#        # 3. assign
-#        corrected_gdfs = self.corrected_gdfs[corrector_id]
-#        corrected_gdfs['depth_rawdata'] = corrected_depth_rawdata
-#
-#        # 4. make segment from corrected norm depth
-#        corrected_depth_segment = corrected_gdfs['depth_rawdata'].get_segment(
-#            annot_colname=DepthRawDF.corrected_norm_depth_colname,
-#            drop_annots=True,
-#            nproc=nproc,
-#        )
-#        raw_target_region = self.get_raw_target_region()
-#        if raw_target_region is not None:
-#            corrected_depth_segment = corrected_depth_segment.intersect(raw_target_region)
-#
-#        # 5. add rawdata information to segment
-#        corrected_depth_segment.add_rawdata_info(
-#            corrected_gdfs['depth_rawdata'], 
-#            merge_methods=['mean', 'std'],
-#            nproc=nproc,
-#        )
-#
-#        # 6. assign
-#        corrected_gdfs['depth_segment'] = corrected_depth_segment
-
-    def make_corrected_gdfs_baf_segment(
+    @deco_nproc
+    def make_corrected_gdfs_baf(
         self, 
         corrector_id, 
-        corrector_excluded_region,
+        corrector_gdf, 
+        germline_CN_gdf=None,
+        germline_baf_rawdata=None,
+        nproc=0,
+        #make_segment=False,
     ):
-        corrected_gdfs = self.corrected_gdfs[corrector_id]
-        corrected_gdfs['baf_edited_segment'] = dict()
-        for baf_idx, seg_gdf in self.get_baf_edited_segment_dict().items():
-            corrected_gdfs['baf_edited_segment'][baf_idx] = seg_gdf.subtract(corrector_excluded_region)
+        assert self.is_germline
+
+        self.log(f'Applying corrector to VAF rawdata')
+
+        # do join
+        joined_baf_rawdata = self.get_baf_rawdata().variant_join(corrector_gdf, how='left', nproc=nproc)
+
+        # collect corrector values, excluding self id
+        corrector_values = dict()
+        selected_cols_list = list()
+        for pf in joined_baf_rawdata.allele_columns:
+            selected_cols = [
+                x for x in joined_baf_rawdata.columns
+                if (x.startswith(f'{pf}_vaf_') and (x != f'{pf}_vaf_{self.sampleid}'))
+            ]
+            selected_cols.sort()
+            selected_cols_list.append(
+                [re.sub(r'^.+_vaf_', '', x) for x in selected_cols]
+            )
+
+            corrector_values[pf] = joined_baf_rawdata[selected_cols]
+
+        assert all((x == y) for x, y in tools.pairwise(selected_cols_list))
+
+        # choose a random not-nan index from each row
+        notna_col_indexes = list()
+        all_notna = ~(np.isnan(corrector_values['REF']))
+        rng = np.random.default_rng()
+        for notna_row in all_notna:
+            not_na_indexes = np.nonzero(notna_row)[0]
+            if len(not_na_indexes) == 0:
+                notna_col_indexes.append(0)
+            else:
+                notna_col_indexes.append(rng.choice(not_na_indexes))
+        notna_col_indexes = np.asarray(notna_col_indexes)
+
+        # select corrector values according to the not-nan indexes
+        selected_corrector_values = dict()
+        row_indexes = np.arange(corrector_values['REF'].shape[0])
+        for key, val in corrector_values.items():
+            selected_corrector_values[key] = val[(row_indexes, notna_col_indexes)]
+
+        # drop unneccessary columns
+        chosen_cols = [x + '_vaf' for x in joined_baf_rawdata.allele_columns]
+        corrected_baf_rawdata = joined_baf_rawdata.choose_annots(chosen_cols)
+
+        # do division
+        for key, val in selected_corrector_values.items():
+            corrected_baf_rawdata[f'{key}_vaf'] = corrected_baf_rawdata[f'{key}_vaf'] / val
+
+        # remove rows where corrector could not be found
+        selector = ~np.isnan(corrected_baf_rawdata['REF_vaf'])
+        corrected_baf_rawdata = corrected_baf_rawdata.loc[selector, :]
+
+        # normalize VAF values and make BAF values
+        corrected_baf_rawdata.add_baf(fit_self_vafs=True)
+
+        # assign
+        self.corrected_gdfs.setdefault(corrector_id, dict())
+        self.corrected_gdfs[corrector_id]['baf_rawdata'] = corrected_baf_rawdata
+
+        # segment
+        #if make_segment:
+        self.log(f'Making BAF segment from the corrected data')
+        corrected_baf_segment_dict, filtered_baf_rawdata = corrected_baf_rawdata.get_segment_dict(
+            target_region=self.get_raw_target_region(),
+
+            germline_baf_rawdata=germline_baf_rawdata,
+
+            germline_CN_gdf=germline_CN_gdf, 
+            is_female=self.is_female,
+
+            return_filtered_rawdata=True,
+
+            nproc=nproc, 
+        )
+        self.corrected_gdfs[corrector_id]['baf_segment'] = corrected_baf_segment_dict
+        self.corrected_gdfs[corrector_id]['filtered_baf_rawdata'] = filtered_baf_rawdata
+
+    @deco_nproc
+    def make_corrected_gdfs_baf_old(
+        self, 
+        corrector_id, 
+        corrector_gdf, 
+        germline_CN_gdf=None,
+        n_sample_cutoff=5,
+        nproc=0,
+    ):
+        # rawdata
+        self.log(f'Applying corrector to BAF rawdata')
+        corrected_baf_rawdata = self.get_baf_rawdata().variant_join(
+            corrector_gdf,
+            how='left',
+        )
+        n_sample_unselector = (corrected_baf_rawdata['n_samples'] < n_sample_cutoff)  # nan is removed here
+        for colname in corrected_baf_rawdata.vaf_columns:
+            numer = corrected_baf_rawdata[colname]
+            denom = corrected_baf_rawdata[colname + '_corrector']
+            denom[
+                np.logical_or(n_sample_unselector, np.isnan(denom))
+            ] = 1
+            corrected_baf_rawdata[colname] = numer / denom
+
+        corrected_baf_rawdata.add_baf(fit_self_vafs=True)
+
+        self.corrected_gdfs.setdefault(corrector_id, dict())
+        self.corrected_gdfs[corrector_id]['baf_rawdata'] = corrected_baf_rawdata
+
+        # segment
+        self.log(f'Making BAF segment from the corrected data')
+        corrected_baf_segment_dict = corrected_baf_rawdata.get_segment_dict(
+            target_region=self.get_raw_target_region(),
+            germline_CN_gdf=germline_CN_gdf, 
+            is_female=self.is_female,
+            nproc=nproc, 
+        )
+        self.corrected_gdfs[corrector_id]['baf_segment'] = corrected_baf_segment_dict
 
     @deco_nproc
     def make_corrected_gdfs_merged_segment(
@@ -1625,13 +1842,13 @@ class CNVSample:
 
         sub_seg_gdfs = (
             [corrected_gdfs['depth_segment']] 
-            + list(self.get_baf_edited_segment_dict().values())
+            + list(corrected_gdfs['baf_segment'].values())
         )
         merged_seg_gdf = CNVSegDF.from_segments(sub_seg_gdfs, nproc=nproc)
 
         cols_to_drop = (
             [DepthSegDF.filter_colname]
-            + [x.get_filter_colname() for x in self.get_baf_edited_segment_dict().values()]
+            + [x.get_filter_colname() for x in corrected_gdfs['baf_segment'].values()]
         )
         merged_seg_gdf.drop_annots(cols_to_drop, inplace=True)
 
@@ -1642,6 +1859,10 @@ class CNVSample:
         raw_target_region = self.get_raw_target_region()
         if raw_target_region is not None:
             merged_seg_gdf = merged_seg_gdf.intersect(raw_target_region)
+
+        # add germline solution
+        if self.is_germline:
+            merged_seg_gdf.add_clonal_solution_germline(self.is_female, self.ploidy)
 
         # result
         corrected_gdfs['merged_segment'] = merged_seg_gdf
@@ -1671,16 +1892,29 @@ class CNVSample:
             nproc=nproc,
         )
         corrected_merged_seg.assign_clonal_CN(
-            corrected_merged_seg.get_clonal_CN(germline=False),
+            #corrected_merged_seg.get_clonal_CN(germline=False),
+            data=corrected_merged_seg[gCN_colname],
             germline=True,
         )
-        for baf_index in gB_colname_dict.keys():
+        for baf_index, colname in gB_colname_dict.items():
             corrected_merged_seg.assign_clonal_B(
-                corrected_merged_seg.get_clonal_B(baf_index, germline=False),
-                baf_index,
+                #corrected_merged_seg.get_clonal_B(baf_index, germline=False),
+                data=corrected_merged_seg[colname],
+                baf_index=baf_index,
                 germline=True,
             )
-        corrected_merged_seg.drop_annots(added_cols, inplace=True)
+
+        germline_CN_columns = (
+            [corrected_merged_seg.get_clonal_CN_colname(germline=True)]
+            + [
+                corrected_merged_seg.get_clonal_B_colname(baf_index, germline=True)
+                for baf_index in corrected_merged_seg.get_baf_indexes()
+            ]
+        )
+        corrected_merged_seg.drop_annots(
+            set(added_cols).difference(germline_CN_columns), 
+            inplace=True,
+        )
 
         self.corrected_gdfs[corrector_id]['merged_segment'] = corrected_merged_seg
 
@@ -1694,23 +1928,23 @@ class CNVSample:
 
         corrected_merged_seg = self.corrected_gdfs[corrector_id]['merged_segment']
 
-        cncall.add_default_CNg_Bg(
+        cnvcall.add_default_CNg_Bg(
             gdf=corrected_merged_seg,
             is_female=self.is_female,
             inplace=True,
             nproc=nproc,
         )
         corrected_merged_seg.assign_clonal_CN(
-            corrected_merged_seg[cncall.DEFAULT_CNG_COLNAME],
+            corrected_merged_seg[cnvcall.DEFAULT_CNG_COLNAME],
             germline=True,
         )
         corrected_merged_seg.assign_clonal_B(
-            corrected_merged_seg[cncall.DEFAULT_BG_COLNAME],
+            corrected_merged_seg[cnvcall.DEFAULT_BG_COLNAME],
             baf_index='baf0',
             germline=True,
         )
         corrected_merged_seg.drop_annots(
-            [cncall.DEFAULT_CNG_COLNAME, cncall.DEFAULT_BG_COLNAME],
+            [cnvcall.DEFAULT_CNG_COLNAME, cnvcall.DEFAULT_BG_COLNAME],
             inplace=True,
         )
 
@@ -1736,67 +1970,64 @@ class CNVSample:
     # plotdata #
     ############
 
-    def make_upscaled_depth(self, binsize):
-        pass
-
-    def make_plotdata_base(self, data, cache_key=None):
-        #self.log(f'Beginning plotdata generation for {cache_key}')
-        plotdata = self.genomeplotter.cconv.prepare_plot_data(data)
-        #self.plotdata_cache[cache_key] = plotdata
-        #self.log(f'Finished plotdata generation for {cache_key}')
-
-        return plotdata
-
-    @get_deco_logging(f'making BAF rawdata plotdata')
-    def make_baf_rawdata_plotdata(self, rmzero=False):
-        plotdata_dict = dict()
-        for baf_idx in self.get_baf_indexes():
-            data = self.get_baf_rawdata(baf_idx, rmzero=rmzero)
-            #plotdata_key = f'{sampletype}_baf_raw_{baf_idx}'
-            plotdata_dict[baf_idx] = self.make_plotdata_base(data)
-
-        return plotdata_dict
-
-    @get_deco_logging(f'making BAF segment plotdata')
-    def make_baf_noedit_segment_plotdata(self, rmzero=False):
-        segment_dict_key = ('baf_rmzero_noedit_segment' if rmzero else 'baf_noedit_segment')
-        data_dict = self.gdfs[segment_dict_key]
-        plotdata_dict = dict()
-        for baf_idx, data in data_dict.items():
-            #plotdata_key = f'{sampletype}_baf_segment_{baf_idx}'
-            plotdata = self.make_plotdata_base(data)
-            plotdata_dict[baf_idx] = plotdata
-
-        return plotdata_dict
-
-    @get_deco_logging(f'making BAF segment plotdata')
-    def make_baf_edited_segment_plotdata(self, rmzero=False):
-        data_dict = self.gdfs['baf_edited_segment']
-        plotdata_dict = dict()
-        for baf_idx, data in data_dict.items():
-            #plotdata_key = f'{sampletype}_baf_segment_{baf_idx}'
-            plotdata = self.make_plotdata_base(data)
-            plotdata_dict[baf_idx] = plotdata
-
-        return plotdata_dict
-
-    @get_deco_logging(f'making depth rawdata plotdata')
-    def make_depth_rawdata_plotdata(self):
-        data = self.get_depth_rawdata()
-        #plotdata_key = f'{sampletype}_depth_raw'
-        return self.make_plotdata_base(data)
-
-    @get_deco_logging(f'making depth segment plotdata')
-    def make_depth_segment_plotdata(self):
-        data = self.get_depth_segment()
-        #plotdata_key = f'{sampletype}_depth_segment'
-        return self.make_plotdata_base(data)
-
-    @get_deco_logging(f'making merged segment plotdata')
-    def make_merged_segment_plotdata(self, corrected=False, corrector_id=None):
-        data = self.get_merged_segment(corrected=corrected, corrector_id=corrector_id)
-        #plotdata_key = f'{sampletype}_depth_segment'
-        return self.make_plotdata_base(data)
+#    def make_plotdata_base(self, data, cache_key=None):
+#        #self.log(f'Beginning plotdata generation for {cache_key}')
+#        plotdata = self.genomeplotter.cconv.prepare_plot_data(data)
+#        #self.plotdata_cache[cache_key] = plotdata
+#        #self.log(f'Finished plotdata generation for {cache_key}')
+#
+#        return plotdata
+#
+#    @get_deco_logging(f'making BAF rawdata plotdata')
+#    def make_baf_rawdata_plotdata(self, rmzero=False):
+#        plotdata_dict = dict()
+#        for baf_idx in self.get_baf_indexes():
+#            data = self.get_baf_rawdata(baf_idx, rmzero=rmzero)
+#            #plotdata_key = f'{sampletype}_baf_raw_{baf_idx}'
+#            plotdata_dict[baf_idx] = self.make_plotdata_base(data)
+#
+#        return plotdata_dict
+#
+#    @get_deco_logging(f'making BAF segment plotdata')
+#    def make_baf_noedit_segment_plotdata(self, rmzero=False):
+#        segment_dict_key = ('baf_rmzero_noedit_segment' if rmzero else 'baf_noedit_segment')
+#        data_dict = self.gdfs[segment_dict_key]
+#        plotdata_dict = dict()
+#        for baf_idx, data in data_dict.items():
+#            #plotdata_key = f'{sampletype}_baf_segment_{baf_idx}'
+#            plotdata = self.make_plotdata_base(data)
+#            plotdata_dict[baf_idx] = plotdata
+#
+#        return plotdata_dict
+#
+#    @get_deco_logging(f'making BAF segment plotdata')
+#    def make_baf_edited_segment_plotdata(self, rmzero=False):
+#        data_dict = self.gdfs['baf_edited_segment']
+#        plotdata_dict = dict()
+#        for baf_idx, data in data_dict.items():
+#            #plotdata_key = f'{sampletype}_baf_segment_{baf_idx}'
+#            plotdata = self.make_plotdata_base(data)
+#            plotdata_dict[baf_idx] = plotdata
+#
+#        return plotdata_dict
+#
+#    @get_deco_logging(f'making depth rawdata plotdata')
+#    def make_depth_rawdata_plotdata(self):
+#        data = self.get_depth_rawdata()
+#        #plotdata_key = f'{sampletype}_depth_raw'
+#        return self.make_plotdata_base(data)
+#
+#    @get_deco_logging(f'making depth segment plotdata')
+#    def make_depth_segment_plotdata(self):
+#        data = self.get_depth_segment()
+#        #plotdata_key = f'{sampletype}_depth_segment'
+#        return self.make_plotdata_base(data)
+#
+#    @get_deco_logging(f'making merged segment plotdata')
+#    def make_merged_segment_plotdata(self, corrected=False, corrector_id=None):
+#        data = self.get_merged_segment(corrected=corrected, corrector_id=corrector_id)
+#        #plotdata_key = f'{sampletype}_depth_segment'
+#        return self.make_plotdata_base(data)
 
     #########################
     # HIGH level ax drawers #
@@ -1882,6 +2113,9 @@ class CNVSample:
         corrector_id=None,
         depthtype=None,
         chromwise_peaks=False,
+        chromwise_peaks_density_kwargs=dict(),
+        chromwise_peaks_line_kwargs=dict(),
+        draw_excluded=False,
 
         #draw_depth_peaks=False,
         #draw_chromwise_peak=True,
@@ -1896,11 +2130,13 @@ class CNVSample:
         subplots_kwargs=dict(),
 
         # kwargs for low level drawers
+        draw_common_kwargs=dict(),
         depth_kwargs=dict(),
         #depth_peaks_kwargs=dict(),
         baf_kwargs=dict(),
         MQ_kwargs=dict(),
         CN_kwargs=dict(),
+        excluded_kwargs=dict(),
         #chromwise_peak_bw_method=1,
         #chromwise_peak_limit=None,
 
@@ -1919,6 +2155,7 @@ class CNVSample:
 
         # multiprocessing
         nproc=0,
+        verbose=True,
     ):
         if draw_all:
             draw_depth = True
@@ -1951,18 +2188,20 @@ class CNVSample:
 
         # prepare CN plotdata
         CN_gdf = self.get_merged_segment(corrector_id=corrector_id)
+        #CN_exists = (CN_gdf is not None) and CN_gdf.check_has_CN()
         CN_exists = (CN_gdf is not None)
         if CN_exists:
             CN_plotdata = genomeplotter.make_plotdata(
                 CN_gdf, 
                 log_suffix=' (Copy number)', 
                 nproc=nproc,
+                verbose=verbose,
             )
 
         # draw CN
         if draw_CN:
-            if CN_exists:
-                CN_gdf.draw(
+            if CN_exists and CN_gdf.check_has_CN():
+                CN_gdf.draw_CN(
                     ax=axd['CN'],
                     plotdata=CN_plotdata,
                     genomeplotter=genomeplotter,
@@ -1970,30 +2209,51 @@ class CNVSample:
                     title=None,
                     ylabel_prefix=ylabel_prefix,
                     nproc=nproc,
+                    verbose=verbose,
+                    draw_common_kwargs=draw_common_kwargs,
                     **CN_kwargs,
                 )
 
         # draw BAF
         if draw_baf:
             # segment
-            baf_segment_gdf_dict = self.get_baf_edited_segment_dict()
+            #baf_segment_gdf_dict = self.get_baf_edited_segment_dict()
+            baf_segment_gdf_dict = self.get_baf_segment_dict(corrector_id=corrector_id)
             baf_axd_keys = set(axd.keys()).intersection(self.get_baf_indexes())
             baf_axd = {k: axd[k] for k in baf_axd_keys}
             for baf_idx, baf_ax in baf_axd.items():
                 baf_segment_gdf = baf_segment_gdf_dict[baf_idx]
-                if baf_segment_gdf is not None:
-                    baf_segment_gdf.draw(
-                        ax=baf_ax, 
+                assert baf_segment_gdf is not None
+                #if baf_segment_gdf is not None:
+                baf_segment_gdf.draw_baf(
+                    ax=baf_ax, 
+                    genomeplotter=genomeplotter,
+                    setup_axes=True,
+                    title=None,
+                    ylabel_prefix=ylabel_prefix,
+                    nproc=nproc,
+                    verbose=verbose,
+                    draw_common_kwargs=draw_common_kwargs,
+                    **baf_kwargs,
+                )
+
+            # segment - corrected baf
+            if CN_exists:
+                for baf_idx, baf_ax in baf_axd.items():
+                    CN_gdf.draw_corrected_baf(
+                        baf_index=baf_idx,
+                        ax=baf_ax,
                         genomeplotter=genomeplotter,
-                        setup_axes=True,
-                        title=None,
-                        ylabel_prefix=ylabel_prefix,
+                        plotdata=CN_plotdata,
+
                         nproc=nproc,
-                        **baf_kwargs,
+                        verbose=verbose,
                     )
+
             # baf rawdata
             if draw_baf_rawdata:
-                baf_rawdata_gdf = self.gdfs['baf_rawdata']
+                #baf_rawdata_gdf = self.gdfs['baf_rawdata']
+                baf_rawdata_gdf = self.get_baf_rawdata(corrector_id=corrector_id)
                 if baf_rawdata_gdf is not None:
                     plotdata_data = (
                         baf_rawdata_gdf
@@ -2004,15 +2264,17 @@ class CNVSample:
                         plotdata_data, 
                         log_suffix=' (BAF raw data)', 
                         nproc=nproc,
+                        verbose=verbose,
                     )
                     for baf_index, baf_ax in baf_axd.items():
-                        baf_rawdata_gdf.draw(
+                        baf_rawdata_gdf.draw_baf(
                             baf_index, 
                             ax=baf_ax,
                             genomeplotter=genomeplotter,
                             plotdata=baf_rawdata_plotdata,
                             ylabel_prefix=ylabel_prefix,
                             setup_axes=False,
+                            verbose=verbose,
                             **baf_kwargs,
                         )
 
@@ -2031,6 +2293,7 @@ class CNVSample:
                                 linewidth=2,
                                 alpha=1,
                             ),
+                            verbose=verbose,
                         )
 
         # prepare plotdata for depth and MQ
@@ -2038,7 +2301,8 @@ class CNVSample:
             use_corrected = (corrector_id is not None)
 
             if depthtype is None:
-                depthtype = ('corr' if use_corrected else 'norm')
+                #depthtype = ('corr' if use_corrected else 'norm')
+                depthtype = 'norm'
 
             if use_corrected:
                 excl_region = self.get_corrected_depth_excluded_region(corrector_id=corrector_id)
@@ -2056,6 +2320,7 @@ class CNVSample:
                     plotdata_data, 
                     log_suffix=' (Depth raw data)', 
                     nproc=nproc,
+                    verbose=verbose,
                 )
 
             depth_segment = self.get_depth_segment(corrector_id=corrector_id)
@@ -2065,6 +2330,7 @@ class CNVSample:
                     depth_segment, 
                     log_suffix=' (Depth segment)', 
                     nproc=nproc,
+                    verbose=verbose,
                 )
 
         # draw depth
@@ -2078,6 +2344,7 @@ class CNVSample:
                     plotdata=depth_raw_plotdata,
                     setup_axes=(not depth_segment_exists),
                     ylabel_prefix=ylabel_prefix,
+                    verbose=verbose,
                     **depth_kwargs,
                 )
             if depth_segment_exists:
@@ -2087,8 +2354,12 @@ class CNVSample:
                     depthtype=depthtype,
                     plotdata=depth_seg_plotdata,
                     chromwise_peaks=chromwise_peaks,
+                    chromwise_peaks_density_kwargs=chromwise_peaks_density_kwargs,
+                    chromwise_peaks_line_kwargs=chromwise_peaks_line_kwargs,
                     setup_axes=True,
+                    draw_common_kwargs=draw_common_kwargs,
                     ylabel_prefix=ylabel_prefix,
+                    verbose=verbose,
                     **depth_kwargs,
                 )
 
@@ -2101,6 +2372,7 @@ class CNVSample:
                         y_colname=y_colname,
                         plotdata=CN_plotdata,
                         setup_axes=False,
+                        verbose=verbose,
                         plot_kwargs=dict(
                             color='red',
                             linewidth=2,
@@ -2117,6 +2389,7 @@ class CNVSample:
                     plotdata=depth_raw_plotdata,
                     setup_axes=(not depth_segment_exists),
                     ylabel_prefix=ylabel_prefix,
+                    verbose=verbose,
                     **MQ_kwargs,
                 )
             if depth_segment_exists:
@@ -2125,13 +2398,46 @@ class CNVSample:
                     genomeplotter=genomeplotter,
                     plotdata=depth_seg_plotdata,
                     setup_axes=True,
+                    draw_common_kwargs=draw_common_kwargs,
                     ylabel_prefix=ylabel_prefix,
+                    verbose=verbose,
                     **MQ_kwargs,
+                )
+
+        # draw excluded
+        if draw_excluded and (corrector_id is not None):
+            excluded_region = self.get_corrected_depth_excluded_region(corrector_id)
+            excluded_region = excluded_region.assign(colors='red')
+            excluded_region_plotdata = genomeplotter.make_plotdata(
+                excluded_region, 
+                log_suffix=' (excluded region)', 
+                nproc=nproc,
+                verbose=verbose,
+            )
+            excluded_kwargs = (
+                dict(
+                    alpha=0.01,
+                ) | excluded_kwargs
+            )
+            for ax in [val for key, val in axd.items() if not key.startswith('blank')]:
+                excluded_region.draw_boxes(
+                    ax=ax, 
+                    color_colname='colors', 
+                    plot_kwargs=excluded_kwargs,
+                    plotdata=excluded_region_plotdata,
+                    setup_axes=False,
                 )
 
         # title
         if title is False:
-            title = self.get_default_title()
+            if corrector_id is None:
+                cellularity = None
+                ploidy = None
+            else:
+                cellularity = self.corrected_gdfs[corrector_id]['cellularity']
+                ploidy = self.corrected_gdfs[corrector_id]['ploidy']
+            title = self.get_default_title(cellularity=cellularity, ploidy=ploidy)
+
         if title is not None:
             plotmisc.draw_suptitle(fig, title, **suptitle_kwargs)
 
@@ -2151,19 +2457,18 @@ class CNVSample:
     # ax drawing helpers #
     ######################
 
-    def draw_excluded_region(self, ax):
-        self.genomeplotter.draw_bgcolors(
-            ax,
-            data=self.get_excluded_region(),
-            colors='magenta',
-            draw_common=False,
-        )
-
-    def get_default_title(self):
-        return ', '.join(
+    def get_default_title(self, cellularity=None, ploidy=None):
+        result = ', '.join(
             f'{key}={getattr(self, key)}' 
             for key in ['sampleid', 'is_female', 'mode']
         )
+        if (cellularity is not None) or (ploidy is not None):
+            result = (
+                result 
+                + '\n' 
+                + f'cellularity={round(cellularity, 3)}, ploidy={round(ploidy, 3)}'
+            )
+        return result
 
     def get_baf_indexes(self):
         return libbaf.get_baf_indexes(self.simple_attrs["ploidy"])
@@ -2191,19 +2496,29 @@ class CNVManager:
 
     def init_datadicts(self):
         self.cnvsamples = dict()
-        self.depth_correctors = dict()
+        #self.depth_correctors = dict()
+        self.correctors = dict()
 
     def __getattr__(self, key):
-        if key in self.simple_attrs.keys():
-            return self.simple_attrs[key]
-        else:
-            super().__getattr__(key)
+        return getattr_base(self, key)
+
+#    def __getattr__(self, key):
+#        if key in self.simple_attrs.keys():
+#            return self.simple_attrs[key]
+#        else:
+#            try:
+#                super().__getattr__(key)
+#            except AttributeError:
+#                raise AttributeError(f'{repr(self.__class__)} object has no attribute {repr(key)}')
 
     #####
 
     @property
     def samples(self):
         return self.cnvsamples
+
+    def get_cnvsample_dir(self, topdir):
+        return os.path.join(topdir, 'cnvsample')
 
     def add_cnvsample(self, cnvsample, force=False):
         if not force:
@@ -2219,72 +2534,133 @@ class CNVManager:
         logutils.log(f'Saving CNVSample {cnvsample_id}')
         cnvsample = self.cnvsamples[cnvsample_id]
 
-        cnvsample_topdir = os.path.join(all_topdir, 'cnvsample', cnvsample_id)
+        cnvsample_topdir = os.path.join(self.get_cnvsample_dir(all_topdir), cnvsample_id)
         cnvsample.save_pickle_asdf(cnvsample_topdir, force=force)
 
     #####
 
-    def save_depth_corrector(self, corrector_id, savepath):
-        logutils.log(f'Saving depth corrector {corrector_id}')
-        saved_dict = self.depth_correctors[corrector_id].copy()
+#    def save_depth_corrector(self, corrector_id, savepath):
+#        logutils.log(f'Saving depth corrector {corrector_id}')
+#        saved_dict = self.depth_correctors[corrector_id].copy()
+#
+#        saved_dict['depth_rawdata'] = saved_dict['depth_rawdata'].df
+#        if saved_dict['raw_target_region'] is not None:
+#            saved_dict['raw_target_region'] = saved_dict['raw_target_region'].df
+#
+#        with open(savepath, mode='wb') as outfile:
+#            pickle.dump(saved_dict, outfile)
+#
+#    def save_all_depth_correctors(self, topdir):
+#        depthcorrector_dir = os.path.join(topdir, 'depth_correctors')
+#        os.makedirs(depthcorrector_dir, exist_ok=True)
+#        for corrector_id in self.depth_correctors.keys():
+#            savepath = os.path.join(depthcorrector_dir, corrector_id + '.pickle')
+#            self.save_depth_corrector(corrector_id, savepath)
+#
+#    def load_depth_corrector(self, savepath):
+#        logutils.log(f'Loading depth corrector from directory {savepath}')
+#        with open(savepath, 'rb') as infile:
+#            corrector_dict = pickle.load(infile)
+#
+#        corrector_dict['depth_rawdata'] = DepthRawDF.from_frame(corrector_dict['depth_rawdata'], refver=self.refver)
+#        if corrector_dict['raw_target_region'] is not None:
+#            corrector_dict['raw_target_region'] = GDF.from_frame(corrector_dict['raw_target_region'], refver=self.refver)
+#
+#        self.depth_correctors[corrector_dict['id']] = corrector_dict
 
-        saved_dict['depth_rawdata'] = saved_dict['depth_rawdata'].df
-        if saved_dict['raw_target_region'] is not None:
-            saved_dict['raw_target_region'] = saved_dict['raw_target_region'].df
+    #####
+
+    def get_corrector_dir(self, topdir):
+        return os.path.join(topdir, 'correctors')
+
+    def save_corrector(self, corrector_id, savepath):
+        logutils.log(f'Saving corrector {corrector_id}')
+        saved_dict = self.correctors[corrector_id].copy()
+
+        for key in (
+            'raw_target_region', 
+            'depth_rawdata', 
+            'vaf_rawdata', 
+            #'vaf_rawdata_nomerge',
+        ):
+            if key == 'raw_target_region':
+                if saved_dict[key] is None:
+                    continue
+
+            if key == 'vaf_rawdata':
+                if key not in saved_dict:
+                    continue
+
+            if isinstance(saved_dict[key], GDF):
+                saved_dict[key] = saved_dict[key].df
 
         with open(savepath, mode='wb') as outfile:
             pickle.dump(saved_dict, outfile)
 
-    def save_all_depth_correctors(self, topdir):
-        depthcorrector_dir = os.path.join(topdir, 'depth_correctors')
-        os.makedirs(depthcorrector_dir, exist_ok=True)
-        for corrector_id in self.depth_correctors.keys():
-            savepath = os.path.join(depthcorrector_dir, corrector_id + '.pickle')
-            self.save_depth_corrector(corrector_id, savepath)
+    def save_all_correctors(self, topdir):
+        corrector_dir = self.get_corrector_dir(topdir)
+        os.makedirs(corrector_dir, exist_ok=True)
+        for corrector_id in self.correctors.keys():
+            savepath = os.path.join(corrector_dir, corrector_id + '.pickle')
+            self.save_corrector(corrector_id, savepath)
 
-    def load_depth_corrector(self, savepath):
-        logutils.log(f'Loading depth corrector from directory {savepath}')
+    def load_corrector(self, savepath):
+        logutils.log(f'Loading corrector from directory {savepath}')
         with open(savepath, 'rb') as infile:
             corrector_dict = pickle.load(infile)
 
-        corrector_dict['depth_rawdata'] = DepthRawDF.from_frame(corrector_dict['depth_rawdata'], refver=self.refver)
-        if corrector_dict['raw_target_region'] is not None:
-            corrector_dict['raw_target_region'] = GDF.from_frame(corrector_dict['raw_target_region'], refver=self.refver)
+        corrector_dict['depth_rawdata'] = DepthRawDF.from_frame(
+            corrector_dict['depth_rawdata'], refver=self.refver,
+        )
 
-        self.depth_correctors[corrector_dict['id']] = corrector_dict
+        if 'vaf_rawdata' in corrector_dict:
+            corrector_dict['vaf_rawdata'] = VariantDataFrame.from_frame(
+                corrector_dict['vaf_rawdata'], refver=self.refver,
+            )
+
+        #if 'vaf_rawdata_nomerge' in corrector_dict:
+        #    corrector_dict['vaf_rawdata_nomerge'] = VariantDataFrame.from_frame(
+        #        corrector_dict['vaf_rawdata_nomerge'], refver=self.refver,
+        #    )
+        if corrector_dict['raw_target_region'] is not None:
+            corrector_dict['raw_target_region'] = GDF.from_frame(
+                corrector_dict['raw_target_region'], refver=self.refver,
+            )
+
+        self.correctors[corrector_dict['id']] = corrector_dict
 
     #####
+
+    def get_simple_attrs_path(self, topdir):
+        return os.path.join(topdir, 'simple_attrs.json')
 
     def save_pickle(self, topdir):
         os.makedirs(topdir, exist_ok=True)
 
         # simple attrs
-        simpleattrs_savepath = os.path.join(topdir, 'simple_attrs.json')
-        with open(simpleattrs_savepath, 'wt') as outfile:
+        with open(self.get_simple_attrs_path(topdir), 'wt') as outfile:
             json.dump(self.simple_attrs, outfile)
 
-        # save depth correctors
-        self.save_all_depth_correctors(topdir)
-
         # save cnvsamples
-        cnvsample_dir = os.path.join(topdir, 'cnvsample')
-        os.makedirs(cnvsample_dir, exist_ok=True)
+        os.makedirs(self.get_cnvsample_dir(topdir), exist_ok=True)
         for sid in self.cnvsamples.keys():
             self.save_cnvsample(sid, topdir, force=True)
 
+        # save depth correctors
+        self.save_all_correctors(topdir)
+
     @classmethod
-    def load_pickle(cls, topdir, cnvsamples=None):
+    def load_pickle(cls, topdir, cnvsamples=None, load_corrector=False):
         result = cls()
         result.init_datadicts()
 
         # simple attrs
-        simpleattrs_savepath = os.path.join(topdir, 'simple_attrs.json')
-        with open(simpleattrs_savepath, 'rt') as infile:
+        with open(result.get_simple_attrs_path(topdir), 'rt') as infile:
             result.simple_attrs = json.load(infile)
 
         # cnvsamples
         logutils.log(f'Beginning loading CNVSamples')
-        cnvsample_dir = os.path.join(topdir, 'cnvsample')
+        cnvsample_dir = result.get_cnvsample_dir(topdir)
 
         all_fnames = sorted(os.listdir(cnvsample_dir))
         if cnvsamples is None:
@@ -2302,12 +2678,13 @@ class CNVManager:
 
         logutils.log(f'Finished loading CNVSamples')
 
-        # depth correctors
-        logutils.log(f'Beginning loading depth correctors')
-        depthcorrector_dir = os.path.join(topdir, 'depth_correctors')
-        for fname in sorted(os.listdir(depthcorrector_dir)):
-            result.load_depth_corrector(os.path.join(depthcorrector_dir, fname))
-        logutils.log(f'Finished loading depth correctors')
+        # correctors
+        if load_corrector:
+            logutils.log(f'Beginning loading correctors')
+            corrector_dir = result.get_corrector_dir(topdir)
+            for fname in sorted(os.listdir(corrector_dir)):
+                result.load_corrector(os.path.join(corrector_dir, fname))
+            logutils.log(f'Finished loading correctors')
 
         return result
 
@@ -2316,7 +2693,7 @@ class CNVManager:
     ##############################
 
     @staticmethod
-    def make_depth_corrector_sanitycheck(cnvsample_list):
+    def make_corrector_sanitycheck(cnvsample_list):
         # refver
         refvers = set(refgenome.standardize(x.refver) for x in cnvsample_list)
         if len(refvers) != 1:
@@ -2350,15 +2727,15 @@ class CNVManager:
         return refver, ploidy, mode, raw_target_region
 
     @staticmethod
-    def make_corrector_depth(cnvsample, nproc, apply_filter=False):
+    def make_corrector_depth_onesample(cnvsample, nproc, apply_filter=False):
         if cnvsample.mode == 'wgs':
-            depth_rawdata = cnvsample.get_depth_rawdata()
+            depth_rawdata_gdf = cnvsample.get_depth_rawdata()
             depth_segment = cnvsample.get_depth_segment()
             merged_segment = cnvsample.get_merged_segment()
             assert merged_segment.check_has_CN()
 
             # 1-1. add calculated germline CN to depth rawdata
-            depth_rawdata = depth_rawdata.join(
+            depth_rawdata_gdf = depth_rawdata_gdf.join(
                 merged_segment,
                 how='left',
                 right_gdf_cols=CNVSegDF.clonal_CN_colname,
@@ -2372,7 +2749,7 @@ class CNVManager:
 
             # 1-2. add segment-based filters
             if apply_filter:
-                depth_rawdata = depth_rawdata.join(
+                depth_rawdata_gdf = depth_rawdata_gdf.join(
                     depth_segment,
                     how='left',
                     right_gdf_cols=DepthSegDF.filter_colname,
@@ -2384,29 +2761,29 @@ class CNVManager:
                     nproc=nproc,
                 )
 
-            depth_rawdata.sort()
+            depth_rawdata_gdf.sort()
 
             # 2. prepare parameters
-            CN = depth_rawdata[CNVSegDF.clonal_CN_colname].astype(float)
-            raw_depth = depth_rawdata.raw_depth
-            lengths = depth_rawdata.get_lengths()
+            CN = depth_rawdata_gdf[CNVSegDF.clonal_CN_colname].astype(float)
+            raw_depth = depth_rawdata_gdf.raw_depth
+            lengths = depth_rawdata_gdf.get_lengths()
             if apply_filter:
-                filters = depth_rawdata[DepthSegDF.filter_colname]
+                filters = depth_rawdata_gdf[DepthSegDF.filter_colname]
             else:
                 filters = np.full(CN.shape, True)
 
         elif cnvsample.mode == 'panel':
             # 1. add default CNg to depth rawdata
             cnvsample.add_default_CNg_Bg_to_depth_rawdata(nproc)
-            depth_rawdata = cnvsample.get_depth_rawdata()
-            depth_rawdata.sort()
+            depth_rawdata_gdf = cnvsample.get_depth_rawdata()
+            depth_rawdata_gdf.sort()
 
             # 2. prepare parameters
-            CN = depth_rawdata[cncall.DEFAULT_CNG_COLNAME].astype(float)
-            raw_depth = depth_rawdata.raw_depth
-            lengths = depth_rawdata.get_lengths()
+            CN = depth_rawdata_gdf[cnvcall.DEFAULT_CNG_COLNAME].astype(float)
+            raw_depth = depth_rawdata_gdf.raw_depth
+            lengths = depth_rawdata_gdf.get_lengths()
             if apply_filter:
-                filters = depth_rawdata.get_filter()
+                filters = depth_rawdata_gdf.get_filter()
             else:
                 filters = np.full(CN.shape, True)
 
@@ -2423,19 +2800,11 @@ class CNVManager:
         corrector_depth = libdepth.make_normalized_depth(corrected_raw_depth, lengths)
 
         # 6. make depth gdf coordinate columns
-        #depth_rawdata_coords = depth_rawdata.get_coordinate_array()
+        #depth_rawdata_coords = depth_rawdata_gdf.get_coordinate_array()
 
-        return corrector_depth, depth_rawdata
+        return corrector_depth, depth_rawdata_gdf
 
-    @deco_nproc
-    @deco.get_deco_atleast1d(['cnvsample_idlist'])
-    def make_depth_corrector(self, sid, cnvsample_idlist, nproc=0, force=False):
-        # 0. sanitycheck
-        if not force:
-            assert sid not in self.depth_correctors
-        cnvsample_list = [self.cnvsamples[x] for x in cnvsample_idlist]
-        refver, ploidy, mode, raw_target_region = self.make_depth_corrector_sanitycheck(cnvsample_list)
-
+    def make_depth_corrector(self, cnvsample_list, nproc):
         # 1. merge excluded regions
 #        logutils.log(f'Beginning merging excluded regions')
 #        excl_region_list = list()
@@ -2446,16 +2815,16 @@ class CNVManager:
 
         # 1. make corrector depth for each cnvsample
         corrector_depth_list = list()
-        depth_rawdata_list = list()
+        depth_rawdata_gdf_list = list()
         for cnvsample in cnvsample_list:
             logutils.log(f'Making corrector depth for CNVSample {cnvsample.sampleid}')
-            corrector_depth, depth_rawdata = self.make_corrector_depth(cnvsample, nproc)
+            corrector_depth, depth_rawdata_gdf = self.make_corrector_depth_onesample(cnvsample, nproc)
             corrector_depth_list.append(corrector_depth)
-            depth_rawdata_list.append(depth_rawdata)
+            depth_rawdata_gdf_list.append(depth_rawdata_gdf)
 
         # 2. sanitycheck - assure all depth rawdata gdfs have identical coords
         logutils.log(f'Confirming identity of depth rawdata coordinates')
-        coords_array_list = [x.get_coordinate_array() for x in depth_rawdata_list]
+        coords_array_list = [x.get_coordinate_array() for x in depth_rawdata_gdf_list]
         all_same_coords = all((x == y).all() for (x, y) in tools.pairwise(coords_array_list))
         if not all_same_coords:
             raise Exception(f'Coordinates differ between depth rawdata of different CNVSamples')
@@ -2470,19 +2839,187 @@ class CNVManager:
                 # averages are calculated ignoring invalid slots (useful for e.g. Y chromosome or other sample-specific 0-copy regions)
             
         # 4. make corrector depth gdf
-        corrector_depth_gdf = depth_rawdata_list[0].drop_annots()
-        corrector_depth_gdf[DepthRawDF.norm_depth_colname] = avg_corrector_depth
+        depth_corrector_gdf = depth_rawdata_gdf_list[0].drop_annots()
+        depth_corrector_gdf[DepthRawDF.norm_depth_colname] = avg_corrector_depth
 
-        # 4. save to dict
-        self.depth_correctors[sid] = {
-            'id': sid,
+        return depth_corrector_gdf
+
+    ############################
+    # baf corrector generation #
+    ############################
+
+    def modify_with_predicted_baf(self, baf_gdf_copy, cnvsample, nproc):
+        # make array of predicted bafs
+        if cnvsample.check_nobias():
+            logutils.log(f'Adding predicted baf values to baf rawdata gdf')
+            germline_CN_gdf = cnvsample.get_merged_segment()
+            for baf_index in cnvsample.get_baf_indexes():
+                germline_CN_gdf.add_predicted_baf_germline(baf_index)
+
+            added_cols = [
+                germline_CN_gdf.get_predicted_baf_colname(baf_index)
+                for baf_index in cnvsample.get_baf_indexes()
+            ]
+            baf_gdf_copy = baf_gdf_copy.join(
+                germline_CN_gdf,
+                how='left',
+                right_gdf_cols=added_cols,
+                merge='longest',
+                overlapping_length=True,
+                omit_N=True,
+                suffixes={'longest': ''},
+                nproc=nproc,
+            )
+            
+            predicted_baf_list = [
+                baf_gdf_copy[colname] for colname in added_cols
+            ]
+            predicted_bafs = np.stack(predicted_baf_list, axis=1)
+        else:
+            predicted_baf_list = list()
+            for baf_index in cnvsample.get_baf_indexes():
+                predicted_baf = cnvcall.get_predicted_baf(
+                    CNt=cnvcall.get_default_CNg(baf_gdf_copy, cnvsample.is_female, nproc),
+                    Bt=cnvcall.get_default_Bg(baf_gdf_copy, cnvsample.is_female, nproc),
+                    cellularity=1,
+                )
+                predicted_baf_list.append(predicted_baf)
+            predicted_bafs = np.stack(predicted_baf_list, axis=1)
+        
+        lastcol = 1 - predicted_bafs.sum(axis=1)
+        predicted_vafs = np.concatenate([predicted_bafs, lastcol[:, np.newaxis]], axis=1)
+
+        # apply correction to VAF values by dividing with corresponding predicted bafs
+        logutils.log(f'Dividing raw VAF values with predicted values')
+        vaf_values = baf_gdf_copy[baf_gdf_copy.vaf_columns]
+        orders = vaf_values.argsort(axis=1).argsort(axis=1)
+        predicted_vafs_reordered = np.stack(
+            [predicted_vafs[idx, orders[idx, :]] for idx in range(predicted_vafs.shape[0])],
+            axis=0,
+        )
+        corrected_vaf_values = vaf_values / predicted_vafs_reordered
+        baf_gdf_copy.loc[:, baf_gdf_copy.vaf_columns] = corrected_vaf_values
+
+        return baf_gdf_copy
+
+    @deco_nproc
+    def make_modified_vaf_gdf(self, cnvsample, divide_with_REF=True, nproc=0):
+        assert cnvsample.is_germline
+
+        logutils.log(f'Making copy of baf rawdata')
+        if divide_with_REF:
+            baf_gdf_copy = cnvsample.get_baf_rawdata().copy()
+        else:
+            baf_gdf_copy = cnvsample.get_baf_rawdata()
+
+        logutils.log(f'Adding hetalt flag')
+        baf_gdf_copy.add_baf_hetalt_flag()
+
+        logutils.log(f'Removing invalid baf data')
+        if cnvsample.check_nobias():
+            baf_gdf_copy = baf_gdf_copy.filter_valid_bafs(
+                germline_CN_gdf=cnvsample.get_merged_segment(), 
+                remove_loh=False,
+                nproc=nproc,
+                verbose=False,
+            )
+        else:
+            baf_gdf_copy = baf_gdf_copy.filter_valid_bafs(
+                is_female=cnvsample.is_female, 
+                remove_loh=False,
+                nproc=nproc,
+                verbose=False,
+            )
+
+        # divide with predicted baf
+        logutils.log(f'Removing regions with imbalanced allele copy numbers')
+        #baf_gdf_copy = self.modify_with_predicted_baf(baf_gdf_copy, cnvsample, nproc)
+        if cnvsample.check_nobias():
+            baf_gdf_copy = baf_gdf_copy.keep_equal_germline_allelecopy_region(
+                germline_CN_gdf=cnvsample.get_merged_segment(), 
+                nproc=nproc,
+            )
+        else:
+            baf_gdf_copy = baf_gdf_copy.keep_equal_germline_allelecopy_region(
+                is_female=cnvsample.is_female, 
+                nproc=nproc,
+            )
+
+        # make raw VAF values into odds ratios (by dividing with REF_vaf)
+        if divide_with_REF:
+            logutils.log(f'Making VAFs into odds ratios')
+            baf_gdf_copy.divide_with_REF_vaf()
+
+        # final
+        baf_gdf_copy = baf_gdf_copy.choose_annots(baf_gdf_copy.vaf_columns)
+        if divide_with_REF:
+            baf_gdf_copy.add_suffix(f'_{cnvsample.sampleid}', inplace=True)
+        else:
+            baf_gdf_copy = baf_gdf_copy.add_suffix(f'_{cnvsample.sampleid}', inplace=False)
+
+        return baf_gdf_copy
+
+    @deco_nproc
+    @get_deco_logging(f'making vaf corrector')
+    def make_vaf_corrector(self, cnvsample_list, nomerge=True, nproc=0):
+        modified_vafdfs = list()
+        for cnvsample in cnvsample_list:
+            logutils.log(f'Processing {cnvsample.sampleid}')
+            modified_vafdfs.append(
+                self.make_modified_vaf_gdf(cnvsample, divide_with_REF=(not nomerge), nproc=nproc)
+            )
+
+        logutils.log(f'Merging vafdfs')
+        merged_vaf_gdf = VariantDataFrame.variant_union(modified_vafdfs, nproc=nproc)
+        if nomerge:
+            vaf_corrector_gdf = merged_vaf_gdf
+        else:
+            subdf_arrays = dict()
+            for prefix in merged_vaf_gdf.allele_columns:
+                selected_cols = [x for x in merged_vaf_gdf.annot_columns if x.startswith(prefix)]
+                subdf_arrays[prefix] = merged_vaf_gdf[selected_cols]
+
+            vaf_corrector_gdf = merged_vaf_gdf.drop_annots()
+            vaf_corrector_gdf['n_samples'] = (
+                np.logical_not(
+                    np.isnan(subdf_arrays['REF'])
+                )
+                .sum(axis=1)
+            )
+            for prefix, arr in subdf_arrays.items():
+                vaf_corrector_gdf[f'{prefix}_vaf_corrector'] = np.nanmean(arr, axis=1)
+
+        return vaf_corrector_gdf
+
+    @deco_nproc
+    @deco.get_deco_atleast1d(['cnvsample_idlist'])
+    #def make_depth_corrector(self, sid, cnvsample_idlist, nproc=0, force=False):
+    def make_corrector(self, corrector_id, cnvsample_idlist, nproc=0, force=False):
+        # sanitycheck
+        if not force:
+            assert corrector_id not in self.correctors
+        cnvsample_list = [self.cnvsamples[x] for x in cnvsample_idlist]
+        refver, ploidy, mode, raw_target_region = self.make_corrector_sanitycheck(cnvsample_list)
+        
+        # depth corrector
+        depth_corrector_gdf = self.make_depth_corrector(cnvsample_list, nproc)
+
+        # vaf corrector
+        vaf_corrector_gdf = self.make_vaf_corrector(cnvsample_list, nproc=nproc, nomerge=True)
+
+        # save to dict
+        self.correctors[corrector_id] = {
+            'id': corrector_id,
             'cnvsample_ids': tuple(cnvsample_idlist),
             #'excluded_region': merged_excl_region,
-            'depth_rawdata': corrector_depth_gdf,
             'mode': mode,
             'refver': refver,
             'ploidy': ploidy,
+
             'raw_target_region': raw_target_region,
+            'depth_rawdata': depth_corrector_gdf,
+            'vaf_rawdata': vaf_corrector_gdf,
+            #'vaf_rawdata_nomerge': merged_vaf_gdf,
         }
 
     ####################################
@@ -2492,13 +3029,16 @@ class CNVManager:
     @deco_nproc
     def make_corrected_gdfs(
         self, 
+        *,
         corrector_id, 
         cnvsample_id,
+        paired_germline_id=None,
+        do_vaf_correction=False,
         force=False,
         nproc=0,
     ):
-        cnvsample = self.cnvsamples[cnvsample_id]
-        corrector_dict = self.depth_correctors[corrector_id]
+        cnvsample = self.samples[cnvsample_id]
+        corrector_dict = self.correctors[corrector_id]
 
         # sanitycheck
         if not force:
@@ -2507,14 +3047,13 @@ class CNVManager:
         assert refgenome.compare_refvers(corrector_dict['refver'], cnvsample.refver)
         assert corrector_dict['ploidy'] == cnvsample.ploidy
 
-
         logutils.log(f'Beginning corrected data generation (cnvsample id: {cnvsample_id}, corrector id: {corrector_id})')
 
         # init entity
         cnvsample.make_corrected_gdfs_init(corrector_id)
 
-        # make depth
-        MQ_cutoff = (40, None)
+        # make corrected depth
+        MQ_cutoff = (45, None)
         norm_depth_cutoff = None
         if cnvsample.mode == 'wgs':
             raw_depth_cutoff = (0, None) 
@@ -2530,16 +3069,48 @@ class CNVManager:
             nproc=nproc,
         )
 
+        # make corrected vaf and baf
+        if paired_germline_id is None:
+            germline_CN_gdf = None
+            germline_baf_rawdata = None
+        else:
+            germline_CN_gdf = self.samples[paired_germline_id].get_merged_segment()
+            germline_baf_rawdata = self.samples[paired_germline_id].get_baf_rawdata()
+
+        if do_vaf_correction:
+            cnvsample.make_corrected_gdfs_baf(
+                corrector_id=corrector_id, 
+                corrector_gdf=corrector_dict['vaf_rawdata'], 
+                germline_CN_gdf=germline_CN_gdf,
+                germline_baf_rawdata=germline_baf_rawdata,
+                nproc=nproc,
+            )
+        else:
+            baf_segment_dict, filtered_baf_rawdata = cnvsample.get_baf_rawdata().get_segment_dict(
+                target_region=cnvsample.get_raw_target_region(),
+
+                germline_baf_rawdata=germline_baf_rawdata,
+
+                germline_CN_gdf=germline_CN_gdf, 
+                is_female=cnvsample.is_female,
+
+                return_filtered_rawdata=True,
+
+                nproc=nproc, 
+            )
+            cnvsample.corrected_gdfs[corrector_id]['baf_segment'] = baf_segment_dict
+            cnvsample.corrected_gdfs[corrector_id]['filtered_baf_rawdata'] = filtered_baf_rawdata
+
         # make merged segment
         cnvsample.make_corrected_gdfs_merged_segment(
-            corrector_id=corrector_id, 
+            corrector_id=corrector_id,
             nproc=nproc,
         )
 
-        logutils.log(f'Finished corrected data generation (cnvsample id: {cnvsample_id}, corrector id: {corrector_id})')
-
     @deco_nproc
-    def add_gCN_to_corrected_merged_segment(self, *, sid, corrector_id, paired_germline_id=None, nproc=0):
+    def add_gCN_to_corrected_merged_segment(
+        self, *, sid, corrector_id, paired_germline_id=None, nproc=0,
+    ):
         cnvsample = self.cnvsamples[sid]
         if (cnvsample.mode == 'wgs') and (paired_germline_id is None):
             raise Exception(f'With WGS sample, paired germline sample ID must be given.')
@@ -2628,6 +3199,7 @@ class CNVManager:
 
         return fig, axd
 
+    @deco_nproc
     def draw_tumor_normal(
         self, 
         tumor_id, 
@@ -2651,11 +3223,15 @@ class CNVManager:
         draw_normal_CN=True,
         draw_normal_MQ=False,
 
+        draw_common_kwargs=dict(),
         tumor_draw_kwargs=dict(),
         normal_draw_kwargs=dict(),
 
         subplots_kwargs=dict(),
         figsize=None,
+
+        nproc=0,
+        verbose=True,
     ):
         # prepare axd
         tumor_cnvsample = self.samples[tumor_id]
@@ -2708,6 +3284,10 @@ class CNVManager:
 
             ylabel_prefix='tumor ',
 
+            nproc=nproc,
+            verbose=verbose,
+
+            draw_common_kwargs=draw_common_kwargs,
             **tumor_draw_kwargs,
         )
 
@@ -2726,6 +3306,12 @@ class CNVManager:
 
             ylabel_prefix='normal ',
 
+            nproc=nproc,
+            verbose=verbose,
+
+            title=None,
+
+            draw_common_kwargs=draw_common_kwargs,
             **normal_draw_kwargs,
         )
 

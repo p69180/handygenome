@@ -2,21 +2,24 @@ import multiprocessing
 import functools
 import re
 
-import pandas as pd
 import numpy as np
-import pyranges as pr
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pysam
 
+import handygenome.tools as tools
 import handygenome.peakutils as peakutils
 import handygenome.logutils as logutils
 from handygenome.genomedf.genomedf import GenomeDataFrame
-import handygenome.cnv.cncall as cncall
+import handygenome.cnv.cnvcall as cnvcall
 from handygenome.cnv.depth import DepthSegmentDataFrame
 from handygenome.cnv.baf import BAFSegmentDataFrame
 import handygenome.cnv.baf as libbaf
 import handygenome.plot.misc as plotmisc
+import handygenome.cnv.bafsimul as bafsimul
+
+
+BAF_COLNAME_PAT = re.compile(libbaf.BAFINDEX_PAT.pattern + '.*')
 
 
 class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
@@ -35,6 +38,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
         f'{subclonal_B_colname_prefix}_(?P<baf_index>{libbaf.BAFINDEX_PAT_STRING})'
     )
 
+    corrected_baf_color = 'tab:red'
 
     @classmethod
     def from_segments(cls, seg_gdfs, nproc=1):
@@ -56,8 +60,13 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
             ),
             seg_gdfs,
         )
+        merged_seg_gdf = cls.from_frame(merged_seg_gdf.df, refver=refver)
 
-        return cls.from_frame(merged_seg_gdf.df, refver=refver)
+        # add corrected baf
+        for baf_index in merged_seg_gdf.get_baf_indexes():
+            merged_seg_gdf.add_corrected_baf_interp(baf_index=baf_index)
+
+        return merged_seg_gdf
 
     def check_has_CN(self):
         return self.__class__.clonal_CN_colname in self.columns
@@ -67,6 +76,28 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
             self.__class__.clonal_B_colname_pat.fullmatch(x)
             for x in self.columns
         )
+
+    def get_baf_indexes(self):
+        """baf0 comes first, the baf1, then baf2, ..."""
+        matches = [BAF_COLNAME_PAT.fullmatch(x) for x in self.columns]
+        matches = [x for x in matches if x is not None]
+        matches.sort(key=(lambda x: int(x.group('num'))))
+        result = tools.unique_keeporder(
+            (x.group('bafindex_prefix') + x.group('num'))
+            for x in matches
+        )
+        return result
+
+    #####################
+    # add corrected baf #
+    #####################
+
+    def add_corrected_baf_interp(self, baf_index):
+        baf_mean_colname = self.get_baf_mean_colname(baf_index=baf_index)
+        depth_colname = self.depth_mean_colname
+        input_data = self[[baf_mean_colname, depth_colname]]
+        corrected_bafs = bafsimul.predict_true_baf(input_data)
+        self[self.get_corrected_baf_colname(baf_index=baf_index)] = corrected_bafs
 
     ###################
     # colname getters #
@@ -148,11 +179,48 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
     def assign_ccf(self, data):
         self[self.__class__.ccf_colname] = data
 
-    def assign_predicted_depth(self, data):
-        self[self.get_predicted_depth_colname()] = data
+    ###################################
+    # predicted value column creation #
+    ###################################
 
-    def assign_predicted_baf(self, data, baf_index):
-        self[self.get_predicted_baf_colname(baf_index)] = data
+    def add_predicted_depth_germline(self, is_female, ploidy):
+        onecopy_depth = self.find_onecopy_depth(is_female, ploidy)
+        K = cnvcall.get_K_from_onecopy_depth_germline(onecopy_depth)
+
+        predicted_depth = cnvcall.get_predicted_depth(
+            CNt=self.get_clonal_CN(germline=False),
+            CNg=None,
+            cellularity=1,
+            K=K,
+        )
+        self[self.get_predicted_depth_colname()] = predicted_depth
+
+    def add_predicted_baf_germline(self, baf_index):
+        predicted_baf = cnvcall.get_predicted_baf(
+            CNt=self.get_clonal_CN(germline=False),
+            Bt=self.get_clonal_B(baf_index=baf_index, germline=False),
+            cellularity=1,
+        )
+        self[self.get_predicted_baf_colname(baf_index)] = predicted_baf
+
+    def add_predicted_depth_nongermline(self, cellularity, K):
+        predicted_depth = cnvcall.get_predicted_depth(
+            CNt=self.get_clonal_CN(germline=False),
+            CNg=self.get_clonal_CN(germline=True),
+            cellularity=cellularity,
+            K=K,
+        )
+        self[self.get_predicted_depth_colname()] = predicted_depth
+
+    def add_predicted_baf_nongermline(self, baf_index, cellularity):
+        predicted_baf = cnvcall.get_predicted_baf(
+            CNt=self.get_clonal_CN(germline=False),
+            Bt=self.get_clonal_B(baf_index=baf_index, germline=False),
+            CNg=self.get_clonal_CN(germline=True),
+            Bg=self.get_clonal_B(baf_index=baf_index, germline=True),
+            cellularity=cellularity,
+        )
+        self[self.get_predicted_baf_colname(baf_index)] = predicted_baf
 
     #########
     # fetch #
@@ -179,11 +247,103 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
     def get_predicted_baf(self, baf_index):
         return self[self.get_predicted_baf_colname(baf_index)]
 
+    #########################
+    # solution-related ones #
+    #########################
+
+    def add_clonal_solution_germline(self, is_female, ploidy):
+        assert isinstance(ploidy, int)
+        clonal_CNt, clonal_Bt = cnvcall.clonal_solution_from_germline(
+            self, is_female, ploidy,
+        )
+        self.assign_clonal_CN(clonal_CNt)
+        for idx, baf_index in enumerate(self.get_baf_indexes()):
+            self.assign_clonal_B(clonal_Bt[:, idx], baf_index)
+
+        # predicted depth and baf
+        self.add_predicted_depth_germline(is_female, ploidy)
+        for baf_index in self.get_baf_indexes():
+            self.add_predicted_baf_germline(baf_index)
+
+    def add_clonal_solution_corrected_depth(self, cellularity, K):
+        assert self.check_has_corrected_depth()
+
+        # CNt
+        CNt = cnvcall.find_clonal_CNt(
+            corrected_depth=self.corrected_depth_mean,
+            cellularity=cellularity,
+            K=K,
+            CNg=self.get_clonal_CN(germline=True),
+        )
+        self.assign_clonal_CN(data=CNt, germline=False)
+
+        # Bt
+        for baf_index in self.get_baf_indexes():
+            Bt = cnvcall.find_clonal_Bt(
+                baf=self.get_corrected_baf(baf_index),
+                CNt=self.get_clonal_CN(germline=False),
+                cellularity=cellularity,
+                CNg=self.get_clonal_CN(germline=True),
+                Bg=self.get_clonal_B(baf_index, germline=True),
+            )
+            self.assign_clonal_B(data=Bt, baf_index=baf_index, germline=False)
+
+        # predicted depth and baf
+        self.add_predicted_depth_nongermline(cellularity, K)
+
+        for baf_index in self.get_baf_indexes():
+            self.add_predicted_baf_nongermline(baf_index, cellularity)
+
+    def drop_solution_columns(self):
+        cols_to_drop = set(self.columns).intersection(
+            [
+                self.get_clonal_CN_colname(germline=False),
+                self.get_predicted_depth_colname(),
+            ]
+            + list(
+                self.get_clonal_B_colname(baf_index, germline=False)
+                for baf_index in self.get_baf_indexes()
+            )
+            + list(
+                self.get_predicted_baf_colname(baf_index)
+                for baf_index in self.get_baf_indexes()
+            )
+        )
+        self.drop_annots(cols_to_drop, inplace=True)
+
+    def get_average_ploidy(self):
+        return np.average(self.get_clonal_CN(), weights=self.lengths)
+
+    @staticmethod
+    def get_fitness_helper(values, lengths):
+        notnan_selector = np.logical_not(np.isnan(values))
+        values = values[notnan_selector]
+        lengths = lengths[notnan_selector]
+        return np.sum(np.abs(values) * lengths)
+
+    def get_CNt_fitness(self):
+        return self.get_fitness_helper(
+            (self.get_predicted_depth() - self.corrected_depth_mean),
+            self.lengths,
+        )
+
+    def get_Bt_fitness_one_baf_index(self, baf_index):
+        return self.get_fitness_helper(
+            (self.get_predicted_baf(baf_index) - self.get_corrected_baf(baf_index)),
+            self.lengths,
+        )
+
+    def get_Bt_fitness(self):
+        return sum(self.get_Bt_fitness_one_baf_index(baf_index) for baf_index in self.get_baf_indexes())
+
+    def get_solution_fitness(self):
+        return self.get_CNt_fitness() + self.get_Bt_fitness()
+
     ########
     # draw #
     ########
 
-    def draw(
+    def draw_CN(
         self,
         ax=None,
         genomeplotter=None,
@@ -210,6 +370,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
 
         # multicore plotdata generation
         nproc=1,
+        verbose=True,
     ):
         # y axis parameters
         if ylabel is False:
@@ -236,6 +397,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
                 self, 
                 log_suffix=' (clonal copy number)',
                 nproc=nproc,
+                verbose=verbose,
             )
 
         # plot kwargs
@@ -248,7 +410,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
         CN_line_color = 'black'
         plot_kwargs = plot_kwargs_base | {'color': CN_line_color}
         offset = 0.1
-        fig, ax, genomeplotter = self.draw_hlines(
+        fig, ax, genomeplotter, plotdata = self.draw_hlines(
             y_colname=self.get_clonal_CN_colname(),
             ax=ax,
             genomeplotter=genomeplotter,
@@ -268,7 +430,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
         for idx, (baf_idx, colname) in enumerate(B_colnames.items()):
             offset = idx * -0.1
             plot_kwargs = plot_kwargs_base | {'color': B_line_colors[baf_idx]}
-            fig, ax, genomeplotter = self.draw_hlines(
+            fig, ax, genomeplotter, plotdata = self.draw_hlines(
                 y_colname=colname,
                 ax=ax,
                 genomeplotter=genomeplotter,
@@ -318,6 +480,52 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
             )
         ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
 
+    def draw_corrected_baf(
+        self,
+        baf_index,
+        ax=None,
+        genomeplotter=None,
+        plotdata=None,
 
+        # drawing kwargs
+        plot_kwargs=dict(),
 
+        # multicore plotdata generation
+        nproc=1,
+        verbose=True,
+    ):
+        y_colname_corr = self.get_corrected_baf_colname(baf_index=baf_index)
+        fig, ax, genomeplotter, plotdata = self.draw_hlines(
+            y_colname=y_colname_corr,
+            ax=ax,
+            genomeplotter=genomeplotter,
+            plotdata=plotdata,
+
+            plot_kwargs=(
+                {'color': self.__class__.corrected_baf_color}
+                | plot_kwargs
+            ),
+
+            setup_axes=False,
+
+            nproc=nproc,
+            log_suffix=' (BAF segment - corrected baf)',
+            verbose=verbose,
+        )
+
+        # make legend - intentionally placed after axes setup to use "bbox_to_anchor"
+        handles = plotmisc.LegendHandles()
+        handles.add_line(
+            marker=None, 
+            linewidth=4, 
+            color=self.__class__.corrected_baf_color, 
+            label='corrected BAF'
+        )
+        handles.add_line(
+            marker=None, 
+            linewidth=4, 
+            color=BAFSegmentDataFrame.baf_mean_color, 
+            label='BAF data mean'
+        )
+        ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
 

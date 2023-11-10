@@ -1,11 +1,13 @@
 import os
 import re
+import subprocess
 
 import pysam
 import numpy as np
 
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.workflow as workflow
+import handygenome.logutils as logutils
 
 
 def create_header(chromdict):
@@ -96,8 +98,26 @@ def get_average_depth(bam, readlen=None, aligned_region_length=None):
     readcounts = sum(x.mapped for x in bam.get_index_statistics())
     if readlen is None:
         readlen = check_read_length(bam)
+        logutils.log(f'Estimated read length: {readlen}')
         
     return (readcounts * readlen) / aligned_region_length
+
+
+def get_average_depth_idxstats(bam_path, readlen=None):
+    if readlen is None:
+        with pysam.AlignmentFile(bam_path) as bam:
+            readlen = check_read_length(bam)
+        logutils.log(f'Estimated read length: {readlen}')
+
+    output = pysam.idxstats(bam_path)
+    readcount = 0
+    aligned_region_length = 0
+    for line in output.rstrip().split('\n'):
+        linesp = line.split('\t')
+        aligned_region_length += int(linesp[1])
+        readcount += int(linesp[2])
+
+    return (readcount * readlen) / aligned_region_length
 
 
 def check_read_length(bam):

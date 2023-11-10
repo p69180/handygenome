@@ -476,37 +476,37 @@ class CoordinateConverter:
     # plotdata generation #
     #######################
 
-    def make_plotdata_old(self, data, log_suffix=None):
-        if log_suffix is not None:
-            logutils.log(f'Beginning plotdata generation{log_suffix}')
-
-        #assert isinstance(data, GDF)
-        isec_gdf = data.intersect(self.totalregion_gdf_wogap)
-        if isec_gdf.is_empty:
-            return False
-
-        isec_gdf.sort()
-
-        result_start0s = list()
-        result_end0s = list()
-        ordered_chroms = tools.unique_keeporder(isec_gdf.chromosomes)
-
-        for chrom in ordered_chroms:
-            subgdf = isec_gdf.subset_chroms(chrom)
-            result_start0s.extend(
-                genomic_to_plot(self.chromwise_params, chrom, subgdf.starts)
-            )
-            result_end0s.extend(
-                genomic_to_plot(self.chromwise_params, chrom, subgdf.ends - 1) + 1
-            )
-
-        isec_gdf['plot_start0s'] = result_start0s
-        isec_gdf['plot_end0s'] = result_end0s
-
-        if log_suffix is not None:
-            logutils.log(f'Finished plotdata generation{log_suffix}')
-
-        return isec_gdf
+#    def make_plotdata_old(self, data, log_suffix=None):
+#        if log_suffix is not None:
+#            logutils.log(f'Beginning plotdata generation{log_suffix}')
+#
+#        #assert isinstance(data, GDF)
+#        isec_gdf = data.intersect(self.totalregion_gdf_wogap)
+#        if isec_gdf.is_empty:
+#            return False
+#
+#        isec_gdf.sort()
+#
+#        result_start0s = list()
+#        result_end0s = list()
+#        ordered_chroms = tools.unique_keeporder(isec_gdf.chromosomes)
+#
+#        for chrom in ordered_chroms:
+#            subgdf = isec_gdf.subset_chroms(chrom)
+#            result_start0s.extend(
+#                genomic_to_plot(self.chromwise_params, chrom, subgdf.starts)
+#            )
+#            result_end0s.extend(
+#                genomic_to_plot(self.chromwise_params, chrom, subgdf.ends - 1) + 1
+#            )
+#
+#        isec_gdf['plot_start0s'] = result_start0s
+#        isec_gdf['plot_end0s'] = result_end0s
+#
+#        if log_suffix is not None:
+#            logutils.log(f'Finished plotdata generation{log_suffix}')
+#
+#        return isec_gdf
 
     @staticmethod
     def make_plotdata_targetfunc(partial_isec_gdf, chromwise_params):
@@ -515,21 +515,21 @@ class CoordinateConverter:
         plot_end0s = genomic_to_plot(chromwise_params, chrom, partial_isec_gdf.end0s - 1) + 1
         return plot_start0s, plot_end0s
 
-    def make_plotdata(self, data, log_suffix=None, nproc=1, split_width=10000):
-        if log_suffix is not None:
+    def make_plotdata(self, data, log_suffix='', nproc=1, split_width=10000, verbose=True):
+        if verbose:
             logutils.log(f'Beginning plotdata generation{log_suffix} (nproc={nproc})')
 
         #assert isinstance(data, GDF)
-        if log_suffix is not None:
+        if verbose:
             logutils.log(f'Beginning intersection')
         isec_gdf = data.intersect(self.totalregion_gdf_wogap, nproc=nproc)
-        if log_suffix is not None:
+        if verbose:
             logutils.log(f'Finished intersection')
 
         if isec_gdf.is_empty:
             return False
 
-        if log_suffix is not None:
+        if verbose:
             logutils.log(f'Beginning plot coordinate calculation')
 
         isec_gdf.sort()
@@ -546,15 +546,13 @@ class CoordinateConverter:
         isec_gdf['plot_start0s'] = plot_start0s
         isec_gdf['plot_end0s'] = plot_end0s
 
-        if log_suffix is not None:
+        if verbose:
             logutils.log(f'Finished plot coordinate calculation')
 
-        if log_suffix is not None:
+        if verbose:
             logutils.log(f'Finished plotdata generation{log_suffix} (nproc={nproc})')
 
         return isec_gdf
-
-    prepare_plot_data = make_plotdata
 
 
 class GenomePlotter:
@@ -562,8 +560,14 @@ class GenomePlotter:
         self.refver = refver
         self.cconv = CoordinateConverter(refver, **kwargs)
 
-    def make_plotdata(self, data, log_suffix=None, nproc=1, split_width=1000):
-        return self.cconv.make_plotdata(data, log_suffix=log_suffix, nproc=nproc, split_width=split_width)
+    def make_plotdata(self, data, log_suffix='', nproc=1, split_width=1000, verbose=True):
+        return self.cconv.make_plotdata(
+            data, 
+            log_suffix=log_suffix, 
+            nproc=nproc, 
+            split_width=split_width,
+            verbose=verbose,
+        )
 
     def genomic_to_plot(self, chrom, pos0_list):
         return self.cconv.genomic_to_plot(chrom, pos0_list)
@@ -582,11 +586,18 @@ class GenomePlotter:
     def draw_common(
         self, 
         ax, 
+
         n_xlabel=None,
+
         split_spines=True,
+
         merge_same_chroms=True,
+
         chromlabel_kwargs=dict(), 
         draw_chromlabel=True,
+
+        title=None,
+        title_kwargs=dict(),
     ):
         """Should be done after data drawings are finished"""
 
@@ -625,6 +636,8 @@ class GenomePlotter:
                 prefix_with_chr=True,
                 merge_same_chroms=merge_same_chroms,
                 chromlabel_kwargs=chromlabel_kwargs,
+                title=title,
+                title_kwargs=title_kwargs,
             )
 
     def draw_decorator(func):
@@ -636,28 +649,25 @@ class GenomePlotter:
             ba.apply_defaults()
 
             # data, plotdata
-            if (
-                ('plotdata' in ba.arguments)
-                and ('data' in ba.arguments)
-            ):
-                assert set(['log_suffix', 'nproc']).issubset(ba.arguments.keys())
-                
+            if set(['plotdata', 'data']).issubset(ba.arguments.keys()):
+                assert set(['log_suffix', 'nproc', 'verbose']).issubset(ba.arguments.keys())
                 if ba.arguments['plotdata'] is None:
+
+                    #logutils.log(ba.arguments['verbose'], verbose_locstring=True)
+
                     gplotter = ba.arguments['self']
-                    ba.arguments['plotdata'] = gplotter.cconv.make_plotdata(
+                    ba.arguments['plotdata'] = gplotter.make_plotdata(
                         ba.arguments['data'],
                         log_suffix=ba.arguments['log_suffix'], 
                         nproc=ba.arguments['nproc'], 
+                        verbose=ba.arguments['verbose'],
                     )
                     del ba.arguments['data']
                 if ba.arguments['plotdata'] is False:
                     return None
 
             # ys
-            if (
-                ('ys' in ba.arguments)
-                and ('y_colname' in ba.arguments)
-            ):
+            if set(['ys', 'y_colname']).issubset(ba.arguments.keys()):
                 if ba.arguments['y_colname'] is not None:
                     ba.arguments['ys'] = ba.arguments['plotdata'][ba.arguments['y_colname']]
                     del ba.arguments['y_colname']
@@ -713,6 +723,8 @@ class GenomePlotter:
         chromlabel_kwargs=dict(), 
         line_kwargs=dict(),
         merge_same_chroms=True,
+        title=None,
+        title_kwargs=dict(),
     ):
         """What it does:
             1) draw spines (axes border lines) (top, bottom, left, right, region borders)
@@ -780,6 +792,14 @@ class GenomePlotter:
                     **chromlabel_kwargs,
                 )
 
+        # axes title
+        if title is not None:
+            kwargs = (
+                {'weight': 'bold', 'size': 20, 'y': 1.1} 
+                | title_kwargs
+            )
+            ax.set_title(title, **kwargs)
+
     def draw_grids(
         self, 
         ax, 
@@ -813,10 +833,12 @@ class GenomePlotter:
         ax, 
         *, 
 
+        # plotdata generation
         data=None, 
         plotdata=None, 
         nproc=1,
-        log_suffix=None,
+        log_suffix='',
+        verbose=True,
 
         ys=None,
         y_colname=None, 
@@ -854,10 +876,13 @@ class GenomePlotter:
     def draw_dots(
         self, ax, 
         *, 
+
+        # plotdata generation
         data=None, 
         plotdata=None,
         nproc=1,
-        log_suffix=None,
+        log_suffix='',
+        verbose=True,
 
         ys=None,
         y_colname=None, 
@@ -885,10 +910,13 @@ class GenomePlotter:
     def draw_dots_scatter(
         self, ax,
         *, 
+
+        # plotdata generation
         data=None, 
         plotdata=None,
         nproc=1,
-        log_suffix=None,
+        log_suffix='',
+        verbose=True,
 
         ys=None,
         y_colname=None, 
@@ -930,10 +958,13 @@ class GenomePlotter:
     def draw_bars(
         self, ax, 
         *, 
+
+        # plotdata generation
         data=None, 
         plotdata=None,
         nproc=1,
-        log_suffix=None,
+        log_suffix='',
+        verbose=True,
 
         ys=None,
         y_colname=None, 
@@ -968,10 +999,13 @@ class GenomePlotter:
     def draw_texts(
         self, ax, 
         *,
+
+        # plotdata generation
         data=None, 
         plotdata=None,
         nproc=1,
-        log_suffix=None,
+        log_suffix='',
+        verbose=True,
 
         ys=None,
         y_colname=None, 
@@ -1008,18 +1042,21 @@ class GenomePlotter:
             ax.text(x, y, t, **text_kwargs)
 
     @draw_decorator
-    def draw_bgcolors(
+    def draw_boxes(
         self, ax, 
         *,
+
+        # plotdata generation
         data=None, 
         plotdata=None,
         nproc=1,
-        log_suffix=None,
+        log_suffix='',
+        verbose=True,
 
         ymins=None,
         ymaxs=None,
+        colors=None,
 
-        colors='yellow',
         #plot_kwargs=dict(),
         rect_kwargs=dict(),
 
@@ -1056,6 +1093,8 @@ class GenomePlotter:
         heights = ymaxs - ymins
 
         # color
+        if colors is None:
+            colors = 'yellow'
         colors = np.broadcast_to(colors, widths.shape)
 
         # setup rect_kwargs
@@ -1104,10 +1143,13 @@ class GenomePlotter:
     def draw_features(
         self, ax,
         *,
+
+        # plotdata generation
         data=None,
         plotdata=None,
         nproc=1,
-        log_suffix=None,
+        log_suffix='',
+        verbose=True,
 
         y_features=None,
         y_labels=None,
@@ -1191,12 +1233,13 @@ class GenomePlotter:
     ):
         cytoband_gdf = ucscdata.get_cytoband(self.refver)
         colors = [ucscdata.CYTOBAND_COLORMAP[x] for x in cytoband_gdf['Stain']]
-        self.draw_bgcolors(
+        self.draw_boxes(
             ax=ax, 
             data=cytoband_gdf, 
             rect_kwargs=dict(alpha=1),
             colors=colors,
             draw_common=False, 
+            verbose=False,
         )
 
     @draw_decorator
@@ -1209,7 +1252,7 @@ class GenomePlotter:
         draw_common_kwargs=dict(),
     ):
         cytoband_gdf = ucscdata.get_cytoband(refver=self.refver)
-        self.draw_bgcolors(
+        self.draw_boxes(
             ax, 
             data=cytoband_gdf.loc[cytoband_gdf['Stain'] == 'acen', :],
             #data=cytoband_gdf.loc[cytoband_gdf['Stain'].isin(['acen', 'gvar', 'stalk']), :],
@@ -1217,7 +1260,8 @@ class GenomePlotter:
             ymaxs=ymaxs,
             colors='red',
             rect_kwargs=dict(alpha=0.3, fill=None, hatch='//'),
-            draw_common=False, 
+            draw_common=False,
+            verbose=False,
         )
 
     @draw_decorator
@@ -1235,12 +1279,13 @@ class GenomePlotter:
         }
 
         def helper(bandname):
-            self.draw_bgcolors(
+            self.draw_boxes(
                 ax, 
                 data=cytoband_gdf[cytoband_gdf['Stain'] == bandname, :], 
                 colors=mapping[bandname],
                 rect_kwargs=dict(alpha=0.3, linewidth=0),
                 draw_common=False, 
+                verbose=False,
             )
 
         helper('acen')
@@ -3217,7 +3262,7 @@ class GenomePlotter:
 #                    peak_cutoff=1e8,
 #                )
 #            if draw_deviation:
-#                self.genomeplotter.draw_bgcolors(
+#                self.genomeplotter.draw_boxes(
 #                    ax,
 #                    df_plotdata=segment_plotdata,
 #                    ymins=(
@@ -3295,19 +3340,19 @@ class GenomePlotter:
 #            )
 #
 #    def draw_unfit_region(self, ax, plotdata):
-#        self.genomeplotter.draw_bgcolors(
+#        self.genomeplotter.draw_boxes(
 #            ax,
 #            df_plotdata=plotdata.loc[plotdata['polyploid_unfit'], :],
 #            colors='yellow',
 #            plot_kwargs=dict(alpha=0.2),
 #        )
-#        self.genomeplotter.draw_bgcolors(
+#        self.genomeplotter.draw_boxes(
 #            ax,
 #            df_plotdata=plotdata.loc[plotdata['polyploid_unfit_bafonly'], :],
 #            colors='green',
 #            plot_kwargs=dict(alpha=0.2),
 #        )
-#        self.genomeplotter.draw_bgcolors(
+#        self.genomeplotter.draw_boxes(
 #            ax,
 #            df_plotdata=plotdata.loc[plotdata['monoploid_unfit'], :],
 #            colors='blue',
@@ -3770,7 +3815,7 @@ class GenomePlotter:
 #        ax.set_yticklabels(yticks)
 #
 #        if mark_clonal_region:
-#            self.genomeplotter.draw_bgcolors(
+#            self.genomeplotter.draw_boxes(
 #                ax,
 #                df_plotdata=plotdata.loc[plotdata['ccf'].isna(), :],
 #                colors='green',
@@ -4812,7 +4857,7 @@ class GenomePlotter:
 #            data_df['depthratio_raw'].isna().to_numpy,
 #            data_df['baf_raw'].isna().to_numpy,
 #        )
-#        gplotter.draw_bgcolors(
+#        gplotter.draw_boxes(
 #            axd['depth'], df=data_df.loc[selector, :], 
 #            plot_kwargs=dict(color='red', alpha=0.01)
 #        )

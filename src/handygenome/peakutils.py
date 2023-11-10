@@ -515,6 +515,8 @@ class DensityPeaks(PeaksBase):
 def find_hist_peaks(
     data, 
 
+    plotonly=False,
+
     weights=None, 
     limit=None, 
     reltoheight=None,
@@ -532,18 +534,17 @@ def find_hist_peaks(
     )
     bin_midpoints = 0.5 * (bin_edges[:-1] + bin_edges[1:])
 
-    if inverse:
-        findpeaks_input = np.max(hist) - hist
-    else:
-        findpeaks_input = hist
-    peaks, peak_properties = scipy.signal.find_peaks(
-        findpeaks_input, **find_peaks_kwargs
-    )
+    if not plotonly:
+        if inverse:
+            findpeaks_input = np.max(hist) - hist
+        else:
+            findpeaks_input = hist
+        peaks, peak_properties = scipy.signal.find_peaks(
+            findpeaks_input, **find_peaks_kwargs
+        )
+        if len(peaks) == 0:
+            raise NoPeakError('Peaks could not be found from histogram')
 
-    if len(peaks) == 0:
-        raise NoPeakError('Peaks could not be found from histogram')
-        #return None
-    else:
         peakresult = HistPeaks(
             {
                 'data': data,
@@ -560,11 +561,26 @@ def find_hist_peaks(
             }
         )
         peakresult.postprocess(reltoheight=reltoheight)
-        return peakresult
+    else:
+        peakresult = HistPeaks(
+            {
+                'data': data,
+                'find_peaks_kwargs': find_peaks_kwargs,
+                'bin_edges': bin_edges,
+                'bin_midpoints': bin_midpoints,
+                'hist': hist,
+                'xs': bin_midpoints,
+                'ys': hist,
+            }
+        )
+
+    return peakresult
 
 
 def find_density_peaks(
     data, 
+
+    plotonly=False,
 
     weights=None, 
     limit=None, 
@@ -587,34 +603,23 @@ def find_density_peaks(
         msg = f'data: {data}; weights: {weights}'
         raise DensityGenerationFailure(msg) from exc
 
-#    except scipy.linalg.LinAlgError as exc:
-#        if str(exc) == 'singular matrix':
-#            logutils.log(
-#                f'Density generation failed.', 
-#                add_locstring=True, 
-#                level='warn',
-#            )
-#            return None
-#        else:
-#            raise
-
     if isinstance(xs, int):
         xs = np.linspace(data.min(), data.max(), xs)
         #xs = np.linspace(np.quantile(data, 0.01), np.quantile(data, 0.99), xs)
     ys = density(xs)
 
-    if inverse:
-        findpeaks_input = np.max(ys) - ys
-    else:
-        findpeaks_input = ys
-    peaks, peak_properties = scipy.signal.find_peaks(
-        findpeaks_input, **find_peaks_kwargs
-    )
+    if not plotonly:
+        if inverse:
+            findpeaks_input = np.max(ys) - ys
+        else:
+            findpeaks_input = ys
+        peaks, peak_properties = scipy.signal.find_peaks(
+            findpeaks_input, **find_peaks_kwargs
+        )
 
-    if len(peaks) == 0:
-        raise NoPeakError('Peaks could not be found from density')
-        #return None
-    else:
+        if len(peaks) == 0:
+            raise NoPeakError('Peaks could not be found from density')
+
         peakresult = DensityPeaks(
             {
                 'data': data,
@@ -629,7 +634,18 @@ def find_density_peaks(
             }
         )
         peakresult.postprocess(reltoheight=reltoheight)
-        return peakresult
+    else:
+        peakresult = DensityPeaks(
+            {
+                'data': data,
+                'find_peaks_kwargs': find_peaks_kwargs,
+                'density': density,
+                'xs': xs,
+                'ys': ys,
+            }
+        )
+
+    return peakresult
 
 
 def findpeaks_arghandler(data, weights, limit, find_peaks_kwargs):
@@ -670,10 +686,15 @@ def draw_peaks(
     reltoheight=None,
     inverse=False,
 
-    omit_hist=False,
-    omit_hist_peakline=True,
-    omit_density=False,
-    omit_density_peakline=False,
+    xs=100,
+    bins=30,
+
+    hist=False,
+
+    omit_hist=None,
+    omit_hist_peakline=None,
+    omit_density=None,
+    omit_density_peakline=None,
 
     histpeaks=None,
     densitypeaks=None,
@@ -683,14 +704,16 @@ def draw_peaks(
 
     lying=False,
 ):
-    # set kwargs
+    # argument handling
     hist_kwargs = (
-        dict(bins=30)
+        dict()
         | hist_kwargs
+        | dict(bins=bins)
     )
     density_kwargs = (
         dict()
         | density_kwargs
+        | dict(xs=xs)
     )
 
     for dic in (hist_kwargs, density_kwargs):
@@ -699,12 +722,37 @@ def draw_peaks(
         dic['reltoheight'] = reltoheight
         dic['inverse'] = inverse
 
+    def helper(old, new):
+        if old is None:
+            return new
+        else:
+            return old
+
+    if hist:
+        omit_hist = helper(omit_hist, False)
+        omit_hist_peakline = helper(omit_hist_peakline, False)
+        omit_density = helper(omit_density, True)
+        omit_density_peakline = helper(omit_density_peakline, True)
+    else:
+        omit_hist = helper(omit_hist, False)
+        omit_hist_peakline = helper(omit_hist_peakline, True)
+        omit_density = helper(omit_density, False)
+        omit_density_peakline = helper(omit_density_peakline, False)
+
     # main
     if (histpeaks is None) and (not omit_hist):
-        histpeaks = find_hist_peaks(data, **hist_kwargs)
+        histpeaks = find_hist_peaks(
+            data, 
+            plotonly=omit_hist_peakline,
+            **hist_kwargs,
+        )
     if (densitypeaks is None) and (not omit_density):
         try:
-            densitypeaks = find_density_peaks(data, **density_kwargs)
+            densitypeaks = find_density_peaks(
+                data, 
+                plotonly=omit_density_peakline,
+                **density_kwargs,
+            )
         except DensityGenerationFailure:
             omit_density = True
 
@@ -736,4 +784,6 @@ def draw_peaks(
                 omit_peakline=omit_density_peakline,
             )
 
-    return fig, ax
+    return fig, ax, densitypeaks, histpeaks
+
+
