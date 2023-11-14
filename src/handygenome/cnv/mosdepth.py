@@ -60,6 +60,9 @@ def run_mosdepth(
     verbose=True,
     prefix='PREFIX'
 ):
+    # disable multiprocessing
+    nproc = 1
+
     # set refver
     #if refver is None:
     refver = refgenome.infer_refver_bampath(bam_path)

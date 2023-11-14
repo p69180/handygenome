@@ -477,6 +477,10 @@ def grouper_Itertools_Recipes(iterable, n, *, incomplete='fill', fillvalue=None)
 # array handlers & mathematical ones #
 ######################################
 
+def phred(n):
+    return 10 ** (n * -0.1)
+
+
 # Proposed by: Noyer282 (https://stackoverflow.com/a/40426159/7204581)
 # https://stackoverflow.com/questions/432112/is-there-a-numpy-function-to-return-the-first-index-of-something-in-an-array
 def array_index(arr, v):
@@ -526,9 +530,47 @@ def get_split_nums_bywidth(total_length, width):
         result = np.repeat([width1, width2], [num1, num2])
 
     return result
+    
+
+def array_grouper_new(arr, cutoff=None, return_values=True, return_counts=True):
+    """- Does not sort before grouping, like itertools.groupby
+    - Args:
+        cutoff: adjacent values with absolute difference le cutoff are grouped together
+    """
+    assert arr.ndim == 1
+
+    # diff
+    changes = np.repeat(False, len(arr))
+    changes[0] = True
+    if cutoff is None:
+        changes[1:] = np.diff(arr)
+    else:
+        changes[1:] = (np.abs(np.diff(arr)) > cutoff)
+
+    # groupkey
+    groupkey = np.cumsum(changes)
+
+    # others
+    if return_values or return_counts:
+        indexes = np.nonzero(changes)[0]
+
+    if return_values:
+        assert cutoff is None
+        values = arr[indexes]
+    else:
+        values = None
+
+    if return_counts:
+        counts = np.empty(len(indexes), dtype=int)
+        counts[:-1] = np.diff(indexes)
+        counts[-1] = len(arr) - indexes[-1]
+    else:
+        counts = None
+        
+    return groupkey, values, counts
 
 
-def array_grouper(arr, omit_values=False):
+def array_grouper(arr, omit_values=False, omit_counts=False):
     """Does not sort before grouping, like itertools.groupby"""
     assert arr.ndim in (1, 2)
 
@@ -539,18 +581,26 @@ def array_grouper(arr, omit_values=False):
     elif arr.ndim == 2:
         diff[1:] = np.diff(arr, axis=0).any(axis=1)
 
-    indexes = np.nonzero(diff)[0]
+    # groupkey
+    groupkey = np.cumsum(diff)
+
+    # others
+    if not (omit_values and omit_counts):
+        indexes = np.nonzero(diff)[0]
 
     if omit_values:
         values = None
     else:
         values = arr[indexes]
 
-    counts = np.empty(indexes.shape, dtype=int)
-    counts[:-1] = np.diff(indexes)
-    counts[-1] = arr.shape[0] - indexes[-1]
+    if omit_counts:
+        counts = None
+    else:
+        counts = np.empty(len(indexes), dtype=int)
+        counts[:-1] = np.diff(indexes)
+        counts[-1] = arr.shape[0] - indexes[-1]
 
-    groupkey = np.repeat(np.arange(len(counts)), counts)
+    #groupkey = np.repeat(np.arange(len(counts)), counts)
         
     return values, counts, groupkey
                 
@@ -690,6 +740,31 @@ def digitize_type2(arr, bins=None, start=None, stop=None, step=None):
     bin_indexes = np.digitize(arr, bins=bins, right=False) - 1
     bin_mids = 0.5 * (bins[:-1] + bins[1:])
     return bin_mids[bin_indexes]
+
+
+def gapped_linspace(starts, ends, num=50, return_indexes=False, endpoint=True):
+    starts = np.asarray(starts)
+    ends = np.asarray(ends)
+    assert (starts[1:] > starts[:-1]).all()
+    assert (ends[1:] > ends[:-1]).all()
+    assert (ends[:-1] <= starts[1:]).all()
+
+    lengths = ends - starts
+    bins = np.insert(lengths.cumsum(), 0, 0)
+    points = np.linspace(0, bins[-1], num=num, endpoint=endpoint)
+    bin_indexes = np.digitize(points, bins, right=False)
+    #assert not np.isin(bin_indexes, [0, len(bins)]).any()
+    assert not (bin_indexes == 0).any()
+    bin_indexes[bin_indexes == len(bins)] -= 1
+    bin_indexes -= 1
+
+    offsets = points - bins[:-1][bin_indexes]
+    result = starts[bin_indexes] + offsets
+
+    if return_indexes:
+        return result, bin_indexes
+    else:
+        return result
 
 
 ##############################

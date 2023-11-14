@@ -2166,36 +2166,6 @@ class VariantDataFrame(GenomeDataFrame):
         result.sort()
         return result
 
-    @classmethod
-    def variant_union_old(cls, gdfs, nproc=1, num_split=30):
-        assert len(gdfs) >= 2
-        assert len(set(x.refver for x in gdfs)) == 1
-        assert len(set(x.num_alleles for x in gdfs)) == 1
-
-        logutils.log(f'Splitting input gdfs')
-        refver = gdfs[0].refver
-        split_allregion_gdf = (
-            GenomeDataFrame.all_regions(refver, assembled_only=True)
-            .equal_length_split(n=num_split)
-        )
-        with multiprocessing.Pool(nproc) as pool:
-            args = (
-                (gdfs, region_gdf)
-                for region_gdf in split_allregion_gdf
-            )
-            split_input_gdfs = pool.starmap(cls.split_input_gdfs_targetfunc, args)
-
-        logutils.log(f'Joining split gdfs')
-        with multiprocessing.Pool(nproc) as pool:
-            mp_result = pool.map(cls.variant_union_base, split_input_gdfs)
-        result = cls.concat(mp_result)
-        result.sort()
-        return result
-
-    @staticmethod
-    def split_input_gdfs_targetfunc(gdfs, region_gdf):
-        return list(x.subset_regions(region_gdf) for x in gdfs)
-
     @staticmethod
     def split_input_gdfs_targetfunc2(gdf):
         return gdf.group_bychrom(sort=False)
@@ -2334,6 +2304,9 @@ def get_vafdf(
         level 1: (name:                                              None |                                 sid1 |                                 sid2
         level 2: Chromosome, Start, End, REF, [ALT1, [ALT2, ...]]   REF_vaf, [ALT1_vaf, [ALT2_vaf, ...]]   REF_vaf, [ALT1_vaf, [ALT2_vaf, ...]]
     """
+    # disable multiprocessing
+    nproc = 1
+
     # get VCF fetch regions for each parallel job
     if verbose:
         logutils.log(f'Extracting vcf position information') 

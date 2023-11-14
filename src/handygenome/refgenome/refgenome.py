@@ -887,7 +887,7 @@ class AssemblySpec:
         for line in stream:
             if not record_start:
                 if line.startswith('# Sequence-Name'):
-                    keys = tools.get_linesp(re.sub('^#\s*', '', line))
+                    keys = tools.get_linesp(re.sub(r'^#\s*', '', line))
                     record_start = True
                     continue
             else:

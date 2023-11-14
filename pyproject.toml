@@ -20,7 +20,9 @@ dependencies = [
     "scikit-learn",
     "PyYAML",
     "jupyterlab",
-    "statsmodels",
+    "notebook",
+    #"statsmodels",
+    "pomegranate",
 ]
 authors = [
     {name="Ji-Hyung Park", email="p69180@gmail.com"},

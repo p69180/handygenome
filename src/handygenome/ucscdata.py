@@ -10,7 +10,7 @@ import handygenome
 import handygenome.network as network
 #import handygenome.cnv.misc as cnvmisc
 import handygenome.refgenome.refgenome as refgenome
-from handygenome.genomedf.genomedf import GenomeDataFrame as GDF
+from handygenome.genomedf.genomedf_base import GenomeDataFrameBase
 
 
 URL_BASE = 'https://api.genome.ucsc.edu'
@@ -54,7 +54,7 @@ def get_refver_aliases():
     genome_data = get_avaliable_genomes()
     for key, val in genome_data.items():
         if val['organism'] in ('Mouse', 'Human'):
-            aliases = re.match('.*\((\S+ )?(\S+)\)', val['description']).group(2).split('/')
+            aliases = re.match(r'.*\((\S+ )?(\S+)\)', val['description']).group(2).split('/')
             result[key] = aliases
 
     return result
@@ -114,7 +114,7 @@ def get_cytoband_from_ucsc_api(refver):
     valid_indexes = df['Chromosome'].isin(tuple(chromdict.keys()))
     df = df.loc[valid_indexes, :]
 
-    result = GDF.from_frame(df, refver=refver)
+    result = GenomeDataFrameBase.from_frame(df, refver=refver)
     result.sort()
     #if (refver == 'hg19') and rename_hg19:
     #    result = rename_hg19_cytoband(result)
@@ -147,7 +147,7 @@ def get_cytoband(refver):
         cytoband_gdf.write_tsv(cytoband_path)
         #write_cytoband(cytoband_df, refver)
     else:
-        cytoband_gdf = GDF.read_tsv(
+        cytoband_gdf = GenomeDataFrameBase.read_tsv(
             cytoband_path, refver, dtype={'Name': 'string', 'Stain': 'string'},
         )
 

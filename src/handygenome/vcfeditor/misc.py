@@ -10,7 +10,7 @@ import handygenome.tools as tools
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.interval as libinterval
 import handygenome.logutils as logutils
-from handygenome.genomedf.genomedf import GenomeDataFrame as GDF
+from handygenome.genomedf.genomedf_base import GenomeDataFrameBase
 
 
 # pysam VariantFile mode related ones
@@ -113,7 +113,7 @@ def get_vcf_positions_new(vcf_path, split=100, nproc=1):
     if not check_has_index(vcf_path):
         make_index(vcf_path) 
 
-    allregion_gdf = GDF.all_regions(refver, assembled_only=False)
+    allregion_gdf = GenomeDataFrameBase.all_regions(refver, assembled_only=False)
     allregion_split = allregion_gdf.equal_length_split(n=split)
 
     with multiprocessing.Pool(nproc) as pool:
@@ -128,7 +128,7 @@ def get_vcf_positions_new(vcf_path, split=100, nproc=1):
 
     all_vr_intervals = list(itertools.chain.from_iterable(pool_result))
     chroms, start0s, end0s = zip(*all_vr_intervals)
-    result_gdf = GDF.from_data(refver=refver, chroms=chroms, start0s=start0s, end0s=end0s)
+    result_gdf = GenomeDataFrameBase.from_data(refver=refver, chroms=chroms, start0s=start0s, end0s=end0s)
     result_gdf = result_gdf.merge()
 
     return result_gdf
@@ -155,7 +155,7 @@ def get_vcf_fetchregions_new(vcf_path, n, nproc=1):
         chrom_right = subgdf.chromosomes[-1]
         end0_right = subgdf.ends[-1]
         fetchregion_gdfs.append(
-            GDF.from_margins(
+            GenomeDataFrameBase.from_margins(
                 refver, chrom_left, start0_left, chrom_right, end0_right,
             )
         )

@@ -99,6 +99,7 @@ def decal_baf(bafs):
 
 class BAFRawDataFrame(VariantDataFrame):
     is_het_colname = 'is_het'
+    drawresult_name = 'baf_rawdata'
 
     def get_baf_indexes(self):
         return get_baf_indexes(self.num_alleles)
@@ -181,19 +182,24 @@ class BAFRawDataFrame(VariantDataFrame):
         self.sort()
         germline_baf_rawdata.sort()
         assert (
-            self.get_coordinate_array()
-            == germline_baf_rawdata.get_coordinate_array()
+            self[self.nonannot_columns] 
+            == germline_baf_rawdata[germline_baf_rawdata.nonannot_columns] 
+            #self.get_coordinate_array()
+            #== germline_baf_rawdata.get_coordinate_array()
         ).all()
         
         germline_baf_rawdata.add_baf_hetalt_flag()
         ishet_colname = self.__class__.is_het_colname
         self[ishet_colname] = germline_baf_rawdata[ishet_colname]
 
+    def get_hetalt_selector(self):
+        return self[self.__class__.is_het_colname]
+
     def subset_hetalt(self):
         """Args:
             cutoff: If maximum VAF value is greater than (1 - cutoff) value, regarded as homalt
         """
-        return self.loc[self[self.__class__.is_het_colname], :]
+        return self.loc[self.get_hetalt_selector(), :]
 
     ##########
     # others #
@@ -282,7 +288,12 @@ class BAFRawDataFrame(VariantDataFrame):
         return result
 
     def filter_valid_bafs(
-        self, germline_CN_gdf=None, is_female=None, remove_loh=True, nproc=1,
+        self, 
+        germline_CN_gdf=None, 
+        is_female=None, 
+        remove_loh=True, 
+        skip_hetalt_filter=False,
+        nproc=1,
         verbose=False,
     ):
         """Keeps only rows adequate for making BAF segment"""
@@ -300,9 +311,10 @@ class BAFRawDataFrame(VariantDataFrame):
                 nproc=nproc,
             )
         #3
-        if verbose:
-            logutils.log(f'Keeping only hetalt positions')
-        result = result.subset_hetalt()
+        if not skip_hetalt_filter:
+            if verbose:
+                logutils.log(f'Keeping only hetalt positions')
+            result = result.subset_hetalt()
 
         return result
 
@@ -314,6 +326,7 @@ class BAFRawDataFrame(VariantDataFrame):
 
         germline_CN_gdf=None, 
         is_female=None,
+        skip_hetalt_filter=False,
 
         return_filtered_rawdata=False,
 
@@ -332,16 +345,18 @@ class BAFRawDataFrame(VariantDataFrame):
         )
 
         # add hetalt flag
-        if germline_is_given:
-            self.add_baf_hetalt_flag_pairednormal(germline_baf_rawdata)
-        else:
-            self.add_baf_hetalt_flag()
+        if not skip_hetalt_filter:
+            if germline_is_given:
+                self.add_baf_hetalt_flag_pairednormal(germline_baf_rawdata)
+            else:
+                self.add_baf_hetalt_flag()
 
         # filter
         filtered_self = self.filter_valid_bafs(
             germline_CN_gdf=germline_CN_gdf, 
             is_female=is_female, 
             remove_loh=remove_loh,
+            skip_hetalt_filter=skip_hetalt_filter,
             nproc=nproc,
             verbose=True,
         )
@@ -412,7 +427,7 @@ class BAFRawDataFrame(VariantDataFrame):
         if yticks is False:
             yticks = np.round(np.arange(0, 0.6, 0.1), 1)
 
-        fig, ax, genomeplotter, plotdata = self.draw_dots(
+        gdraw_result = self.draw_dots(
             y_colname=baf_idx,
             ax=ax,
             genomeplotter=genomeplotter,
@@ -439,6 +454,9 @@ class BAFRawDataFrame(VariantDataFrame):
             log_suffix=' (BAF raw data)',
             verbose=verbose,
         )
+        gdraw_result.set_name(self.__class__.drawresult_name)
+
+        return gdraw_result
 
 
 @deco.get_deco_atleast1d(['sampleids'])
@@ -505,6 +523,7 @@ class BAFSegmentDataFrame(SegmentDataFrame):
     distinfo_suffix = '_distinfo'
     corrected_baf_suffix = '_corrected'
     baf_mean_color = 'tab:blue'
+    drawresult_name = 'baf_segment'
 
     #@property
     #def baf_colname(self):
@@ -720,7 +739,7 @@ class BAFSegmentDataFrame(SegmentDataFrame):
             yticks = np.round(np.arange(0, 0.6, 0.1), 1)
 
         y_colname_mean = self.get_baf_mean_colname()
-        fig, ax, genomeplotter, plotdata = self.draw_hlines(
+        gdraw_result = self.draw_hlines(
             y_colname=y_colname_mean,
             ax=ax,
             genomeplotter=genomeplotter,
@@ -749,6 +768,9 @@ class BAFSegmentDataFrame(SegmentDataFrame):
             log_suffix=' (BAF segment)',
             verbose=verbose,
         )
+        gdraw_result.set_name(self.__class__.drawresult_name)
+
+        return gdraw_result
 
 
 #############################################################

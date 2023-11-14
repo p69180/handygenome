@@ -27,8 +27,44 @@ INTERP_SAVEPATH = handygenome.USERDATA_DIR / 'baf_interpolator.pickle'
 # basic #
 #########
 
-def phred(n):
-    return 10 ** (n * -0.1)
+def make_simulated_total_depths(mean_depth, N, omega=None, rng=None, mode='gpois'):
+    """Only non-zero values"""
+    assert mode in ('pois', 'gpois', 'repeat')
+    
+    if mode == 'repeat':
+        return np.repeat(np.rint(mean_depth).astype(int), N)
+
+    ########
+
+    if rng is None:
+        rng = np.random.default_rng()
+
+    result = list()
+    while True:
+        size = N - sum(map(len, result))
+
+        if mode == 'pois':
+            arr = rng.poisson(lam=mean_depth, size=size)
+        elif mode == 'gpois':
+            arr = stats.rgpois(size, lam=mean_depth, omega=omega)
+
+        arr = arr[arr > 0]
+        result.append(arr)
+        if sum(map(len, result)) == N:
+            break
+
+    return np.concatenate(result)
+
+
+def make_simulated_allele_depths(total_depths, allele_portions, alpha_sum=None, rng=None):
+    assert np.isclose(allele_portions.sum(), 1)
+    if alpha_sum is not None:  # dirichlet multinomial
+        dirichlet_alpha = allele_portions * alpha_sum
+        allele_depths = tools.dirichlet_multinomial_rvs(total_depths, dirichlet_alpha, rng=rng)
+    else:
+        allele_depths = rng.multinomial(n=total_depths, pvals=allele_portions)
+
+    return allele_depths
 
 
 def simulate_variant_data(
@@ -51,9 +87,6 @@ def simulate_variant_data(
         - Total depths are generated from poisson distribution
         - If "dirichlet" is False, plain multinomial distribution is used.
     """
-    # sanitycheck
-    assert mode in ('gpois', 'pois', 'repeat')
-
     # allele_portions sanitycheck
     allele_portions = np.asarray(allele_portions)
     assert allele_portions.ndim == 1
@@ -69,16 +102,13 @@ def simulate_variant_data(
     if rng is None:
         rng = np.random.default_rng()
 
-    if mode == 'repeat':
-        total_depths = np.repeat(np.rint(mean_depth).astype(int), size)
-    else:
-        total_depths = make_simulated_total_depths(mean_depth=mean_depth, N=size, rng=rng, omega=omega, mode=mode)
+    total_depths = make_simulated_total_depths(mean_depth=mean_depth, N=size, rng=rng, omega=omega, mode=mode)
 
     if dirichlet:
-        dirichlet_alpha = allele_portions * alpha_sum
-        allele_depths = tools.dirichlet_multinomial_rvs(total_depths, dirichlet_alpha, rng=rng)
+        assert alpha_sum is not None
+        allele_depths = make_simulated_allele_depths(total_depths, allele_portions, alpha_sum=alpha_sum, rng=rng)
     else:
-        allele_depths = rng.multinomial(n=total_depths, pvals=allele_portions)
+        allele_depths = make_simulated_allele_depths(total_depths, allele_portions, alpha_sum=None)
 
     # make vafs and bafs
     vafs = allele_depths / total_depths[:, np.newaxis]
@@ -93,28 +123,85 @@ def simulate_variant_data(
     return simul_vardata
 
 
-def make_simulated_total_depths(mean_depth, N, omega=None, rng=None, mode='gpois'):
-    """Only non-zero values"""
-    assert mode in ('pois', 'gpois')
+def simulate_corrected_variant_data(
+    mean_depth, 
+    corrector_mean_depth,
+    allele_portions, 
+    size, 
+    omega=EMPIRICAL_OMEGA,
+    alpha_sum=EMPIRICAL_ALPHASUM, 
+    #dirichlet=True, 
+    rng=None, 
+    mode='gpois',
+    ALT_biases=None,
+): 
+    """Args:
+        allele_portions: Must be ordered. First item should indicate REF, next one ALT1, then ALT2, ...
+        REF_bias: length must be len(allele_portions) - 1. First item indicates ALT1/REF bias, next one ALT2/REF, ...
 
+    Help:
+        - "allele_portions" is first normalized such that it sums to 1
+        - The order of "allele_portions" is not important
+        - Larger alpha_sum leads to less variation
+        - Total depths are generated from poisson distribution
+        - If "dirichlet" is False, plain multinomial distribution is used.
+    """
+    # allele_portions preprocess
+    allele_portions = np.asarray(allele_portions)
+    assert allele_portions.ndim == 1
+
+    # make corrector allele portions
+    corrector_allele_portions = np.repeat(1, len(allele_portions))
+
+    # apply ALT_biases to allele_portions
+    if ALT_biases is not None:
+        ALT_biases = np.asarray(ALT_biases)
+        assert ALT_biases.shape == (len(allele_portions) - 1,)
+        ALT_biases = np.insert(ALT_biases, 0, 1)
+
+        allele_portions = allele_portions * ALT_biases
+        corrector_allele_portions = corrector_allele_portions * ALT_biases
+
+    # normalize allele_portions
+    allele_portions = allele_portions / allele_portions.sum()
+    corrector_allele_portions = corrector_allele_portions / corrector_allele_portions.sum()
+
+    # make depths
     if rng is None:
         rng = np.random.default_rng()
 
-    result = list()
-    while True:
-        size = N - sum(map(len, result))
+    total_depths = make_simulated_total_depths(mean_depth=mean_depth, N=size, rng=rng, omega=omega, mode=mode)
+    allele_depths = make_simulated_allele_depths(total_depths, allele_portions, alpha_sum=alpha_sum, rng=rng)
 
-        if mode == 'pois':
-            arr = rng.poisson(lam=mean_depth, size=size)
-        elif mode == 'gpois':
-            arr = stats.rgpois(size, lam=mean_depth, omega=omega)
+    corrector_total_depths = make_simulated_total_depths(mean_depth=corrector_mean_depth, N=size, rng=rng, omega=omega, mode=mode)
+    corrector_allele_depths = make_simulated_allele_depths(corrector_total_depths, corrector_allele_portions, alpha_sum=alpha_sum, rng=rng)
 
-        arr = arr[arr > 0]
-        result.append(arr)
-        if sum(map(len, result)) == N:
-            break
+    # make vafs and bafs
+    vafs = allele_depths / total_depths[:, np.newaxis]
+    corrector_vafs = corrector_allele_depths / corrector_total_depths[:, np.newaxis]
 
-    return np.concatenate(result)
+    selector = (corrector_vafs != 0).all(axis=1)
+    assert selector.mean() > 0.99
+    vafs = vafs[selector, :]
+    corrector_vafs = corrector_vafs[selector, :]
+
+    corrected_vafs = vafs / corrector_vafs
+    corrected_vafs = corrected_vafs / corrected_vafs.sum(axis=1)[:, np.newaxis]
+    bafs = libbaf.get_baf_from_vaf(vafs)
+    corrected_bafs = libbaf.get_baf_from_vaf(corrected_vafs)
+
+    simul_vardata = {
+        'total_depth': total_depths,
+        'allele_depth': allele_depths,
+        'corrector_total_depth': corrector_total_depths,
+        'corrector_allele_depth': corrector_allele_depths,
+        'vaf': vafs,
+        'corrector_vaf': corrector_vafs,
+        'corrected_vaf': corrected_vafs,
+        'baf': bafs,
+        'corrected_baf': corrected_bafs,
+    }
+    return simul_vardata
 
 
 ########################

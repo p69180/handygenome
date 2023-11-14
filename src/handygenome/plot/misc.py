@@ -82,3 +82,8 @@ def qqplot(data1, data2, q=np.arange(0, 1.01, 0.01), ax=None):
     return fig, ax
 
 
+
+
+
+
+

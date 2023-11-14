@@ -2,43 +2,30 @@ import functools
 import itertools
 import multiprocessing
 import operator
-import pprint
 import inspect
-import pickle
 
 import numpy as np
 import pandas as pd
 import pyranges as pr
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-#import seaborn as sns
-import sklearn.cluster
 import scipy
-from matplotlib.collections import PatchCollection
+#from matplotlib.collections import PatchCollection
 from matplotlib.patches import Rectangle
 
 import handygenome
 import handygenome.tools as tools
 import handygenome.logutils as logutils
 import handygenome.refgenome.refgenome as refgenome
-#import handygenome.pyranges_helper as pyranges_helper
-#import handygenome.cnv.misc as cnvmisc
-#import handygenome.cnv.rcopynumber as rcopynumber
-#import handygenome.cnv.mosdepth as libmosdepth
-#import handygenome.variant.variantplus as variantplus
-#import handygenome.cnv.gcfraction as libgcfraction
 import handygenome.deco as deco
-#import handygenome.workflow as workflow
 import handygenome.ucscdata as ucscdata
-#import handygenome.cnv.baf as libbaf
 
-#import handygenome.genomedf.genomedf as libgenomedf
-from handygenome.genomedf.genomedf import GenomeDataFrame as GDF
+from handygenome.genomedf.genomedf_base import GenomeDataFrameBase
+import handygenome.plot.gui as gui
 
 
-#LOGGER_INFO = workflow.get_debugging_logger(verbose=False)
-#LOGGER_DEBUG = workflow.get_debugging_logger(verbose=True)
 DOT_ALPHA_CONST = 0.01 / 3e6
+GAPREGION_PREFIX = '::GAP::'
 
 
 ######################
@@ -198,28 +185,28 @@ def calc_dot_alpha_old(
 #    return fig, axd
 
 
-@deco.get_deco_atleast1d(['pos0_list'])
-def genomic_to_plot(chromwise_params, chrom, pos0_list):
-    if chrom not in chromwise_params.keys():
-        raise Exception(f'Input "chrom" argument is not included in the plotting region.')
-
-    pos0_list = pos0_list[:, np.newaxis]
-    params = chromwise_params[chrom]
-
-    contains = np.logical_and(
-        (pos0_list >= params['start0']), (pos0_list < params['end0'])
-    )
-    pos0s_indexes, intv_indexes = np.where(contains)
-        # np.ndarray composed of the indexes of the containing intervals
-        # identical intervals can appear many times
-    within_region_offsets = (
-        params['plot_region_length'][intv_indexes]
-        * (
-            (pos0_list[pos0s_indexes, 0] - params['start0'][intv_indexes]) 
-            / params['raw_region_length'][intv_indexes]
-        )
-    )
-    return params['plot_region_start_offset'][intv_indexes] + within_region_offsets
+#@deco.get_deco_atleast1d(['pos0_list'])
+#def genomic_to_plot(chromwise_params, chrom, pos0_list):
+#    if chrom not in chromwise_params.keys():
+#        raise Exception(f'Input "chrom" argument is not included in the plotting region.')
+#
+#    pos0_list = pos0_list[:, np.newaxis]
+#    params = chromwise_params[chrom]
+#
+#    contains = np.logical_and(
+#        (pos0_list >= params['start0']), (pos0_list < params['end0'])
+#    )
+#    pos0s_indexes, intv_indexes = np.where(contains)
+#        # np.ndarray composed of the indexes of the containing intervals
+#        # identical intervals can appear many times
+#    within_region_offsets = (
+#        params['plot_region_length'][intv_indexes]
+#        * (
+#            (pos0_list[pos0s_indexes, 0] - params['start0'][intv_indexes]) 
+#            / params['raw_region_length'][intv_indexes]
+#        )
+#    )
+#    return params['plot_region_start_offset'][intv_indexes] + within_region_offsets
 
 
 class CoordinateConverter:
@@ -235,12 +222,23 @@ class CoordinateConverter:
         region_gdf=None, 
 
         region_gaps=0.1,
+
+        xmin=0,
+        xmax=1,
     ):
         """Args:
             region_gaps: fraction of sum of gap lengths over plotting region lengths
         """
+        region_gaps = float(region_gaps)
+        assert (
+            (region_gaps >= 0)
+            and (region_gaps < 1)
+        )
+
         self.refver = refver
         self.chromdict = refgenome.get_chromdict(self.refver)
+        self.xmin = xmin
+        self.xmax = xmax
 
         # input region_gdf sanitycheck
         if region_gdf is not None:
@@ -256,10 +254,10 @@ class CoordinateConverter:
         # prepare unmodified region_gdf
         if region_gdf is None:
             if chroms is None:
-                region_gdf = GDF.all_regions(self.refver, assembled_only=True)
+                region_gdf = GenomeDataFrameBase.all_regions(self.refver, assembled_only=True)
                 region_gdf['weight'] = weights
             else:
-                region_gdf = GDF.from_data(
+                region_gdf = GenomeDataFrameBase.from_data(
                     refver, 
                     chroms=chroms, 
                     start0s=start0s, 
@@ -274,34 +272,44 @@ class CoordinateConverter:
         self.set_params(region_gdf)
 
     @staticmethod
-    def insert_gap_to_region_gdf(gdf, region_gaps):
+    def insert_gap_to_region_gdf(gdf, region_gaps, last=False):
         new_gdf = gdf.copy().choose_annots('weight')
+        assert not np.char.startswith(new_gdf.chroms, GAPREGION_PREFIX).any()
 
         # intercalate with gap rows
-        if (region_gaps != 0) and (new_gdf.nrow > 1):
-            weighted_length_sum = (new_gdf.lengths * new_gdf['weight']).sum()
-            total_gap_length = weighted_length_sum * region_gaps
-            gap_weight = total_gap_length / (new_gdf.nrow - 1)
+        do_make_gaps = (
+            (last and (region_gaps != 0))
+            or (
+                (not last) 
+                and (region_gaps != 0) 
+                and (new_gdf.nrow > 1)
+            )
+        )
+        if do_make_gaps:
+        #if (region_gaps != 0) and (new_gdf.nrow > 1):
+            weighted_length_mean = (new_gdf.lengths * new_gdf['weight']).sum() / new_gdf.nrow
+            gap_length = weighted_length_mean * region_gaps
+
+            #total_gap_length = weighted_length_sum * region_gaps
+            #gap_weight = total_gap_length / (new_gdf.nrow - 1)
                 # since raw length of every gap region is 1, weight is equal to weighted length
 
-            src_arr = np.empty(
-                (new_gdf.nrow * 2 - 1,  new_gdf.ncol), 
-                dtype=object,
-            )
+            nrow = new_gdf.nrow * 2 - 1
+            num_gap = new_gdf.nrow - 1
+            if last:
+                nrow += 1
+                num_gap += 1
+
+            src_arr = np.empty((nrow,  new_gdf.ncol), dtype=object)
             src_arr[0::2, :] = new_gdf.df
-            src_arr[1::2, 0] = [str(-x - 1) for x in range(new_gdf.nrow - 1)]  # Chromosome
-            src_arr[1::2, 1] = 0  # Start
-            src_arr[1::2, 2] = 1  # End
-            src_arr[1::2, 3] = gap_weight  # weight
+            src_arr[1::2, 0] = [f'{GAPREGION_PREFIX}{x}' for x in range(num_gap)]  # gap region Chromosome
+            src_arr[1::2, 1] = 0  # gap region Start
+            src_arr[1::2, 2] = 1  # gap region End
+            src_arr[1::2, 3] = gap_length  # gap region weight is equal to length because start and end is 0 and 1 for every gap region
 
             new_df = pd.DataFrame(src_arr, columns=new_gdf.columns)
-            new_gdf = GDF.from_frame(
-                new_df, 
-                refver=new_gdf.refver,
-                dtype={'weight': float},
-            )
+            new_gdf.assign_frame(new_df, dtype={'weight': float})
 
-        # return
         return new_gdf
 
 #            total_gap_length = (gdf.lengths * gdf['weight']).sum() * region_gaps
@@ -334,12 +342,6 @@ class CoordinateConverter:
 #            ) return gdf
 
     def set_params(self, gdf):
-        """Set attributes:
-            totalregion_gdf
-            totalregion_gr
-            plot_interval_start0s
-            plot_interval_end0s
-        """
         # check internal overlap
         if gdf.check_self_overlap():
             raise Exception(f'Plot region dataframe must not have overlapping intervals.')
@@ -347,38 +349,37 @@ class CoordinateConverter:
         # set totalregion_gdf
         totalregion_gdf = gdf
         totalregion_gdf['raw_region_length'] = totalregion_gdf.lengths
-        totalregion_gdf['plot_region_length'] = (
-            totalregion_gdf['raw_region_length'] 
-            * totalregion_gdf['weight']
-        )
+
+        plot_lengths = totalregion_gdf['raw_region_length'] * totalregion_gdf['weight']
+        plot_lengths = (self.xmax - self.xmin) * (plot_lengths / plot_lengths.sum())
+        totalregion_gdf['plot_region_length'] = plot_lengths
 
         cumsum = totalregion_gdf['plot_region_length'].cumsum()
-        cumsum_shift = pd.Series(cumsum).shift(1, fill_value=0)
-        totalregion_gdf['plot_interval_start0s'] = np.asarray(cumsum_shift)
-        totalregion_gdf['plot_interval_end0s'] = np.asarray(cumsum)
+        plot_end0s = cumsum + self.xmin
+        plot_start0s = np.insert(plot_end0s[:-1], 0, self.xmin)
+        totalregion_gdf['plot_region_end0'] = plot_end0s
+        totalregion_gdf['plot_region_start0'] = plot_start0s
 
         # set dfs without gap regions
-        gap_indexes = np.char.startswith(
-            totalregion_gdf.chromosomes.astype(str), 
-            '-',
-        )
-        totalregion_gdf_wogap = totalregion_gdf.loc[~gap_indexes, :]
+        gap_selector = np.char.startswith(totalregion_gdf.chroms, GAPREGION_PREFIX)
+        totalregion_gdf_wogap = totalregion_gdf.loc[~gap_selector, :]
+        gapregion_gdf = totalregion_gdf.loc[gap_selector, :]
 
         # set chromosome-wise params
         chromwise_params = dict()
-
         for chrom, subgdf in totalregion_gdf.group_bychrom(sort=False).items():
             chromwise_params[chrom] = {
-                'start0': subgdf.starts,
-                'end0': subgdf.ends,
+                'start0': subgdf.start0s,
+                'end0': subgdf.end0s,
                 'raw_region_length': subgdf['raw_region_length'],
                 'plot_region_length': subgdf['plot_region_length'],
-                'plot_region_start_offset': subgdf['plot_interval_start0s'],
+                'plot_region_start0': subgdf['plot_region_start0'],
             }
 
         # result
         self.totalregion_gdf = totalregion_gdf
         self.totalregion_gdf_wogap = totalregion_gdf_wogap
+        self.gapregion_gdf = gapregion_gdf
         self.chromwise_params = chromwise_params
 
     def iter_totalregion_gdf(self, merge_same_chroms=True):
@@ -391,66 +392,277 @@ class CoordinateConverter:
 
     @property
     def xlim(self):
-        start0 = self.totalregion_gdf['plot_interval_start0s'][0]
-        end0 = self.totalregion_gdf['plot_interval_end0s'][-1] - 1
-        return (start0, end0)
+        return (self.xmin, self.xmax)
+        #start0 = self.totalregion_gdf['plot_region_start0'][0]
+        #end0 = self.totalregion_gdf['plot_region_end0'][-1] - 1
+        #return (start0, end0)
 
-    def genomic_to_plot(self, chrom, pos0_list):
-        return genomic_to_plot(self.chromwise_params, chrom, pos0_list)
+    @staticmethod
+    @deco.get_deco_atleast1d(['pos0_list'])
+    def genomic_to_plot(chromwise_params, chrom, pos0_list):
+        """
+        Example:
+            Interval (0, 5)
+            |-----|-----|-----|-----|-----|
+            0     1     2     3     4     5
 
-    def genomic_to_plot_with_indexes(self, chrom, pos0_list, indexes):
-        plot_coords = genomic_to_plot(self.chromwise_params, chrom, pos0_list)
-        return (indexes, plot_coords)
+            coord of data to draw = 2
+                        <--> : common offset
+            <-----------> : data offset
+            |-----|-----|--*--|-----|-----|
+            0     1     2     3     4     5
 
-    def plot_to_genomic(self, plotcoord_list):
-        plotcoord_list = np.asarray(plotcoord_list)
-        xlim = self.xlim
+            coord of data to draw = 0
+            <--> : common offset
+            |--*--|-----|-----|-----|-----|
+            0     1     2     3     4     5
+        """
+
+        if chrom not in chromwise_params.keys():
+            raise Exception(f'Input "chrom" argument is not included in the plotting region.')
+
+        pos0_list = pos0_list[:, np.newaxis]
+        params = chromwise_params[chrom]
+
+        contains = np.logical_and(
+            (pos0_list >= params['start0']), (pos0_list <= params['end0'])
+        )
+        idxs = np.stack(np.nonzero(contains), axis=1)
+        sorted_idxs = idxs[np.argsort(idxs[:, 0])]
+        selector = np.insert(np.diff(sorted_idxs[:, 0]), 0, 1).nonzero()
+        dedup_idxs = sorted_idxs[selector]
+        pos0s_indexes = dedup_idxs[:, 0]
+        intv_indexes = dedup_idxs[:, 1]
+        #pos0s_indexes, intv_indexes = np.where(contains)
+            # np.ndarray composed of the indexes of the containing intervals
+            # identical intervals can appear many times
+
+        selected_plotregion_lengths = params['plot_region_length'][intv_indexes]
+        selected_rawregion_lengths = params['raw_region_length'][intv_indexes]  # this is integer
+        #common_offsets = 0.5 * (selected_plotregion_lengths / selected_rawregion_lengths)
+        data_offsets = (
+            selected_plotregion_lengths
+            * (
+                (pos0_list[pos0s_indexes, 0] - params['start0'][intv_indexes]) 
+                / selected_rawregion_lengths
+            )
+        )
+        #within_region_offsets = data_offsets + common_offsets
+        within_region_offsets = data_offsets
+        return params['plot_region_start0'][intv_indexes] + within_region_offsets
+
+    #def genomic_to_plot(self, chrom, pos0_list):
+    #    return genomic_to_plot(self.chromwise_params, chrom, pos0_list)
+
+    #def genomic_to_plot_with_indexes(self, chrom, pos0_list, indexes):
+    #    plot_coords = self.genomic_to_plot(self.chromwise_params, chrom, pos0_list)
+    #    return (indexes, plot_coords)
+
+    def plot_to_genomic(self, plotcoord_list, return_modified=False):
+        """
+        Input plot coordinate may lie within a gap region
+
+        Example:
+            Interval (0, 5)
+            |-----|-----|-----|-----|-----|
+            0     1     2     3     4     5
+
+            Input plot coord is here => treated as "2"
+                            |
+            |-----|-----|---*-|-----|-----|
+            0     1     2     3     4     5
+        """
+        plotcoord_list = np.atleast_1d(plotcoord_list)
         assert np.logical_and(
-            plotcoord_list >= xlim[0],
-            plotcoord_list <= xlim[1],
+            plotcoord_list >= self.xlim[0],
+            plotcoord_list <= self.xlim[1],
         ).all(), f'Input plot coordinates are out of plot limits'
 
-        plotcoord_list_expand = plotcoord_list[:, np.newaxis]
-        compare_result = np.logical_and(
-            plotcoord_list_expand >= self.totalregion_gdf['plot_interval_start0s'],
-            plotcoord_list_expand < self.totalregion_gdf['plot_interval_end0s'],
+        bins = np.append(
+            self.totalregion_gdf['plot_region_start0'], 
+            self.totalregion_gdf['plot_region_end0'][-1],
         )
-        input_indexes, plotregion_indexes = np.where(compare_result)
-        assert (plotcoord_list[input_indexes] == plotcoord_list).all()
+        plotregion_indexes = np.digitize(plotcoord_list, bins, right=False)
+        #assert not np.isin(plotregion_indexes, [0, len(bins)]).any()
+        assert not (plotregion_indexes == 0).any()
+
+        # shift indexes of plotcoord on the right margin
+        plotregion_indexes[plotregion_indexes == len(bins)] -= 1
+
+        # shift indexes of plotcoord on the left margin of gap regions
+        for gapregion_start in self.gapregion_gdf['plot_region_start0']:
+            plotregion_indexes[plotcoord_list == gapregion_start] -= 1
+
+        # final shift
+        plotregion_indexes -= 1
 
         # results
         subgdf = self.totalregion_gdf.iloc[plotregion_indexes, :]
-
-        result_chroms = subgdf.chromosomes
-        offsets = (
-            (plotcoord_list - subgdf['plot_interval_start0s'])
+        result_chroms = subgdf.chroms
+        within_region_frac = (
+            (plotcoord_list - subgdf['plot_region_start0'])
             / subgdf['plot_region_length']
-        ) * subgdf.lengths
+        )
+        offsets = np.floor(within_region_frac * subgdf.lengths).astype(int)
+        result_pos0s = subgdf.start0s + offsets
 
-        result_pos0s = np.rint(subgdf['Start'] + offsets).astype(int)
-        return result_chroms, result_pos0s
+        if return_modified:
+            # move to nearest integer positions
+            #wogap_regions = self.totalregion_gdf_wogap
+            #region_genomic_lengths = wogap_regions['End'] - wogap_regions['Start']
+            #region_plot_lengths = wogap_regions['plot_region_end0'] - wogap_regions['plot_region_start0']
+            #onebase_lengths = region_plot_lengths / region_genomic_lengths
+            onebase_lengths = (
+                (subgdf['plot_region_end0'] - subgdf['plot_region_start0'])
+                / subgdf.lengths
+            )
+            offset_ints = np.floor(
+                (plotcoord_list - subgdf['plot_region_start0'])
+                / onebase_lengths
+            )
+            modified_plotcoords = subgdf['plot_region_start0'] + (offset_ints * onebase_lengths)
 
-    def plot_to_genomic_old(self, x):
-        plot_intvlist = self.data.index.get_level_values('plot_interval')
-        genome_intvlist = self.data.index.get_level_values('genome_interval')
-        contains = plot_intvlist.contains(x)
+            return result_chroms, result_pos0s, modified_plotcoords
+        else:
+            return result_chroms, result_pos0s
 
-        num_hit = contains.sum()
-        if num_hit == 0:
-            return None
-        elif num_hit > 1:
-            raise Exception(f'More than one intervals contains the input position.')
+#    def plot_to_genomic_old(self, x):
+#        plot_intvlist = self.data.index.get_level_values('plot_interval')
+#        genome_intvlist = self.data.index.get_level_values('genome_interval')
+#        contains = plot_intvlist.contains(x)
+#
+#        num_hit = contains.sum()
+#        if num_hit == 0:
+#            return None
+#        elif num_hit > 1:
+#            raise Exception(f'More than one intervals contains the input position.')
+#
+#        idx = np.where(contains)[0][0]
+#
+#        chrom = self.data.index.get_level_values('chromosome')[idx]
+#
+#        plot_intv = plot_intvlist[idx]
+#        genome_intv = genome_intvlist[idx]
+#        regional_offset_fraction = (x - plot_intv.left) / plot_intv.length
+#        pos0 = int(np.rint(genome_intv.left + (genome_intv.length * regional_offset_fraction)))
+#
+#        return chrom, pos0
 
-        idx = np.where(contains)[0][0]
+    ##################################################
+    # pos1-style genomic_to_plot and plot_to_genomic #
+    ##################################################
 
-        chrom = self.data.index.get_level_values('chromosome')[idx]
+    @staticmethod
+    @deco.get_deco_atleast1d(['pos0_list'])
+    def genomic_to_plot_pos1style(chromwise_params, chrom, pos0_list):
+        """
+        Example:
+            Interval (0, 5)
+            |-----|-----|-----|-----|-----|
+               0     1     2     3     4   
 
-        plot_intv = plot_intvlist[idx]
-        genome_intv = genome_intvlist[idx]
-        regional_offset_fraction = (x - plot_intv.left) / plot_intv.length
-        pos0 = int(np.rint(genome_intv.left + (genome_intv.length * regional_offset_fraction)))
+            coord of data to draw = 2
+                        <--> : common offset
+            <-----------> : data offset
+            |-----|-----|--*--|-----|-----|
+               0     1     2     3     4   
 
-        return chrom, pos0
+            coord of data to draw = 0
+            <--> : common offset
+            |--*--|-----|-----|-----|-----|
+               0     1     2     3     4   
+        """
+
+        if chrom not in chromwise_params.keys():
+            raise Exception(f'Input "chrom" argument is not included in the plotting region.')
+
+        pos0_list = pos0_list[:, np.newaxis]
+        params = chromwise_params[chrom]
+
+        contains = np.logical_and(
+            (pos0_list >= params['start0']), (pos0_list <= params['end0'])
+        )
+        idxs = np.stack(np.nonzero(contains), axis=1)
+        sorted_idxs = idxs[np.argsort(idxs[:, 0])]
+        selector = np.insert(np.diff(sorted_idxs[:, 0]), 0, 1).nonzero()
+        dedup_idxs = sorted_idxs[selector]
+        pos0s_indexes = dedup_idxs[:, 0]
+        intv_indexes = dedup_idxs[:, 1]
+        #pos0s_indexes, intv_indexes = np.where(contains)
+            # np.ndarray composed of the indexes of the containing intervals
+            # identical intervals can appear many times
+
+        selected_plotregion_lengths = params['plot_region_length'][intv_indexes]
+        selected_rawregion_lengths = params['raw_region_length'][intv_indexes]  # this is integer
+        onebase_lengths = selected_plotregion_lengths / selected_rawregion_lengths
+        common_offsets = 0.5 * onebase_lengths
+        data_offsets = (
+            selected_plotregion_lengths
+            * (
+                (pos0_list[pos0s_indexes, 0] - params['start0'][intv_indexes]) 
+                / selected_rawregion_lengths
+            )
+        )
+        within_region_offsets = data_offsets + common_offsets
+        return params['plot_region_start0'][intv_indexes] + within_region_offsets
+
+    def plot_to_genomic_pos1style(self, plotcoord_list, return_modified=False):
+        """
+        Input plot coordinate may lie within a gap region
+
+        Example:
+            Interval (0, 5)
+            |-----|-----|-----|-----|-----|
+               0     1     2     3     4   
+
+            Input plot coord is here => treated as "2"
+                            |
+            |-----|-----|-----|-----|-----|
+               0     1     2     3     4   
+        """
+        plotcoord_list = np.atleast_1d(plotcoord_list)
+        assert np.logical_and(
+            plotcoord_list >= self.xlim[0],
+            plotcoord_list < self.xlim[1],
+        ).all(), f'Input plot coordinates are out of plot limits'
+
+        bins = np.append(
+            self.totalregion_gdf['plot_region_start0'], 
+            self.totalregion_gdf['plot_region_end0'][-1],
+        )
+        plotregion_indexes = np.digitize(plotcoord_list, bins, right=False)
+        assert not np.isin(plotregion_indexes, [0, len(bins)]).any()
+        plotregion_indexes = plotregion_indexes - 1
+
+        # results
+        subgdf = self.totalregion_gdf.iloc[plotregion_indexes, :]
+        result_chroms = subgdf.chroms
+        within_region_frac = (
+            (plotcoord_list - subgdf['plot_region_start0'])
+            / subgdf['plot_region_length']
+        )
+        offsets = np.floor(within_region_frac * subgdf.lengths).astype(int)
+        result_pos0s = subgdf.start0s + offsets
+
+        if return_modified:
+            # move to nearest integer positions
+            wogap_regions = self.totalregion_gdf_wogap
+            region_genomic_lengths = wogap_regions['End'] - wogap_regions['Start']
+            region_plot_lengths = wogap_regions['plot_region_end0'] - wogap_regions['plot_region_start0']
+            onebase_lengths = region_plot_lengths / region_genomic_lengths
+
+            offset_ints = np.floor(
+                (plotcoord_list - wogap_regions['plot_region_start0'][plotregion_indexes])
+                / onebase_lengths[plotregion_indexes]
+            )
+            modified_plotcoords = (
+                wogap_regions['plot_region_start0'][plotregion_indexes] 
+                + ((offset_ints + 0.5) * onebase_lengths[plotregion_indexes])
+            )
+
+            return result_chroms, result_pos0s, modified_plotcoords
+        else:
+            return result_chroms, result_pos0s
 
     # Axes modification
     def get_chrom_borders(self, merge_same_chroms=True):
@@ -460,14 +672,13 @@ class CoordinateConverter:
             chroms = set(subdf['Chromosome'])
             assert len(chroms) == 1
             chrom = chroms.pop()
-            if chrom.startswith('-'):
-                continue
+            assert not chrom.startswith(GAPREGION_PREFIX)
 
             result.append(
                 (
                     chrom, 
-                    subdf['plot_interval_start0s'].iloc[0], 
-                    subdf['plot_interval_end0s'].iloc[-1],
+                    subdf['plot_region_start0'].iloc[0], 
+                    subdf['plot_region_end0'].iloc[-1],
                 )
             )
         return result
@@ -508,11 +719,13 @@ class CoordinateConverter:
 #
 #        return isec_gdf
 
-    @staticmethod
-    def make_plotdata_targetfunc(partial_isec_gdf, chromwise_params):
+    #@staticmethod
+    @classmethod
+    def make_plotdata_targetfunc(cls, partial_isec_gdf, chromwise_params):
         chrom = partial_isec_gdf.chroms[0]
-        plot_start0s = genomic_to_plot(chromwise_params, chrom, partial_isec_gdf.start0s)
-        plot_end0s = genomic_to_plot(chromwise_params, chrom, partial_isec_gdf.end0s - 1) + 1
+        plot_start0s = cls.genomic_to_plot(chromwise_params, chrom, partial_isec_gdf.start0s)
+        #plot_end0s = cls.genomic_to_plot(chromwise_params, chrom, partial_isec_gdf.end0s - 1) + 1
+        plot_end0s = cls.genomic_to_plot(chromwise_params, chrom, partial_isec_gdf.end0s)
         return plot_start0s, plot_end0s
 
     def make_plotdata(self, data, log_suffix='', nproc=1, split_width=10000, verbose=True):
@@ -569,8 +782,11 @@ class GenomePlotter:
             verbose=verbose,
         )
 
-    def genomic_to_plot(self, chrom, pos0_list):
-        return self.cconv.genomic_to_plot(chrom, pos0_list)
+    def genomic_to_plot(self, *args, **kwargs):
+        return self.cconv.genomic_to_plot(*args, **kwargs)
+
+    def plot_to_genomic(self, *args, **kwargs):
+        return self.cconv.plot_to_genomic(*args, **kwargs)
 
     @property
     def region_gdf(self):
@@ -624,7 +840,7 @@ class GenomePlotter:
 
         # centromere bgcolor
         ylims = ax.get_ylim()
-        self.draw_centromeres(ax, ymins=ylims[0], ymaxs=ylims[1], draw_common=False)
+        self.draw_centromeres(ax, ymins=ylims[0], ymaxs=ylims[1])
         #self.draw_centromeres_type2(ax)
 
         # spine modification
@@ -663,6 +879,7 @@ class GenomePlotter:
                         verbose=ba.arguments['verbose'],
                     )
                     del ba.arguments['data']
+
                 if ba.arguments['plotdata'] is False:
                     return None
 
@@ -689,30 +906,45 @@ class GenomePlotter:
     # components of common drawer #
     ###############################
 
-    def set_xlim(self, ax):
-        ax.set_xlim(*self.cconv.xlim)
+    def set_xlim(self, ax, margin=0.01):
+        #ax.set_xlim(*self.cconv.xlim)
+        width = self.cconv.xlim[1] - self.cconv.xlim[0]
+        margin = width * margin
+        ax.set_xlim(self.cconv.xlim[0] - margin, self.cconv.xlim[1] + margin)
 
-    def draw_genomecoord_labels(self, ax, n=10):
+    def draw_genomecoord_labels(self, ax, n=10, pos1=False):
         """Should be done after data drawings are finished"""
-        xlim = self.cconv.xlim
-        plotcoords = np.linspace(xlim[0], xlim[1], num=n, endpoint=True)
-        chroms, pos0s = self.cconv.plot_to_genomic(plotcoords)
+        #xlim = self.cconv.xlim
+        #plotcoords = np.linspace(xlim[0], xlim[1], num=n, endpoint=True)
 
-        # remove dummy chromosome labels
-        selector = np.array([(not x.startswith('-')) for x in chroms])
-        plotcoords = plotcoords[selector]
-        chroms = chroms[selector]
-        pos0s = pos0s[selector]
+        # generate labeling positions
+        raw_plotcoords = tools.gapped_linspace(
+            self.region_gdf['plot_region_start0'], 
+            self.region_gdf['plot_region_end0'], 
+            num=n,
+            return_indexes=False,
+            endpoint=True,
+        )
 
-        chroms = [
-            x if x.startswith('chr') else ('chr' + x)
-            for x in chroms
-        ]
-        pos1s = pos0s + 1
-        #pos1_strings = tools.shorten_int(pos1s)
-        pos1_strings = [f'{x:,}' for x in pos1s]
+        #print(raw_plotcoords)
 
-        labels = [f'{x} : {y}' for x, y in zip(chroms, pos1_strings)]
+        chroms, pos0s, plotcoords = self.cconv.plot_to_genomic(raw_plotcoords, return_modified=True)
+        plotcoords, uniq_idxs = np.unique(plotcoords, return_index=True)
+        chroms = chroms[uniq_idxs]
+        pos0s = pos0s[uniq_idxs]
+
+        #chroms = [
+        #    x if x.startswith('chr') else ('chr' + x)
+        #    for x in chroms
+        #]
+        if pos1:
+            pos1s = pos0s + 1
+            #pos1_strings = tools.shorten_int(pos1s)
+            pos_strings = [f'{x:,}' for x in pos1s]
+        else:
+            pos_strings = [f'{x:,}' for x in pos0s]
+
+        labels = [f'{x} : {y}' for x, y in zip(chroms, pos_strings)]
         ax.set_xticks(plotcoords, labels=labels, minor=False, rotation=90)
 
     def fit_spines_to_regions(
@@ -737,7 +969,7 @@ class GenomePlotter:
         """
         # set plotting kwargs
         chromlabel_kwargs = (
-            dict(ha='center', va='bottom', size=12)
+            dict(ha='center', va='bottom', size=8)
             | chromlabel_kwargs
         )
         line_kwargs = (
@@ -754,33 +986,37 @@ class GenomePlotter:
         ax.spines[['top', 'bottom']].set_visible(False)
         _, start0s, end0s = zip(*chrom_borders)
         ax.hlines(
-            np.repeat(ylims[1], len(start0s)), start0s, end0s, 
+            *np.broadcast_arrays(ylims[1], start0s, end0s),
+            #np.repeat(ylims[1], len(start0s)), start0s, end0s, 
             color='black', linewidth=1,
         )
         ax.hlines(
-            np.repeat(ylims[0], len(start0s)), start0s, end0s, 
+            *np.broadcast_arrays(ylims[0], start0s, end0s),
+            #np.repeat(ylims[0], len(start0s)), start0s, end0s, 
             color='black', linewidth=1.5,
         )
 
         # vertical spines - left and right margins
-        ax.spines[['left', 'right']].set_visible(False)
-        ax.vlines(ax.get_xlim(), ylims[0], ylims[1], **line_kwargs)
+        #ax.spines[['left', 'right']].set_visible(False)
+        #ax.vlines(ax.get_xlim(), ylims[0], ylims[1], **line_kwargs)
 
         # vertical spines - region borderlines
+        ax.spines[['left', 'right']].set_visible(False)
         border_pos0s = set()
-        xlim = self.cconv.xlim
+        #xlim = self.cconv.xlim
         for _, start0, end0 in chrom_borders:
-            if start0 != xlim[0]:
-                border_pos0s.add(start0)
-            if end0 != xlim[1]:
-                border_pos0s.add(end0)
-        ax.vlines(tuple(border_pos0s), ylims[0], ylims[1], **line_kwargs)
+            #if start0 != xlim[0]:
+            border_pos0s.add(start0)
+            #if end0 != xlim[1]:
+            border_pos0s.add(end0)
+        #ax.vlines(tuple(border_pos0s), ylims[0], ylims[1], **line_kwargs)
+        ax.vlines(*np.broadcast_arrays(tuple(border_pos0s), ylims[0], ylims[1]), **line_kwargs)
 
         # chromosome name texts
         if draw_chromlabel:
             chromlabel_y = ylims[1] + chromlabel_offset * (ylims[1] - ylims[0])
             for chrom, start0, end0 in chrom_borders:
-                if chrom.startswith('-'):
+                if chrom.startswith(GAPREGION_PREFIX):
                     continue
                 if prefix_with_chr:
                     if not chrom.startswith('chr'):
@@ -825,6 +1061,10 @@ class GenomePlotter:
     #############################
     # elemental drawing methods #
     #############################
+
+    @staticmethod
+    def get_point_plot_coord(plot_start0s, plot_end0s):
+        return (plot_start0s + plot_end0s) / 2
 
     @draw_decorator
     @deco.get_deco_num_set_differently(('ys', 'y_colname'), 1)
@@ -901,7 +1141,8 @@ class GenomePlotter:
             } | plot_kwargs
         )
 
-        xs = (plotdata['plot_start0s'] + (plotdata['plot_end0s'] - 1)) / 2
+        #xs = (plotdata['plot_start0s'] + (plotdata['plot_end0s'] - 1)) / 2
+        xs = self.get_point_plot_coord(plotdata['plot_start0s'], plotdata['plot_end0s'])
         ax.plot(xs, ys, **plot_kwargs)
 
     @draw_decorator
@@ -938,7 +1179,8 @@ class GenomePlotter:
         )
 
         # main
-        xs = (plotdata['plot_start0s'] + (plotdata['plot_end0s'] - 1)) / 2
+        #xs = (plotdata['plot_start0s'] + (plotdata['plot_end0s'] - 1)) / 2
+        xs = self.get_point_plot_coord(plotdata['plot_start0s'], plotdata['plot_end0s'])
         if color_colname is not None:
             plot_kwargs['c'] = plotdata[color_colname]
         elif color_values is not None:
@@ -1022,7 +1264,8 @@ class GenomePlotter:
         text_kwargs = default_text_kwargs | text_kwargs
 
         # prepare text positions
-        xs = (plotdata['plot_start0s'] + (plotdata['plot_end0s'] - 1)) / 2
+        #xs = (plotdata['plot_start0s'] + (plotdata['plot_end0s'] - 1)) / 2
+        xs = self.get_point_plot_coord(plotdata['plot_start0s'], plotdata['plot_end0s'])
         if ys is None:
             ys = 1.05
             transform = ax.transAxes
@@ -1242,14 +1485,13 @@ class GenomePlotter:
             verbose=False,
         )
 
-    @draw_decorator
     def draw_centromeres(
         self, 
         ax, 
         ymins=None, 
         ymaxs=None,
-        draw_common=True, 
-        draw_common_kwargs=dict(),
+        #draw_common=True, 
+        #draw_common_kwargs=dict(),
     ):
         cytoband_gdf = ucscdata.get_cytoband(refver=self.refver)
         self.draw_boxes(
@@ -1291,8 +1533,6 @@ class GenomePlotter:
         helper('acen')
         helper('gvar')
         helper('stalk')
-
-
 
 #    def prepare_plot_data_old(self, df, nproc=None):
 #        # create isec between total region and input data
@@ -1352,6 +1592,7 @@ class GenomePlotter:
         new_plot_xmaxs = plot_xmaxs[[x[1] for x in indexes]]
 
         return new_ys, new_plot_xmins, new_plot_xmaxs
+
 
 #    @classmethod
 #    def _merge_adjacent_data(cls, xmins, xmaxs, ys=None):

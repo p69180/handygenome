@@ -1703,14 +1703,11 @@ class CNVSample:
         self.corrected_gdfs[corrector_id]['depth_excluded_region'] = excluded_region
 
     @deco_nproc
-    def make_corrected_gdfs_baf(
+    def make_corrected_gdfs_baf_germlinesample(
         self, 
         corrector_id, 
         corrector_gdf, 
-        germline_CN_gdf=None,
-        germline_baf_rawdata=None,
         nproc=0,
-        #make_segment=False,
     ):
         assert self.is_germline
 
@@ -1770,12 +1767,72 @@ class CNVSample:
         corrected_baf_rawdata.add_baf(fit_self_vafs=True)
 
         # assign
-        self.corrected_gdfs.setdefault(corrector_id, dict())
+        if corrector_id not in self.corrected_gdfs:
+            self.make_corrected_gdfs_init(corrector_id)
         self.corrected_gdfs[corrector_id]['baf_rawdata'] = corrected_baf_rawdata
 
+    def make_corrected_gdfs_baf_pairedgermline(
+        self, 
+        corrector_id, 
+        germline_baf_rawdata,
+    ):
+        # 1. synchronize coordinates between tumor and germline baf rawdata
+        corrected_baf_rawdata = self.get_baf_rawdata().copy()
+        corrected_baf_rawdata.sort()
+        germline_baf_rawdata.sort()
+        assert (
+            corrected_baf_rawdata[corrected_baf_rawdata.nonannot_columns] 
+            == germline_baf_rawdata[germline_baf_rawdata.nonannot_columns] 
+        ).all()
+
+        # 2. keep only hetalt positions determined from paired germline data
+        germline_baf_rawdata.add_baf_hetalt_flag()
+        ishet = germline_baf_rawdata.get_hetalt_selector()
+        germline_baf_rawdata = germline_baf_rawdata.loc[ishet, :]
+        corrected_baf_rawdata = corrected_baf_rawdata.loc[ishet, :]
+
+        # 2. do division
+        corrected_baf_rawdata[corrected_baf_rawdata.vaf_columns] = (
+            corrected_baf_rawdata[corrected_baf_rawdata.vaf_columns]
+            / germline_baf_rawdata[germline_baf_rawdata.vaf_columns]
+        )
+
+        # 3. normalize VAF values and make BAF values
+        corrected_baf_rawdata.add_baf(fit_self_vafs=True)
+
+        # 4. assign
+        if corrector_id not in self.corrected_gdfs:
+            self.make_corrected_gdfs_init(corrector_id)
+        self.corrected_gdfs[corrector_id]['baf_rawdata'] = corrected_baf_rawdata
+
+    @deco_nproc
+    def make_corrected_gdfs_baf(
+        self, 
+        corrector_id, 
+        corrector_gdf, 
+        germline_CN_gdf=None,
+        germline_baf_rawdata=None,
+        nproc=0,
+    ):
+        if self.is_germline:
+            assert germline_baf_rawdata is None
+            self.make_corrected_gdfs_baf_germlinesample(
+                corrector_id=corrector_id, 
+                corrector_gdf=corrector_gdf, 
+                nproc=nproc,
+            )
+        else:
+            assert germline_baf_rawdata is not None
+            self.make_corrected_gdfs_baf_pairedgermline(
+                corrector_id=corrector_id, 
+                germline_baf_rawdata=germline_baf_rawdata,
+            )
+
         # segment
-        #if make_segment:
         self.log(f'Making BAF segment from the corrected data')
+
+        corrected_baf_rawdata = self.corrected_gdfs[corrector_id]['baf_rawdata']
+        skip_hetalt_filter = (not self.is_germline)
         corrected_baf_segment_dict, filtered_baf_rawdata = corrected_baf_rawdata.get_segment_dict(
             target_region=self.get_raw_target_region(),
 
@@ -1783,6 +1840,7 @@ class CNVSample:
 
             germline_CN_gdf=germline_CN_gdf, 
             is_female=self.is_female,
+            skip_hetalt_filter=skip_hetalt_filter,
 
             return_filtered_rawdata=True,
 
@@ -2586,12 +2644,14 @@ class CNVManager:
             if key == 'raw_target_region':
                 if saved_dict[key] is None:
                     continue
+                else:
+                    saved_dict[key] = saved_dict[key].df
 
-            if key == 'vaf_rawdata':
-                if key not in saved_dict:
-                    continue
+            elif key == 'vaf_rawdata':
+                if key in saved_dict:
+                    saved_dict[key] = saved_dict[key].df
 
-            if isinstance(saved_dict[key], GDF):
+            elif key == 'depth_rawdata':
                 saved_dict[key] = saved_dict[key].df
 
         with open(savepath, mode='wb') as outfile:

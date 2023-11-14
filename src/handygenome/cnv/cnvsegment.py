@@ -410,7 +410,8 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
         CN_line_color = 'black'
         plot_kwargs = plot_kwargs_base | {'color': CN_line_color}
         offset = 0.1
-        fig, ax, genomeplotter, plotdata = self.draw_hlines(
+        #fig, ax, genomeplotter, plotdata = self.draw_hlines(
+        gdraw_result = self.draw_hlines(
             y_colname=self.get_clonal_CN_colname(),
             ax=ax,
             genomeplotter=genomeplotter,
@@ -430,10 +431,11 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
         for idx, (baf_idx, colname) in enumerate(B_colnames.items()):
             offset = idx * -0.1
             plot_kwargs = plot_kwargs_base | {'color': B_line_colors[baf_idx]}
-            fig, ax, genomeplotter, plotdata = self.draw_hlines(
+            #fig, ax, genomeplotter, plotdata = self.draw_hlines(
+            gdraw_result = self.draw_hlines(
                 y_colname=colname,
-                ax=ax,
-                genomeplotter=genomeplotter,
+                ax=gdraw_result.ax,
+                genomeplotter=gdraw_result.genomeplotter,
                 offset=offset,
 
                 plotdata=plotdata,
@@ -445,8 +447,8 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
         # axes setup
         if setup_axes:
             self.draw_axessetup(
-                ax=ax,
-                genomeplotter=genomeplotter,
+                ax=gdraw_result.ax,
+                genomeplotter=gdraw_result.genomeplotter,
 
                 ylabel=ylabel,
                 ylabel_prefix=ylabel_prefix,
@@ -458,7 +460,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
                 draw_common_kwargs=draw_common_kwargs,
                 rotate_chromlabel=rotate_chromlabel,
 
-                fig=fig,
+                fig=gdraw_result.fig,
                 title=title, 
                 suptitle_kwargs=suptitle_kwargs,
             )
@@ -478,7 +480,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
                 color=color, 
                 label=f'{baf_idx} B allele copy number',
             )
-        ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
+        gdraw_result.ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
 
     def draw_corrected_baf(
         self,
@@ -495,7 +497,8 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
         verbose=True,
     ):
         y_colname_corr = self.get_corrected_baf_colname(baf_index=baf_index)
-        fig, ax, genomeplotter, plotdata = self.draw_hlines(
+        #fig, ax, genomeplotter, plotdata = self.draw_hlines(
+        gdraw_result = self.draw_hlines(
             y_colname=y_colname_corr,
             ax=ax,
             genomeplotter=genomeplotter,
@@ -527,5 +530,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
             color=BAFSegmentDataFrame.baf_mean_color, 
             label='BAF data mean'
         )
-        ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
+        gdraw_result.ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
+
+
 

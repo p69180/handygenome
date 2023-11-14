@@ -522,6 +522,8 @@ def find_hist_peaks(
     reltoheight=None,
     inverse=False,
 
+    as_density=True,
+
     bins=10, 
     **find_peaks_kwargs,
 ):
@@ -530,7 +532,7 @@ def find_hist_peaks(
     )
 
     hist, bin_edges = np.histogram(
-        data, bins=bins, weights=weights, density=True,
+        data, bins=bins, weights=weights, density=as_density,
     )
     bin_midpoints = 0.5 * (bin_edges[:-1] + bin_edges[1:])
 
@@ -652,6 +654,8 @@ def findpeaks_arghandler(data, weights, limit, find_peaks_kwargs):
     data = np.asarray(data)
     if data.ndim != 1:
         raise Exception(f'Input data must be 1-d.')
+    if len(data) == 0:
+        raise Exception(f'Input data length is 0')
 
     if weights is None:
         weights = np.repeat(1, len(data))
