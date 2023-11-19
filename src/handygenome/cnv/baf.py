@@ -26,6 +26,7 @@ import handygenome.refgenome.refgenome as refgenome
 import handygenome.variant.variantplus as libvp
 from handygenome.variant.variantplus import VCFDataFrame, VariantDataFrame
 from handygenome.genomedf.genomedf import GenomeDataFrame, SegmentDataFrame
+import handygenome.genomedf.genomedf_draw as genomedf_draw
 import handygenome.plot.misc as plotmisc
 import handygenome.cnv.cnvcall as cnvcall
 #import handygenome.cnv.bafsimul as bafsimul
@@ -100,6 +101,10 @@ def decal_baf(bafs):
 class BAFRawDataFrame(VariantDataFrame):
     is_het_colname = 'is_het'
     drawresult_name = 'baf_rawdata'
+
+    default_plot_kwargs = dict(
+        zorder=0,
+    )
 
     def get_baf_indexes(self):
         return get_baf_indexes(self.num_alleles)
@@ -367,18 +372,20 @@ class BAFRawDataFrame(VariantDataFrame):
                 annot_colname=baf_index,
                 drop_annots=True,
                 nproc=nproc,
+                **kwargs,
             )
             seg_gdf = BAFSegmentDataFrame.from_frame(seg_gdf.df, refver=self.refver)
             seg_gdf = seg_gdf.fill_gaps(edit_first_last=True)
-            if target_region is not None:
-                seg_gdf = seg_gdf.intersect(target_region, nproc=nproc)
-
             seg_gdf.add_rawdata_info_simple(
                 filtered_self, 
                 baf_index,
                 merge_methods=['mean', 'std'],
                 nproc=nproc,
             )
+
+            if target_region is not None:
+                seg_gdf = seg_gdf.intersect(target_region, nproc=nproc)
+
             result[baf_index] = seg_gdf
 
         if return_filtered_rawdata:
@@ -438,7 +445,7 @@ class BAFRawDataFrame(VariantDataFrame):
             suptitle_kwargs=suptitle_kwargs,
             subplots_kwargs=subplots_kwargs,
 
-            plot_kwargs=plot_kwargs,
+            plot_kwargs=(self.__class__.default_plot_kwargs | plot_kwargs),
 
             setup_axes=setup_axes,
             ylabel=ylabel,
@@ -522,8 +529,14 @@ def get_bafdfs_from_vafdf(vafdf):
 class BAFSegmentDataFrame(SegmentDataFrame):
     distinfo_suffix = '_distinfo'
     corrected_baf_suffix = '_corrected'
-    baf_mean_color = 'tab:blue'
     drawresult_name = 'baf_segment'
+    default_plot_kwargs = dict(
+        color='tab:blue',
+        alpha=genomedf_draw.DEFAULT_SEGMENT_ALPHA,
+        #alpha=0.9,
+        linewidth=2,
+        zorder=5,
+    )
 
     #@property
     #def baf_colname(self):
@@ -579,9 +592,6 @@ class BAFSegmentDataFrame(SegmentDataFrame):
         if baf_index is None:
             baf_index = self.get_baf_index()
         return baf_index + self.__class__.corrected_baf_suffix
-
-    def get_corrected_baf(self, baf_index=None):
-        return self[self.get_corrected_baf_colname(baf_index=baf_index)]
 
     ########################
     # column value getters #
@@ -747,10 +757,7 @@ class BAFSegmentDataFrame(SegmentDataFrame):
 
             subplots_kwargs=subplots_kwargs,
 
-            plot_kwargs=(
-                {'color': self.__class__.baf_mean_color}
-                | plot_kwargs
-            ),
+            plot_kwargs=(self.__class__.default_plot_kwargs | plot_kwargs),
 
             setup_axes=setup_axes,
             ylabel=ylabel,

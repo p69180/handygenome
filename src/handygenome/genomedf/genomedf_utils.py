@@ -38,6 +38,7 @@ def order_df(df, columns):
 
 
 def compare_two_dfs(df1, df2):
+    """Column order may differ"""
     assert set(COMMON_COLUMNS).issubset(df1.columns)
     assert set(COMMON_COLUMNS).issubset(df2.columns)
 

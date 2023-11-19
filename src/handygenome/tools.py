@@ -628,9 +628,25 @@ def nanaverage(values, weights):
 
 
 def nanargmin(arr, axis, keepdims=False):
+    """When all-nan axis is encountered, 0 is returned as resultant index value"""
+    if axis == -1:
+        axis = arr.ndim - 1
+
     arrcp = arr.copy()
-    isnan = np.isnan(arrcp).all(axis=axis)
-    arrcp[isnan] = 0
+
+    nonzero = np.nonzero(np.isnan(arrcp).all(axis=axis))
+    lenaxis = arrcp.shape[axis]
+
+    selector = list()
+    for idx in range(0, axis):
+        selector.append(np.tile(nonzero[idx], lenaxis))
+    selector.append(np.repeat(np.arange(lenaxis), len(nonzero[0])))
+    for idx in range(axis + 1, arrcp.ndim):
+        selector.append(np.tile(nonzero[idx - 1], lenaxis))
+    selector = tuple(selector)
+
+    arrcp[selector] = 0
+
     return np.nanargmin(arrcp, axis, keepdims=keepdims)
 
 

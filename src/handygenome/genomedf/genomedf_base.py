@@ -213,6 +213,7 @@ class GenomeDataFrameBase:
         del self._gr
 
     def __eq__(self, other):
+        """Column order may differ"""
         #assert isinstance(other, self.__class__), f'{self.__class__}, {other.__class__}'
         return genomedf_utils.compare_two_dfs(self.df, other.df)
 

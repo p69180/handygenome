@@ -100,6 +100,12 @@ def check_haploid(is_female, chrom):
     )
 
 
+def get_average_ploidy(CNt, lengths, axis=None):
+    result = np.average(CNt, axis=axis, weights=lengths)
+    assert not np.isnan(result)
+    return result
+
+
 ############################
 # germline sample solution #
 ############################
@@ -282,20 +288,52 @@ def solution_from_targetsample():
     return depth_seg_gdf
 
 
-def solution_from_segments(
+def solution_from_segments_arghandler(
     depths, 
     bafs, 
+    weights,
 
-    num_ndiv_cand=10,
-    num_CNt0_cand=6,
-    ndivs_offset_step=0.01,
+    all_depths,
+    all_bafs,
+    all_weights,
+):
+    def helper(data):
+        if data is None:
+            return None
+        else:
+            result = np.atleast_1d(
+                np.squeeze(
+                    np.asarray(data)
+                )
+            )
+            assert result.ndim == 1
+            return result
 
-    depthfit_cutoff=0.15,
-    bafdiff_frac=0.1,
-    CNt_handicap_factor=1,
+    if weights is not None:
+        weights = np.asarray(weights)
+        assert weights.shape == depths.shape
 
-    CNg=2,
-    Bg=1,
+    depths = helper(depths)
+    bafs = helper(bafs)
+    weights = helper(weights)
+    if weights is not None:
+        assert weights.shape == depths.shape
+
+    all_depths = helper(all_depths)
+    all_bafs = helper(all_bafs)
+    all_weights = helper(all_weights)
+    if all_weights is not None:
+        assert all_weights.shape == all_depths.shape
+
+    return depths, bafs, weights, all_depths, all_bafs, all_weights
+
+
+def solution_from_segments_common_params(
+    depths,
+    num_ndiv_cand,
+    num_CNt0_cand,
+    ndivs_offset_step,
+    depthfit_cutoff,
 ):
     # make grid variables
     CNt0 = np.arange(num_CNt0_cand)
@@ -310,119 +348,287 @@ def solution_from_segments(
         ndivs = ndivs[ndivs > 0]
 
     dd = depths.ptp() / ndivs
-
     CNt0, dd = np.meshgrid(CNt0, dd, indexing='ij')
+    ndivs = np.tile(ndivs[np.newaxis, :], (CNt0.shape[0], 1))
 
     # make K, c
     depth0 = depths.min()
-    K, cellularity = find_K_and_cellularity(depth1=depth0, CNt1=CNt0, CNg1=2, depth2=(depth0 + dd), CNt2=(CNt0 + 1), CNg2=2)
+    K, cellularity = find_Kc(
+        depth1=depth0, 
+        CNt1=CNt0, 
+        CNg1=2, 
+        depth2=(depth0 + dd), 
+        CNt2=(CNt0 + 1), 
+        CNg2=2,
+        raise_with_nan=False,
+    )
 
     # expand along a new axis which represent different segments
-    n_segs = len(depths)
-    def expand_helper(arr):
-        return np.repeat(np.expand_dims(arr, 0), n_segs, axis=0)
-    CNt0 = expand_helper(CNt0)
-    dd = expand_helper(dd)
-    cellularity = expand_helper(cellularity)
+    CNt0 = np.expand_dims(CNt0, 0)
+    dd = np.expand_dims(dd, 0)
+    ndivs = np.expand_dims(ndivs, 0)
+    cellularity = np.expand_dims(cellularity, 0)
+    K = np.expand_dims(K, 0)
 
+    return CNt0, dd, ndivs, cellularity, K, depth0
+
+
+def solution_from_segments_fit_to_data(
+    depth0,
+
+    depths, 
+    bafs, 
+    weights,
+
+    depthfit_cutoff,
+    baffit_cutoff,
+    CNt_handicap_factor,
+
+    CNg,
+    Bg,
+
+    CNt0, 
+    dd, 
+    cellularity, 
+
+    valid_flags=None,
+):
     # expand depths and bafs
     depths = np.expand_dims(depths, (1, 2))
     bafs = np.expand_dims(bafs, (1, 2))
 
+    ### from here ndims of CNt0, dd, cellularity, depths, bafs are all same ###
+
     # make CNt1 for each segment
-    depthdiff_quotients = (depths - depth0) / dd
-    CNt1 = (CNt0 + np.rint(depthdiff_quotients))
+    dd_quotients = (depths - depth0) / dd
+    dd_quotients[dd_quotients < 0] = 0
+    CNt_diffs = np.rint(dd_quotients)
+    depthdiff_fractions = np.abs(dd_quotients - CNt_diffs)
+    CNt1 = CNt0 + CNt_diffs
 
-    # determine Bt for each segment
-    half_CNt1 = np.floor(CNt1 / 2).astype(int)
-    Bt_offsets = np.arange(half_CNt1.max())
-    Bt = (np.expand_dims(half_CNt1, -1) - Bt_offsets).astype(float)
-    Bt[Bt < 0] = np.nan
+    # determine Bt for each segment (axis for Bt candidates is the last one)
+    half_CNt1 = (np.floor(CNt1 / 2)).astype(int)
+    Bt_offsets = np.arange(half_CNt1.max() + 1)
+    Bt_candidates = (np.expand_dims(half_CNt1, -1) - Bt_offsets).astype(float)
+    Bt_candidates[Bt_candidates < 0] = np.nan
 
-    pred_bafs = get_predicted_baf(
+    # choose Bt candidate indexes with the least difference
+    pred_bafs_candidates = get_predicted_baf(
         CNt=np.expand_dims(CNt1, -1), 
-        Bt=Bt, 
+        Bt=Bt_candidates, 
         CNg=CNg, 
         Bg=Bg, 
         cellularity=np.expand_dims(cellularity, -1),
     )
-    ## choose indexes with the least difference along the last axis
-    baf_diffs = np.abs(pred_bafs - np.expand_dims(bafs, -1))
-    # argmins = np.nanargmin(baf_diffs, axis=-1, keepdims=True)
-    argmins = nanargmin(baf_diffs, axis=-1, keepdims=True)
-    Bt = np.squeeze(np.take_along_axis(Bt, argmins, axis=-1), axis=-1)
-    pred_bafs = np.squeeze(np.take_along_axis(pred_bafs, argmins, axis=-1), axis=-1)
+    bafdiff_candidates = np.abs(pred_bafs_candidates - np.expand_dims(bafs, -1))
+    argmins = tools.nanargmin(bafdiff_candidates, axis=-1, keepdims=True)
+
+    bafdiffs = np.squeeze(np.take_along_axis(bafdiff_candidates, argmins, axis=-1), axis=-1)
+    Bt = np.squeeze(np.take_along_axis(Bt_candidates, argmins, axis=-1), axis=-1)
+    pred_bafs = np.squeeze(np.take_along_axis(pred_bafs_candidates, argmins, axis=-1), axis=-1)
 
     # make onecopy bafdiff
-    onecopy_bafdiffs = get_predicted_baf(
+    onecopy_bafdiffs = get_onecopy_bafdiff(
         CNt=CNt1, 
-        Bt=1, 
-        CNg=CNg, 
-        Bg=Bg, 
         cellularity=cellularity,
+        CNg=CNg, 
     )
-
-    # get diffs between pred and obs bafs
-    baf_errors = np.abs(pred_bafs - bafs)
+    bafdiff_fractions = bafdiffs / onecopy_bafdiffs
 
     # get valid selectors
-    depthfit_valid_flags = np.abs(depthdiff_quotients - np.rint(depthdiff_quotients)) < depthfit_cutoff
-    baffit_valid_flags = baf_errors < (onecopy_bafdiffs * bafdiff_frac)
-    notnan_flags = ~np.isnan(pred_bafs)
+    if valid_flags is None:
+        depthfit_valid_flags = depthdiff_fractions < depthfit_cutoff
+        baffit_valid_flags = bafdiff_fractions < baffit_cutoff
+        notnan_flags = ~np.isnan(pred_bafs)
 
-    valid_flags = functools.reduce(np.logical_and, [depthfit_valid_flags, baffit_valid_flags, notnan_flags])
-    valid_flags_flat = valid_flags.reshape(valid_flags.shape[0], -1).all(axis=0)
+        valid_flags = functools.reduce(
+            np.logical_and, 
+            [depthfit_valid_flags, baffit_valid_flags, notnan_flags],
+        )
+        valid_flags = valid_flags.all(axis=0)
 
-    baf_errors_hdcp = baf_errors + CNt1 * CNt_handicap_factor
-    baf_errors_flat = baf_errors_hdcp.reshape(baf_errors_hdcp.shape[0], -1).sum(axis=0)
-    baf_errors_flat[~valid_flags_flat] = np.nan
-    argmin = np.nanargmin(baf_errors_flat)
+    # make target function
+    depth_targetval = depthdiff_fractions.copy()
 
-    unraveled_idx = np.unravel_index(argmin, CNt0.shape[1:])
+    # for regions where baf is unavailable (e.g. male X)
+    baf_targetval = bafdiff_fractions.copy()
+    baf_isnan = np.isnan(np.squeeze(bafs, axis=(1, 2)))
+    baf_targetval[baf_isnan] = 0
 
-    return {
-        'CNt0': CNt0[0, :][unraveled_idx],
-        'onecopy_depth': dd[0, :][unraveled_idx],
-        'cellularity': cellularity[0, :][unraveled_idx],
-        'Bt': Bt[np.index_exp[:,] + unraveled_idx],
-        'CNt1': CNt1[np.index_exp[:,] + unraveled_idx],
-        'predicted_baf': pred_bafs[np.index_exp[:,] + unraveled_idx],
-    }
-
-
-def show_solution_from_segments(depths, bafs, solution):
-    nseg = len(depths)
-
-    fig, axd = plt.subplot_mosaic(
-        [['CN'], ['baf'], ['depth']], 
-        gridspec_kw=dict(hspace=0.4),
-        figsize=(8, 10),
+    targetval = (
+        depth_targetval 
+        + baf_targetval 
+        #+ (CNt1 * CNt_handicap_factor)
     )
 
-    xs = np.arange(nseg)
-    width = 1
+    def process_targetval(targetval, valid_flags, weights):
+        if weights is not None:
+            targetval = targetval * np.expand_dims(weights, (1, 2))
+        targetval_sum = targetval.sum(axis=0)
+        targetval_sum[~valid_flags] = np.nan
 
-    axd['CN'].set_xlim(-1, nseg)
-    axd['CN'].hlines(solution['CNt1'], xs - width/2, xs + width/2, alpha=0.4, color='black')
-    axd['CN'].hlines(solution['Bt'], xs - width/2, xs + width/2, alpha=0.4, color='blue')
-    axd['CN'].set_title('CN')
+        notna_vals = targetval_sum[~np.isnan(targetval_sum)]
+        #assert len(notna_vals) > 0
+        mean = np.mean(notna_vals)
+        std = np.std(notna_vals)
+        norm_targetval_sum = (targetval_sum - mean) / std
 
-    axd['baf'].set_xlim(-1, nseg)
-    axd['baf'].set_ylim(-0.02, 0.52)
-    axd['baf'].hlines(bafs, xs - width/2, xs + width/2, alpha=0.4)
-    axd['baf'].hlines(solution['predicted_baf'], xs - width/2, xs + width/2, alpha=0.4, color='tab:red')
-    axd['baf'].set_title('BAF')
+        return targetval, targetval_sum, norm_targetval_sum
 
-    axd['depth'].set_xlim(-1, nseg)
-    axd['depth'].set_ylim(0, 2)
-    axd['depth'].hlines(depths, xs - width/2, xs + width/2, alpha=0.4)
-    axd['depth'].set_title('depth')
+    depth_targetval, depth_targetval_sum, norm_depth_targetval_sum = process_targetval(depth_targetval, valid_flags, weights)
+    baf_targetval, baf_targetval_sum, norm_baf_targetval_sum = process_targetval(baf_targetval, valid_flags, weights)
+    targetval, targetval_sum, norm_targetval_sum = process_targetval(targetval, valid_flags, weights)
 
-    depth0 = depths.min()
-    for y in depth0 + solution['onecopy_depth'] * np.arange(20):
-        axd['depth'].axhline(y, color='tab:red', alpha=0.4, linestyle='dotted')
+    return (
+        CNt1, Bt, valid_flags,
+        norm_depth_targetval_sum,
+        norm_baf_targetval_sum,
+        norm_targetval_sum,
+        pred_bafs,
+    )
 
-    return fig, axd
+
+def solution_from_segments(
+    depths, 
+    bafs, 
+    weights=None,
+
+    all_depths=None,
+    all_bafs=None,
+    all_weights=None,
+
+    num_ndiv_cand=20,
+    num_CNt0_cand=10,
+    ndivs_offset_step=0.01,
+
+    depthfit_cutoff=0.5,
+    baffit_cutoff=0.5,
+    CNt_handicap_factor=0,
+
+    CNg=2,
+    Bg=1,
+):
+    depths, bafs, weights, all_depths, all_bafs, all_weights = solution_from_segments_arghandler(
+        depths, 
+        bafs, 
+        weights,
+
+        all_depths,
+        all_bafs,
+        all_weights,
+    )
+
+    CNt0, dd, ndivs, cellularity, K, depth0 = solution_from_segments_common_params(
+        depths,
+        num_ndiv_cand,
+        num_CNt0_cand,
+        ndivs_offset_step,
+        depthfit_cutoff,
+    )
+
+    (
+        CNt1, Bt, valid_flags,
+        depth_targetval_sum,
+        baf_targetval_sum,
+        targetval_sum,
+        pred_bafs,
+    ) = solution_from_segments_fit_to_data(
+        depth0,
+
+        depths, 
+        bafs, 
+        weights,
+
+        depthfit_cutoff,
+        baffit_cutoff,
+        CNt_handicap_factor,
+
+        CNg,
+        Bg,
+
+        CNt0, 
+        dd, 
+        cellularity, 
+
+        valid_flags=None,
+    )
+
+    argmin = np.nanargmin(targetval_sum)
+    unraveled_idx = np.unravel_index(argmin, shape=targetval_sum.shape)
+
+    if all_depths is not None:
+        (
+            all_CNt1, all_Bt, _,
+            all_depth_targetval_sum,
+            all_baf_targetval_sum,
+            all_targetval_sum,
+            _,
+        ) = solution_from_segments_fit_to_data(
+            depth0,
+
+            all_depths, 
+            all_bafs, 
+            all_weights,
+
+            depthfit_cutoff,
+            baffit_cutoff,
+            CNt_handicap_factor,
+
+            CNg,
+            Bg,
+
+            CNt0, 
+            dd, 
+            cellularity, 
+
+            valid_flags=valid_flags,
+        )
+    else:
+        all_CNt1 = None 
+        all_Bt = None 
+        all_depth_targetval_sum = None
+        all_baf_targetval_sum = None
+        all_targetval_sum = None
+
+
+    #targetval_flat = targetval.reshape(targetval.shape[0], -1).sum(axis=0)
+    #baf_errors_hdcp = bafdiffs + CNt1 * CNt_handicap_factor
+    #baf_errors_flat = baf_errors_hdcp.reshape(baf_errors_hdcp.shape[0], -1).sum(axis=0)
+    #baf_errors_flat[~valid_flags_flat] = np.nan
+    #argmin = np.nanargmin(baf_errors_flat)
+
+#    return {
+#        'CNt0': CNt0[0, :][unraveled_idx],
+#        'onecopy_depth': dd[0, :][unraveled_idx],
+#        'cellularity': cellularity[0, :][unraveled_idx],
+#        'K': K[0, :][unraveled_idx],
+#        'CNt1': CNt1[np.index_exp[:,] + unraveled_idx],
+#        'Bt': Bt[np.index_exp[:,] + unraveled_idx],
+#        'predicted_baf': pred_bafs[np.index_exp[:,] + unraveled_idx],
+#    }
+
+    return {
+        'CNt0': CNt0[0, :],
+        'onecopy_depth': dd[0, :],
+        'num_division': ndivs[0, :],
+        'cellularity': cellularity[0, :],
+        'K': K[0, :],
+
+        'targetval': targetval_sum,
+        'depth_targetval': depth_targetval_sum,
+        'baf_targetval': baf_targetval_sum,
+        'CNt': CNt1,
+        'Bt': Bt,
+
+        'argmin': unraveled_idx,
+        'predicted_baf': pred_bafs,
+
+        'all_targetval': all_targetval_sum,
+        'all_depth_targetval': all_depth_targetval_sum,
+        'all_baf_targetval': all_baf_targetval_sum,
+        'all_CNt': all_CNt1,
+        'all_Bt': all_Bt,
+    }
 
 
 ###########
@@ -572,7 +778,8 @@ def get_K_from_onecopy_depth_germline(onecopy_depth):
 
 
 @get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
-def find_Kc(*, depth1, CNt1, CNg1, depth2, CNt2, CNg2):
+@deco.get_deco_atleast1d(['depth1', 'CNt1', 'CNg1', 'depth2', 'CNt2', 'CNg2'])
+def find_Kc(*, depth1, CNt1, CNg1, depth2, CNt2, CNg2, raise_with_nan=False):
     """Assume 'depth1' and 'depth2' are corrected so that position-dependent bias has been removed.
 
     Assert that cellularity must not be zero
@@ -601,23 +808,35 @@ def find_Kc(*, depth1, CNt1, CNg1, depth2, CNt2, CNg2):
     # cellularity
     cellularity_numer = depth1 * CNg2 - depth2 * CNg1
     cellularity_denom = depth2 * (CNt1 - CNg1) - depth1 * (CNt2 - CNg2)
-    if cellularity_denom == 0:
+    if (cellularity_denom == 0).any():
         raise KCError(f'Invalid input value combination: cellularity denominator becomes zero')
-
     cellularity = cellularity_numer / cellularity_denom
+
+    # cellularity sanitycheck
+    invalid_selector = np.logical_or((cellularity <= 0), (cellularity > 1))
+    if invalid_selector.any() and raise_with_nan:
+        raise KCError(f'Invalid input value combination: cellularity is out of range (0, 1]')
+    cellularity[invalid_selector] = np.nan
 
     # K
     K_inverse = (1 / depth1) * (CNg1 + cellularity * (CNt1 - CNg1))
-    if K_inverse == 0:
+        # since "cellularity" is at least 1d, K_inverse is also at least 1d
+    if (K_inverse == 0).any():
         raise KCError(f'Invalid input value combination: inverse of K becomes zero')
     K = 1 / K_inverse
 
-    # sanity check
-    if K <= 0:
-        raise KCError(f'Invalid input value combination: K has a non-positive value')
-    if not ((cellularity > 0) and (cellularity <= 1)):
-        raise KCError(f'Invalid input value combination: cellularity is not within the valid range: (0, 1]')
-
+    # K sanitycheck
+    invalid_K_selector = (K <= 0)
+    if invalid_K_selector.any() and raise_with_nan:
+        raise KCError(f'Invalid input value combination: K <= 0')
+    K[invalid_K_selector] = np.nan
+        
+    # result
+    try:
+        K = K.item()
+        cellularity = cellularity.item()
+    except ValueError:
+        pass
     return K, cellularity
 
 
@@ -641,25 +860,81 @@ def find_Kc_withdelta(*, depth, CNt, CNg, delta_depth):
 
 
 @get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
+@deco.get_deco_atleast1d(['CNt', 'K', 'cellularity'])
 def get_predicted_depth(CNt, K, cellularity, CNg=None):
-    if cellularity == 1:
-        return K * CNt
+    if (
+        (not (cellularity == 1).all()) 
+        and (CNg is None)
+    ):
+        raise Exception(f'When any of cellularity is not 1, CNg must be given.')
+
+    if (cellularity == 1).all():
+        result = K * CNt
     else:
-        return K * (CNg * (1 - cellularity) + CNt * cellularity)
+        result = K * (CNg * (1 - cellularity) + CNt * cellularity)
+
+    try:
+        result = result.item()
+    except ValueError:
+        pass
+
+    return result
 
 
 @get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
+@deco.get_deco_atleast1d(['CNt', 'Bt', 'cellularity'])
 def get_predicted_baf(CNt, Bt, cellularity, CNg=None, Bg=None):
     """Where CNt == 0 and CNg == 0, result is np.nan"""
+    if (
+        (not (cellularity == 1).all()) 
+        and ((CNg is None) or (Bg is None))
+    ):
+        raise Exception(f'When any of cellularity is not 1, CNg and Bg must be given.')
+
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', RuntimeWarning)
-        if cellularity == 1:
-            return Bt / CNt
+        if (cellularity == 1).all():
+            result = Bt / CNt
         else:
-            return (
+            result = (
                 (Bt * cellularity + Bg * (1 - cellularity))
                 / (CNt * cellularity + CNg * (1 - cellularity))
             )
+
+    try:
+        result = result.item()
+    except ValueError:
+        pass
+
+    return result
+
+
+@get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
+@deco.get_deco_atleast1d(['CNt', 'cellularity'])
+def get_onecopy_bafdiff(CNt, cellularity, CNg=None):
+    """Where CNt == 0 and CNg == 0, result is np.nan"""
+    if (
+        (not (cellularity == 1).all()) 
+        and (CNg is None)
+    ):
+        raise Exception(f'When any of cellularity is not 1, CNg must be given.')
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        if (cellularity == 1).all():
+            result = 1 / CNt
+        else:
+            result = (
+                cellularity
+                / (CNt * cellularity + CNg * (1 - cellularity))
+            )
+
+    try:
+        result = result.item()
+    except ValueError:
+        pass
+
+    return result
 
 
 def get_possible_bafs(*, CNt, cellularity, CNg=2, Bg=1):

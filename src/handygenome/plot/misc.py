@@ -41,12 +41,12 @@ def get_integer_yticks(ymin, ymax, num_ticks=15):
     ymin = np.rint(ymin)
     ymax = np.rint(ymax)
     step = int(max(1, np.rint((ymax - ymin) / num_ticks)))
-    return np.arange(ymin, ymax, step).astype(int)
+    return np.arange(ymin, ymax + step, step).astype(int)
 
 
 def draw_suptitle(fig, title, **kwargs):
     kwargs = (
-        {'weight': 'bold', 'size': 20, 'y': 1} 
+        {'weight': 'bold', 'size': 20, 'y': 0.97} 
         | kwargs
     )
     fig.suptitle(title, **kwargs)
@@ -82,8 +82,25 @@ def qqplot(data1, data2, q=np.arange(0, 1.01, 0.01), ax=None):
     return fig, ax
 
 
+def clear_ax(ax):
+    ax.clear()
+    ax.spines[:].set_visible(False)
+    ax.set_xticks([])
+    ax.set_yticks([])
 
 
+def data_into_point(ax):
+    x0, x1, y0, y1 = 0, 1, 0, 1
+    disp_x0, disp_y0 = ax.transData.transform((x0, y0))
+    disp_x1, disp_y1 = ax.transData.transform((x1, y1))
+    inch_x0, inch_y0 = ax.figure.dpi_scale_trans.inverted().transform((disp_x0, disp_y0))
+    inch_x1, inch_y1 = ax.figure.dpi_scale_trans.inverted().transform((disp_x1, disp_y1))
 
+    inch_x = inch_x1 - inch_x0
+    inch_y = inch_y1 - inch_y0
+    point_x = inch_x * 72
+    point_y = inch_y * 72
+
+    return inch_x, inch_y, point_x, point_y
 
 

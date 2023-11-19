@@ -15,7 +15,11 @@ from handygenome.cnv.cnvcall import DefaultCNgUnavailableError
 import handygenome.plot.misc as plotmisc
 from handygenome.peakutils import NoPeakError
 
-from handygenome.genomedf.genomedf_draw import GenomeDrawingResultGroup
+import handygenome.genomedf.genomedf_draw as genomedf_draw
+from handygenome.genomedf.genomedf_draw import GenomeDrawingFigureResult
+
+
+DEFAULT_WINSORIZE = (0.05, 0.05)
 
 
 def make_normalized_depth(depths, lengths):
@@ -35,6 +39,10 @@ class DepthRawDataFrame(GenomeDataFrame):
     filter_colname = 'depth_selected'
     depth_drawresult_name = 'depth_rawdata'
     mq_drawresult_name = 'mq_rawdata'
+
+    default_plot_kwargs = dict(
+        zorder=0,
+    )
 
     DEFAULT_DTYPES = {
         'Chromosome': 'string', 
@@ -77,13 +85,13 @@ class DepthRawDataFrame(GenomeDataFrame):
     def get_colname_ylabel(self, depthtype):
         assert depthtype in ('norm', 'normalized', 'raw', 'corr', 'corrected')
         if depthtype in ('norm', 'normalized'):
-            default_ylabel = f'normalized depth'
+            default_ylabel = f'normalized_depth'
             y_colname = self.__class__.norm_depth_colname
         elif depthtype in ('raw',):
-            default_ylabel = f'raw depth'
+            default_ylabel = f'raw_depth'
             y_colname = self.__class__.depth_colname
         elif depthtype in ('corr', 'corrected'):
-            default_ylabel = f'corrected depth'
+            default_ylabel = f'corrected_depth'
             y_colname = self.__class__.corrected_norm_depth_colname
 
         return default_ylabel, y_colname
@@ -281,7 +289,7 @@ class DepthRawDataFrame(GenomeDataFrame):
             suptitle_kwargs=suptitle_kwargs,
             subplots_kwargs=subplots_kwargs,
 
-            plot_kwargs=plot_kwargs,
+            plot_kwargs=(self.__class__.default_plot_kwargs | plot_kwargs),
 
             setup_axes=setup_axes,
             ylabel=ylabel,
@@ -298,7 +306,8 @@ class DepthRawDataFrame(GenomeDataFrame):
             log_suffix=' (Depth raw data)',
             verbose=verbose,
         )
-        gdraw_result.set_name(self.__class__.depth_drawresult_name)
+        #gdraw_result.set_name(self.__class__.depth_drawresult_name)
+        gdraw_result.set_name(default_ylabel + '_rawdata')
 
         return gdraw_result
 
@@ -408,6 +417,14 @@ class DepthSegmentDataFrame(SegmentDataFrame):
     depth_drawresult_name = 'depth_segment'
     mq_drawresult_name = 'mq_segment'
 
+    default_plot_kwargs = dict(
+        color='tab:blue',
+        alpha=genomedf_draw.DEFAULT_SEGMENT_ALPHA,
+        #alpha=1,
+        linewidth=genomedf_draw.DEFAULT_SEGMENT_LINEWIDTH,
+        zorder=5,
+    )
+
     @property
     def norm_depth_mean(self):
         return self[self.__class__.norm_depth_mean_colname]
@@ -461,6 +478,7 @@ class DepthSegmentDataFrame(SegmentDataFrame):
         merge_methods=['mean', 'std'],
         rawdepth=False,
         nproc=1,
+        winsorize=DEFAULT_WINSORIZE,
     ):
         #depth_colname = (
         #    DepthRawDataFrame.depth_colname
@@ -478,7 +496,7 @@ class DepthSegmentDataFrame(SegmentDataFrame):
             #right_gdf_cols=right_gdf_cols,
             how='left',
             merge=merge_methods,
-            winsorize=(0.05, 0.05),
+            winsorize=winsorize,
             nproc=nproc,
         )
         self.assign_frame(joined_gdf.df)
@@ -573,7 +591,7 @@ class DepthSegmentDataFrame(SegmentDataFrame):
         #    yticks = np.round(np.linspace(0, ymax, 10), 2)
 
         plot_kwargs = (
-            dict(alpha=1)
+            self.__class__.default_plot_kwargs
             | plot_kwargs
         )
         #fig, ax, genomeplotter, plotdata = self.draw_hlines(
@@ -603,7 +621,8 @@ class DepthSegmentDataFrame(SegmentDataFrame):
             log_suffix=' (Depth segment)',
             verbose=verbose,
         )
-        gdraw_result.set_name(self.__class__.depth_drawresult_name)
+        #gdraw_result.set_name(self.__class__.depth_drawresult_name)
+        gdraw_result.set_name(default_ylabel + '_segment')
 
         ax = gdraw_result.ax
         genomeplotter = gdraw_result.genomeplotter
@@ -712,6 +731,10 @@ class DepthSegmentDataFrame(SegmentDataFrame):
         if yticks is False:
             yticks = np.arange(0, 80, 10).astype(int)
 
+        plot_kwargs = (
+            self.__class__.default_plot_kwargs
+            | plot_kwargs
+        )
         #fig, ax, genomeplotter, plotdata = self.draw_hlines(
         gdraw_result = self.draw_hlines(
             y_colname=y_colname,
@@ -864,6 +887,6 @@ class DepthSegmentDataFrame(SegmentDataFrame):
                     linewidth=1,
                 )
 
-        return GenomeDrawingResultGroup(gdraw_result)
+        return GenomeDrawingFigureResult(gdraw_result)
         
     

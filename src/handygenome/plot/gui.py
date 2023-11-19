@@ -6,16 +6,36 @@ import matplotlib.pyplot as plt
 
 
 class IntervalSelector:
-    def __init__(self, fig, omit_ax_labels=list()):
+    @classmethod
+    def from_ax(cls, ax):
+        return cls(
+            fig=ax.figure, 
+            ax=ax, 
+            omit_ax_labels=list(),
+        )
+
+    @classmethod
+    def from_fig(cls, fig, omit_ax_labels=list()):
+        return cls(
+            fig=fig, 
+            ax=None, 
+            omit_ax_labels=omit_ax_labels,
+        )
+
+    def __init__(self, fig, ax, omit_ax_labels):
         self.fig = fig
+        self.ax = ax
         self.omit_ax_labels = omit_ax_labels
         self.init_params()
 
     def get_axes(self):
-        return [
-            ax for ax in self.fig.get_axes() 
-            if ax.get_label() not in self.omit_ax_labels
-        ]
+        if self.ax is None:
+            return [
+                ax for ax in self.fig.get_axes() 
+                if ax.get_label() not in self.omit_ax_labels
+            ]
+        else:
+            return [self.ax]
 
     def init_params(self):
         '''axes is hashable'''

@@ -835,6 +835,11 @@ def replace_nan_args(nan_data, bafmean_minmax_bydepth):
 
 
 def predict_true_baf(data, interp=None):
+    """Args:
+        data: array with shape (ndata, 2); rows indicate data index; column 0 is raw baf; column 1 is depth
+    """
+    assert data.ndim == 2
+
     if interp is None:
         interp = load_interp()
     bafmean_minmax_bydepth = make_meanbaf_limits(interp)

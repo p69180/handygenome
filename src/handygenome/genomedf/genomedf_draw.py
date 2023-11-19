@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 
 #import handygenome.deco as deco
 import handygenome.refgenome.refgenome as refgenome
-#import handygenome.tools as tools
+import handygenome.tools as tools
 #import handygenome.logutils as logutils
 
 from handygenome.genomedf.genomedf_base import GenomeDataFrameBase
@@ -26,6 +26,72 @@ import handygenome.plot.misc as plotmisc
 from handygenome.plot.gui import IntervalSelector
 import handygenome.plot.genomeplot as libgenomeplot
 from handygenome.plot.genomeplot import GenomePlotter
+
+
+DEFAULT_SEGMENT_LINEWIDTH = 1.5
+DEFAULT_SEGMENT_ALPHA = 0.9
+
+
+def draw_axessetup(
+    ax,
+    genomeplotter,
+
+    # y axes setting
+    ylabel=None,
+    ylabel_prefix=None,
+    ylabel_kwargs=dict(),
+    ymax=None,
+    ymin=None,
+    yticks=None,
+
+    # draw common
+    draw_common_kwargs=dict(),
+    rotate_chromlabel=None,
+
+    # figure suptitle
+    fig=None,
+    title=None,
+    suptitle_kwargs=dict(),
+):
+    # ylabel
+    if ylabel is not None:
+        ylabel = ylabel_prefix + ylabel
+        ax.set_ylabel(ylabel, **ylabel_kwargs)
+
+    # yticks
+    if yticks is False:
+        yticks = None
+    if yticks is not None:
+        ax.set_yticks(yticks)
+        ax.set_yticklabels(
+            yticks, 
+            size=plotmisc.get_yticklabel_size(len(yticks)),
+        )
+
+    # ymin, ymax
+    if ymin is False:
+        ymin = None
+    if ymax is False:
+        ymax = None
+    ax.set_ylim(ymin, ymax)
+
+    # draw_common
+    draw_common_kwargs = (
+        {'n_xlabel': None}
+        | draw_common_kwargs
+    )
+
+    if rotate_chromlabel is not None:
+        draw_common_kwargs.setdefault('chromlabel_kwargs', dict())
+        draw_common_kwargs['chromlabel_kwargs'] |= {'rotation': rotate_chromlabel}
+
+    draw_common_artists = genomeplotter.draw_common(ax, **draw_common_kwargs)
+
+    # figure suptitle
+    if title is not None:
+        plotmisc.draw_suptitle(fig, title, **suptitle_kwargs)
+
+    return draw_common_artists
 
 
 class GenomeDataFrameDrawingBase:
@@ -96,65 +162,67 @@ class GenomeDataFrameDrawingBase:
 
         return fig, ax, genomeplotter, plotdata
 
-    def draw_axessetup(
-        self, 
-        ax,
-        genomeplotter,
-
-        # y axes setting
-        ylabel,
-        ylabel_prefix,
-        ylabel_kwargs,
-        ymax,
-        ymin,
-        yticks,
-
-        # draw common
-        draw_common_kwargs,
-        rotate_chromlabel,
-
-        # figure suptitle
-        fig,
-        title,
-        suptitle_kwargs,
-    ):
-        # ylabel
-        if ylabel is not None:
-            ylabel = ylabel_prefix + ylabel
-            ax.set_ylabel(ylabel, **ylabel_kwargs)
-
-        # yticks
-        if yticks is False:
-            yticks = None
-        if yticks is not None:
-            ax.set_yticks(yticks)
-            ax.set_yticklabels(
-                yticks, 
-                size=plotmisc.get_yticklabel_size(len(yticks)),
-            )
-
-        # ymin, ymax
-        if ymin is False:
-            ymin = None
-        if ymax is False:
-            ymax = None
-        ax.set_ylim(ymin, ymax)
-
-        # draw_common
-        draw_common_kwargs = (
-            {'n_xlabel': None}
-            | draw_common_kwargs
-        )
-
-        if rotate_chromlabel is not None:
-            draw_common_kwargs.setdefault('chromlabel_kwargs', dict())
-            draw_common_kwargs['chromlabel_kwargs'] |= {'rotation': rotate_chromlabel}
-
-        genomeplotter.draw_common(ax, **draw_common_kwargs)
-
-        # figure suptitle
-        if title is not None:
-            plotmisc.draw_suptitle(fig, title, **suptitle_kwargs)
+#    def draw_axessetup(
+#        self, 
+#        ax,
+#        genomeplotter,
+#
+#        # y axes setting
+#        ylabel,
+#        ylabel_prefix,
+#        ylabel_kwargs,
+#        ymax,
+#        ymin,
+#        yticks,
+#
+#        # draw common
+#        draw_common_kwargs,
+#        rotate_chromlabel,
+#
+#        # figure suptitle
+#        fig,
+#        title,
+#        suptitle_kwargs,
+#    ):
+#        # ylabel
+#        if ylabel is not None:
+#            ylabel = ylabel_prefix + ylabel
+#            ax.set_ylabel(ylabel, **ylabel_kwargs)
+#
+#        # yticks
+#        if yticks is False:
+#            yticks = None
+#        if yticks is not None:
+#            ax.set_yticks(yticks)
+#            ax.set_yticklabels(
+#                yticks, 
+#                size=plotmisc.get_yticklabel_size(len(yticks)),
+#            )
+#
+#        # ymin, ymax
+#        if ymin is False:
+#            ymin = None
+#        if ymax is False:
+#            ymax = None
+#        ax.set_ylim(ymin, ymax)
+#
+#        # draw_common
+#        draw_common_kwargs = (
+#            {'n_xlabel': None}
+#            | draw_common_kwargs
+#        )
+#
+#        if rotate_chromlabel is not None:
+#            draw_common_kwargs.setdefault('chromlabel_kwargs', dict())
+#            draw_common_kwargs['chromlabel_kwargs'] |= {'rotation': rotate_chromlabel}
+#
+#        draw_common_artists = genomeplotter.draw_common(ax, **draw_common_kwargs)
+#
+#        # figure suptitle
+#        if title is not None:
+#            plotmisc.draw_suptitle(fig, title, **suptitle_kwargs)
+#
+#        return draw_common_artists
 
     ################
     # main drawers #
@@ -217,7 +285,7 @@ class GenomeDataFrameDrawingBase:
         )
 
         # do drawing
-        genomeplotter.draw_dots(
+        line2d, _ = genomeplotter.draw_dots(
             ax,
             plotdata=plotdata,
             y_colname=y_colname,
@@ -231,7 +299,7 @@ class GenomeDataFrameDrawingBase:
                 ymin = default_ymin
             if ymax is False:
                 ymax = default_ymax
-            self.draw_axessetup(
+            draw_common_artists = draw_axessetup(
                 ax=ax,
                 genomeplotter=genomeplotter,
                 ylabel=ylabel,
@@ -246,14 +314,16 @@ class GenomeDataFrameDrawingBase:
                 title=title,
                 suptitle_kwargs=suptitle_kwargs,
             )
+        else:
+            draw_common_artists = None
 
         #return fig, ax, genomeplotter, plotdata
         #plothandle = GenomePlotHandle(fig, genomeplotter)
-        return GenomeDrawingResult(
-            fig=fig, 
+        return GenomeDrawingAxesResult(
             ax=ax, 
             genomeplotter=genomeplotter, 
-            #plothandle=plothandle, 
+            artist=line2d,
+            draw_common_artists=draw_common_artists,
             y_colname=y_colname,
             plotdata=plotdata,
         )
@@ -311,7 +381,7 @@ class GenomeDataFrameDrawingBase:
         )
 
         # do drawing
-        genomeplotter.draw_hlines(
+        linecol, _ = genomeplotter.draw_hlines(
             ax,
             offset=offset,
             plotdata=plotdata,
@@ -326,7 +396,7 @@ class GenomeDataFrameDrawingBase:
                 ymin = default_ymin
             if ymax is False:
                 ymax = default_ymax
-            self.draw_axessetup(
+            draw_common_artists = draw_axessetup(
                 ax=ax,
                 genomeplotter=genomeplotter,
                 ylabel=ylabel,
@@ -341,14 +411,16 @@ class GenomeDataFrameDrawingBase:
                 title=title,
                 suptitle_kwargs=suptitle_kwargs,
             )
+        else:
+            draw_common_artists = None
 
         #return fig, ax, genomeplotter, plotdata
         #plothandle = GenomePlotHandle(fig, genomeplotter)
-        return GenomeDrawingResult(
-            fig=fig, 
+        return GenomeDrawingAxesResult(
             ax=ax, 
             genomeplotter=genomeplotter, 
-            #plothandle=plothandle, 
+            artist=linecol,
+            draw_common_artists=draw_common_artists,
             y_colname=y_colname,
             plotdata=plotdata,
         )
@@ -428,7 +500,7 @@ class GenomeDataFrameDrawingBase:
             colors = plotdata[color_colname]
 
         # do drawing
-        genomeplotter.draw_boxes(
+        rects = genomeplotter.draw_boxes(
             ax,
             plotdata=plotdata,
 
@@ -441,7 +513,7 @@ class GenomeDataFrameDrawingBase:
         )
 
         if setup_axes:
-            self.draw_axessetup(
+            draw_common_artists = draw_axessetup(
                 ax=ax,
                 genomeplotter=genomeplotter,
                 ylabel=ylabel,
@@ -456,82 +528,21 @@ class GenomeDataFrameDrawingBase:
                 title=title,
                 suptitle_kwargs=suptitle_kwargs,
             )
+        else:
+            draw_common_artists = None
 
         #return fig, ax, genomeplotter, plotdata
         #plothandle = GenomePlotHandle(fig, genomeplotter)
-        return GenomeDrawingResult(
-            fig=fig, 
+        return GenomeDrawingAxesResult(
             ax=ax, 
             genomeplotter=genomeplotter, 
-            #plothandle=plothandle, 
+            artist=rects,
+            draw_common_artists=draw_common_artists,
             plotdata=plotdata,
         )
 
 
-#class GenomePlotHandle:
-#    def __init__(self, fig, genomeplotter, omit_ax_labels=list()):
-#        self.fig = fig
-#        self.gplotter = genomeplotter
-#        self.intv_selector = IntervalSelector(fig, omit_ax_labels=omit_ax_labels)
-#
-#    def connect(self):
-#        self.intv_selector.connect()
-#
-#    def disconnect(self):
-#        self.intv_selector.disconnect()
-#
-#    def get_region_gdfs(self):
-#        intv_plotcoords = self.intv_selector.get_intervals()
-#        left_chroms, left_pos0s = self.gplotter.plot_to_genomic(intv_plotcoords[:, 0])
-#        right_chroms, right_pos0s = self.gplotter.plot_to_genomic(intv_plotcoords[:, 1])
-#        right_end0s = right_pos0s + 1
-#
-#        results = list()
-#        for chrom1, position1, chrom2, position2 in zip(
-#            left_chroms, left_pos0s, right_chroms, right_end0s,
-#        ):
-#            if chrom1 != chrom2:
-#                raise Exception(f'On-press chrom and on-release chrom differ.')
-#                
-#            results.append(
-#                GenomeDataFrameBase.from_margins(
-#                    self.gplotter.refver, 
-#                    chrom1, 
-#                    position1, 
-#                    chrom2, 
-#                    position2,
-#                )
-#            )
-#
-#        return results
-#
-
-class GenomeDrawingResult:
-    """variable name: gdraw_result"""
-    def __init__(
-        self, fig, genomeplotter, 
-
-        ax=None, 
-        #plothandle=None, 
-        y_colname=None,
-        plotdata=None,
-        name=None,
-
-        omit_ax_labels=list(),
-    ):
-        self.fig = fig
-        self.genomeplotter = genomeplotter
-        self.ax = ax
-        #self.plothandle = plothandle
-        self.y_colname = y_colname
-        self.plotdata = plotdata
-        self.name = name
-
-        self.intv_selector = IntervalSelector(self.fig, omit_ax_labels=omit_ax_labels)
-
-    def set_name(self, x):
-        self.name = x
-
+class GenomeDrawingResultBase:
     def connect(self):
         self.intv_selector.connect()
 
@@ -566,22 +577,125 @@ class GenomeDrawingResult:
 
         return results
 
-    def get_mean_values(self):
-        assert self.plotdata is not None
-        assert self.y_colname is not None
+    def get_region_lengths(self):
+        return [
+            self.genomeplotter.region_gdf.intersect(x).lengths.sum()
+            for x in self.get_region_gdfs()
+        ]
 
-        result = list()
-        for gdf in self.get_region_gdfs():
-            isec = self.plotdata.intersect(gdf)
-            if isec.is_empty:
-                result.append(np.nan)
-            else:
-                result.append(isec.get_lwavg(self.y_colname))
+
+def get_region_mean_values(plotdata, y_colname, region_gdfs):
+    assert plotdata is not None
+    assert y_colname is not None
+
+    result = list()
+    for gdf in region_gdfs:
+        isec = plotdata.intersect(gdf)
+        if isec.is_empty:
+            result.append(np.nan)
+        else:
+            result.append(isec.get_lwavg(y_colname))
+    return np.atleast_1d(result)
+
+
+class GenomeDrawingAxesResult(GenomeDrawingResultBase):
+    """variable name: gdraw_result"""
+    def __init__(
+        self, 
+        ax, 
+        genomeplotter, 
+        artist,
+        draw_common_artists,
+
+        y_colname=None,
+        plotdata=None,
+        name=None,
+
+    ):
+        #self.fig = fig
+        self.genomeplotter = genomeplotter
+        self.ax = ax
+        self.artist = artist
+        self.draw_common_artists = draw_common_artists
+        self.y_colname = y_colname
+        self.plotdata = plotdata
+        self.name = name
+
+        self.intv_selector = IntervalSelector.from_ax(self.ax)
+
+    @property
+    def fig(self):
+        return self.ax.figure
+
+    def set_name(self, x):
+        self.name = x
+
+    def get_mean_values(self, region_gdfs=None):
+        if region_gdfs is None:
+            region_gdfs = self.get_region_gdfs()
+        return get_region_mean_values(self.plotdata, self.y_colname, region_gdfs)
+
+
+class GenomeDrawingFigureResult(GenomeDrawingResultBase):
+    ########
+    # init #
+    ########
+
+    def __init__(
+        self, 
+        axresult_list,
+        omit_ax_labels=list(),
+    ):
+        self.axresults = {x.name: x for x in axresult_list}
+
+        # sanitycheck
+        self.init_sanitycheck()
+
+        # derived attributes
+        self.intv_selector = IntervalSelector.from_fig(self.fig, omit_ax_labels=omit_ax_labels)
+
+    def init_sanitycheck(self):
+        # 1. compare figures
+        assert len(set(x.ax.figure for x in self.axresults.values())) == 1, (
+            f'Figure object of input {GenomeDrawingAxesResult.__name__} objects differ' 
+        )
+
+        # 2. compare GenomePlotter
+        gplotter_list = tuple(x.genomeplotter for x in self.axresults.values())
+        assert all((x == y) for (x, y) in tools.pairwise(gplotter_list))
+
+    #############
+    # utilities #
+    #############
+
+    @property
+    def first_axresult(self):
+        return next(iter(self.axresults.values()))
+
+    @property
+    def fig(self):
+        return self.first_axresult.ax.figure
+
+    @property
+    def axd(self):
+        return {ax.get_label(): ax for ax in self.fig.get_axes()}
+
+    @property
+    def genomeplotter(self):
+        return self.first_axresult.genomeplotter
+
+    def get_mean_values(self, names=None):
+        if names is None:
+            names = tuple(self.axresults.keys())
+
+        region_gdfs = self.get_region_gdfs()
+
+        result = dict()
+        for name in names:
+            result[name] = self.axresults[name].get_mean_values(
+                region_gdfs=region_gdfs,
+            )
+
         return result
-
-class GenomeDrawingResultGroup:
-    def __init__(self, *args):
-        self.gdraw_results = args
-
 
 

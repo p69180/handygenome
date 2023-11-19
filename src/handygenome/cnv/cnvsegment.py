@@ -17,6 +17,8 @@ from handygenome.cnv.baf import BAFSegmentDataFrame
 import handygenome.cnv.baf as libbaf
 import handygenome.plot.misc as plotmisc
 import handygenome.cnv.bafsimul as bafsimul
+import handygenome.genomedf.genomedf_draw as genomedf_draw
+from handygenome.genomedf.genomedf_draw import GenomeDrawingFigureResult
 
 
 BAF_COLNAME_PAT = re.compile(libbaf.BAFINDEX_PAT.pattern + '.*')
@@ -28,8 +30,16 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
     subclonal_CN_colname = 'subCN'
     subclonal_B_colname_prefix = 'subB'
     ccf_colname = 'ccf'
+
     predicted_depth_colname = 'predicted_depth'
     predicted_baf_colname_prefix = 'predicted_baf'
+    predicted_depth_drawresult_name = 'predicted_depth'
+    predicted_baf_drawresult_name_prefix = 'predicted_baf_'
+    predicted_default_kwargs = dict(
+        color='tab:green',
+        alpha=genomedf_draw.DEFAULT_SEGMENT_ALPHA,
+        linewidth=genomedf_draw.DEFAULT_SEGMENT_LINEWIDTH,
+    )
 
     clonal_B_colname_pat = re.compile(
         f'{clonal_B_colname_prefix}_(?P<baf_index>{libbaf.BAFINDEX_PAT_STRING})'
@@ -38,7 +48,16 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
         f'{subclonal_B_colname_prefix}_(?P<baf_index>{libbaf.BAFINDEX_PAT_STRING})'
     )
 
-    corrected_baf_color = 'tab:red'
+    #corrected_baf_color = 'tab:red'
+    corrected_baf_default_kwargs = dict(
+        color='tab:red',
+        alpha=genomedf_draw.DEFAULT_SEGMENT_ALPHA,
+        linewidth=genomedf_draw.DEFAULT_SEGMENT_LINEWIDTH,
+    )
+    baf_drawresult_name = 'corrected_baf_segment'
+
+    CN_drawresult_name = 'CN'
+    B_drawresult_name = 'B'
 
     @classmethod
     def from_segments(cls, seg_gdfs, nproc=1):
@@ -265,12 +284,14 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
         for baf_index in self.get_baf_indexes():
             self.add_predicted_baf_germline(baf_index)
 
-    def add_clonal_solution_corrected_depth(self, cellularity, K):
-        assert self.check_has_corrected_depth()
+    def add_clonal_solution_targetsample(self, cellularity, K):
+        """depth and baf of this sample must be corrected"""
+        #assert self.check_has_corrected_depth()
 
         # CNt
         CNt = cnvcall.find_clonal_CNt(
-            corrected_depth=self.corrected_depth_mean,
+            #corrected_depth=self.corrected_depth_mean,
+            corrected_depth=self.norm_depth_mean,
             cellularity=cellularity,
             K=K,
             CNg=self.get_clonal_CN(germline=True),
@@ -312,7 +333,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
         self.drop_annots(cols_to_drop, inplace=True)
 
     def get_average_ploidy(self):
-        return np.average(self.get_clonal_CN(), weights=self.lengths)
+        return cnvcall.get_average_ploidy(self.get_clonal_CN(), self.lengths)
 
     @staticmethod
     def get_fitness_helper(values, lengths):
@@ -376,6 +397,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
         if ylabel is False:
             ylabel = f'clonal copy number'
         if ymax is False:
+            #ymax = np.nanmax(self.get_clonal_CN()) + 0.4
             ymax = np.nanquantile(self.get_clonal_CN(), 0.99)
             #q25, q75 = np.nanquantile(self.get_clonal_CN(), [0.25, 0.75])
             #iqr = q75 - q25
@@ -406,12 +428,15 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
             | plot_kwargs
         )
 
+        # prepare gdraw list
+        gdraw_result_list = list()
+
         # draw CN
         CN_line_color = 'black'
         plot_kwargs = plot_kwargs_base | {'color': CN_line_color}
         offset = 0.1
         #fig, ax, genomeplotter, plotdata = self.draw_hlines(
-        gdraw_result = self.draw_hlines(
+        gdraw_result_CN = self.draw_hlines(
             y_colname=self.get_clonal_CN_colname(),
             ax=ax,
             genomeplotter=genomeplotter,
@@ -424,18 +449,26 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
             subplots_kwargs=subplots_kwargs,
         )
 
+        ax = gdraw_result_CN.ax
+        fig = gdraw_result_CN.fig
+        genomeplotter = gdraw_result_CN.genomeplotter
+
+        gdraw_result_CN.set_name(self.__class__.CN_drawresult_name)
+        gdraw_result_list.append(gdraw_result_CN)
+
         # draw B
         B_colnames = self.get_clonal_B_colname_dict()
         colors = mpl.cm.cool(np.linspace(0, 1, len(B_colnames), endpoint=True))
         B_line_colors = dict(zip(iter(B_colnames.keys()), colors))
+        #gdraw_result_B_
         for idx, (baf_idx, colname) in enumerate(B_colnames.items()):
             offset = idx * -0.1
             plot_kwargs = plot_kwargs_base | {'color': B_line_colors[baf_idx]}
             #fig, ax, genomeplotter, plotdata = self.draw_hlines(
-            gdraw_result = self.draw_hlines(
+            gdraw_result_B = self.draw_hlines(
                 y_colname=colname,
-                ax=gdraw_result.ax,
-                genomeplotter=gdraw_result.genomeplotter,
+                ax=ax,
+                genomeplotter=genomeplotter,
                 offset=offset,
 
                 plotdata=plotdata,
@@ -443,12 +476,14 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
 
                 setup_axes=False,
             )
+            gdraw_result_B.set_name(self.__class__.B_drawresult_name + '_' + baf_idx)
+            gdraw_result_list.append(gdraw_result_B)
 
         # axes setup
         if setup_axes:
-            self.draw_axessetup(
-                ax=gdraw_result.ax,
-                genomeplotter=gdraw_result.genomeplotter,
+            genomedf_draw.draw_axessetup(
+                ax=ax,
+                genomeplotter=genomeplotter,
 
                 ylabel=ylabel,
                 ylabel_prefix=ylabel_prefix,
@@ -460,7 +495,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
                 draw_common_kwargs=draw_common_kwargs,
                 rotate_chromlabel=rotate_chromlabel,
 
-                fig=gdraw_result.fig,
+                fig=fig,
                 title=title, 
                 suptitle_kwargs=suptitle_kwargs,
             )
@@ -480,7 +515,10 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
                 color=color, 
                 label=f'{baf_idx} B allele copy number',
             )
-        gdraw_result.ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
+        ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
+
+        gdraw_figresult = GenomeDrawingFigureResult(gdraw_result_list)
+        return gdraw_figresult
 
     def draw_corrected_baf(
         self,
@@ -505,7 +543,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
             plotdata=plotdata,
 
             plot_kwargs=(
-                {'color': self.__class__.corrected_baf_color}
+                self.__class__.corrected_baf_default_kwargs
                 | plot_kwargs
             ),
 
@@ -521,16 +559,74 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
         handles.add_line(
             marker=None, 
             linewidth=4, 
-            color=self.__class__.corrected_baf_color, 
+            color=self.__class__.corrected_baf_default_kwargs['color'], 
             label='corrected BAF'
         )
         handles.add_line(
             marker=None, 
             linewidth=4, 
-            color=BAFSegmentDataFrame.baf_mean_color, 
+            color=BAFSegmentDataFrame.default_plot_kwargs['color'], 
             label='BAF data mean'
         )
         gdraw_result.ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
+
+        gdraw_result.set_name(self.__class__.baf_drawresult_name)
+        return gdraw_result
+
+    def draw_predicted_baf(
+        self,
+        baf_index,
+        ax,
+
+        genomeplotter=None,
+        plotdata=None,
+        plot_kwargs=dict(),
+
+        nproc=1,
+        verbose=True,
+    ):
+        plot_kwargs = (self.__class__.predicted_default_kwargs | plot_kwargs)
+        gdraw_result = self.draw_hlines(
+            ax=ax,
+            y_colname=self.get_predicted_baf_colname(baf_index=baf_index),
+            genomeplotter=genomeplotter,
+            plotdata=plotdata,
+            setup_axes=False,
+            plot_kwargs=plot_kwargs,
+            nproc=nproc,
+            verbose=verbose,
+        )
+        gdraw_result.set_name(
+            self.__class__.predicted_baf_drawresult_name_prefix + str(baf_index)
+        )
+
+        return gdraw_result
+
+    def draw_predicted_depth(
+        self,
+        ax,
+
+        genomeplotter=None,
+        plotdata=None,
+        plot_kwargs=dict(),
+
+        nproc=1,
+        verbose=True,
+    ):
+        plot_kwargs = (self.__class__.predicted_default_kwargs | plot_kwargs)
+        gdraw_result = self.draw_hlines(
+            ax=ax,
+            y_colname=self.get_predicted_depth_colname(),
+            genomeplotter=genomeplotter,
+            plotdata=plotdata,
+            setup_axes=False,
+            plot_kwargs=plot_kwargs,
+            nproc=nproc,
+            verbose=verbose,
+        )
+        gdraw_result.set_name(self.__class__.predicted_depth_drawresult_name)
+
+        return gdraw_result
 
 
 
