@@ -2288,6 +2288,7 @@ class VCFDataFrame(VariantDataFrame):
 # parallelized vaf dataframe generation #
 #########################################
 
+@deco.get_deco_nproc_limit(3)
 @deco.get_deco_atleast1d(['sampleids'])
 def get_vafdf(
     vcf_path, 
@@ -2304,9 +2305,6 @@ def get_vafdf(
         level 1: (name:                                              None |                                 sid1 |                                 sid2
         level 2: Chromosome, Start, End, REF, [ALT1, [ALT2, ...]]   REF_vaf, [ALT1_vaf, [ALT2_vaf, ...]]   REF_vaf, [ALT1_vaf, [ALT2_vaf, ...]]
     """
-    # disable multiprocessing
-    nproc = 1
-
     # get VCF fetch regions for each parallel job
     if verbose:
         logutils.log(f'Extracting vcf position information') 

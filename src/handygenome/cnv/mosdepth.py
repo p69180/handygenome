@@ -16,6 +16,12 @@ import handygenome.tools as tools
 import handygenome.bameditor as bameditor
 
 
+def get_mosdepth_path():
+    if handygenome.PARAMS['mosdepth'] is None:
+        raise Exception(f'mosdepth executable cannot be found.')
+    return handygenome.PARAMS['mosdepth']
+
+
 def get_mosdepth_args(
     prefix, bam_path, t, use_median, no_perbase=True, bed_path=None, window_size=None,
 ):
@@ -25,7 +31,7 @@ def get_mosdepth_args(
     ):
         raise Exception(f'"window_size" and "bed_path" arguments must not be used at the same time.')
 
-    args = [handygenome.PARAMS['mosdepth'], '-x', '-t', str(t)]
+    args = [get_mosdepth_path(), '-x', '-t', str(t)]
 
     if use_median:
         args.append('-m')
@@ -43,10 +49,10 @@ def get_mosdepth_args(
     return args
 
 
+@deco.get_deco_nproc_limit(3)
 @deco.get_deco_num_set_differently(('region_bed_path', 'region_gdf'), 2, how='lt')
 def run_mosdepth(
     bam_path, 
-    #refver=None,
     t=1, 
     nproc=1,
     split_width=500,
@@ -60,11 +66,7 @@ def run_mosdepth(
     verbose=True,
     prefix='PREFIX'
 ):
-    # disable multiprocessing
-    nproc = 1
-
     # set refver
-    #if refver is None:
     refver = refgenome.infer_refver_bampath(bam_path)
 
     # make bam index
@@ -78,6 +80,7 @@ def run_mosdepth(
         window=window,
         refver=refver,
         split_width=split_width,
+        nosplit=(nproc == 1),
     )
 
     # run parallel jobs
@@ -99,6 +102,7 @@ def run_mosdepth(
         )
         for region_gdf in region_gdf_list
     )
+
     with multiprocessing.Pool(nproc) as pool:
         pool_result = pool.starmap(run_mosdepth_base, args)
 
@@ -118,6 +122,7 @@ def run_mosdepth_prepare_region_gdfs(
     window,
     refver,
     split_width,
+    nosplit=False,
 ):
     region_is_given = (region_bed_path is not None) or (region_gdf is not None)
     if region_is_given:
@@ -130,7 +135,10 @@ def run_mosdepth_prepare_region_gdfs(
         region_gdf = region_gdf.window(window)
 
     region_gdf.sort()
-    region_gdf_list = region_gdf.equal_nrow_split(width=split_width)
+    if nosplit:
+        region_gdf_list = [region_gdf]
+    else:
+        region_gdf_list = region_gdf.equal_nrow_split(width=split_width)
     return region_gdf_list
 
 

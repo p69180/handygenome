@@ -532,54 +532,80 @@ def get_split_nums_bywidth(total_length, width):
     return result
     
 
-def array_grouper_new(arr, cutoff=None, return_values=True, return_counts=True):
-    """- Does not sort before grouping, like itertools.groupby
-    - Args:
-        cutoff: adjacent values with absolute difference le cutoff are grouped together
-    """
-    assert arr.ndim == 1
+#def array_grouper_new(arr, cutoff=None, return_values=True, return_counts=True):
+#    """- Does not sort before grouping, like itertools.groupby
+#    - Args:
+#        cutoff: adjacent values with absolute difference le cutoff are grouped together
+#    """
+#    assert arr.ndim == 1
+#
+#    # diff
+#    changes = np.repeat(False, len(arr))
+#    changes[0] = True
+#    if cutoff is None:
+#        changes[1:] = np.diff(arr)
+#    else:
+#        changes[1:] = (np.abs(np.diff(arr)) > cutoff)
+#
+#    # groupkey
+#    groupkey = np.cumsum(changes)
+#
+#    # others
+#    if return_values or return_counts:
+#        indexes = np.nonzero(changes)[0]
+#
+#    if return_values:
+#        assert cutoff is None
+#        values = arr[indexes]
+#    else:
+#        values = None
+#
+#    if return_counts:
+#        counts = np.empty(len(indexes), dtype=int)
+#        counts[:-1] = np.diff(indexes)
+#        counts[-1] = len(arr) - indexes[-1]
+#    else:
+#        counts = None
+#        
+#    return groupkey, values, counts
 
-    # diff
-    changes = np.repeat(False, len(arr))
-    changes[0] = True
-    if cutoff is None:
-        changes[1:] = np.diff(arr)
-    else:
-        changes[1:] = (np.abs(np.diff(arr)) > cutoff)
 
-    # groupkey
-    groupkey = np.cumsum(changes)
+def random_without(shape, without, rng=None):
+    without = np.atleast_1d(without)
+    assert without.ndim == 1
 
-    # others
-    if return_values or return_counts:
-        indexes = np.nonzero(changes)[0]
+    if rng is None:
+        rng = np.random.default_rng()
 
-    if return_values:
-        assert cutoff is None
-        values = arr[indexes]
-    else:
-        values = None
+    while True:
+        result = rng.random(shape)
+        if np.isin(result, without).any():
+            continue
+        else:
+            break
 
-    if return_counts:
-        counts = np.empty(len(indexes), dtype=int)
-        counts[:-1] = np.diff(indexes)
-        counts[-1] = len(arr) - indexes[-1]
-    else:
-        counts = None
-        
-    return groupkey, values, counts
+    return result
 
 
 def array_grouper(arr, omit_values=False, omit_counts=False):
-    """Does not sort before grouping, like itertools.groupby"""
+    """- Does not sort before grouping, like itertools.groupby
+    """
     assert arr.ndim in (1, 2)
-
-    diff = np.empty(arr.shape[0], dtype=bool)
-    diff[0] = True
     if arr.ndim == 1:
-        diff[1:] = np.diff(arr)
-    elif arr.ndim == 2:
-        diff[1:] = np.diff(arr, axis=0).any(axis=1)
+        arr = np.expand_dims(arr, 1)
+
+    # make nan substitute
+    wo = arr.ravel()
+    wo = wo[~np.isnan(wo)]
+    subs = random_without(1, wo).item()
+
+    # make array replaced with nan substitute
+    newarr = np.where(np.isnan(arr), subs, arr)
+
+    # make diff
+    diff = np.empty(newarr.shape[0], dtype=bool)
+    diff[0] = True
+    diff[1:] = np.diff(newarr, axis=0).any(axis=1)
 
     # groupkey
     groupkey = np.cumsum(diff)

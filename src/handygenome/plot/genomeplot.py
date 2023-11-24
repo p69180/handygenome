@@ -724,7 +724,6 @@ class GenomePlotter:
                 ax,
                 ylims=ylims,
                 draw_chromlabel=draw_chromlabel,
-                prefix_with_chr=True,
                 merge_same_chroms=merge_same_chroms,
                 chromlabel_kwargs=chromlabel_kwargs,
                 title=title,
@@ -759,16 +758,23 @@ class GenomePlotter:
                     del ba.arguments['data']
 
                 if ba.arguments['plotdata'] is False:
-                    return None
+                    nodraw = True
+                else:
+                    nodraw = False
+            else:
+                nodraw = True
 
             # ys
             if set(['ys', 'y_colname']).issubset(ba.arguments.keys()):
-                if ba.arguments['y_colname'] is not None:
+                if (ba.arguments['y_colname'] is not None) and (not nodraw):
                     ba.arguments['ys'] = ba.arguments['plotdata'][ba.arguments['y_colname']]
                     del ba.arguments['y_colname']
 
             # main drawing
-            result = func(**ba.arguments)
+            if nodraw:
+                result = None
+            else:
+                result = func(**ba.arguments)
 
             # draw_common
             draw_common_artists = None

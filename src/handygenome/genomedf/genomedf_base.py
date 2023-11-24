@@ -1373,32 +1373,36 @@ class GenomeDataFrameBase:
 
     def merge_byannot(self, annot_colnames):
         annot_colnames = list(np.atleast_1d(annot_colnames))
-        _, _, groupkey = tools.array_grouper(
-            self[annot_colnames], 
-            omit_values=True,
-            omit_counts=True,
-        )
-        df = self.df
-        groupby = df.groupby(groupkey)
+        self_bychrom = self.group_bychrom(sort=True)
+        result = list()
+        for chrom, subgdf in self_bychrom.items():
+            _, _, groupkey = tools.array_grouper(
+                subgdf[annot_colnames], 
+                omit_values=True,
+                omit_counts=True,
+            )
+            df = subgdf.df
+            groupby = df.groupby(groupkey)
 
-        first_cols = ['Chromosome', 'Start'] + annot_colnames
-        first = groupby[first_cols].first()
-        chroms = first['Chromosome']
-        start0s = first['Start']
-        values = {key: first[key] for key in annot_colnames}
+            first_cols = ['Start'] + annot_colnames
+            first = groupby[first_cols].first()
+            start0s = first['Start']
+            chroms = np.broadcast_to(chrom, start0s.shape).astype(object)
+            values = {key: first[key] for key in annot_colnames}
 
-        last_cols = ['End']
-        last = groupby[last_cols].last()
-        end0s = last['End']
+            last_cols = ['End']
+            last = groupby[last_cols].last()
+            end0s = last['End']
 
-        return self.__class__.from_data(
-            refver=self.refver,
-            chroms=chroms,
-            start0s=start0s,
-            end0s=end0s,
-            **values,
-        )
-        
+            subresult = self.__class__.from_data(
+                refver=self.refver,
+                chroms=chroms,
+                start0s=start0s,
+                end0s=end0s,
+                **values,
+            )
+            result.append(subresult)
+        return self.__class__.concat(result)
 
     #############################
     # overlapping row selection #
@@ -1418,7 +1422,6 @@ class GenomeDataFrameBase:
 
         selector = (joined_gdf['Start_b'] != -1)
         return selector
-
 
     ###########
     # binning #

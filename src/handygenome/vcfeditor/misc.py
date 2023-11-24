@@ -93,9 +93,9 @@ def get_indexfile_path(vcf_path):
         return None
 
 
-def make_index(vcf_path):
+def make_index(vcf_path, force=False):
     index_filename = f'{vcf_path}.csi'
-    pysam.tabix_index(vcf_path, preset='vcf', csi=True, index=index_filename)
+    pysam.tabix_index(vcf_path, preset='vcf', csi=True, index=index_filename, force=force)
     return index_filename
 
 

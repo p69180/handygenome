@@ -7,6 +7,7 @@ import signal
 import numpy as np
 
 import handygenome.tools as tools
+import handygenome.logutils as logutils
 
 
 def make_errmsg(deconame, funcname):
@@ -366,3 +367,27 @@ def get_deco_asarray(names):
         return wrapper
 
     return decorator
+
+
+def get_deco_nproc_limit(max_nproc):
+    def decorator(func):
+        sig = inspect.signature(func)
+        if 'nproc' not in sig.parameters.keys():
+            raise Exception(f'"nproc" must be included in the decorated function parameters')
+        
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            ba = sig.bind(*args, **kwargs)
+            ba.apply_defaults()
+            if ba.arguments['nproc'] > max_nproc:
+                logutils.log(f'Maximum allowed "nproc" is {max_nproc}. "nproc" value of {max_nproc} will be used.', level='warning')
+                ba.arguments['nproc'] = max_nproc
+
+            return func(*ba.args, **ba.kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+

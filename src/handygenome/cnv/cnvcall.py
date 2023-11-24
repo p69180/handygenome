@@ -81,10 +81,63 @@ def deco_cellularity_sanitycheck(func):
     def wrapper(*args, **kwargs):
         ba = sig.bind(*args, **kwargs)
         ba.apply_defaults()
-        if ba.arguments['cellularity'] == 0:
-            raise Exception(f'"cellularity" must not be 0.')
+
+        cellularity = np.atleast_1d(ba.arguments['cellularity'])
+        notna_vals = cellularity[~np.isnan(cellularity)]
+        if not np.logical_and(
+            notna_vals > 0,
+            notna_vals <= 1,
+        ).all():
+        #if ba.arguments['cellularity'] == 0:
+            raise Exception(f'"cellularity" must be within interval (0, 1]')
 
         return func(*ba.args, **ba.kwargs)
+
+    return wrapper
+
+
+def deco_return_item(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        def helper(x):
+            try:
+                return x.item()
+            except ValueError:
+                return x
+
+        result = func(*args, **kwargs)
+        if isinstance(result, np.ndarray):
+            return helper(result)
+        elif isinstance(result, (tuple, list)):
+            return tuple(helper(x) for x in result)
+        else:
+            raise Exception(f'Return value of decorated function must be either an np.ndarray or tuple or list.')
+
+    return wrapper
+
+
+def deco_return_squeezed(func):
+    sig = inspect.signature(func)
+    assert 'squeeze' not in sig.parameters.keys()
+
+    @functools.wraps(func)
+    def wrapper(*args, squeeze=True, **kwargs):
+        def helper(x):
+            result = np.squeeze(x)
+            if result.ndim == 0:
+                result = result.item()
+            return result
+
+        result = func(*args, **kwargs)
+        if squeeze:
+            if isinstance(result, np.ndarray):
+                return helper(result)
+            elif isinstance(result, (tuple, list)):
+                return tuple(helper(x) for x in result)
+            else:
+                raise Exception(f'Return value of decorated function must be either an np.ndarray or tuple or list.')
+        else:
+            return result
 
     return wrapper
 
@@ -102,7 +155,6 @@ def check_haploid(is_female, chrom):
 
 def get_average_ploidy(CNt, lengths, axis=None):
     result = np.average(CNt, axis=axis, weights=lengths)
-    assert not np.isnan(result)
     return result
 
 
@@ -213,7 +265,7 @@ def clonal_solution_from_germline(cnv_seg_gdf, is_female, ploidy, nproc=1):
     onecopy_depth = cnv_seg_gdf_copy.find_onecopy_depth(is_female, ploidy)
     K = get_K_from_onecopy_depth_germline(onecopy_depth)
     clonal_CNt = find_clonal_CNt(
-        corrected_depth=cnv_seg_gdf_copy.norm_depth_mean, 
+        depth=cnv_seg_gdf_copy.norm_depth_mean, 
         cellularity=1, 
         K=K,
         CNg=None, 
@@ -334,6 +386,7 @@ def solution_from_segments_common_params(
     num_CNt0_cand,
     ndivs_offset_step,
     depthfit_cutoff,
+    CNg=2,
 ):
     # make grid variables
     CNt0 = np.arange(num_CNt0_cand)
@@ -356,21 +409,143 @@ def solution_from_segments_common_params(
     K, cellularity = find_Kc(
         depth1=depth0, 
         CNt1=CNt0, 
-        CNg1=2, 
+        CNg1=CNg, 
         depth2=(depth0 + dd), 
         CNt2=(CNt0 + 1), 
-        CNg2=2,
+        CNg2=CNg,
         raise_with_nan=False,
+        squeeze=False,
     )
 
     # expand along a new axis which represent different segments
-    CNt0 = np.expand_dims(CNt0, 0)
-    dd = np.expand_dims(dd, 0)
-    ndivs = np.expand_dims(ndivs, 0)
-    cellularity = np.expand_dims(cellularity, 0)
-    K = np.expand_dims(K, 0)
+    #CNt0 = np.expand_dims(CNt0, 0)
+    #dd = np.expand_dims(dd, 0)
+    #ndivs = np.expand_dims(ndivs, 0)
+    #cellularity = np.expand_dims(cellularity, 0)
+    #K = np.expand_dims(K, 0)
 
     return CNt0, dd, ndivs, cellularity, K, depth0
+
+
+def solution_from_segments_fit_to_data_new(
+    depths, 
+    bafs, 
+
+    CNg,
+    Bg,
+
+    cellularity, 
+    K,
+
+    weights=None,
+    depthfit_cutoff=None,
+    baffit_cutoff=None,
+):
+    """Replacement of 'baf_targetval' with 0 where nan is inevitable due to condition of genomic position, not due to combination of cellularity and K:
+        1) baf is unavailable (e.g. male X) => Bt is nan
+        2) CNg == 0 => pred_bafs is nan
+        3) CNt == 0 & cellularity == 1 => pred_bafs is nan
+    """
+    assert depths.ndim == 1
+    assert bafs.ndim == 1
+    assert CNg.ndim == 1
+    assert Bg.ndim == 1
+
+    # depth
+    CNt1 = find_clonal_CNt(depths, cellularity, K, CNg=CNg, squeeze=False)
+    pred_depths = get_predicted_depth(CNt1, K, cellularity, CNg=CNg, squeeze=False)
+    depths_expand = np.expand_dims(
+        depths, tuple(np.arange(pred_depths.ndim - 1) + 1),
+    )
+    depthdiffs = np.abs(depths_expand - pred_depths)
+    onecopy_depthdiffs = get_onecopy_depthdiff(K, cellularity, squeeze=False)
+    depthdiff_fractions = depthdiffs / onecopy_depthdiffs
+
+    # baf
+    Bt = find_clonal_Bt(bafs, CNt1, cellularity, CNg=CNg, Bg=Bg, squeeze=False)
+    pred_bafs = get_predicted_baf(CNt1, Bt, cellularity, CNg=CNg, Bg=Bg, squeeze=False)
+    bafs_expand = np.expand_dims(
+        bafs, tuple(np.arange(pred_bafs.ndim - 1) + 1),
+    )
+    bafdiffs = np.abs(bafs_expand - pred_bafs)
+    onecopy_bafdiffs = get_onecopy_bafdiff(CNt1, cellularity, CNg=CNg, squeeze=False)
+    bafdiff_fractions = bafdiffs / onecopy_bafdiffs
+
+    # get valid selectors
+    if (depthfit_cutoff is None) and (baffit_cutoff is None):
+        valid_flags = None
+    else:
+        depthfit_valid_flags = (
+            np.full(True, depthdiff_fractions.shape)
+            if depthfit_cutoff is None else
+            depthdiff_fractions < depthfit_cutoff
+        )
+        baffit_valid_flags = (
+            np.full(True, bafdiff_fractions.shape)
+            if baffit_cutoff is None else
+            bafdiff_fractions < baffit_cutoff
+        )
+        valid_flags = np.logical_and(depthfit_valid_flags, baffit_valid_flags)
+        valid_flags = valid_flags.all(axis=0)
+
+    # depth target function
+    depth_targetval = depthdiff_fractions.copy()
+
+    # baf target function
+    baf_targetval = bafdiff_fractions.copy()
+
+    # replacement of inevitable nan baf_targetval
+    added_dims = tuple(np.arange(CNt1.ndim - 1) + 1)
+    flag1 = np.expand_dims(np.isnan(bafs), added_dims)
+    flag2 = np.expand_dims((CNg == 0), added_dims)
+    flag3 = np.logical_and(
+        (CNt1 == 0), 
+        np.broadcast_to((cellularity == 1), CNt1.shape),
+    )
+    total_flag = functools.reduce(
+        np.logical_or, np.broadcast_arrays(flag1, flag2, flag3),
+    )
+    baf_targetval[total_flag] = 0
+
+    # total target function
+    targetval = (
+        depth_targetval 
+        + baf_targetval 
+    )
+
+    def process_targetval(targetval, valid_flags, weights):
+        if weights is not None:
+            weights_expand = np.expand_dims(
+                weights, tuple(np.arange(targetval.ndim - 1) + 1),
+            )
+            targetval = targetval * weights_expand
+        targetval_sum = targetval.sum(axis=0)
+        if valid_flags is not None:
+            targetval_sum[~valid_flags] = np.nan
+
+        #notna_vals = targetval_sum[~np.isnan(targetval_sum)]
+        #assert len(notna_vals) > 0
+        #mean = np.mean(notna_vals)
+        #std = np.std(notna_vals)
+        #norm_targetval_sum = (targetval_sum - mean) / std
+
+        return targetval, targetval_sum
+
+    #depth_targetval, depth_targetval_sum, norm_depth_targetval_sum = process_targetval(depth_targetval, valid_flags, weights)
+    #baf_targetval, baf_targetval_sum, norm_baf_targetval_sum = process_targetval(baf_targetval, valid_flags, weights)
+    #targetval, targetval_sum, norm_targetval_sum = process_targetval(targetval, valid_flags, weights)
+
+    depth_targetval, depth_targetval_sum = process_targetval(depth_targetval, valid_flags, weights)
+    baf_targetval, baf_targetval_sum = process_targetval(baf_targetval, valid_flags, weights)
+    targetval, targetval_sum = process_targetval(targetval, valid_flags, weights)
+
+    return (
+        CNt1, 
+        Bt, 
+        depth_targetval_sum,
+        baf_targetval_sum,
+        targetval_sum,
+    )
 
 
 def solution_from_segments_fit_to_data(
@@ -419,6 +594,7 @@ def solution_from_segments_fit_to_data(
         CNg=CNg, 
         Bg=Bg, 
         cellularity=np.expand_dims(cellularity, -1),
+        squeeze=False,
     )
     bafdiff_candidates = np.abs(pred_bafs_candidates - np.expand_dims(bafs, -1))
     argmins = tools.nanargmin(bafdiff_candidates, axis=-1, keepdims=True)
@@ -432,6 +608,7 @@ def solution_from_segments_fit_to_data(
         CNt=CNt1, 
         cellularity=cellularity,
         CNg=CNg, 
+        squeeze=False,
     )
     bafdiff_fractions = bafdiffs / onecopy_bafdiffs
 
@@ -631,6 +808,128 @@ def solution_from_segments(
     }
 
 
+@deco.get_deco_atleast1d([
+    'picked_depths', 
+    'depths', 
+    'bafs', 
+    'lengths',
+    'target_depths',
+    'target_bafs',
+    'target_weights',
+])
+def solution_from_depth_limits(
+    picked_depths,
+    depths, 
+    bafs, 
+    CNg,
+    Bg,
+    lengths,
+    #weights=None,
+
+    target_depths=None,
+    target_bafs=None,
+    target_weights=None,
+
+    num_ndiv_cand=20,
+    num_CNt0_cand=10,
+    ndivs_offset_step=0.01,
+
+    depthfit_cutoff=0.3,
+    baffit_cutoff=0.3,
+
+    major_CNg=2,
+):
+    CNt0, dd, ndivs, cellularity, K, _ = solution_from_segments_common_params(
+        picked_depths,
+        num_ndiv_cand,
+        num_CNt0_cand,
+        ndivs_offset_step,
+        depthfit_cutoff,
+        CNg=major_CNg,
+    )
+
+    (
+        CNt1, 
+        Bt, 
+        depth_targetval_sum,
+        baf_targetval_sum,
+        targetval_sum,
+    ) = solution_from_segments_fit_to_data_new(
+        depths, 
+        bafs, 
+
+        CNg,
+        Bg,
+
+        cellularity, 
+        K,
+
+        weights=lengths,
+        depthfit_cutoff=None,
+        baffit_cutoff=None,
+    )
+
+    argsort = np.argsort(targetval_sum, axis=None)
+    unraveled_indexes = [np.unravel_index(x, shape=targetval_sum.shape) for x in argsort]
+
+    #argmin = np.nanargmin(targetval_sum)
+    #unraveled_idx = np.unravel_index(argmin, shape=targetval_sum.shape)
+    ploidies = get_average_ploidy(CNt1, lengths, axis=0)
+
+    if target_depths is not None:
+        (
+            target_CNt1, 
+            target_Bt, 
+            target_depth_targetval_sum,
+            target_baf_targetval_sum,
+            target_targetval_sum,
+        ) = solution_from_segments_fit_to_data_new(
+            depths=target_depths, 
+            bafs=target_bafs, 
+
+            CNg=CNg,
+            Bg=Bg,
+
+            cellularity=cellularity, 
+            K=K,
+
+            weights=target_weights,
+            depthfit_cutoff=depthfit_cutoff,
+            baffit_cutoff=baffit_cutoff,
+        )
+    else:
+        target_CNt1 = None 
+        target_Bt = None 
+        target_depth_targetval_sum = None
+        target_baf_targetval_sum = None
+        target_targetval_sum = None
+
+    return {
+        'CNt0': CNt0,
+        'onecopy_depth': dd,
+        'num_division': ndivs,
+        'cellularity': cellularity,
+        'K': K,
+
+        'CNt': CNt1,
+        'Bt': Bt,
+
+        'targetval': targetval_sum,
+        'depth_targetval': depth_targetval_sum,
+        'baf_targetval': baf_targetval_sum,
+
+        #'argmin': unraveled_idx,
+        'sorted_indexes': unraveled_indexes,
+        'ploidy': ploidies,
+
+        'target_targetval': target_targetval_sum,
+        'target_depth_targetval': target_depth_targetval_sum,
+        'target_baf_targetval': target_baf_targetval_sum,
+        'target_CNt': target_CNt1,
+        'target_Bt': target_Bt,
+    }
+
+
 ###########
 # helpers #
 ###########
@@ -664,45 +963,168 @@ def get_deco_CNg_Bg(CNg_fillvalue, Bg_fillvalue):
     return decorator
 
 
+#@get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
+#@deco_cellularity_sanitycheck
+#def find_clonal_CNt_nonvectorized(corrected_depth, cellularity, K, CNg=None):
+#    """Assume 'corrected_depth' is corrected so that position-dependent bias has been removed.
+#    It can be formulated like:
+#        'corrected_depth' = K * (CNg * (1 - cellularity) + CNt * cellularity)
+#
+#    derivation:
+#        corrected_depth = K * (CNg * (1 - cellularity) + CNt * cellularity)
+#        corrected_depth / K = CNg * (1 - cellularity) + CNt * cellularity
+#        (corrected_depth / K) - (CNg * (1 - cellularity)) = CNt * cellularity
+#        CNt = ( (corrected_depth / K) - (CNg * (1 - cellularity)) ) / cellularity
+#    """
+#    CNg_given = (CNg is not None)
+#    if (cellularity != 1) and (not CNg_given):
+#        raise Exception(f'When cellularity is not 1, "CNg" must be given.')
+#
+#    # main
+#    if cellularity == 1:
+#        CNt = (corrected_depth / K)
+#    else:
+#        CNt = (
+#            (corrected_depth / K) 
+#            - (CNg * (1 - cellularity))
+#        ) / cellularity
+#
+#    # rint
+##    diff_from_rint = CNt - np.floor(CNt)
+##    midzone_selector = np.logical_and((diff_from_rint > 0.4), (diff_from_rint < 0.6))
+##    CNt[midzone_selector] = np.floor(CNt[midzone_selector])
+##    CNt[~midzone_selector] = np.rint(CNt[~midzone_selector])
+#
+#    CNt = np.clip(np.rint(CNt), 0, None)
+#    if CNg_given:
+#        CNt[CNg == 0] = 0
+#
+#    return CNt
+
+
+#@deco_return_item
+@deco_return_squeezed
+@deco.get_deco_atleast1d(['depth', 'cellularity', 'K', 'CNg'], keep_none=True)
 @get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
 @deco_cellularity_sanitycheck
-def find_clonal_CNt(corrected_depth, cellularity, K, CNg=None):
-    """Assume 'corrected_depth' is corrected so that position-dependent bias has been removed.
+def find_clonal_CNt(depth, cellularity, K, CNg=None):
+    """Assume 'depth' is corrected so that position-dependent bias has been removed.
     It can be formulated like:
-        'corrected_depth' = K * (CNg * (1 - cellularity) + CNt * cellularity)
+        'depth' = K * (CNg * (1 - cellularity) + CNt * cellularity)
 
     derivation:
-        corrected_depth = K * (CNg * (1 - cellularity) + CNt * cellularity)
-        corrected_depth / K = CNg * (1 - cellularity) + CNt * cellularity
-        (corrected_depth / K) - (CNg * (1 - cellularity)) = CNt * cellularity
-        CNt = ( (corrected_depth / K) - (CNg * (1 - cellularity)) ) / cellularity
+        depth = K * (CNg * (1 - cellularity) + CNt * cellularity)
+        depth / K = CNg * (1 - cellularity) + CNt * cellularity
+        (depth / K) - (CNg * (1 - cellularity)) = CNt * cellularity
+        CNt = ( (depth / K) - (CNg * (1 - cellularity)) ) / cellularity
+
+    Args:
+        depth: ndim must be 1.
+
+    Axis of parameters:
+        Axis 0: Different genomic positions. The axis of "depth" and "CNg" must be this.
+        Axis 1, 2, ...: Candidates of cellularity and K.
+
+        "cellularity", "K" must be broadcastable to each other.
     """
+    # sanitycheck
+    assert depth.ndim == 1
+
     CNg_given = (CNg is not None)
-    if (cellularity != 1) and (not CNg_given):
-        raise Exception(f'When cellularity is not 1, "CNg" must be given.')
+    if CNg_given:
+        assert CNg.ndim == 1
+    if (cellularity != 1).any() and (not CNg_given):
+        raise Exception(f'When any cellularity value is not 1, "CNg" must be given.')
+
+    # non-position shape
+    nonpos_shape = np.broadcast_shapes(cellularity.shape, K.shape)
+    added_dims = tuple(np.arange(len(nonpos_shape)) + 1)
 
     # main
-    if cellularity == 1:
-        CNt = (corrected_depth / K)
+    depth_expand = np.expand_dims(depth, added_dims)
+    if CNg_given:
+        CNg_expand = np.expand_dims(CNg, added_dims)
+
+    if (cellularity == 1).all():
+        CNt = depth_expand / K
     else:
         CNt = (
-            (corrected_depth / K) 
-            - (CNg * (1 - cellularity))
+            (depth_expand / K)
+            - CNg_expand * (1 - cellularity)
         ) / cellularity
-
-    # rint
-#    diff_from_rint = CNt - np.floor(CNt)
-#    midzone_selector = np.logical_and((diff_from_rint > 0.4), (diff_from_rint < 0.6))
-#    CNt[midzone_selector] = np.floor(CNt[midzone_selector])
-#    CNt[~midzone_selector] = np.rint(CNt[~midzone_selector])
 
     CNt = np.clip(np.rint(CNt), 0, None)
     if CNg_given:
-        CNt[CNg == 0] = 0
+        CNt[np.broadcast_to(CNg_expand == 0, CNt.shape)] = 0
 
     return CNt
 
 
+#@get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
+#@deco_cellularity_sanitycheck
+#def find_clonal_Bt_nonvectorized(baf, CNt, cellularity, CNg=None, Bg=None):
+#    """
+#    derivation:
+#        baf = (
+#            (Bt * cellularity + Bg * (1 - cellularity))
+#            / (CNt * cellularity + CNg * (1 - cellularity))
+#        )
+#        Bt * cellularity + Bg * (1 - cellularity) = (
+#            baf * (CNt * cellularity + CNg * (1 - cellularity))
+#        )
+#        Bt * cellularity = (
+#            (baf * (CNt * cellularity + CNg * (1 - cellularity)))
+#            - (Bg * (1 - cellularity))
+#        )
+#        Bt = (
+#            (baf * (CNt * cellularity + CNg * (1 - cellularity)))
+#            - (Bg * (1 - cellularity))
+#        ) / cellularity
+#        Bt = (
+#            (baf * (CNt + CNg * (1 / cellularity - 1)))
+#            - (Bg * (1 / cellularity - 1))
+#        )
+#    """
+#    # sanitycheck
+#    CNg_given = (CNg is not None)
+#    Bg_given = (Bg is not None)
+#    if (
+#        (cellularity != 1) 
+#        and (
+#            (not CNg_given) or (not Bg_given)
+#        )
+#    ):
+#        raise Exception(f'When cellularity is not 1, "CNg" and "Bg" must be given.')
+#
+#    # main
+#    c = (1 / cellularity) - 1
+#    if c == 0:
+#        Bt = baf * CNt 
+#    else:
+#        Bt = (baf * (CNt + CNg * c)) - (Bg * c)
+#
+#    # correction
+#    Bt = np.clip(np.rint(Bt), 0, np.floor(CNt / 2))
+#    if CNg_given or Bg_given:
+#        if CNg_given:
+#            zero_selector_CNg = (CNg == 0)
+#        else:
+#            zero_selector_CNg = np.repeat(False, len(CNg))
+#
+#        if Bg_given:
+#            zero_selector_Bg = (Bg == 0)
+#        else:
+#            zero_selector_Bg = np.repeat(False, len(Bg))
+#
+#        zero_selector = np.logical_or(zero_selector_CNg, zero_selector_Bg)
+#        Bt[zero_selector] = 0
+#
+#    return Bt
+
+
+#@deco_return_item
+@deco_return_squeezed
+@deco.get_deco_atleast1d(['baf', 'CNt', 'cellularity', 'CNg', 'Bg'], keep_none=True)
 @get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
 @deco_cellularity_sanitycheck
 def find_clonal_Bt(baf, CNt, cellularity, CNg=None, Bg=None):
@@ -727,39 +1149,66 @@ def find_clonal_Bt(baf, CNt, cellularity, CNg=None, Bg=None):
             (baf * (CNt + CNg * (1 / cellularity - 1)))
             - (Bg * (1 / cellularity - 1))
         )
+
+    Args:
+        baf: ndim must be 1
+
+    Axis of parameters:
+        Axis 0: Different genomic positions. 
+            The only axis of "baf" must be this.
+            Axis 0 of CNt must correspond to this.
+            Axis 0 of CNt and baf must be broadcastable to each other.
+        Axis 1, 2, ...: Must represent candidates of cellularity, CNg, and Bg.
+
+        "cellularity", "CNg", and "Bg" must be broadcastable to each other.
     """
     # sanitycheck
+    assert baf.ndim == 1
+    assert baf.shape[0] == CNt.shape[0]
+
     CNg_given = (CNg is not None)
+    if CNg_given:
+        assert CNg.ndim == 1
     Bg_given = (Bg is not None)
-    if (
-        (cellularity != 1) 
-        and (
-            (not CNg_given) or (not Bg_given)
-        )
-    ):
-        raise Exception(f'When cellularity is not 1, "CNg" and "Bg" must be given.')
+    if Bg_given:
+        assert Bg.ndim == 1
+
+    assert CNg_given == Bg_given
+    ginfo_given = CNg_given
+
+    c_all_full = (cellularity == 1).all()
+    if (not c_all_full) and (not ginfo_given):
+        raise Exception(f'When any of cellularity is not 1, "CNg" and "Bg" must be given.')
+
+    # non-position shape
+    if CNt.ndim == 1:
+        nonpos_shape = (1,)
+        CNt = np.expand_dims(CNt, 1)
+    else:
+        nonpos_shape = CNt.shape[1:]
+
+    assert nonpos_shape == np.broadcast_shapes(nonpos_shape, cellularity.shape)
+    added_dims = tuple(np.arange(len(nonpos_shape)) + 1)
 
     # main
-    c = (1 / cellularity) - 1
-    if c == 0:
-        Bt = baf * CNt 
+    baf_expand = np.expand_dims(baf, added_dims)
+    c_prime = (1 / cellularity) - 1
+    if c_all_full:
+        Bt = baf_expand * CNt 
     else:
-        Bt = (baf * (CNt + CNg * c)) - (Bg * c)
+        CNg_expand = np.expand_dims(CNg, added_dims)
+        Bg_expand = np.expand_dims(Bg, added_dims)
+        Bt = (baf_expand * (CNt + CNg_expand * c_prime)) - (Bg_expand * c_prime)
 
     # correction
     Bt = np.clip(np.rint(Bt), 0, np.floor(CNt / 2))
-    if CNg_given or Bg_given:
-        if CNg_given:
-            zero_selector_CNg = (CNg == 0)
-        else:
-            zero_selector_CNg = np.repeat(False, len(CNg))
-
-        if Bg_given:
-            zero_selector_Bg = (Bg == 0)
-        else:
-            zero_selector_Bg = np.repeat(False, len(Bg))
-
-        zero_selector = np.logical_or(zero_selector_CNg, zero_selector_Bg)
+    if ginfo_given:
+        zero_selector_CNg = (CNg_expand == 0)
+        zero_selector_Bg = (Bg_expand == 0)
+        zero_selector = np.logical_or(
+            np.broadcast_to(zero_selector_CNg, Bt.shape), 
+            np.broadcast_to(zero_selector_Bg, Bt.shape), 
+        )
         Bt[zero_selector] = 0
 
     return Bt
@@ -777,6 +1226,8 @@ def get_K_from_onecopy_depth_germline(onecopy_depth):
     return onecopy_depth
 
 
+#@deco_return_item
+@deco_return_squeezed
 @get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
 @deco.get_deco_atleast1d(['depth1', 'CNt1', 'CNg1', 'depth2', 'CNt2', 'CNg2'])
 def find_Kc(*, depth1, CNt1, CNg1, depth2, CNt2, CNg2, raise_with_nan=False):
@@ -832,11 +1283,6 @@ def find_Kc(*, depth1, CNt1, CNg1, depth2, CNt2, CNg2, raise_with_nan=False):
     K[invalid_K_selector] = np.nan
         
     # result
-    try:
-        K = K.item()
-        cellularity = cellularity.item()
-    except ValueError:
-        pass
     return K, cellularity
 
 
@@ -859,80 +1305,133 @@ def find_Kc_withdelta(*, depth, CNt, CNg, delta_depth):
     )
 
 
+#@deco_return_item
+@deco_return_squeezed
 @get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
-@deco.get_deco_atleast1d(['CNt', 'K', 'cellularity'])
+@deco.get_deco_atleast1d(['CNt', 'K', 'cellularity', 'CNg'])
 def get_predicted_depth(CNt, K, cellularity, CNg=None):
-    if (
-        (not (cellularity == 1).all()) 
-        and (CNg is None)
-    ):
+    c_all_full = (cellularity == 1).all()
+    CNg_given = (CNg is not None)
+
+    if (not c_all_full) and (not CNg_given):
         raise Exception(f'When any of cellularity is not 1, CNg must be given.')
 
-    if (cellularity == 1).all():
+    # non-position shape
+    if CNt.ndim == 1:
+        nonpos_shape = (1,)
+        CNt = np.expand_dims(CNt, 1)
+    else:
+        nonpos_shape = CNt.shape[1:]
+
+    assert nonpos_shape == np.broadcast_shapes(nonpos_shape, cellularity.shape)
+    assert nonpos_shape == np.broadcast_shapes(nonpos_shape, K.shape)
+    added_dims = tuple(np.arange(len(nonpos_shape)) + 1)
+
+    # main
+    if c_all_full:
         result = K * CNt
     else:
-        result = K * (CNg * (1 - cellularity) + CNt * cellularity)
-
-    try:
-        result = result.item()
-    except ValueError:
-        pass
+        CNg_expand = np.expand_dims(CNg, added_dims)
+        result = K * (CNg_expand * (1 - cellularity) + CNt * cellularity)
 
     return result
 
 
+#@deco_return_item
+@deco_return_squeezed
 @get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
-@deco.get_deco_atleast1d(['CNt', 'Bt', 'cellularity'])
+@deco.get_deco_atleast1d(['K', 'cellularity'])
+def get_onecopy_depthdiff(K, cellularity):
+    result = K * cellularity
+    return result
+
+
+#@deco_return_item
+@deco_return_squeezed
+@get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
+@deco.get_deco_atleast1d(['CNt', 'Bt', 'cellularity', 'CNg', 'Bg'])
 def get_predicted_baf(CNt, Bt, cellularity, CNg=None, Bg=None):
-    """Where CNt == 0 and CNg == 0, result is np.nan"""
-    if (
-        (not (cellularity == 1).all()) 
-        and ((CNg is None) or (Bg is None))
-    ):
+    """Where CNg == 0 or (cellularity == 1 and CNt == 0), result is np.nan"""
+ 
+    # sanitycheck
+    assert CNt.shape == Bt.shape
+
+    c_all_full = (cellularity == 1).all()
+    CNg_given = (CNg is not None)
+    if CNg_given:
+        assert CNg.ndim == 1
+    Bg_given = (Bg is not None)
+    if Bg_given:
+        assert Bg.ndim == 1
+
+    assert CNg_given == Bg_given
+    ginfo_given = CNg_given
+
+    if (not c_all_full) and (not ginfo_given):
         raise Exception(f'When any of cellularity is not 1, CNg and Bg must be given.')
 
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', RuntimeWarning)
-        if (cellularity == 1).all():
-            result = Bt / CNt
-        else:
-            result = (
-                (Bt * cellularity + Bg * (1 - cellularity))
-                / (CNt * cellularity + CNg * (1 - cellularity))
-            )
+    # non-position shape
+    if CNt.ndim == 1:
+        nonpos_shape = (1,)
+        CNt = np.expand_dims(CNt, 1)
+        Bt = np.expand_dims(Bt, 1)
+    else:
+        nonpos_shape = CNt.shape[1:]
 
-    try:
-        result = result.item()
-    except ValueError:
-        pass
+    assert nonpos_shape == np.broadcast_shapes(nonpos_shape, cellularity.shape)
+    added_dims = tuple(np.arange(len(nonpos_shape)) + 1)
+
+    # main
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)  # in order to ignore zerodivisionwarning
+        if c_all_full:
+            result = Bt / CNt  # where CNg == 0, CNt ought to be 0
+        else:
+            CNg_expand = np.expand_dims(CNg, added_dims)
+            Bg_expand = np.expand_dims(Bg, added_dims)
+            one_minus_c = (1 - cellularity)
+            result = (
+                (Bt * cellularity + Bg_expand * one_minus_c)
+                / (CNt * cellularity + CNg_expand * one_minus_c)
+            )
 
     return result
 
 
+#@deco_return_item
+@deco_return_squeezed
 @get_deco_CNg_Bg(CNg_fillvalue=2, Bg_fillvalue=1)
-@deco.get_deco_atleast1d(['CNt', 'cellularity'])
+@deco.get_deco_atleast1d(['CNt', 'cellularity', 'CNg'])
 def get_onecopy_bafdiff(CNt, cellularity, CNg=None):
-    """Where CNt == 0 and CNg == 0, result is np.nan"""
-    if (
-        (not (cellularity == 1).all()) 
-        and (CNg is None)
-    ):
-        raise Exception(f'When any of cellularity is not 1, CNg must be given.')
+    """Where CNg == 0 or (cellularity == 1 and CNt == 0), result is np.nan"""
 
+    CNg_given = (CNg is not None)
+    if CNg_given:
+        assert CNg.ndim == 1
+    c_all_full = (cellularity == 1).all()
+    if (not c_all_full) and (not CNg_given):
+        raise Exception(f'When any cellularity value is not 1, "CNg" must be given.')
+
+    # non-position shape
+    if CNt.ndim == 1:
+        nonpos_shape = (1,)
+        CNt = np.expand_dims(CNt, 1)
+    else:
+        nonpos_shape = CNt.shape[1:]
+    assert nonpos_shape == np.broadcast_shapes(nonpos_shape, cellularity.shape)
+    added_dims = tuple(np.arange(len(nonpos_shape)) + 1)
+
+    # main
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', RuntimeWarning)
-        if (cellularity == 1).all():
+        if c_all_full:
             result = 1 / CNt
         else:
+            CNg_expand = np.expand_dims(CNg, added_dims)
             result = (
                 cellularity
-                / (CNt * cellularity + CNg * (1 - cellularity))
+                / (CNt * cellularity + CNg_expand * (1 - cellularity))
             )
-
-    try:
-        result = result.item()
-    except ValueError:
-        pass
 
     return result
 

@@ -290,12 +290,12 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
 
         # CNt
         CNt = cnvcall.find_clonal_CNt(
-            #corrected_depth=self.corrected_depth_mean,
-            corrected_depth=self.norm_depth_mean,
+            depth=self.norm_depth_mean,
             cellularity=cellularity,
             K=K,
             CNg=self.get_clonal_CN(germline=True),
         )
+        #CNt = np.squeeze(CNt, axis=1)
         self.assign_clonal_CN(data=CNt, germline=False)
 
         # Bt
@@ -307,6 +307,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
                 CNg=self.get_clonal_CN(germline=True),
                 Bg=self.get_clonal_B(baf_index, germline=True),
             )
+            #Bt = np.squeeze(Bt, axis=1)
             self.assign_clonal_B(data=Bt, baf_index=baf_index, germline=False)
 
         # predicted depth and baf
@@ -333,7 +334,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
         self.drop_annots(cols_to_drop, inplace=True)
 
     def get_average_ploidy(self):
-        return cnvcall.get_average_ploidy(self.get_clonal_CN(), self.lengths)
+        return cnvcall.get_average_ploidy(self.get_clonal_CN(), self.lengths, axis=None)
 
     @staticmethod
     def get_fitness_helper(values, lengths):
@@ -359,6 +360,18 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
 
     def get_solution_fitness(self):
         return self.get_CNt_fitness() + self.get_Bt_fitness()
+
+    ###############################
+    # merge similar adjacent segs #
+    ###############################
+
+    def merge_by_CN(self):
+        B_colnames = [
+            self.get_clonal_B_colname(germline=False, baf_index=x)
+            for x in self.get_baf_indexes()
+        ]
+        annot_colnames = B_colnames + [self.get_clonal_CN_colname(germline=False)]
+        return self.merge_byannot(annot_colnames)
 
     ########
     # draw #
@@ -434,8 +447,8 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
         # draw CN
         CN_line_color = 'black'
         plot_kwargs = plot_kwargs_base | {'color': CN_line_color}
+
         offset = 0.1
-        #fig, ax, genomeplotter, plotdata = self.draw_hlines(
         gdraw_result_CN = self.draw_hlines(
             y_colname=self.get_clonal_CN_colname(),
             ax=ax,
