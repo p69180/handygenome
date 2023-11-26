@@ -14,7 +14,7 @@ import handygenome.interval as libinterval
 import handygenome.workflow as workflow
 import handygenome.vcfeditor.misc as vcfmisc
 import handygenome.ucscdata as ucscdata
-import handygenome.blacklist as blacklist
+#import handygenome.blacklist as blacklist
 
 
 SPLIT_INFILE_PAT = re.compile(r'([0-9]+)([A-Za-z]*)(\.vcf\.gz)')

@@ -277,20 +277,28 @@ def get_tmpdir_paths(subdirs, prefix=None, suffix=None, where=os.getcwd(),
 # ARGPARSE SETUP FUNCTIONS
 
 class CustomFormatter(
-        argparse.ArgumentDefaultsHelpFormatter,
-        argparse.RawTextHelpFormatter):
+    argparse.ArgumentDefaultsHelpFormatter,
+    #argparse.RawDescriptionHelpFormatter, 
+    argparse.RawTextHelpFormatter
+):
     pass
 
 
-def init_parser(description=None):
+def init_parser(description=None, formatter_class=None):
+    if formatter_class is None:
+        formatter_class = CustomFormatter
+
     if description is None:
         parser = argparse.ArgumentParser(
             description=None,
-            formatter_class=CustomFormatter, add_help=False)
+            formatter_class=formatter_class, add_help=False)
     else:
         parser = argparse.ArgumentParser(
-            description=textwrap.fill(description, width=DESCRIPTION_WIDTH),
-            formatter_class=CustomFormatter, add_help=False)
+            #description=textwrap.fill(description, width=DESCRIPTION_WIDTH),
+            description=description,
+            formatter_class=formatter_class, 
+            add_help=False,
+        )
 
     required = parser.add_argument_group(
         title='REQUIRED', 
@@ -396,9 +404,9 @@ def add_fasta_arg(parser, required=True, help=None):
         help=textwrap.fill(help, width=HELP_WIDTH))
 
 
-def add_refver_arg(parser, required=True, choices='all', help=None):
+def add_refver_arg(parser, required=True, choices='all', help=None, standardize=False):
     if choices == 'all':
-        allowed_vals = refgenome.RefverDict.known_refvers
+        allowed_vals = refgenome.REFVERINFO.list_known_refvers()
     elif choices == 'mouse':
         allowed_vals = ('mm9', 'mm10', 'mm39')
     elif choices == 'human':
@@ -409,10 +417,20 @@ def add_refver_arg(parser, required=True, choices='all', help=None):
     if help is None:
         help = f'Reference genome version. Must be one of {allowed_vals}.'
 
+    if standardize:
+        type_arg = refgenome.standardize
+    else:
+        type_arg = str
     parser.add_argument(
-        '--refver', dest='refver', required=required, default=None, 
-        choices=allowed_vals, metavar='<reference genome version>', 
-        help=textwrap.fill(help, width=HELP_WIDTH))
+        '--refver', 
+        dest='refver', 
+        required=required, 
+        default=None, 
+        choices=allowed_vals, 
+        metavar='<reference genome version>', 
+        help=textwrap.fill(help, width=HELP_WIDTH),
+        type=type_arg,
+    )
 
 
 def add_outfmt_arg(
@@ -695,6 +713,7 @@ def arghandler_fasta(arg):
         return refgenome.get_fasta_path(arg)
     else:
         return arghandler_infile(arg)
+    
 
 
 # decorators
@@ -941,6 +960,7 @@ class JobList(list):
         logpath=None, 
         logger=None,
         job_status_logpath=None,
+        title=None,
     ):
         # general logger
         self.verbose = verbose
@@ -964,6 +984,7 @@ class JobList(list):
                 Job(jobscript_path=jobscript_path, verbose=verbose, logger=self.logger)
             )
 
+        self.title = title
         self.intv_submit = intv_submit
         self.intv_check = intv_check
         self.max_submit = max_submit
@@ -1023,7 +1044,7 @@ class JobList(list):
         self.write_job_status_log(
             textwrap.dedent(
                 f"""\
-                Current job status:
+                Current job status (title: {self.title}):
                     Not submitted yet: {n_notsubmit}
 
                     Pending: {info_pending}
@@ -1039,7 +1060,7 @@ class JobList(list):
         self.logger.info(
             textwrap.dedent(
                 f"""\
-                Current job status:
+                Current job status (title: {self.title}):
                     Not submitted yet: {n_notsubmit}
                     Pending: {n_pending}
                     Running: {n_running}
@@ -1271,11 +1292,16 @@ def run_jobs(
     log_dir, 
     job_status_logpath=None,
     raise_on_failure=True,
+    log_paths=None,
+    title=None,
 ):
     assert sched in ('local', 'slurm')
 
+    if log_paths is not None:
+        assert all(x.endswith('.log') for x in log_paths)
+
     if sched == 'local':
-        success, exitcode_list = run_jobs_local(jobscript_paths)
+        success, exitcode_list = run_jobs_local(jobscript_paths, log_paths=log_paths)
     elif sched == 'slurm':
         joblist = JobList(
             jobscript_paths, 
@@ -1284,31 +1310,56 @@ def run_jobs(
             max_submit=max_submit,
             logger=logger,
             job_status_logpath=job_status_logpath,
+            title=title,
         )
         joblist.run()
 
         success = joblist.success
         exitcode_list = joblist.get_exitcodes()
 
+    if log_paths is not None:
+        for code, filepath in zip(exitcode_list, log_paths):
+            if code == 0:
+                os.rename(filepath, re.sub(r'\.log$', '.success', filepath))
+            else:
+                os.rename(filepath, re.sub(r'\.log$', '.failure', filepath))
+
     if raise_on_failure:
         if not success:
-            raise SystemExit(
-                (f'One or more jobs have finished unsuccessfully. Refer to '
-                 f'log files in {log_dir}'))
-        else:
-            return None
-    else:
-        return success, exitcode_list
+            #raise SystemExit(
+            #    (f'One or more jobs have finished unsuccessfully. Refer to '
+            #     f'log files in {log_dir}'))
+            raise SystemExit(f'One or more jobs have finished unsuccessfully.')
+        #else:
+        #    return None
+    #else:
+
+    return success, exitcode_list
 
 
-def run_jobs_local(jobscript_path_list):
+def run_jobs_local(jobscript_path_list, log_paths=None):
+    if not all(os.access(x, os.R_OK | os.X_OK) for x in jobscript_path_list):
+        raise Exception(f'read/execute permission is not set for job script files')
+    if log_paths is not None:
+        assert len(log_paths) == len(jobscript_path_list)
+
     plist = list()
-    for jobscript_path in jobscript_path_list:
-        p = subprocess.Popen([jobscript_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        plist.append(p)
+    if log_paths is not None:
+        log_files = [open(x, 'wt') for x in log_paths]
+        for jobscript_path, logfile in zip(jobscript_path_list, log_files):
+            p = subprocess.Popen([jobscript_path], stdout=logfile, stderr=logfile, text=True)
+            plist.append(p)
+    else:
+        for jobscript_path in jobscript_path_list:
+            p = subprocess.Popen([jobscript_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            plist.append(p)
 
     for p in plist:
         p.wait()
+
+    if log_paths is not None:
+        for x in log_files:
+            x.close()
 
     exitcode_list = [p.returncode for p in plist]
     success = all(x == 0 for x in exitcode_list)

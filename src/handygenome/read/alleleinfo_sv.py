@@ -82,9 +82,9 @@ def make_alleleinfoitem_readpluspair(aiitem_bnd1_rp1, aiitem_bnd1_rp2,
 def make_alleleinfoitem_readplus(bnds, is_bnd1, rp,
                                  flanklen_parside=DEFAULT_FLANKLEN_PARSIDE, 
                                  flanklen_bndside=DEFAULT_FLANKLEN_BNDSIDE):
-    def handle_bndside_notonborder(rp, endis5, alleleinfoitem):
-        if faces_border_frombnd(rp.read, endis5):
-            if clipped_toward_border(rp.read, endis5):
+    def handle_bndside_notonborder(rp, is5prime, alleleinfoitem):
+        if faces_border_frombnd(rp.read, is5prime):
+            if clipped_toward_border(rp.read, is5prime):
                 alleleinfoitem['noninformative'] = True
             else:
                 alleleinfoitem['facing_frombnd'] = True
@@ -92,12 +92,12 @@ def make_alleleinfoitem_readplus(bnds, is_bnd1, rp,
             alleleinfoitem['noninformative'] = True
 
     def handle_bndside_onborder_clipped(
-            rp, pos_range0, endis5, alleleinfoitem, is_bnd1,
+            rp, pos_range0, is5prime, alleleinfoitem, is_bnd1,
             flanklen_parside, bndside_flankrange0):
         queryseq_length = len(pos_range0) + flanklen_parside
         queryseq_beyond_bndsideflank = rp.get_seq_from_coord(
             start0=pos_range0.start, length=queryseq_length,
-            forward=(not endis5))
+            forward=(not is5prime))
 
         if len(queryseq_beyond_bndsideflank) < queryseq_length:
             alleleinfoitem['noninformative'] = True
@@ -118,12 +118,12 @@ def make_alleleinfoitem_readplus(bnds, is_bnd1, rp,
             else:
                 alleleinfoitem['other_support'] = True
 
-    def handle_traverser(rp, pos_range0, endis5, flanklen_parside,
+    def handle_traverser(rp, pos_range0, is5prime, flanklen_parside,
                          alleleinfoitem, bndside_flankrange0,
                          is_bnd1):
         queryseq_beyond_bnd = rp.get_seq_from_coord(
             start0=pos_range0.stop, length=flanklen_parside,
-            forward=(not endis5))
+            forward=(not is5prime))
         if len(queryseq_beyond_bnd) < flanklen_parside:
             alleleinfoitem['noninformative'] = True
         else:  # now flanking length conditions are fulfilled
@@ -147,7 +147,7 @@ def make_alleleinfoitem_readplus(bnds, is_bnd1, rp,
                 alleleinfoitem['other_support'] = True
 
     # get parameters
-    (chrom, pos_range0, endis5) = bnds.get_params(is_bnd1)
+    (chrom, pos_range0, is5prime) = bnds.get_params(is_bnd1)
     bndside_flankrange0 = bnds.get_flank_range0(mode='bnd_dist', 
                                                 is_bnd1=is_bnd1, 
                                                 flanklen=flanklen_bndside)
@@ -168,33 +168,33 @@ def make_alleleinfoitem_readplus(bnds, is_bnd1, rp,
         if distance > BND_DISTANCE_THRESHOLD:
             alleleinfoitem['noninformative'] = True
         else:
-            if on_bndside(rp.read, pos_range0, endis5):
-                if on_bndside_notonborder(rp.read, pos_range0, endis5):
-                    handle_bndside_notonborder(rp, endis5, alleleinfoitem)
+            if on_bndside(rp.read, pos_range0, is5prime):
+                if on_bndside_notonborder(rp.read, pos_range0, is5prime):
+                    handle_bndside_notonborder(rp, is5prime, alleleinfoitem)
                 else:  # on bndside and on the border
                     if rp.check_spans(bndside_flankrange0):
-                        if clipped_toward_border(rp.read, endis5):
+                        if clipped_toward_border(rp.read, is5prime):
                             handle_bndside_onborder_clipped(
-                                rp, pos_range0, endis5, alleleinfoitem, 
+                                rp, pos_range0, is5prime, alleleinfoitem, 
                                 is_bnd1, flanklen_parside, 
                                 bndside_flankrange0)
                         else:
-                            if faces_border_frombnd(rp.read, endis5):
+                            if faces_border_frombnd(rp.read, is5prime):
                                 alleleinfoitem['facing_frombnd'] = True
                             else:
                                 alleleinfoitem['noninformative'] = True
                     else:
                         alleleinfoitem['noninformative'] = True
 
-            elif on_parside(rp.read, pos_range0, endis5):
-                if faces_border_frompar(rp.read, endis5):
+            elif on_parside(rp.read, pos_range0, is5prime):
+                if faces_border_frompar(rp.read, is5prime):
                     alleleinfoitem['facing_frompar'] = True
                 else:
                     alleleinfoitem['noninformative'] = True
 
             else:  # traverses the most advanced border
                 if rp.check_spans(bndside_flankrange0):
-                    handle_traverser(rp, pos_range0, endis5, flanklen_parside,
+                    handle_traverser(rp, pos_range0, is5prime, flanklen_parside,
                                      alleleinfoitem, bndside_flankrange0,
                                      is_bnd1)
                 else:
@@ -205,44 +205,44 @@ def make_alleleinfoitem_readplus(bnds, is_bnd1, rp,
     return alleleinfoitem
 
 
-def on_bndside_notonborder(read, pos_range0, endis5):
-    if endis5:
+def on_bndside_notonborder(read, pos_range0, is5prime):
+    if is5prime:
         return read.reference_start > pos_range0.start
     else:
         return read.reference_end <= pos_range0.start
 
 
-def on_bndside(read, pos_range0, endis5):
-    if endis5:
+def on_bndside(read, pos_range0, is5prime):
+    if is5prime:
         return read.reference_start > pos_range0.stop
     else:
         return read.reference_end <= pos_range0.stop
 
 
 # parside: partner side (named in conformity with the VCF spec)
-def on_parside(read, pos_range0, endis5):
-    if endis5:
+def on_parside(read, pos_range0, is5prime):
+    if is5prime:
         return read.reference_end <= pos_range0.stop + 1
     else:
         return read.reference_start >= pos_range0.stop
 
 
-def clipped_toward_border(read, endis5):
-    if endis5:
+def clipped_toward_border(read, is5prime):
+    if is5prime:
         return read.cigartuples[0][0] in (4, 5)
     else:
         return read.cigartuples[-1][0] in (4, 5)
 
 
-def faces_border_frombnd(read, endis5):
-    if endis5:
+def faces_border_frombnd(read, is5prime):
+    if is5prime:
         return read.is_reverse
     else:
         return read.is_forward
    
     
-def faces_border_frompar(read, endis5):
-    if endis5:
+def faces_border_frompar(read, is5prime):
+    if is5prime:
         return read.is_forward
     else:
         return read.is_reverse
@@ -267,11 +267,11 @@ def faces_border_frompar(read, endis5):
 #    return bndsideflank_range0.stop in rp.ref_range0
 #
 #
-#def get_querypos0_beyond_bndsideflank(rp, bndsideflank_range0, endis5):
+#def get_querypos0_beyond_bndsideflank(rp, bndsideflank_range0, is5prime):
 #    idx_retractedpos = rp.pairs_dict['refpos0'].index(
 #        bndsideflank_range0.stop)
 #
-#    if endis5:
+#    if is5prime:
 #        sl = slice(0, idx_retractedpos + 1)
 #    else:
 #        sl = slice(0, idx_retractedpos + 1)
@@ -286,23 +286,23 @@ def faces_border_frompar(read, endis5):
 ##def get_length_beyond_bndsideflank(pos_range0
 #
 #
-#def spans_beyond_bnd(read, parflank_range0, endis5):
-#    if endis5:
+#def spans_beyond_bnd(read, parflank_range0, is5prime):
+#    if is5prime:
 #        return read.reference_start <= parflank_range0[-1]
 #    else:
 #        return read.reference_end > parflank_range0[0]
 #
 #
-#def spans_beyond_parflank(read, parflank_range0, endis5):
-#    if endis5:
+#def spans_beyond_parflank(read, parflank_range0, is5prime):
+#    if is5prime:
 #        return read.reference_start <= parflank_range0[0]
 #    else:
 #        return read.reference_end > parflank_range0[-1]
 #
 #
-#def get_length_otherside(read, pos_range0, endis5):
+#def get_length_otherside(read, pos_range0, is5prime):
 #    # assumes that the read does not span beyond the breakend
-#    if endis5:
+#    if is5prime:
 #        if read.cigartuples[0][0] == 4:
 #            remaining_length = read.cigartuples[0][1]
 #        else:
@@ -320,8 +320,8 @@ def faces_border_frompar(read, endis5):
 #    return length_otherside
 #
 #
-#def clippedat_border(read, endis5):
-#    if endis5:
+#def clippedat_border(read, is5prime):
+#    if is5prime:
 #        return read.cigartuples[0][0] == 4
 #    else:
 #        return read.cigartuples[-1][0] == 4

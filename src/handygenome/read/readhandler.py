@@ -858,37 +858,6 @@ def get_softclip_ends_range0(read):
     return range(start, end)
 
 
-Clipspec = collections.namedtuple(
-    "Clipspec", 
-    #("pos0", "is_forward", "seq", "qual", "qname"),
-    ("pos0", "is_forward", "seq", "qual", "readuid"),
-)
-
-
-def get_softclip_specs(read):
-    readuid = get_uid(read)
-    clipspec_list = list()
-
-    if read.cigartuples[0][0] == 4:
-        pos0 = read.reference_start
-        cliplen = read.cigartuples[0][1]
-        seq = read.query_sequence[:cliplen][::-1]
-        qual = list(read.query_qualities)[:cliplen][::-1]
-        is_forward = False
-        clipspec_list.append(Clipspec(pos0, is_forward, seq, qual, readuid))
-
-    if read.cigartuples[-1][0] == 4:
-        #start1 = read.reference_end + 1
-        pos0 = read.reference_end - 1
-        cliplen = read.cigartuples[-1][1]
-        seq = read.query_sequence[-cliplen:]
-        qual = list(read.query_qualities)[-cliplen:]
-        is_forward = True
-        clipspec_list.append(Clipspec(pos0, is_forward, seq, qual, readuid))
-
-    return clipspec_list
-
-
 #####
 
 

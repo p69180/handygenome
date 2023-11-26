@@ -850,6 +850,12 @@ class GenomeDataFrameBase:
     def get_lengths(self):
         return self.end0s - self.start0s
 
+    def get_chrom_lengths(self):
+        return np.fromiter(
+            (self.chromdict[x] for x in self.chroms),
+            dtype=int,
+        )
+
     @property
     def lengths(self):
         return self.get_lengths()
@@ -887,6 +893,9 @@ class GenomeDataFrameBase:
             [self.chromosome_indexes, self.start0s, self.end0s],
             axis=1,
         ).astype(int)
+
+    def get_coordinate_columns(self):
+        return self.iloc[:, :3]
 
     def iter_coords(self):
         return zip(self.chroms, self.start0s, self.end0s)

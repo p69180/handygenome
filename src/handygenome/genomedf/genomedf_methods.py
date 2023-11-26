@@ -16,7 +16,6 @@ import handygenome.deco as deco
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.tools as tools
 import handygenome.logutils as logutils
-import handygenome.cnv.rdnacopy as rdnacopy
 
 import handygenome.genomedf.genomedf_utils as genomedf_utils
 

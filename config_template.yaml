@@ -1,0 +1,162 @@
+---
+#####################
+# fundamental tools #
+#####################
+
+bash: "/usr/bin/bash"
+perl: "/home/users/pjh/scripts/conda_wrapper/perl"
+python: null
+bwa: "/usr/local/bin/bwa"
+gatk: "/home/users/pjh/tools/mamba/231122/mamba/envs/gatk/bin/gatk"
+samtools: "/home/users/pjh/conda_bin/samtools"
+
+
+#########################
+# third party utilities #
+#########################
+
+vep: "/home/users/pjh/scripts/conda_wrapper/vep_v105"
+vep_mm10: "/home/users/pjh/scripts/conda_wrapper/vep_v102" # for mm10
+vep_cache_dir: "/home/users/pjh/.vep"
+
+mosdepth: "/home/apps/opt/pydev/mamba/230828/mamba/envs/mosdepth/bin/mosdepth"
+
+
+#############################
+# reference version related #
+#############################
+
+default_refver: 'human'
+
+refverinfo:
+    ## Most of reference versions are derived from RefSeq ftp
+
+    # Homo sapiens
+    - 
+        standard: "T2T-CHM13v2"
+        aliases: ["T2T"]
+        RefSeq_refver: "T2T-CHM13v2"
+        fasta_path: null
+        species: "Homo_sapiens"
+    - 
+        standard: "GRCh38"
+        aliases: ["hg38", "grch38"]
+        RefSeq_refver: "GRCh38"
+        #fasta_path: "/home/users/data/01_reference/human_g1k_v38/Homo_sapiens_assembly38.fasta"
+        fasta_path: null
+        species: "Homo_sapiens"
+
+        edited_repeat_path: "/home/users/pjh/References/ucsc_data_files/modified_files/grch38/repeatmasker.bed.gz"
+        edited_geneset_path: "/home/users/pjh/References/ensembl_data_files/modified_files/grch38/geneset_gff3_sorted.gz"
+        edited_regulatory_path: "/home/users/pjh/References/ensembl_data_files/modified_files/grch38/ensembl_regulatory_sorted.grch38.gff.gz"
+    - 
+        standard: "GRCh37"
+        aliases: []
+        RefSeq_refver: "GRCh37"
+        fasta_path: null
+        species: "Homo_sapiens"
+    - 
+        standard: "GRCh37_1kg"
+        aliases: ["hg19", "grch37", "human"]
+        RefSeq_refver: "GRCh37"
+        fasta_path: "/home/users/data/01_reference/human_g1k_v37/human_g1k_v37.fasta"
+        species: "Homo_sapiens"
+
+        edited_repeat_path: "/home/users/pjh/References/ucsc_data_files/modified_files/grch37/repeatmasker.bed.gz"
+        edited_geneset_path: "/home/users/pjh/References/ensembl_data_files/modified_files/grch37/geneset_gff3_sorted.gz"
+        edited_regulatory_path: "/home/users/pjh/References/ensembl_data_files/modified_files/grch37/ensembl_regulatory_sorted.grch37.gff.gz"
+    - 
+        standard: "GRCh37_hs37d5"
+        aliases: []
+        RefSeq_refver: "GRCh37"
+        fasta_path: "/home/users/sypark/02_Reference/15_pcawg/genome.fa"
+        species: "Homo_sapiens"
+#    - 
+#        standard: "NCBI36"
+#        aliases: ["hg18", "ncbi36"]
+#        RefSeq_refver: "NCBI36"
+#        fasta_path: "/home/users/pjh/References/reference_genome/NCBI36/ucsc/custom_files/hg18.fa"
+#        species: "Homo_sapiens"
+#    - 
+#        standard: "NCBI35"
+#        aliases: []
+#        RefSeq_refver: "NCBI35"
+#        fasta_path: null
+#        species: "Homo_sapiens"
+#    - 
+#        standard: "NCBI34"
+#        aliases: []
+#        RefSeq_refver: "NCBI34"
+#        fasta_path: null
+#        species: "Homo_sapiens"
+#    - 
+#        standard: "NCBI33"
+#        aliases: []
+#        RefSeq_refver: "NCBI33"
+#        fasta_path: null
+#        species: "Homo_sapiens"
+    
+    # Mus musculus
+    - 
+        standard: "GRCm39"
+        aliases: ["mm39", "grcm39"]
+        RefSeq_refver: "GRCm39"
+        fasta_path: "/home/users/pjh/References/reference_genome/GRCm39/ucsc/custom_files/mm39.fa"
+        species: "Mus_musculus"
+    - 
+        standard: "GRCm38"
+        aliases: ["mm10", "grcm38"]
+        RefSeq_refver: "GRCm38"
+        fasta_path: "/home/users/pjh/References/reference_genome/GRCm38/ucsc/custom_files/mm10.fa"
+        species: "Mus_musculus"
+#    - 
+#        standard: "MGSCv37"
+#        aliases: ["mm9"]
+#        RefSeq_refver: "MGSCv37"
+#        fasta_path: null
+#        species: "Mus_musculus"
+#    -
+#        standard: "MGSCv36"
+#        aliases: []
+#        RefSeq_refver: "MGSCv36"
+#        fasta_path: null
+#        species: "Mus_musculus"
+#    -
+#        standard: "MGSCv35"
+#        aliases: []
+#        RefSeq_refver: "MGSCv35"
+#        fasta_path: null
+#        species: "Mus_musculus"
+#    -
+#        standard: "MGSCv34"
+#        aliases: []
+#        RefSeq_refver: "MGSCv34"
+#        fasta_path: null
+#        species: "Mus_musculus"
+#    -
+#        standard: "MGSCv3"
+#        aliases: []
+#        RefSeq_refver: "MGSCv3"
+#        fasta_path: null
+#        species: "Mus_musculus"
+
+    # Musa acuminata
+    -
+        standard: "DHPahang4"
+        aliases: ["banana"]
+        RefSeq_refver: null
+        fasta_path: "/home/users/yeonjin/practice/banana/reference/Musa_acuminata_pahang_v4_cp.fasta"
+        species: null
+    -
+        standard: "ASM31385v2"
+        aliases: []
+        RefSeq_refver: "ASM31385v2"
+        fasta_path: null
+        species: "Musa_acuminata"
+#    -
+#        standard: "ASM31385v1"
+#        aliases: []
+#        RefSeq_refver: "ASM31385v1"
+#        fasta_path: null
+#        species: "Musa_acuminata"
+

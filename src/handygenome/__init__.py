@@ -43,17 +43,17 @@ with CONFIGPATH.open() as f:
     OPTION = yaml.safe_load(f)
 
 
-def get_exec_path(key, replace=None, whicharg=None):
+def get_exec_path(key, replace=None, which_args=list()):
     if OPTION[key] is None:
         if replace is None:
-            if whicharg is None:
-                whicharg = key
+            if not which_args:
+                which_args = [key]
 
-            p = subprocess.run(['which', whicharg], capture_output=True, text=True)
+            p = subprocess.run(['which'] + which_args, capture_output=True, text=True)
             if p.returncode == 0:
                 return p.stdout.strip()
             else:
-                return None
+                raise Exception(f'Executable path could not be created for {repr(key)}')
         else:
             return replace
     else:
@@ -61,10 +61,15 @@ def get_exec_path(key, replace=None, whicharg=None):
 
 
 PARAMS = dict()
+
 PARAMS['python'] = get_exec_path('python', replace=sys.executable)
 PARAMS['bash'] = get_exec_path('bash')
 PARAMS['perl'] = get_exec_path('perl')
 PARAMS['mosdepth'] = get_exec_path('mosdepth')
+PARAMS['bwa'] = get_exec_path('bwa')
+PARAMS['gatk'] = get_exec_path('gatk')
+PARAMS['samtools'] = get_exec_path('samtools')
+
 PARAMS['default_refver'] = OPTION['default_refver']
 
 

@@ -47,11 +47,32 @@ Meaning of range
 '''
 
 
-Clipspec = collections.namedtuple(
-    "Clipspec", 
-    #("pos0", "is_forward", "seq", "qual", "qname"),
-    ("pos0", "is_5prime", "seq", "qual"),
-)
+class ClipSpec:
+    """Attributes:
+        pos0: 0-based coordinate of the aligned base adjacent to the marginal clipped base
+        is5prime: 
+            True: clip is on the leftmost end
+            False: on the right
+        seq: 
+            The sequence as shown on IGV
+            #When "is5prime" is True, the sequence as seen on IGV
+            #When "is5prime" is False, the sequence as seen on IGV is reversed (not reverse-complemented)
+            #The first (index 0) base is the one adjacent to aligned bases
+        qual: base qualities, in the same order as "seq" attribute
+    """
+    def __init__(self, pos0, is5prime, seq, qual, rp):
+        self.pos0 = pos0
+        self.is5prime = is5prime
+        self.seq = seq
+        self.qual = qual
+        self.rp = rp
+
+    @property
+    def chrom(self):
+        return self.rp.read.reference_name
+
+    def get_uid(self):
+        return f'(qname={self.rp.read.query_name}, pos0={self.pos0:,}, is5prime={self.is5prime})'
 
 
 class ReadPlus:
@@ -154,6 +175,13 @@ class ReadPlus:
     def SAinfo(self):
         return self.get_SAinfo()
 
+    ##########
+    # refver #
+    ##########
+
+    def get_refver(self):
+        return refgenome.infer_refver_bamheader(self.read.header)
+
     #############################################
     # ReadStats non-rppcount attributes-related #
     #############################################
@@ -178,31 +206,31 @@ class ReadPlus:
 
         return BQlist
 
-    def get_mNM_clipspec_data(self, vcfspec, split_del=False):
+    #def get_mNM_clipspec_data(self, vcfspec, split_del=False):
+    def get_mNM_data(self, vcfspec, split_del=False):
         """mNM
             - Softclip is not included
             - Insertion on the right or left border is not included
             - Consecutive mismatches are split into single-base positions
             - Multi-base deletion can be split or treated as one (option)
             - Multi-base insertion is treated as one
-        clipspec
-            - Leading/trailing insertions are included
-            - Those on the right border are assigned to the position on the RIGHT
+        #clipspec
+        #    - Leading/trailing insertions are included
+        #    - Those on the right border are assigned to the position on the RIGHT
 
         Result:
-            mNM_data, clipspec_data
             mNM_data:
                 list of tuples
                 tuple format:
                     - Mismatch: (reference pos0, 0, read base)
                     - Insertion: (reference pos0, 1, inserted bases)
                     - Deletion: (reference pos0, 2, deletion length)
-            clipspec_data:
-                list of Clipspec instances
+            #clipspec_data:
+            #    list of Clipspec instances
         """
         # set parameters
         mNM_data = list()
-        clipspec_data = list()
+        #clipspec_data = list()
         #vcfspec_ref_range0 = vcfspec.get_range0()
         current_refpos0 = self.read.reference_start
 
@@ -246,25 +274,28 @@ class ReadPlus:
                 inserted_seq = self.read.query_sequence[read_slice]
 
                 if current_refpos0 == self.read.reference_start:
-                    clipspec = Clipspec(
-                        pos0=current_refpos0, 
-                        is_5prime=True,
-                        seq=inserted_seq,
-                        qual=tuple(self.read.query_qualities)[read_slice],
-                    )
-                    clipspec_data.append(clipspec)
+                    pass
+#                    clipspec = Clipspec(
+#                        pos0=current_refpos0, 
+#                        is_5prime=True,
+#                        seq=inserted_seq,
+#                        qual=tuple(self.read.query_qualities)[read_slice],
+#                    )
+#                    clipspec_data.append(clipspec)
                 elif current_refpos0 == self.read.reference_end:
-                    clipspec = Clipspec(
-                        pos0=current_refpos0, 
-                        is_5prime=False,
-                        seq=inserted_seq,
-                        qual=tuple(self.read.query_qualities)[read_slice],
-                    )
-                    clipspec_data.append(clipspec)
+                    pass
+#                    clipspec = Clipspec(
+#                        pos0=current_refpos0, 
+#                        is_5prime=False,
+#                        seq=inserted_seq,
+#                        qual=tuple(self.read.query_qualities)[read_slice],
+#                    )
+#                    clipspec_data.append(clipspec)
                 else:
                     mNM_data.append((current_refpos0, 1, inserted_seq))
 
-        return mNM_data, clipspec_data
+        #return mNM_data, clipspec_data
+        return mNM_data
 
 
     ######################################################
@@ -724,7 +755,35 @@ class ReadPlus:
     #################
 
     def get_clipspecs(self):
-        return readhandler.get_softclip_specs(self.read)
+        read = self.read
+
+        readuid = readhandler.get_uid(read)
+        clipspec_list = list()
+
+        if read.cigartuples[0][0] == 4:
+            pos0 = read.reference_start
+            cliplen = read.cigartuples[0][1]
+            #seq = read.query_sequence[:cliplen][::-1]
+            seq = read.query_sequence[:cliplen]
+            #qual = list(read.query_qualities)[:cliplen][::-1]
+            qual = list(read.query_qualities)[:cliplen]
+            is5prime = True
+            clipspec_list.append(
+                ClipSpec(pos0, is5prime, seq, qual, self)
+            )
+
+        if read.cigartuples[-1][0] == 4:
+            #start1 = read.reference_end + 1
+            pos0 = read.reference_end - 1
+            cliplen = read.cigartuples[-1][1]
+            seq = read.query_sequence[-cliplen:]
+            qual = list(read.query_qualities)[-cliplen:]
+            is5prime = False
+            clipspec_list.append(
+                ClipSpec(pos0, is5prime, seq, qual, self)
+            )
+
+        return clipspec_list
 
     #################
     # miscellaneous #
@@ -1019,29 +1078,34 @@ class ReadPlusPair:
         else:
             return self.rp1.cigarstats[4] + self.rp2.cigarstats[4]
 
-    def get_mNM_clipspec_data(self, vcfspec):
+    #def get_mNM_clipspec_data(self, vcfspec):
+    def get_mNM_data(self, vcfspec):
         if self.rp2 is None:
-            return self.rp1.get_mNM_clipspec_data(vcfspec)
+            #return self.rp1.get_mNM_clipspec_data(vcfspec)
+            return self.rp1.get_mNM_data(vcfspec)
         else:
-            mNM_data_rp1, clipspec_data_rp1 = self.rp1.get_mNM_clipspec_data(vcfspec)
-            mNM_data_rp2, clipspec_data_rp2 = self.rp2.get_mNM_clipspec_data(vcfspec)
+            #mNM_data_rp1, clipspec_data_rp1 = self.rp1.get_mNM_clipspec_data(vcfspec)
+            #mNM_data_rp2, clipspec_data_rp2 = self.rp2.get_mNM_clipspec_data(vcfspec)
+            mNM_data_rp1 = self.rp1.get_mNM_data(vcfspec)
+            mNM_data_rp2 = self.rp2.get_mNM_data(vcfspec)
 
             mNM_data = sorted(
                 set(itertools.chain(mNM_data_rp1, mNM_data_rp2)),
                 key=(lambda x: x[0])
             )
-            clipspec_data = sorted(
-                set(itertools.chain(clipspec_data_rp1, clipspec_data_rp2)),
-                key=(lambda x: x[0])
-            )
-            return mNM_data, clipspec_data
+            #clipspec_data = sorted(
+            #    set(itertools.chain(clipspec_data_rp1, clipspec_data_rp2)),
+            #    key=(lambda x: x[0])
+            #)
+            #return mNM_data, clipspec_data
+            return mNM_data
 
     #################
     # softclip spec #
     #################
 
-    def get_clipspecs(self):
-        pass
+    #def get_clipspecs(self):
+    #    pass
 
 
 #    def _set_is_proper_pair(self):
@@ -1526,9 +1590,9 @@ def initial_fetch_sv(bam, bnds, view, fetch_padding_common,
                      new_fetch_padding, long_insert_threshold):
     """Read filtering done by readhandler.readfilter_bad_read"""
 
-    def get_initial_fetcher(bam, chrom_bnd, pos_range0, endis5, 
+    def get_initial_fetcher(bam, chrom_bnd, pos_range0, is5prime, 
                                fetch_padding_common, fetch_padding_sv):
-        if endis5:
+        if is5prime:
             fetcher = readhandler.get_fetch(
                 bam, chrom,
                 start=(
@@ -1568,7 +1632,7 @@ def initial_fetch_sv(bam, bnds, view, fetch_padding_common,
 
         return fetcher
 
-    def readfilter_qname(read, bndborder_start0, bndborder_end0, endis5):
+    def readfilter_qname(read, bndborder_start0, bndborder_end0, is5prime):
         """The read is selected if True.
         For decision of whether the read query_name will be included in the
             "relevant_qname_list", for SV.
@@ -1576,7 +1640,7 @@ def initial_fetch_sv(bam, bnds, view, fetch_padding_common,
 
         cond_overlapping = (read.reference_start < bndborder_end0 and 
                             read.reference_end > bndborder_start0)
-        if endis5:
+        if is5prime:
             cond_distant = (read.is_reverse and 
                             read.reference_start >= bndborder_end0)
         else:
@@ -1587,7 +1651,7 @@ def initial_fetch_sv(bam, bnds, view, fetch_padding_common,
 
         return result
 
-    def handle_initial_fetcher(fetcher, view, pos_range0, endis5, 
+    def handle_initial_fetcher(fetcher, view, pos_range0, is5prime, 
                                long_insert_threshold):
         relevant_qname_set = set()
         start0_set = set()
@@ -1597,7 +1661,7 @@ def initial_fetch_sv(bam, bnds, view, fetch_padding_common,
                 read_is_relevant = True
             else:
                 read_is_relevant = readfilter_qname(
-                    read, min(pos_range0), max(pos_range0) + 1, endis5)
+                    read, min(pos_range0), max(pos_range0) + 1, is5prime)
 
             if read_is_relevant:
                 relevant_qname_set.add(read.query_name)
@@ -1628,19 +1692,19 @@ def initial_fetch_sv(bam, bnds, view, fetch_padding_common,
                                                 fetch_padding_view)
     else:
         fetcher_bnd1 = get_initial_fetcher(
-            bam, bnds.chrom_bnd1, bnds.get_pos_range0_bnd1(), bnds.endis5_bnd1,
+            bam, bnds.chrom_bnd1, bnds.get_pos_range0_bnd1(), bnds.is5prime_bnd1,
             fetch_padding_common, fetch_padding_sv)
         fetcher_bnd2 = get_initial_fetcher(
-            bam, bnds.chrom_bnd2, bnds.get_pos_range0_bnd2(), bnds.endis5_bnd2,
+            bam, bnds.chrom_bnd2, bnds.get_pos_range0_bnd2(), bnds.is5prime_bnd2,
             fetch_padding_common, fetch_padding_sv)
 
     # extract information from initial fetchers
     relevant_qname_set_bnd1, start0_set_bnd1 = handle_initial_fetcher(
         fetcher_bnd1, view, bnds.get_pos_range0_bnd1(), 
-        bnds.endis5_bnd1, long_insert_threshold)
+        bnds.is5prime_bnd1, long_insert_threshold)
     relevant_qname_set_bnd2, start0_set_bnd2 = handle_initial_fetcher(
         fetcher_bnd2, view, bnds.get_pos_range0_bnd2(), 
-        bnds.endis5_bnd2, long_insert_threshold)
+        bnds.is5prime_bnd2, long_insert_threshold)
 
     # get new fetch ranges
     new_fetch_range_bnd1 = get_new_fetch_range(start0_set_bnd1, 

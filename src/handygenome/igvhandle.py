@@ -5,7 +5,8 @@ import socket
 import numpy as np
 
 import handygenome.sv.breakends as breakends
-import handygenome.variant.vcfspec as libvcfspec
+#import handygenome.variant.vcfspec as libvcfspec
+from handygenome.variant.vcfspec import Vcfspec
 
 
 class IGVHandle:
@@ -41,7 +42,7 @@ class IGVHandle:
                 start1 = int(start1)
                 end1 = int(end1)
                 cmd_src.append(f'{chrom}:{start1 - width}-{end1 + width}')
-            elif isinstance(locus, libvcfspec.Vcfspec):
+            elif isinstance(locus, Vcfspec):
                 chrom = locus.chrom
                 if locus.get_mutation_type(alt_index=0) == 'del':
                     start1 = locus.pos + 1 - width

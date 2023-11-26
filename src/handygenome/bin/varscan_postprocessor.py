@@ -2,7 +2,6 @@ import pysam
 
 import handygenome.workflow as workflow
 import handygenome.workflow.toolsetup as toolsetup
-import handygenome.variant.svcaller_parser as svcaller_parser
 import handygenome.variant.varianthandler as varianthandler
 import handygenome.vcfeditor.headerhandler as headerhandler
 import handygenome.vcfeditor.indexing as indexing

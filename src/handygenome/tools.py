@@ -9,6 +9,7 @@ import collections
 import inspect
 import functools
 import math
+import pathlib
 
 import numpy as np
 import pandas as pd
@@ -253,12 +254,18 @@ def check_bgzipped(fname):
 
 
 def openfile(fname, mode='rt'):
-    patstring = r'[rwa][tb]'
+    patstring = r'[rwa]([tb])?'
     if not re.fullmatch(patstring, mode):
         raise Exception(f'Invalid "mode" argument. Allowed pattern: {patstring}')
 
     if len(mode) == 1:
         mode = mode + 't'
+
+    if (
+        (mode[0] in ('w', 'a'))
+        and (not os.path.exists(fname))
+    ):
+        pathlib.Path(fname).touch()
 
     if check_textfile(fname):
         return open(fname, mode)
@@ -823,25 +830,24 @@ def coord_sortkey(chrom, pos, chromdict):
     return (chromdict.contigs.index(chrom), pos)
 
 
-#def get_vcfspec_sortkey(chromdict):
-#    def sortkey(vcfspec):
-#        return (chromdict.contigs.index(vcfspec.chrom), vcfspec.pos, vcfspec.ref) + vcfspec.alts
-#        #return coord_sortkey(vcfspec.chrom, vcfspec.pos, chromdict)
-#
-#    return sortkey
-
-
 def compare_coords(chrom1, pos1, chrom2, pos2, chromdict):
     """
+    Compares two genomic coordinates.
     Returns:
         0: equal; -1: chrom1/pos1 comes first; 1: chrom2/pos2 comes first
     """
-
-    if chrom1 == chrom2 and pos1 == pos2:
-        return 0
+    if chrom1 == chrom2:
+        if pos1 == pos2:
+            return 0
+        elif pos1 < pos2:
+            return -1
+        else:
+            return 1
     else:
-        if (coord_sortkey(chrom1, pos1, chromdict) 
-            < coord_sortkey(chrom2, pos2, chromdict)):
+        if (
+            coord_sortkey(chrom1, pos1, chromdict) 
+            < coord_sortkey(chrom2, pos2, chromdict)
+        ):
             return -1
         else:
             return 1

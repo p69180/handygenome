@@ -7,9 +7,9 @@ top_package_name = __name__.split('.')[0]
 customfile = importlib.import_module('.'.join([top_package_name, 'annotation', 'customfile']))
 
 
-def get_next_codon_frame(chrom, pos, endis5, transcript_id, is_forward, tabixfile_geneset):
-	next_CDS = get_next_CDS(chrom, pos, transcript_id, tabixfile_geneset, endis5)
-	if endis5:
+def get_next_codon_frame(chrom, pos, is5prime, transcript_id, is_forward, tabixfile_geneset):
+	next_CDS = get_next_CDS(chrom, pos, transcript_id, tabixfile_geneset, is5prime)
+	if is5prime:
 		return get_leftmost_codon_frame(next_CDS, is_forward)
 	else:
 		return get_rightmost_codon_frame(next_CDS, is_forward)
@@ -23,7 +23,7 @@ def get_rna_range(chrom, pos, transcript_id, tabixfile_geneset):
 	return range(line.start, line.end)
 
 
-def get_next_CDS(chrom, pos, transcript_id, tabixfile_geneset, endis5):
+def get_next_CDS(chrom, pos, transcript_id, tabixfile_geneset, is5prime):
 	"""
 	Returns:
 		A pysam.libctabixproxies.GTFProxy object representing 
@@ -32,7 +32,7 @@ def get_next_CDS(chrom, pos, transcript_id, tabixfile_geneset, endis5):
 
 	rna_range = get_rna_range(chrom, pos, transcript_id, tabixfile_geneset)
 
-	if endis5:
+	if is5prime:
 		def filter_other_side(line, pos):
 			return line.start > (pos - 1)
 	else:
@@ -53,7 +53,7 @@ def get_next_CDS(chrom, pos, transcript_id, tabixfile_geneset, endis5):
 	if len(lines_other_side) == 0:
 		return None
 	else:
-		if endis5:
+		if is5prime:
 			return min(lines_other_side, key = lambda x: x.start)
 		else:
 			return max(lines_other_side, key = lambda x: x.start)
@@ -87,7 +87,7 @@ def get_rightmost_codon_frame0(CDS):
 
 # for bnd annotation
 
-def get_next_codon_frame0(transcript_id_list, chrom, pos, endis5, tabixfile_geneset):
+def get_next_codon_frame0(transcript_id_list, chrom, pos, is5prime, tabixfile_geneset):
 	def get_fetch_range(tabixfile_geneset, chrom, pos):
 		range_list = list()
 		for tabixline in tabixfile_geneset.fetch(chrom, pos - 1, pos):
@@ -107,8 +107,8 @@ def get_next_codon_frame0(transcript_id_list, chrom, pos, endis5, tabixfile_gene
 
 		return fetched_dict
 
-	def get_next_CDS(pos, transcript_id, fetched_dict, endis5):
-		if endis5:
+	def get_next_CDS(pos, transcript_id, fetched_dict, is5prime):
+		if is5prime:
 			relevant_features = [x for x in fetched_dict[transcript_id]
 								 if x.start + 1 > pos]
 			next_pos = min(x.start for x in relevant_features) + 1
@@ -121,10 +121,10 @@ def get_next_codon_frame0(transcript_id_list, chrom, pos, endis5, tabixfile_gene
 
 		next_feature_roles = [x.feature for x in next_features]
 		if next_feature_roles.count('exon') != 1:
-			raise Exception(f'Unexpected  exon is not included among the next features:\ntranscript_id: {transcript_id}, pos: {pos}, endis5: {endis5}\nnext_features: {next_features}')
+			raise Exception(f'Unexpected  exon is not included among the next features:\ntranscript_id: {transcript_id}, pos: {pos}, is5prime: {is5prime}\nnext_features: {next_features}')
 			
 		if 'exon' not in next_feature_roles:
-			raise Exception(f'exon is not included among the next features:\ntranscript_id: {transcript_id}, pos: {pos}, endis5: {endis5}\nnext_features: {next_features}')
+			raise Exception(f'exon is not included among the next features:\ntranscript_id: {transcript_id}, pos: {pos}, is5prime: {is5prime}\nnext_features: {next_features}')
 
 		next_CDS_candidates = [x for x in next_features if x.feature == 'CDS']
 
@@ -133,10 +133,10 @@ def get_next_codon_frame0(transcript_id_list, chrom, pos, endis5, tabixfile_gene
 		elif len(next_CDS_candidates) == 1:
 			return next_CDS_candidates[0]
 		else:
-			raise Exception(f'More than one next CDSs with identical positions:\ntranscript_id="{transcript_id}", pos="{pos}", endis5="{endis5}"')
+			raise Exception(f'More than one next CDSs with identical positions:\ntranscript_id="{transcript_id}", pos="{pos}", is5prime="{is5prime}"')
 
-	def get_result(transcript_id_list, pos, fetched_dict, endis5):
-		if endis5:
+	def get_result(transcript_id_list, pos, fetched_dict, is5prime):
+		if is5prime:
 			frame0_getter = get_leftmost_codon_frame0
 		else:
 			frame0_getter = get_rightmost_codon_frame0
@@ -144,7 +144,7 @@ def get_next_codon_frame0(transcript_id_list, chrom, pos, endis5, tabixfile_gene
 		result = dict()
 
 		for transcript_id in transcript_id_list:
-			next_CDS = get_next_CDS(pos, transcript_id, fetched_dict, endis5)
+			next_CDS = get_next_CDS(pos, transcript_id, fetched_dict, is5prime)
 			if next_CDS is None:
 				next_codon_frame0 = None
 			else:
@@ -157,5 +157,5 @@ def get_next_codon_frame0(transcript_id_list, chrom, pos, endis5, tabixfile_gene
 	fetch_range = get_fetch_range(tabixfile_geneset, chrom, pos)
 	fetched_dict = classify_fetched(tabixfile_geneset, transcript_id_list, chrom, fetch_range)
 
-	return get_result(transcript_id_list, pos, fetched_dict, endis5)
+	return get_result(transcript_id_list, pos, fetched_dict, is5prime)
 

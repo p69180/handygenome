@@ -9,10 +9,8 @@ from scipy.stats import rv_discrete
 from scipy.special import gamma, gammaln
 
 
-LAPDEMON = importr('LaplacesDemon')
-
-
 def dgpois(x, lam, omega):
+    LAPDEMON = importr('LaplacesDemon')
     return np.array(
         LAPDEMON.dgpois(
             ro.FloatVector(np.atleast_1d(x)),

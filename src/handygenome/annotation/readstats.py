@@ -606,7 +606,9 @@ def rpplist_to_readstats_data(
     # fields initialized as list
     for key in (
         'rpp_range0',
-        'MQ', 'BQ', 'mNM', 'clipspec', 'cliplen', 'pairorient', 'readorient',
+        'MQ', 'BQ', 'mNM', 
+        #'clipspec', 
+        'cliplen', 'pairorient', 'readorient',
         'pos0_left', 'pos0_right', 'pos0_5prime', 'pos0_3prime',
         'pos0_left_fraction', 'pos0_right_fraction', 
         'pos0_5prime_fraction', 'pos0_3prime_fraction',
@@ -660,9 +662,10 @@ def rpplist_to_readstats_data(
                 )
 
         # mNM
-        mNM_data, clipspec_data = rpp.get_mNM_clipspec_data(vcfspec)
+        #mNM_data, clipspec_data = rpp.get_mNM_clipspec_data(vcfspec)
+        mNM_data = rpp.get_mNM_data(vcfspec)
         data['mNM'][alleleclass_rpp].extend(mNM_data)
-        data['clipspec'][alleleclass_rpp].extend(clipspec_data)
+        #data['clipspec'][alleleclass_rpp].extend(clipspec_data)
 
         # var_pos0s
         add_var_pos0s_rp(rpp.rp1, data, alleleclass_rpp, vcfspec)

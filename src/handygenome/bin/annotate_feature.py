@@ -238,7 +238,7 @@ def add_annotations(
         annotdb_bnd1.update_features_postvep_bnd(
             bnds.chrom_bnd1,
             bnds.pos_bnd1,
-            bnds.endis5_bnd1,
+            bnds.is5prime_bnd1,
             tabixfile_geneset,
             tabixfile_regulatory,
             tabixfile_repeats,
@@ -249,7 +249,7 @@ def add_annotations(
         annotdb_bnd2.update_features_postvep_bnd(
             bnds.chrom_bnd2,
             bnds.pos_bnd2,
-            bnds.endis5_bnd2,
+            bnds.is5prime_bnd2,
             tabixfile_geneset,
             tabixfile_regulatory,
             tabixfile_repeats,

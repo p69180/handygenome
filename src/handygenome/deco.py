@@ -114,7 +114,7 @@ def get_deco_num_notNone(names, n):
 
 
 def get_deco_num_set_differently(names, n, how='equal'):
-    assert how in ('equal', 'gt', 'lt')
+    assert how in ('equal', 'gt', 'lt', 'ge', 'le')
     def decorator(func):
         sig = inspect.signature(func)
         if not set(names).issubset(sig.parameters.keys()):
@@ -147,6 +147,12 @@ def get_deco_num_set_differently(names, n, how='equal'):
             elif how == 'lt':
                 cond = (n_diff < n)
                 word = 'less than'
+            elif how == 'ge':
+                cond = (n_diff >= n)
+                word = 'greater than or equal to'
+            elif how == 'le':
+                cond = (n_diff <= n)
+                word = 'less than or equal to'
 
             if not cond:
                 raise ValueError(

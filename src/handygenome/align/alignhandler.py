@@ -7,7 +7,8 @@ import numpy as np
 
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.tools as tools
-import handygenome.variant.vcfspec as libvcfspec
+#import handygenome.variant.vcfspec as libvcfspec
+from handygenome.variant.vcfspec import Vcfspec
 
 
 ##########################
@@ -168,22 +169,19 @@ def iter_leading_queryonly(cigartuples):
             break
 
 
-def get_query_length(cigartuples):
-    result = 0
+def iter_cigar_lengths(cigartuples):
+    """Yields tuple (target traverse length, query traverse length)"""
     for opcode, count in cigartuples:
         consume_target, consume_query = CIGAR_WALK_DICT[opcode]
-        if consume_query:
-            result += count
-    return result
+        yield (consume_target * count), (consume_query * count)
+
+
+def get_query_length(cigartuples):
+    return sum(x[1] for x in iter_cigar_lengths(cigartuples))
 
 
 def get_target_length(cigartuples):
-    result = 0
-    for opcode, count in cigartuples:
-        consume_target, consume_query = CIGAR_WALK_DICT[opcode]
-        if consume_target:
-            result += count
-    return result
+    return sum(x[0] for x in iter_cigar_lengths(cigartuples))
 
 
 # walk cigar #
@@ -980,7 +978,7 @@ def alignment_to_vcfspec(
             ref = new_aln.target[target_idx - 1]
         inserted_seq = new_aln.query[query_idx:(query_idx + len(query_walk))]
         alt = ref + inserted_seq
-        vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta))
+        vcfspec_list.append(Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta))
 
     def handle_single_del(current_pos0, target_idx, target_walk, fasta, chrom, new_aln, vcfspec_list, refver):
         pos = current_pos0
@@ -990,7 +988,7 @@ def alignment_to_vcfspec(
             preceding_base = new_aln.target[target_idx - 1]
         ref = preceding_base + new_aln.target[target_idx:(target_idx + len(target_walk))]
         alt = ref[0]
-        vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta))
+        vcfspec_list.append(Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta))
 
     def handle_consecutive_indels(new_aln, walks_subset, target_idx, query_idx, current_pos0, chrom, fasta, vcfspec_list, refver):
         target_walk_length = sum(len(target_walk) for target_walk, query_walk in walks_subset)
@@ -998,7 +996,7 @@ def alignment_to_vcfspec(
         ref = new_aln.target[target_idx:(target_idx + target_walk_length)]
         alt = new_aln.query[query_idx:(query_idx + query_walk_length)]
         pos = current_pos0 + 1
-        vcfspec = libvcfspec.Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta)
+        vcfspec = Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta)
         #vcfspec = vcfspec.parsimonious()
         vcfspec_list.append(vcfspec)
 
@@ -1012,7 +1010,7 @@ def alignment_to_vcfspec(
                 pos = current_pos0 + idx_offset + 1
                 ref = ''.join(x[0] for x in seq_pairs)
                 alt = ''.join(x[1] for x in seq_pairs)
-                vcfspec_list.append(libvcfspec.Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta))
+                vcfspec_list.append(Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta))
             idx_offset += len(seq_pairs)
 
     # set paramters
@@ -1186,4 +1184,4 @@ def alignment_tiebreaker(alignments, raise_with_failure=True):
         
     return selected_alns[0]
 
-
+tiebreaker = alignment_tiebreaker

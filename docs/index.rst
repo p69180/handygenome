@@ -27,7 +27,7 @@ You can install handygenome by running the commands below,
 
 .. code-block:: bash
     
-    conda create -n handygenome python>=3.10 conda-forge::rpy2 bioconda::bioconductor-dnacopy conda-forge::gcc
+    conda create -n handygenome python>=3.10 bioconda::pysam conda-forge::rpy2 bioconda::bioconductor-dnacopy conda-forge::gcc
     conda activate handygenome
     pip install handygenome
 

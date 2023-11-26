@@ -21,6 +21,7 @@ dependencies = [
     "PyYAML",
     "jupyterlab",
     "notebook",
+    "ipympl",
     #"statsmodels",
     #"pomegranate",
 ]
@@ -43,3 +44,4 @@ Repository = "https://github.com/p69180/handygenome.git"
 [project.scripts]
 annotate-readstats = "handygenome.bin.annotate_readstats:main"
 annotate-feature = "handygenome.bin.annotate_feature:main"
+alignment = "handygenome.bin.alignment:main"
