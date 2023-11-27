@@ -7,6 +7,7 @@ import Bio.Align
 import pyranges as pr
 
 import handygenome.refgenome.refgenome as refgenome
+import handygenome.tools as tools
 import handygenome.annotation.annotitem as annotitem
 import handygenome.variant.repeat as librepeat
 from handygenome.annotation.annotitem import AnnotItemInfoALTlist
@@ -20,9 +21,9 @@ DEFAULT_FETCH_EXTEND_LENGTH = 10
 SV_ALTS = ('DEL', 'INS', 'DUP', 'INV', 'CNV', 'BND', 'TRA')
 CPGMET_ALT = 'CPGMET'
 
-PAT_BND1 = re.compile('^(?P<t>[^\[\]]+)(?P<bracket1>\[|\])(?P<matechrom>[^:]+):(?P<matepos>[0-9]+)(?P<bracket2>\[|\])$')
-PAT_BND2 = re.compile('^(?P<bracket1>\[|\])(?P<matechrom>[^:]+):(?P<matepos>[0-9]+)(?P<bracket2>\[|\])(?P<t>[^\[\]]+)$')
-PAT_NUCLEOBASES = re.compile('[ACGTNacgtn]+')
+PAT_BND1 = re.compile(r'^(?P<t>[^\[\]]+)(?P<bracket1>\[|\])(?P<matechrom>[^:]+):(?P<matepos>[0-9]+)(?P<bracket2>\[|\])$')
+PAT_BND2 = re.compile(r'^(?P<bracket1>\[|\])(?P<matechrom>[^:]+):(?P<matepos>[0-9]+)(?P<bracket2>\[|\])(?P<t>[^\[\]]+)$')
+PAT_NUCLEOBASES = re.compile(r'[ACGTNacgtn]+')
 
 ALIGNER_DIFF = Bio.Align.PairwiseAligner(
     mode='global',
@@ -45,36 +46,47 @@ My convention:
 '''
 
 
+class NonStandardSVAlt(Exception):
+    pass
+
+
 class Vcfspec:
     # I/O
+#    def __init__(
+#        self, chrom=None, pos=None, ref=None, alts=None, 
+#        *,
+#        #somaticindex=1, germlineindexes=(0, 0),
+#        refver=None, 
+#        fasta=None, 
+#        components=None,
+#    ):
+
     def __init__(
-        self, chrom=None, pos=None, ref=None, alts=None, *,
-        #somaticindex=1, germlineindexes=(0, 0),
-        refver=None, fasta=None, components=None,
+        self, chrom, pos, ref, alts, refver,
+        components=None,
     ):
         # sanity check
-        if alts is not None:
-            if not isinstance(alts, (tuple, list)):
-                raise Exception(f'"alts" argument must be a tuple or a list.')
+        #if alts is not None:
+        if not isinstance(alts, (tuple, list)):
+            raise Exception(f'"alts" argument must be a tuple or a list.')
+
         # chrom, pos, ref, alt
         self.chrom = chrom
         self.pos = int(pos)  # 221215: There are occasions where this value is np.int64, incompatible with VcfspecComponents.write
         self.ref = ref
-        if alts is None:
-            self.alts = None
-        else:
-            self.alts = tuple(alts)
+        self.alts = alts
+        if self.alts is not None:
+            self.alts = tuple(self.alts)
+        #if alts is None:
+        #    self.alts = None
+        #else:
+        #    self.alts = tuple(alts)
+
         # others
         #self.somaticindex = somaticindex
         #self.germlineindexes = sorted(germlineindexes)
         self.refver = refver
-        if fasta is None:
-            if refver is None:
-                raise Exception(f'When "fasta" is not set, "refver" must be set.')
-            self.fasta = refgenome.get_fasta(self.refver)
-        else:
-            self.fasta = fasta
-        # attributes not able to set in __init__
+
         self.is_leftmost = None
         self.is_rightmost = None
         self._is_parsimonious = None
@@ -110,6 +122,14 @@ class Vcfspec:
         #    (self.chrom, self.pos, self.ref, self.alts),
         #    handle_percent=True,
         #)
+
+    @property
+    def chromdict(self):
+        return refgenome.get_chromdict(self.refver)
+
+    @property
+    def fasta(self):
+        return refgenome.get_fasta(self.refver)
 
     @classmethod
     def from_tuple(cls, tup, refver):
@@ -151,7 +171,7 @@ class Vcfspec:
             #'somaticindex': self.somaticindex,
             #'germlineindexes': self.germlineindexes,
             'refver': self.refver,
-            'fasta': self.fasta,
+            #'fasta': self.fasta,
         }
         default_kwargs.update(kwargs)
         result = self.__class__(**default_kwargs)
@@ -607,6 +627,25 @@ class Vcfspec:
             for allele_index in self.iter_allele_indexes()
         }
 
+    ######
+    # SV #
+    ######
+
+    def check_is_sv(self):
+        assert len(self.alts) == 1
+        return check_SV_altstring(self.alts[0])
+
+    def check_is_bnd1(self):
+        assert self.check_is_sv()
+        t, chrom_mate, pos_mate, endtype_current_is5, endtype_mate_is5 = (
+            parse_sv_altstring(self.alts[0])
+        )
+        return get_is_bnd1_base(self.chrom, self.pos, chrom_mate, pos_mate, self.chromdict)
+
+    def get_bnds(self):
+        from handygenome.sv.breakends import Breakends
+        return Breakends.from_vcfspec(self)
+
 
 #class VcfspecConcatComponents(collections.UserList):
 #    def encode(self):
@@ -687,11 +726,25 @@ class IdentityVcfspec:
     pass
 
 
-#def check_vcfspec_monoalt(vcfspec):
-#    if len(vcfspec.alts) != 1:
-#        raise Exception('The input vcfspec must be with single ALT.')
 
-#check_vcfspec_monoallele = check_vcfspec_monoalt
+########################
+# SV and mutation type #
+########################
+
+def check_SV_altstring(alt):
+    if any(
+        (re.fullmatch(f'<{x}(:.+)?>', alt) is not None)
+        for x in SV_ALTS
+    ):
+        # <DEL>, <INV>, ...
+        return True
+    elif (
+        (PAT_BND1.fullmatch(alt) is not None)
+        or (PAT_BND2.fullmatch(alt) is not None)
+    ):
+        return True
+    else:
+        return False
 
 
 def get_mutation_type(ref, alt):
@@ -735,6 +788,58 @@ def get_mutation_type(ref, alt):
 
 get_mttype = get_mutation_type
 
+
+def parse_sv_altstring(sv_altstring):
+    mats = [PAT_BND1.match(sv_altstring), PAT_BND2.match(sv_altstring)]
+    mats_isNotNone = [(x is not None) for x in mats]
+
+    nTrue = mats_isNotNone.count(True)
+    if nTrue == 0: # not a bnd string
+        raise NonStandardSVAlt(f'ALT string "{sv_altstring}" does not match '
+                               f'the standard SV string pattern.') 
+
+    elif nTrue == 1:
+        mat = next(itertools.compress(mats, mats_isNotNone))
+        t = mat.group('t') # t : according to VCF spec documentation
+        chrom_mate = mat.group('matechrom')
+        pos_mate = int(mat.group('matepos'))
+
+        if sv_altstring.startswith('[') or sv_altstring.startswith(']'):
+            endtype_current_is5 = True
+        else:
+            endtype_current_is5 = False
+        
+        if mat.group('bracket1') == '[':
+            endtype_mate_is5 = True
+        else:
+            endtype_mate_is5 = False
+
+    elif nTrue == 2: # not a valid bnd string
+        raise NonStandardSVAlt(f'ALT string "{sv_altstring}" matches both '
+                               f'pat1 and pat2.')
+
+    return (
+        t, chrom_mate, pos_mate, endtype_current_is5,  endtype_mate_is5
+    )
+
+
+def get_is_bnd1_base(chrom, pos, chrom_mate, pos_mate, chromdict):
+    order = tools.compare_coords(
+        chrom, pos, chrom_mate, pos_mate, chromdict,
+    )
+    if order < 0:
+        is_bnd1 = True
+    elif order > 0:
+        is_bnd1 = False
+    elif order == 0:
+        is_bnd1 = True
+
+    return is_bnd1
+
+
+######################
+# Vcfspec arithmetic #
+######################
 
 def merge(vcfspec1, vcfspec2):
     """Intended for use with vcfspecs on different contigs(haplotypes).

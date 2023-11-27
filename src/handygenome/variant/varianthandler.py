@@ -16,20 +16,7 @@ import handygenome.variant.vcfspec as libvcfspec
 
 
 def check_SV(vr):
-    alt = vr.alts[0]
-    if any(
-        (re.fullmatch(f'<{x}(:.+)?>', alt) is not None)
-        for x in libvcfspec.SV_ALTS
-    ):
-        # <DEL>, <INV>, ...
-        return True
-    elif (
-        (libvcfspec.PAT_BND1.fullmatch(alt) is not None)
-        or (libvcfspec.PAT_BND2.fullmatch(alt) is not None)
-    ):
-        return True
-    else:
-        return False
+    return libvcfspec.check_SV_altstring(vr.alts[0])
 
 
 def check_cpgmet(vr):

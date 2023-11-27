@@ -1,4 +1,5 @@
 import collections
+import pprint
 
 #import pyranges as pr
 import numpy as np
@@ -6,7 +7,7 @@ import Bio.Seq
 import Bio.SeqRecord
 
 import handygenome.refgenome.refgenome as refgenome
-import handygenome.read.readplus as libreadplus
+from handygenome.read.readplus import ReadPlusPairList
 import handygenome.align.msa as libmsa
 import handygenome.align.alignhandler as alignhandler
 from handygenome.genomedf.genomedf import GenomeDataFrame
@@ -25,7 +26,7 @@ from handygenome.sv.breakends import Breakends
 def call_breakends(bam, chrom, start0, end0, SA_extend=30, mate_match_length=5, aligner=alignhandler.ALIGNER_EQUAL_MM_GAP):
 
     # make rpplist
-    rpplist = libreadplus.ReadPlusPairList.from_bam(bam, chrom, start0, end0)
+    rpplist = ReadPlusPairList.from_bam(bam, chrom, start0, end0)
 
     # set params
     refver = refgenome.infer_refver_bamheader(bam.header)
@@ -99,8 +100,8 @@ def align_consensus_toSA(consensus_item, fasta, match_length=5, aligner=alignhan
         cigartuples, target_offset = alignhandler.alignment_to_cigartuples(
             aln, match_as_78=False, remove_left_del=False, remove_right_del=False,
         )
-
         long_matches = [(x[0] == 0 and x[1] >= match_length) for x in cigartuples]
+
         if not any(long_matches):
             subresult = None
         else:
@@ -112,12 +113,17 @@ def align_consensus_toSA(consensus_item, fasta, match_length=5, aligner=alignhan
                 if consensus_item['is5prime'] else
                 is_reversed
             )
+
             if flip_aln:  # counting from right
                 lmidx = (len(long_matches) - 1) - long_matches[::-1].index(True)
                     # lmidx: long match index
                 mate_bnd_pos0 = walks[lmidx].target.stop - 1
                 querylen_before_longmatch = sum(len(x.query) for x in walks[lmidx + 1:])
-                insseq = query[-querylen_before_longmatch:]
+                if querylen_before_longmatch == 0:
+                    insseq = ''
+                else:
+                    insseq = query[-querylen_before_longmatch:]
+
             else:  # counting from left
                 lmidx = long_matches.index(True)
                 mate_bnd_pos0 = walks[lmidx].target.start

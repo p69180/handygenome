@@ -17,7 +17,10 @@ import handygenome.workflow as workflow
 import handygenome.annotation.annotitem as annotitem
 import handygenome.variant.infoformat as infoformat
 import handygenome.read.readplus as readplus
-import handygenome.read.alleleinfo as liballeleinfo
+from handygenome.read.readplus import ReadPlusPairList
+import handygenome.read.alleleclass as liballeleclass
+import handygenome.read.alleleclass_sv as liballeleclass_sv
+from handygenome.sv.breakends import Breakends
 
 
 ZERO_ONE_UNIFORM = scipy.stats.uniform(loc=0, scale=1)
@@ -72,16 +75,22 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
             or ((mean_mq >= mq_limits[0]) and (mean_mq <= mq_limits[1]))
         )
         return depth_okay and mq_okay
+
+    @property
+    def fasta(self):
+        return self.vcfspec.fasta
+
+    @property
+    def chromdict(self):
+        return self.vcfspec.chromdict
         
     @classmethod
     def from_bam(
         cls, 
         vcfspec, 
         bam, 
-        fasta=None, 
-        chromdict=None,
         rpplist_kwargs=dict(),
-        alleleinfo_kwargs=dict(),
+        alleleclass_kwargs=dict(),
         countonly=False,
         depth_limits=DEFAULT_DEPTH_LIMITS,
         mq_limits=DEFAULT_MQ_LIMITS,
@@ -92,23 +101,55 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         mq_limits = cls.handle_limits_arg(mq_limits)
 
         if cls.check_position_validity(depth, mqlist, depth_limits, mq_limits):
-            readstats_data = get_readstats_data(
-                vcfspec, bam, fasta, chromdict,
-                rpplist_kwargs=rpplist_kwargs,
-                alleleinfo_kwargs=alleleinfo_kwargs,
-                countonly=countonly,
-            )
-            result = cls.from_readstats_data(
-                readstats_data, 
-                vcfspec, 
-                fasta, 
-                chromdict,
-                countonly=countonly,
-                include_mNM_items=include_mNM_items,
-            )
-            del readstats_data
+            if not vcfspec.check_is_sv():
+                readstats_data = get_readstats_data(
+                    vcfspec, 
+                    bam, 
+                    rpplist_kwargs=rpplist_kwargs,
+                    alleleclass_kwargs=alleleclass_kwargs,
+                    countonly=countonly,
+                )
+                result = cls.from_readstats_data(
+                    readstats_data, 
+                    vcfspec, 
+                    countonly=countonly,
+                    include_mNM_items=include_mNM_items,
+                )
+                del readstats_data
+            else:  # SV
+                readstats_data_bnd1, readstats_data_bnd2 = get_readstats_data(
+                    vcfspec, 
+                    bam, 
+                    rpplist_kwargs=rpplist_kwargs,
+                    alleleclass_kwargs=alleleclass_kwargs,
+                    countonly=countonly,
+                )
+                result_bnd1 = cls.from_readstats_data(
+                    readstats_data_bnd1, 
+                    vcfspec, 
+                    countonly=True,
+                    include_mNM_items=include_mNM_items,
+                )
+                result_bnd2 = cls.from_readstats_data(
+                    readstats_data_bnd2, 
+                    vcfspec, 
+                    countonly=True,
+                    include_mNM_items=include_mNM_items,
+                )
+                del readstats_data_bnd1
+                del readstats_data_bnd2
+
+                result = cls(is_missing=False)
+                result.vcfspec = vcfspec
+                result['bnd1'] = result_bnd1
+                result['bnd2'] = result_bnd2
         else:
-            result = cls.init_invalid(vcfspec, fasta, chromdict, countonly=countonly)
+            if not vcfspec.check_is_sv():
+                result = cls.init_invalid(vcfspec, countonly=countonly)
+            else:
+                result = cls(is_missing=False)
+                result['bnd1'] = cls.init_invalid(vcfspec, countonly=countonly)
+                result['bnd2'] = cls.init_invalid(vcfspec, countonly=countonly)
 
         return result
 
@@ -117,8 +158,6 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         cls, 
         readstats_data,  
         vcfspec, 
-        fasta=None, 
-        chromdict=None,
         countonly=False,
         include_mNM_items=False,
     ):
@@ -126,16 +165,6 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         result = cls(is_missing=False)
         result.is_invalid = False
         result.vcfspec = vcfspec
-        result.fasta = (
-            refgenome.get_fasta(vcfspec.refver)
-            if fasta is None else
-            fasta
-        )
-        result.chromdict = (
-            refgenome.get_chromdict(vcfspec.refver)
-            if chromdict is None else
-            chromdict
-        )
 
         result['rppcounts'] = readstats_data['count'].copy()
 
@@ -181,8 +210,6 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         result = cls(is_missing=False)
         result.is_invalid = False
         result.vcfspec = vcfspec
-        result.fasta = refgenome.get_fasta(vcfspec.refver)
-        result.chromdict = refgenome.get_chromdict(vcfspec.refver)
 
         result['rppcounts'] = dict()
         result['rppcounts']['softclip_overlap'] = 0
@@ -196,23 +223,14 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         return result
 
     @classmethod
-    def init_invalid(cls, vcfspec, fasta=None, chromdict=None, countonly=False, verbose=True):
+    def init_invalid(cls, vcfspec, countonly=False, verbose=True):
         if verbose:
-            logutils.print_timestamp(f'Initiating ReadStats object as invalid mode')
+            logutils.log(f'Initiating ReadStats object as invalid mode', level='warning')
+
         # main
         result = cls(is_missing=False)
         result.is_invalid = True
         result.vcfspec = vcfspec
-        result.fasta = (
-            refgenome.get_fasta(vcfspec.refver)
-            if fasta is None else
-            fasta
-        )
-        result.chromdict = (
-            refgenome.get_chromdict(vcfspec.refver)
-            if chromdict is None else
-            chromdict
-        )
 
         result['rppcounts'] = {
             alleleclass: np.nan 
@@ -407,7 +425,13 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
             except KeyError:
                 raise AlleleclassError(f'Invalid alleleclass')
 
-    def get_vafs(self, n_allele, exclude_other=False):
+    def get_vafs(self, n_allele=None, exclude_other=False):
+        if n_allele is None:
+            n_allele = sum(
+                (isinstance(x, int) and (x >= 0)) 
+                for x in self['rppcounts'].keys()
+            )
+                
         total_rppcount = self.get_total_rppcount(exclude_other=exclude_other)
         if total_rppcount == 0:
             return np.repeat(np.nan, n_allele)
@@ -469,10 +493,8 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         cls, 
         bam_dict, 
         vcfspec, 
-        fasta=None, 
-        chromdict=None,
         rpplist_kwargs=dict(),
-        alleleinfo_kwargs=dict(),
+        alleleclass_kwargs=dict(),
         countonly=False,
         depth_limits=DEFAULT_DEPTH_LIMITS,
         mq_limits=DEFAULT_MQ_LIMITS,
@@ -485,13 +507,19 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         result = cls()
         if init_invalid:
             for sampleid, bam in bam_dict.items():
-                result[sampleid] = ReadStats.init_invalid(vcfspec, fasta, chromdict, countonly=countonly)
+                if not vcfspec.check_is_sv():
+                    result[sampleid] = ReadStats.init_invalid(vcfspec, countonly=countonly)
+                else:
+                    result[sampleid] = ReadStats(is_missing=False)
+                    result[sampleid]['bnd1'] = ReadStats.init_invalid(vcfspec, countonly=countonly)
+                    result[sampleid]['bnd2'] = ReadStats.init_invalid(vcfspec, countonly=countonly)
         else:
             for sampleid, bam in bam_dict.items():
                 result[sampleid] = ReadStats.from_bam(
-                    vcfspec, bam, fasta, chromdict,
+                    vcfspec, 
+                    bam, 
                     rpplist_kwargs=rpplist_kwargs,
-                    alleleinfo_kwargs=alleleinfo_kwargs,
+                    alleleclass_kwargs=alleleclass_kwargs,
                     countonly=countonly,
                     depth_limits=depth_limits[sampleid],
                     mq_limits=mq_limits[sampleid],
@@ -511,18 +539,22 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         return self.get_first_readstats().vcfspec
 
     @property
+    def refver(self):
+        return self.vcfspec.refver
+
+    @property
     def fasta(self):
-        return self.get_first_readstats().fasta
+        return refgenome.get_fasta(self.refver)
 
     @property
     def chromdict(self):
-        return self.get_first_readstats().chromdict
+        return refgenome.get_chromdict(self.refver)
 
     def update_bams(
         self, 
         bam_dict,
         rpplist_kwargs=dict(),
-        alleleinfo_kwargs=dict(),
+        alleleclass_kwargs=dict(),
         countonly=False,
         depth_limits=DEFAULT_DEPTH_LIMITS,
         mq_limits=DEFAULT_MQ_LIMITS,
@@ -538,14 +570,15 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         if init_invalid:
             for sampleid, bam in bam_dict.items():
                 self[sampleid] = ReadStats.init_invalid(
-                    self.vcfspec, self.fasta, self.chromdict, countonly=countonly,
+                    self.vcfspec, countonly=countonly,
                 )
         else:
             for sampleid, bam in bam_dict.items():
                 self[sampleid] = ReadStats.from_bam(
-                    self.vcfspec, bam, self.fasta, self.chromdict,
+                    self.vcfspec, 
+                    bam, 
                     rpplist_kwargs=rpplist_kwargs,
-                    alleleinfo_kwargs=alleleinfo_kwargs,
+                    alleleclass_kwargs=alleleclass_kwargs,
                     countonly=countonly,
                     depth_limits=depth_limits[sampleid],
                     mq_limits=mq_limits[sampleid],
@@ -578,8 +611,47 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
             pprint.pprint(vaf_dict)
 
 
+##################
+# readstats data #
+##################
+
+def rpplist_to_readstats_data_countonly_sv(
+    rpplist, bnds, 
+    flanklen_parside=liballeleclass_sv.DEFAULT_FLANKLEN_PARSIDE,
+    flanklen_bndside=liballeleclass_sv.DEFAULT_FLANKLEN_BNDSIDE,
+):
+    data_bnd1 = {
+        'count': {x: 0 for x in (None, -1, 0, 1)},
+    }
+    data_bnd2 = {
+        'count': {x: 0 for x in (None, -1, 0, 1)},
+    }
+
+    # add data
+    for rpp in rpplist:
+        if bnds not in rpp.alleleclass.keys():
+            rpp.update_alleleclass_sv(
+                bnds,
+                flanklen_parside=flanklen_parside,
+                flanklen_bndside=flanklen_bndside,
+            )
+
+    for rpp in rpplist:
+        aiitem_bnd1 = rpp.alleleclass[bnds]['bnd1']
+        aiitem_bnd2 = rpp.alleleclass[bnds]['bnd2']
+        for aiitem, data in zip([aiitem_bnd1, aiitem_bnd2], [data_bnd1, data_bnd2]):
+            data['count'][None] += aiitem['noninformative']
+            data['count'][-1] += aiitem['other_support']
+            data['count'][0] += aiitem['ref_support_direct']
+            data['count'][0] += aiitem['ref_support_indirect']
+            data['count'][1] += aiitem['alt_support_direct']
+            data['count'][1] += aiitem['alt_support_indirect']
+
+    return data_bnd1, data_bnd2
+
+
 def rpplist_to_readstats_data(
-    rpplist, vcfspec, flanklen=liballeleinfo.DEFAULT_FLANKLEN,
+    rpplist, vcfspec, flanklen=liballeleclass.DEFAULT_FLANKLEN,
 ):
     def add_var_pos0s_rp(rp, data, alleleclass_rpp, vcfspec):
         var_querypos0s = rp.get_querypos0_of_range0_allmodes(vcfspec.REF_range0)
@@ -684,7 +756,7 @@ def rpplist_to_readstats_data(
 
 
 def rpplist_to_readstats_data_countonly(
-    rpplist, vcfspec, flanklen=liballeleinfo.DEFAULT_FLANKLEN,
+    rpplist, vcfspec, flanklen=liballeleclass.DEFAULT_FLANKLEN,
 ):
     # initialize
     alleleclass_keys = vcfspec.get_alleleclasses()  # this includes -1
@@ -703,36 +775,49 @@ def rpplist_to_readstats_data_countonly(
 
 def get_readstats_data(
     vcfspec, bam, 
-    fasta=None, 
-    chromdict=None, 
     rpplist_kwargs=dict(),
-    alleleinfo_kwargs=dict(),
+    alleleclass_kwargs=dict(),
     countonly=False,
 ):
     """Only for non-sv cases"""
 
     #rpplist_kwargs.update({'view': False})
     rpplist_kwargs['view'] = False
-    rpplist = readplus.get_rpplist_nonsv(
-        bam=bam, 
-        fasta=fasta, 
-        chromdict=chromdict, 
-        chrom=vcfspec.chrom, 
-        start0=vcfspec.pos0, 
-        end0=vcfspec.end0, 
-        **rpplist_kwargs,
-    )
-    rpplist.update_alleleclass(
-        vcfspec=vcfspec, 
-        **alleleinfo_kwargs,
-    )
-    if countonly:
-        readstats_data = rpplist_to_readstats_data_countonly(rpplist, vcfspec)
+    if vcfspec.check_is_sv():
+        bnds = Breakends.from_vcfspec(vcfspec)
+        rpplist = ReadPlusPairList.from_bam_sv(
+            bam=bam, 
+            bnds=bnds,
+            **rpplist_kwargs,
+        )
+        rpplist.update_alleleclass_sv(
+            bnds=bnds,
+            **alleleclass_kwargs,
+        )
+        readstats_data_bnd1, readstats_data_bnd2 = rpplist_to_readstats_data_countonly_sv(rpplist, bnds)
+        del rpplist
+
+        return readstats_data_bnd1, readstats_data_bnd2
     else:
-        readstats_data = rpplist_to_readstats_data(rpplist, vcfspec)
+        rpplist = ReadPlusPairList.from_bam(
+            bam=bam, 
+            chrom=vcfspec.chrom, 
+            start0=vcfspec.pos0, 
+            end0=vcfspec.end0, 
+            **rpplist_kwargs,
+        )
+        rpplist.update_alleleclass(
+            vcfspec=vcfspec, 
+            **alleleclass_kwargs,
+        )
+        if countonly:
+            readstats_data = rpplist_to_readstats_data_countonly(rpplist, vcfspec)
+        else:
+            readstats_data = rpplist_to_readstats_data(rpplist, vcfspec)
 
-    del rpplist
+        del rpplist
 
-    return readstats_data
+        return readstats_data
+
 
 

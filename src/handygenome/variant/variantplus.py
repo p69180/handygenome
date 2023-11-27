@@ -37,7 +37,10 @@ import handygenome.annotation.ensembl_rest as ensembl_rest
 import handygenome.annotation.popfreq as libpopfreq
 import handygenome.annotation.cosmic as libcosmic
 import handygenome.annotation.oncokb as liboncokb
+
 import handygenome.read.readplus as readplus
+from handygenome.read.readplus import ReadPlusPairList
+
 import handygenome.annotation.readstats as libreadstats
 from handygenome.annotation.readstats import AlleleclassError
 import handygenome.variant.vcfspec as libvcfspec
@@ -101,7 +104,9 @@ class VariantPlus:
     @classmethod
     def from_vr(
         cls, vr, 
-        refver=None, fasta=None, chromdict=None,
+        refver=None, 
+        #fasta=None, 
+        #chromdict=None,
         init_all_attrs=False,
         vp_init_params=dict(),
         preset_vp_init_params=None,
@@ -113,14 +118,16 @@ class VariantPlus:
 
         result.vr = vr
         result.refver = refgenome.infer_refver_vr(result.vr) if (refver is None) else refver
-        result.fasta = (
-            refgenome.get_fasta(result.refver)
-            if fasta is None
-            else fasta
-        )
-        result.chromdict = (
-            refgenome.ChromDict.from_fasta(result.fasta) if chromdict is None else chromdict
-        )
+
+#        result.fasta = (
+#            refgenome.get_fasta(result.refver)
+#            if fasta is None
+#            else fasta
+#        )
+#        result.chromdict = (
+#            refgenome.ChromDict.from_fasta(result.fasta) if chromdict is None else chromdict
+#        )
+
         result.vcfspec = libvcfspec.Vcfspec.from_vr(result.vr, refver=result.refver)
 
         # set init params
@@ -134,7 +141,6 @@ class VariantPlus:
     @classmethod
     def from_vcfspec(
         cls, vcfspec, 
-        chromdict=None, 
         init_all_attrs=False,
         vp_init_params=dict(),
         preset_vp_init_params=None,
@@ -146,12 +152,12 @@ class VariantPlus:
 
         result.vcfspec = vcfspec
         result.refver = result.vcfspec.refver
-        result.fasta = result.vcfspec.fasta
-        result.chromdict = (
-            refgenome.get_chromdict(result.refver)
-            if chromdict is None else 
-            chromdict
-        )
+        #result.fasta = result.vcfspec.fasta
+        #result.chromdict = (
+        #    refgenome.get_chromdict(result.refver)
+        #    if chromdict is None else 
+        #    chromdict
+        #)
         result.vr = initvcf.create_vr(chromdict=result.chromdict, vcfspec=result.vcfspec)
 
         # set init params
@@ -163,8 +169,11 @@ class VariantPlus:
         return result
 
     @classmethod
-    def from_bnds(cls, bnds, chromdict=None, **kwargs):
-        vcfspec = bnds.get_vcfspec_bnd1()
+    def from_bnds(cls, bnds, bnd1=True, chromdict=None, **kwargs):
+        if bnd1:
+            vcfspec = bnds.get_vcfspec_bnd1()
+        else:
+            vcfspec = bnds.get_vcfspec_bnd2()
         return cls.from_vcfspec(vcfspec, chromdict, **kwargs)
 
     def set_vp_init_params(self, init_all_attrs, vp_init_params, preset_vp_init_params):
@@ -259,7 +268,28 @@ class VariantPlus:
                 
             return alteration_strings
 
+    ############
+    # pickling #
+    ############
+
+    def __getstate__(self):
+        return {k: v for (k, v) in self.__dict__.items() if k != 'vr'}
+
+    def __setstate__(self, data):
+        self.__dict__ = data
+        self.vr = None
+        #self.vr = initvcf.create_vr(chromdict=self.chromdict, vcfspec=self.vcfspec)
+        #self.write_annots_to_vr()
+
     # BASICS
+    @property
+    def chromdict(self):
+        return refgenome.get_chromdict(self.refver)
+
+    @property
+    def fasta(self):
+        return refgenome.get_fasta(self.refver)
+
     @property
     def chrom(self):
         return self.vcfspec.chrom
@@ -586,7 +616,7 @@ class VariantPlus:
     def create_readstats(
         self, bam_dict,
         rpplist_kwargs=dict(),
-        alleleinfo_kwargs=dict(),
+        alleleclass_kwargs=dict(),
         **kwargs,
     ):
         """Args:
@@ -598,23 +628,10 @@ class VariantPlus:
         self.readstats_dict = libreadstats.ReadStatsSampledict.from_bam_dict(
             bam_dict=bam_dict,
             vcfspec=self.vcfspec, 
-            fasta=self.fasta, 
-            chromdict=self.chromdict,
             rpplist_kwargs=rpplist_kwargs,
-            alleleinfo_kwargs=alleleinfo_kwargs,
+            alleleclass_kwargs=alleleclass_kwargs,
             **kwargs,
         )
-
-#        self.readstats_dict = libreadstats.ReadStatsSampledict()
-#        for sampleid, bam in bam_dict.items():
-#            self.readstats_dict[sampleid] = libreadstats.ReadStats.from_bam(
-#                vcfspec=self.vcfspec, 
-#                bam=bam, 
-#                fasta=self.fasta, 
-#                chromdict=self.chromdict,
-#                rpplist_kwargs=rpplist_kwargs,
-#                alleleinfo_kwargs=alleleinfo_kwargs,
-#            )
 
     def update_readstats(
         self, bam_dict, **kwargs, 
@@ -630,46 +647,40 @@ class VariantPlus:
         self, 
         bam, 
         rpplist_kwargs={},
-        alleleinfo_kwargs={},
+        alleleclass_kwargs={},
     ):
         return libreadstats.ReadStats.from_bam(
             vcfspec=self.vcfspec, 
             bam=bam, 
-            fasta=self.fasta, 
-            chromdict=self.chromdict,
             rpplist_kwargs=rpplist_kwargs,
-            alleleinfo_kwargs=alleleinfo_kwargs,
+            alleleclass_kwargs=alleleclass_kwargs,
         )
 
     def make_rpplist(
         self,
         bam,
         set_alleleclass=True,
-        rpplist_kwargs={},
-        alleleinfo_kwargs=dict(),
+        rpplist_kwargs=dict(),
+        alleleclass_kwargs=dict(),
     ):
         if self.is_sv:
-            rpplist = readplus.get_rpplist_sv(
+            rpplist = ReadPlusPairList.from_bam_sv(
                 bam=bam,
-                fasta=self.fasta,
-                chromdict=self.chromdict,
                 bnds=self.bnds,
                 **rpplist_kwargs,
             )
             if set_alleleclass:
-                rpplist.update_alleleinfo_sv(bnds=self.bnds, **alleleinfo_kwargs)
+                rpplist.update_alleleclass_sv(bnds=self.bnds, **alleleclass_kwargs)
         else:
-            rpplist = readplus.get_rpplist_nonsv(
+            rpplist = ReadPlusPairList.from_bam(
                 bam=bam,
-                fasta=self.fasta,
-                chromdict=self.chromdict,
                 chrom=self.vcfspec.chrom,
-                start0=self.vcfspec.pos0,
+                start0=self.vcfspec.start0,
                 end0=self.vcfspec.end0,
                 **rpplist_kwargs,
             )
             if set_alleleclass:
-                rpplist.update_alleleclass(vcfspec=self.vcfspec, **alleleinfo_kwargs)
+                rpplist.update_alleleclass(vcfspec=self.vcfspec, **alleleclass_kwargs)
 
         return rpplist
 
@@ -677,12 +688,12 @@ class VariantPlus:
         self, sampleid, bam, 
         set_alleleclass=True,
         rpplist_kwargs={},
-        alleleinfo_kwargs=dict(),
+        alleleclass_kwargs=dict(),
     ):
         self.rpplist_dict[sampleid] = self.make_rpplist(
             bam, set_alleleclass=set_alleleclass,
             rpplist_kwargs=rpplist_kwargs,
-            alleleinfo_kwargs=alleleinfo_kwargs,
+            alleleclass_kwargs=alleleclass_kwargs,
         )
 
     def make_readstats_data(self, bam, **kwargs):
@@ -700,7 +711,7 @@ class VariantPlus:
         bam, 
         verbose=False, 
         rpplist_kwargs={},
-        alleleinfo_kwargs=dict(),
+        alleleclass_kwargs=dict(),
     ):
         if verbose:
             print(f"Getting readstats_data for the sample {sampleid}")
@@ -711,7 +722,7 @@ class VariantPlus:
             bam, 
             set_alleleclass=True,
             rpplist_kwargs=rpplist_kwargs,
-            alleleinfo_kwargs=alleleinfo_kwargs,
+            alleleclass_kwargs=alleleclass_kwargs,
         )
 
 #        readstats_data = libreadstats.rpplist_to_readstats_data(
@@ -757,14 +768,20 @@ class VariantPlus:
 
     def get_vaf_singlesample(self, sampleid, allele_index=1, exclude_other=False, ndigits=None):
         readstats = self.readstats_dict[sampleid]
-        vaf = readstats.get_vaf(alleleclass=allele_index, exclude_other=exclude_other)
-        if np.isnan(vaf):
-            return vaf
+        if self.is_sv:
+            return {
+                'bnd1': readstats['bnd1'].get_vaf(alleleclass=allele_index, exclude_other=exclude_other),
+                'bnd2': readstats['bnd2'].get_vaf(alleleclass=allele_index, exclude_other=exclude_other),
+            }
         else:
-            if ndigits is None:
+            vaf = readstats.get_vaf(alleleclass=allele_index, exclude_other=exclude_other)
+            if np.isnan(vaf):
                 return vaf
             else:
-                return round(vaf, ndigits)
+                if ndigits is None:
+                    return vaf
+                else:
+                    return round(vaf, ndigits)
 
     def get_sorted_vafs(self, sampleid, exclude_other=True, reverse=True):
         return self.readstats_dict[sampleid].get_sorted_vafs(exclude_other=exclude_other, reverse=reverse)
@@ -855,18 +872,25 @@ class VariantPlus:
         new=True,
         readheight='collapse',
         viewaspairs=True,
-        colorby='FIRST_OF_PAIR_STRAND',
+
+        colorby=None,
         colorby_alleleclass=False,
-        rpplist_kwargs={
-            'view': True,
-            'no_matesearch': True,
-        },
-        alleleinfo_kwargs=dict(),
+
+        rpplist_kwargs=dict(),
+        alleleclass_kwargs=dict(),
+        tmpdir_loc=os.getcwd(),
     ):
-        if self.is_sv:
-            raise Exception(f'SV is not supported yet')
+        #if self.is_sv:
+        #    raise Exception(f'SV is not supported yet')
 
         assert readheight in ('collapse', 'expand', 'squish')
+        
+        default_rpplist_kwargs = (
+            {'view': True}
+            if self.is_sv else
+            {'view': True, 'no_matesearch': True}
+        )
+        rpplist_kwargs = default_rpplist_kwargs | rpplist_kwargs
 
         # make rpplists
         rpplist_dict = dict()
@@ -875,11 +899,11 @@ class VariantPlus:
                 bam, 
                 set_alleleclass=True,
                 rpplist_kwargs=rpplist_kwargs,
-                alleleinfo_kwargs=alleleinfo_kwargs,
+                alleleclass_kwargs=alleleclass_kwargs,
             )
             if self.is_sv:
-                rpplist.set_alleleinfo_tag_rp_sv(self.bnds)
-                rpplist.set_alleleinfo_tag_rpp_sv(self.bnds)
+                rpplist.set_alleleclass_tag_rp_sv(self.bnds)
+                rpplist.set_alleleclass_tag_rpp_sv(self.bnds)
             else:
                 rpplist.set_alleleclass_tag_rp(self.vcfspec)
                 rpplist.set_alleleclass_tag_rpp(self.vcfspec)
@@ -887,13 +911,19 @@ class VariantPlus:
             rpplist_dict[sampleid] = rpplist
 
         # make temporary directory and write temp bam files
-        tmpbam_dir = workflow.get_tmpfile_path(prefix='tmpdir_show_igv_', dir=os.getcwd(), delete=False, is_dir=True)
+        tmpbam_dir = workflow.get_tmpfile_path(
+            prefix='tmpdir_show_igv_', 
+            dir=tmpdir_loc, 
+            delete=False, 
+            is_dir=True,
+        )
         tmpbam_paths = {
             sampleid: os.path.join(tmpbam_dir, f'{sampleid}_for_show.bam')
             for sampleid in bam_dict.keys()
         }
         for sampleid, rpplist in rpplist_dict.items():
             rpplist.write_bam(outfile_path=tmpbam_paths[sampleid])
+
         # igv manipulation
         if new:
             igv.cmd('new')
@@ -911,9 +941,28 @@ class VariantPlus:
             show_range_end = min(self.vcfspec.end0 + max_width_oneside, max(maxs))
             show_locus = (self.vcfspec.chrom, show_range_start, show_range_end)
 
-            igv.goto([show_locus], width=0)
+            igv.goto(show_locus, width=0)
         else:
-            pass
+            mins_bnd1 = list()
+            maxs_bnd1 = list()
+            mins_bnd2 = list()
+            maxs_bnd2 = list()
+            for rpplist in rpplist_dict.values():
+                ref_range0_bnd1, ref_range0_bnd2 = rpplist.get_ref_range0_sv(self.bnds)
+                mins_bnd1.append(ref_range0_bnd1.start)
+                mins_bnd2.append(ref_range0_bnd2.start)
+                maxs_bnd1.append(ref_range0_bnd1.stop)
+                maxs_bnd2.append(ref_range0_bnd2.stop)
+
+            view_start_bnd1 = max(self.bnds.pos0_bnd1 - max_width_oneside, min(mins_bnd1))
+            view_end_bnd1 = min(self.bnds.pos_bnd1 + max_width_oneside, max(maxs_bnd1))
+            view_locus_bnd1 = (self.bnds.chrom_bnd1, view_start_bnd1, view_end_bnd1)
+
+            view_start_bnd2 = max(self.bnds.pos0_bnd2 - max_width_oneside, min(mins_bnd2))
+            view_end_bnd2 = min(self.bnds.pos_bnd2 + max_width_oneside, max(maxs_bnd2))
+            view_locus_bnd2 = (self.bnds.chrom_bnd2, view_start_bnd2, view_end_bnd2)
+
+            igv.goto(view_locus_bnd1, view_locus_bnd2, width=0)
 
         if viewaspairs:
             igv.viewaspairs()
@@ -922,12 +971,21 @@ class VariantPlus:
 
         igv.cmd(readheight)
         igv.cmd("group TAG a2")
+
         if colorby_alleleclass:
             igv.cmd(f"colorBy TAG {readplus.ALLELECLASS_TAG_RPP}")
         else:
+            if colorby is None:
+                if self.is_sv:
+                    colorby = 'PAIR_ORIENTATION'
+                else:
+                    colorby = 'FIRST_OF_PAIR_STRAND'
             igv.cmd(f"colorBy {colorby}")
 
-        shutil.rmtree(tmpbam_dir)
+        try:
+            shutil.rmtree(tmpbam_dir)
+        except Exception as exc:
+            print(f'Failed to remove tmp directory ({exc})')
 
     def show_readstats_data(self, bam, alt_index=0, varpos_key='left'):
         readstats_data = self.make_readstats_data(bam)
@@ -1032,9 +1090,11 @@ class VariantPlusList(list):
 
     def __init__(
         self, 
-        vcf_path=None, vcf=None, 
-        refver=None,
-        fasta=None, chromdict=None,
+        refver,
+
+        vcf_path=None, 
+        vcf=None, 
+        #fasta=None, chromdict=None,
         logging_lineno=1000, 
         preview_lineno=15, 
         verbose=True, 
@@ -1044,31 +1104,9 @@ class VariantPlusList(list):
     ):
         # vcf_path, vcf
         self.vcf_path = vcf_path
-        if vcf is None:
-            if self.vcf_path is None:
-                self.vcf = None
-            else:
-                self.vcf = pysam.VariantFile(self.vcf_path, "r")
-        else:
-            self.vcf = vcf
 
         # refver, fasta, chromdict
-        if refver is None:
-            if self.vcf is None:
-                raise Exception(f'When "refver" is not set, "vcf_path" or "vcf" must be set.')
-            self.refver = refgenome.infer_refver_vcfheader(self.vcf.header)
-        else:
-            self.refver = refver
-
-        if fasta is None:
-            self.fasta = refgenome.get_fasta(self.refver)
-        else:
-            self.fasta = fasta
-
-        if chromdict is None:
-            self.chromdict = refgenome.ChromDict.from_fasta(self.fasta)
-        else:
-            self.chromdict = chromdict
+        self.refver = refver
 
         # vp initiation parameters
         self.vp_init_params = VariantPlusInitParams()
@@ -1086,6 +1124,21 @@ class VariantPlusList(list):
         # others
         self.is_sorted = False
         self._index_gr = None
+
+    @property
+    def vcf(self):
+        if self.vcf_path is None:
+            return None
+        else:
+            return pysam.VariantFile(self.vcf_path, 'r')
+
+    @property
+    def chromdict(self):
+        return refgenome.get_chromdict(self.refver)
+
+    @property
+    def fasta(self):
+        return refgenome.get_fasta(self.refver)
 
     @classmethod
     def concat(cls, vplist_list, **kwargs):
@@ -1133,7 +1186,11 @@ class VariantPlusList(list):
         """Args:
             prop: probability for random selection. If None, all entries are selected.
         """
+        with pysam.VariantFile(vcf_path) as tmp_vcf:
+            refver = refgenome.infer_refver_vcfheader(tmp_vcf.header)
+
         result = cls(
+            refver=refver,
             vcf_path=vcf_path, 
             logging_lineno=logging_lineno, 
             preview_lineno=preview_lineno, 
@@ -1163,7 +1220,11 @@ class VariantPlusList(list):
         init_all_attrs=False,
         vp_init_params=dict(),
     ):
+        with pysam.VariantFile(vcf_path) as tmp_vcf:
+            refver = refgenome.infer_refver_vcfheader(tmp_vcf.header)
+
         result = cls(
+            refver=refver,
             vcf_path=vcf_path, 
             logging_lineno=logging_lineno, 
             preview_lineno=preview_lineno, 
@@ -1322,8 +1383,8 @@ class VariantPlusList(list):
             vp = VariantPlus.from_vr(
                 vr=vr,
                 refver=self.refver,
-                fasta=self.fasta,
-                chromdict=self.chromdict,
+                #fasta=self.fasta,
+                #chromdict=self.chromdict,
                 preset_vp_init_params=self.vp_init_params,
             )
 
@@ -1812,6 +1873,10 @@ class VariantPlusList(list):
         ends = list()
 
         alleles = [list() for x in range(n_allele)]
+
+        idlist = list()
+        is_bnd1_list = list()
+
         vafs = {
             sid: [list() for x in range(n_allele)] 
             for sid in sampleids
@@ -1831,15 +1896,15 @@ class VariantPlusList(list):
                 vp_iterator = self.fetch_by_coord(chrom, start0, end0)
 
         # extract information for vps
-        for vp in vp_iterator:
+        def populate_data(vp):
             this_vafs = vp.get_vafs(sampleids, n_allele=n_allele, exclude_other=exclude_other)
             # skip if vafs are invalid values
             vafs_are_valid = all(
-                (not np.isnan(sublist).any())
-                for sid, sublist in this_vafs.items()
+                (not np.isnan(vaflist).any())
+                for sid, vaflist in this_vafs.items()
             )
             if not vafs_are_valid:
-                continue
+                return
 
             # populate data
             chroms.append(vp.vcfspec.chrom)
@@ -1851,9 +1916,33 @@ class VariantPlusList(list):
             for allele_idx, alleles_sublist in enumerate(alleles):
                 alleles_sublist.append(vp.get_allele(allele_idx))
 
+            idlist.append(vp.vcfspec.get_id())
+
             for sid, this_vaf_list in this_vafs.items():
                 for vaflist, vafval in zip(vafs[sid], this_vaf_list):
                     vaflist.append(vafval)
+
+            if vp.vcfspec.check_is_sv():
+                is_bnd1_list.append(vp.vcfspec.check_is_bnd1())
+            else:
+                is_bnd1_list.append(np.nan)
+
+        for vp in vp_iterator:
+            if vp.vcfspec.check_is_sv():
+                bnds = vp.vcfspec.get_bnds()
+                vcfspec_bnd1 = bnds.get_vcfspec_bnd1()
+                vcfspec_bnd2 = bnds.get_vcfspec_bnd2()
+                tmpvp_bnd1 = VariantPlus.from_vcfspec(vcfspec_bnd1)
+                tmpvp_bnd2 = VariantPlus.from_vcfspec(vcfspec_bnd2)
+
+                for key, val in vp.readstats_dict.items():
+                    tmpvp_bnd1.readstats_dict[key] = val['bnd1']
+                    tmpvp_bnd2.readstats_dict[key] = val['bnd2']
+                
+                populate_data(tmpvp_bnd1)
+                populate_data(tmpvp_bnd2)
+            else:
+                populate_data(vp)
 
         # result
         if multiindex:
@@ -1895,9 +1984,16 @@ class VariantPlusList(list):
             data['start0s'] = starts
             data['end0s'] = ends
 
+            # alleles
             allele_colnames = get_vafdf_allele_columns(n_allele)
             for colname, sublist in zip(allele_colnames, alleles):
                 data[colname] = sublist
+
+            # ids
+            data['ID'] = idlist
+            data['is_bnd1'] = is_bnd1_list
+
+            # vafs
             for sid in sampleids:
                 for allele_col, vaflist in zip(allele_colnames, vafs[sid]):
                     formatkey = f'{allele_col}_vaf'
@@ -2546,8 +2642,8 @@ def _init_helper_make_vp(
     return VariantPlus.from_vr(
         vr=vr,
         refver=result.refver,
-        fasta=result.fasta,
-        chromdict=result.chromdict,
+        #fasta=result.fasta,
+        #chromdict=result.chromdict,
 
         init_popfreq=init_popfreq,
         init_cosmic=init_cosmic,

@@ -1,3 +1,4 @@
+
 import re
 import collections
 import itertools
@@ -13,7 +14,7 @@ import handygenome.deco as deco
 import handygenome.workflow as workflow
 import handygenome.sv.structvars as structvars
 import handygenome.variant.vcfspec as libvcfspec
-from handygenome.variant.vcfspec import Vcfspec
+from handygenome.variant.vcfspec import Vcfspec, NonStandardSVAlt
 
 
 LOGGER = workflow.get_logger(
@@ -22,47 +23,6 @@ LOGGER = workflow.get_logger(
         fmt='[%(asctime)s  %(levelname)s] %(name)s - %(message)s',
         datefmt=workflow.DEFAULT_DATEFMT),
     level='info', stderr=True, filenames=None, append=False)
-
-
-#class BreakendSpec(collections.UserList):
-#    def __init__(self, chrom, pos0, is5prime):
-#        self.data = [chrom, pos0, is5prime]
-#
-#    @property
-#    def chrom(self):
-#        return self.data[0]
-#
-#    ###
-#
-#    @property
-#    def pos0(self):
-#        return self.data[1]
-#
-#    @pos0.setter
-#    def pos0(self, value):
-#        self.data[1] = value
-#
-#    @property
-#    def pos(self):
-#        return self.pos0 + 1
-#
-#    @pos.setter
-#    def pos(self, value):
-#        self.data[1] = value - 1
-#
-#    ###
-#
-#    @property
-#    def is5prime(self):
-#        return self.data[2]
-#
-#    @property
-#    def is3prime(self):
-#        return not self.is5prime
-#
-#    ### 
-#    def copy(self):
-#        return self.__class__(*self.data)
 
 
 class BreakendSpec(
@@ -184,8 +144,8 @@ class Breakends:
             self.score = score
 
         # private attributes accesible with getters
-        self._pos_range0_bnd1 = None
-        self._pos_range0_bnd2 = None
+        #self._pos_range0_bnd1 = None
+        #self._pos_range0_bnd2 = None
 
     def init_inserted_seq(
         self, 
@@ -195,7 +155,7 @@ class Breakends:
         arg1_first,
     ):
         assert all(
-            isinstance(x, (str, tuple, type(None))) for x in 
+            isinstance(x, (str, tuple, list, type(None))) for x in 
             (
                 inserted_seq, 
                 inserted_seq_view1,
@@ -249,7 +209,7 @@ class Breakends:
             bnd2 = f'{brkt2}{self.chrom_bnd2}:{self.pos_bnd2}{brkt2}'
             insseq = ''.join(self.inserted_seq)
 
-            return f'<{self.__class__.__name__} | bnd1={bnd1} | bnd2={bnd2} | inserted_seq={repr(insseq)} (1-based coords, inserted seq as seen on bnd1)>'
+            return f'<{self.__class__.__name__} bnd1={bnd1} | bnd2={bnd2} | insseq={repr(insseq)}>'
 
         def func3(self):
             endtype1 = '5\'' if self.is5prime_bnd1 else '3\''
@@ -291,6 +251,35 @@ class Breakends:
         return hash(self) == hash(other)
 
     ###########################################
+
+    @classmethod
+    def from_vcfspec(cls, vcfspec):
+        try:
+            (
+                t,
+                chrom_mate,
+                pos_mate,
+                current_is5prime,
+                mate_is5prime,
+            ) = libvcfspec.parse_sv_altstring(vcfspec.alts[0])
+        except NonStandardSVAlt as e:
+            raise Exception(f'Cannot interpret input vcfspec ALT string') from e
+
+        chromdict = refgenome.get_chromdict(vcfspec.refver)
+        is_bnd1 = get_is_bnd1(vcfspec, chrom_mate, pos_mate, chromdict)
+
+        return get_bnds_from_vcfspec_parseinfo(
+            chrom=vcfspec.chrom,
+            pos=vcfspec.pos,
+            ref=vcfspec.ref,
+            t=t,
+            chrom_mate=chrom_mate,
+            pos_mate=pos_mate,
+            current_is5prime=current_is5prime,
+            mate_is5prime=mate_is5prime,
+            is_bnd1=is_bnd1,
+            refver=vcfspec.refver,
+        )
 
     @classmethod
     def from_vr(cls, vr):
@@ -525,7 +514,7 @@ class Breakends:
         else:
             alt = t + alt_matestring
 
-        return Vcfspec(chrom, pos, ref, [alt])
+        return Vcfspec(chrom, pos, ref, [alt], refver=self.refver)
 
     def get_vcfspec_bnd2(self):
         chrom = self.chrom_bnd2
@@ -547,7 +536,7 @@ class Breakends:
         else:
             alt = t + alt_matestring
 
-        return Vcfspec(chrom, pos, ref, [alt])
+        return Vcfspec(chrom, pos, ref, [alt], refver=self.refver)
 
     def get_simplesv(self):
         if self.chrom_bnd1 != self.chrom_bnd2:
@@ -692,44 +681,56 @@ class Breakends:
 
     ###############
 
-    def set_pos_range0s(self):
+    @functools.cache
+    #def set_pos_range0s(self):
+    def get_pos_range0s(self):
         poslist0_bnd1 = list()
         poslist0_bnd2 = list()
         for bnds in self.get_equivs():
-            poslist0_bnd1.append(bnds.pos_bnd1 - 1)
-            poslist0_bnd2.append(bnds.pos_bnd2 - 1)
+            poslist0_bnd1.append(bnds.pos0_bnd1)
+            poslist0_bnd2.append(bnds.pos0_bnd2)
 
         if self.is5prime_bnd1:
-            self._pos_range0_bnd1 = range(max(poslist0_bnd1),
-                                          min(poslist0_bnd1) - 1,
-                                          -1)
+            #self._pos_range0_bnd1 = range(max(poslist0_bnd1),
+            pos_range0_bnd1 = range(
+                max(poslist0_bnd1), min(poslist0_bnd1) - 1, -1,
+            )
         else:
-            self._pos_range0_bnd1 = range(min(poslist0_bnd1),
-                                          max(poslist0_bnd1) + 1,
-                                          1)
+            #self._pos_range0_bnd1 = range(min(poslist0_bnd1),
+            pos_range0_bnd1 = range(
+                min(poslist0_bnd1), max(poslist0_bnd1) + 1, 1,
+            )
 
         if self.is5prime_bnd2:
-            self._pos_range0_bnd2 = range(max(poslist0_bnd2),
-                                          min(poslist0_bnd2) - 1,
-                                          -1)
+            #self._pos_range0_bnd2 = range(max(poslist0_bnd2),
+            pos_range0_bnd2 = range(
+                max(poslist0_bnd2),
+                min(poslist0_bnd2) - 1,
+                -1,
+            )
         else:
-            self._pos_range0_bnd2 = range(min(poslist0_bnd2),
-                                          max(poslist0_bnd2) + 1,
-                                          1)
+            #self._pos_range0_bnd2 = range(min(poslist0_bnd2),
+            pos_range0_bnd2 = range(
+                min(poslist0_bnd2),
+                max(poslist0_bnd2) + 1,
+                1,
+            )
+
+        return pos_range0_bnd1, pos_range0_bnd2
 
     def get_pos_range0_bnd1(self):
         """Returns a directional range"""
-
-        if self._pos_range0_bnd1 is None:
-            self.set_pos_range0s()
-        return self._pos_range0_bnd1
+        #if self._pos_range0_bnd1 is None:
+        #    self.set_pos_range0s()
+        #return self._pos_range0_bnd1
+        return self.get_pos_range0s()[0]
 
     def get_pos_range0_bnd2(self):
         """Returns a directional range"""
-
-        if self._pos_range0_bnd2 is None:
-            self.set_pos_range0s()
-        return self._pos_range0_bnd2
+        #if self._pos_range0_bnd2 is None:
+        #    self.set_pos_range0s()
+        #return self._pos_range0_bnd2
+        return self.get_pos_range0s()[1]
 
     @functools.cache
     def get_flank_range0(self, mode, is_bnd1, flanklen):
@@ -740,17 +741,29 @@ class Breakends:
                     advanced border)
                 bnd_dist: breakend side, distal (adjacent to the most 
                     retracted border)
+
+                             BND side | PARTNER side
+                      |               |
+        --------------|---|---|---|---|
+                      |   |   |   |   | <====>
+        --------------|---|---|---|---|  "par" flank 
+                      |  borderzone   |
+               <=====>         <=====>
+              bnd_dist        bnd_prox
+                 flank           flank
         """
         assert mode in ('par', 'bnd_prox', 'bnd_dist')
 
         # modify flanklen for breakend-side flanks
-        if mode in ('bnd_prox', 'bnd_dist'):
-            flanklen = flanklen - 1
+        #if mode in ('bnd_prox', 'bnd_dist'):
+        #    flanklen = flanklen - 1
 
         # get parameters
-        pos_range0 = (self.get_pos_range0_bnd1()
-                      if is_bnd1 else
-                      self.get_pos_range0_bnd2())
+        pos_range0 = (
+            self.get_pos_range0_bnd1()
+            if is_bnd1 else
+            self.get_pos_range0_bnd2()
+        )
 
         # main
         step = pos_range0.step
@@ -909,6 +922,8 @@ class Breakends:
                     new_inserted_seq = self.inserted_seq[:-1]
                 else:
                     new_inserted_seq = self.inserted_seq[1:]
+            else:
+                new_inserted_seq = self.inserted_seq
 
             #self.pos_bnd1 = newpos_bnd1
             #self.pos_bnd2 = newpos_bnd2
@@ -975,6 +990,8 @@ class Breakends:
                     new_inserted_seq = self.inserted_seq[1:]
                 else:
                     new_inserted_seq = self.inserted_seq[:-1]
+            else:
+                new_inserted_seq = self.inserted_seq
 
 #            self.pos_bnd1 = newpos_bnd1
 #            self.pos_bnd2 = newpos_bnd2
@@ -1107,10 +1124,6 @@ class Breakends:
 #######################################################
 
 
-class NonStandardSVAlt(Exception):
-    pass
-
-
 class NonStandardSVRecord(Exception):
     pass
 
@@ -1219,6 +1232,87 @@ def convert_seq_between_bnds(seq, is5prime_bnd1, is5prime_bnd2):
 
 ########################################################
 
+
+def get_bnds_from_vcfspec_parseinfo(
+    chrom,
+    pos,
+    ref,
+    t,
+    chrom_mate,
+    pos_mate,
+    current_is5prime,
+    mate_is5prime,
+    is_bnd1,
+    refver,
+):
+    if is_bnd1:
+        chrom_bnd1 = chrom
+        chrom_bnd2 = chrom_mate
+        is5prime_bnd1 = current_is5prime
+        is5prime_bnd2 = mate_is5prime
+
+        if is5prime_bnd1:
+            if t[-1] == ref:
+                pos_bnd1 = pos
+                inserted_seq = list( t[:-1] )
+            else:
+                warn()
+                pos_bnd1 = pos + 1
+                inserted_seq = list( t )
+        else:
+            if t[0] == ref:
+                pos_bnd1 = pos
+                inserted_seq = list( t[1:] )
+            else:
+                warn()
+                pos_bnd1 = pos - 1
+                inserted_seq = list( t )
+            
+        pos_bnd2 = pos_mate
+
+    else:
+        chrom_bnd1 = chrom_mate
+        chrom_bnd2 = chrom
+        is5prime_bnd1 = mate_is5prime
+        is5prime_bnd2 = current_is5prime
+
+        pos_bnd1 = pos_mate
+
+        if is5prime_bnd2:
+            if t[-1] == ref:
+                pos_bnd2 = pos
+                inserted_seq = list(
+                    convert_seq_between_bnds(t[:-1], 
+                                             is5prime_bnd1, is5prime_bnd2))
+            else:
+                warn()
+                pos_bnd2 = pos + 1
+                inserted_seq = list(
+                    convert_seq_between_bnds(t, 
+                                             is5prime_bnd1, is5prime_bnd2))
+        else:
+            if t[0] == ref:
+                pos_bnd2 = pos
+                inserted_seq = list(
+                    convert_seq_between_bnds(t[1:], 
+                                             is5prime_bnd1, is5prime_bnd2))
+            else:
+                warn()
+                pos_bnd2 = pos - 1
+                inserted_seq = list(
+                    convert_seq_between_bnds(t, 
+                                             is5prime_bnd1, is5prime_bnd2))
+
+    bnds = Breakends(
+        bndspec1=(chrom_bnd1, pos_bnd1 - 1, is5prime_bnd1),
+        bndspec2=(chrom_bnd2, pos_bnd2 - 1, is5prime_bnd2),
+        refver=refver,
+        inserted_seq=inserted_seq,
+    )
+
+    return bnds
+
+
 def get_bnds_from_vr_svinfo(vr, vr_svinfo, fasta, chromdict):
     def warn():
         LOGGER.warning(f'"t" portion of SV ALT string is not an extension '
@@ -1307,52 +1401,19 @@ def get_vr_svinfo_standard_vr(vr, fasta, chromdict):
          vr_svinfo['chrom_mate'],
          vr_svinfo['pos_mate'],
          vr_svinfo['current_is5prime'],
-         vr_svinfo['mate_is5prime']) = parse_sv_altstring(vr.alts[0])
+         vr_svinfo['mate_is5prime']) = libvcfspec.parse_sv_altstring(vr.alts[0])
     except NonStandardSVAlt as e:
         e_msg = f'{str(e)}\nInput variant record:\n{vr}'
         raise NonStandardSVRecord(e_msg)
 
-    vr_svinfo['is_bnd1'] = get_is_bnd1(vr, vr_svinfo, chromdict)
+    vr_svinfo['is_bnd1'] = get_is_bnd1_withvr(vr, vr_svinfo, chromdict)
 
     return vr_svinfo
 
 
-def parse_sv_altstring(sv_altstring):
-    mats = [libvcfspec.PAT_BND1.match(sv_altstring), libvcfspec.PAT_BND2.match(sv_altstring)]
-    mats_isNotNone = [(x is not None) for x in mats]
-
-    nTrue = mats_isNotNone.count(True)
-    if nTrue == 0: # not a bnd string
-        raise NonStandardSVAlt(f'ALT string "{sv_altstring}" does not match '
-                               f'the standard SV string pattern.') 
-
-    elif nTrue == 1:
-        mat = next(itertools.compress(mats, mats_isNotNone))
-        t = mat.group('t') # t : according to VCF spec documentation
-        chrom_mate = mat.group('matechrom')
-        pos_mate = int(mat.group('matepos'))
-
-        if sv_altstring.startswith('[') or sv_altstring.startswith(']'):
-            endtype_current_is5 = True
-        else:
-            endtype_current_is5 = False
-        
-        if mat.group('bracket1') == '[':
-            endtype_mate_is5 = True
-        else:
-            endtype_mate_is5 = False
-
-        sv_altstring_parsed = (t, chrom_mate, pos_mate, endtype_current_is5, 
-                               endtype_mate_is5)
-
-    elif nTrue == 2: # not a valid bnd string
-        raise NonStandardSVAlt(f'ALT string "{sv_altstring}" matches both '
-                               f'pat1 and pat2.')
-
-    return sv_altstring_parsed
 
 
-def get_is_bnd1(vr, vr_svinfo, chromdict):
+def get_is_bnd1_withvr(vr, vr_svinfo, chromdict):
     order = tools.compare_coords(
         vr.contig, vr.pos, vr_svinfo['chrom_mate'], vr_svinfo['pos_mate'], chromdict,
     )
@@ -1367,5 +1428,9 @@ def get_is_bnd1(vr, vr_svinfo, chromdict):
 #            f'for vcf record :\n{vr}')
 
     return is_bnd1
+
+
+def get_is_bnd1(vcfspec, chrom_mate, pos_mate, chromdict):
+    return libvcfspec.get_is_bnd1_base(vcfspec.chrom, vcfspec.pos, chrom_mate, pos_mate, chromdict)
 
 
