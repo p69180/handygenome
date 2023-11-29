@@ -248,23 +248,57 @@ def vectorize(func):
     return wrapper
 
 
-def args_into_array(func):
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        keys = list(kwargs.keys())
-        arglist = [
-            np.atleast_1d(x) for x in 
-            itertools.chain(args, kwargs.values())
-        ]
+#def args_into_array(func):
+#    @functools.wraps(func)
+#    def wrapper(*args, **kwargs):
+#        keys = list(kwargs.keys())
+#        arglist = [
+#            np.atleast_1d(x) for x in 
+#            itertools.chain(args, kwargs.values())
+#        ]
+#
+#        new_args = arglist[:len(args)]
+#        new_kwargs = dict(zip(keys, arglist[len(args):]))
+#
+#        result = np.squeeze(func(*new_args, **new_kwargs))
+#
+#        return result
+#
+#    return wrapper
 
-        new_args = arglist[:len(args)]
-        new_kwargs = dict(zip(keys, arglist[len(args):]))
 
-        result = np.squeeze(func(*new_args, **new_kwargs))
+def get_deco_asarray(names, keep_none=True):
+    def decorator(func):
+        sig = inspect.signature(func)
+        if not set(names).issubset(sig.parameters.keys()):
+            raise Exception(
+                f'The names of parameters given to '
+                f'"get_deco_atleast1d" function '
+                f'is not included in the parameter names of '
+                f'the function "{func.__name__}".')
 
-        return result
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            ba = sig.bind(*args, **kwargs)
+            ba.apply_defaults()
+            for key in names:
+                old = ba.arguments[key]
+                if old is None:
+                    if keep_none:
+                        new = old
+                    else:
+                        new = np.asarray(old)
+                elif np.isscalar(old):
+                    new = np.asarray(old)
+                else:
+                    new = np.asarray(tuple(old))
+                ba.arguments[key] = new
 
-    return wrapper
+            return func(*ba.args, **ba.kwargs)
+
+        return wrapper
+
+    return decorator
 
 
 def get_deco_atleast1d(names, keep_none=True):

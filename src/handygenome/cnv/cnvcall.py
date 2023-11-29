@@ -8,6 +8,7 @@ import itertools
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import scipy
 
 import handygenome.tools as tools
 import handygenome.deco as deco
@@ -38,22 +39,7 @@ DEFAULT_CNG_COLNAME = 'default_CNg'
 DEFAULT_BG_COLNAME = 'default_Bg'
 MALE_HAPLOID_CHROMS = ('X', 'Y', 'chrX', 'chrY')
 DEFAULT_CNT_WEIGHT = 5
-
-
-###############
-# CCF classes #
-###############
-
-class CCFInfo(
-    collections.namedtuple('CCFInfo', ('CNm', 'ccf', 'mutated_allele'))
-):
-    pass
-
-
-class CPPair(
-    collections.namedtuple('CPPair', ('cellularity', 'ploidy'))
-):
-    pass
+DEFAULT_CLONAL_PVALUE = 0.1
 
 
 ##############
@@ -124,8 +110,10 @@ def deco_return_squeezed(func):
     def wrapper(*args, squeeze=True, **kwargs):
         def helper(x):
             result = np.squeeze(x)
-            if result.ndim == 0:
+            try:
                 result = result.item()
+            except ValueError:
+                pass
             return result
 
         result = func(*args, **kwargs)
@@ -156,6 +144,209 @@ def check_haploid(is_female, chrom):
 def get_average_ploidy(CNt, lengths, axis=None):
     result = np.average(CNt, axis=axis, weights=lengths)
     return result
+
+
+#######
+# CCF #
+#######
+
+class CCFInfo(
+    collections.namedtuple('CCFInfo', ('CNm', 'ccf', 'mutated_allele'))
+):
+    pass
+
+
+class CPPair(
+    collections.namedtuple('CPPair', ('cellularity', 'ploidy'))
+):
+    pass
+
+
+def vaf_from_CNm(cellularity, CNm, CNt, CNg):
+    return (
+        (cellularity * CNm)
+        / (cellularity * CNt + (1 - cellularity) * CNg)
+    )
+
+
+def ccf_from_vaf(vaf, cellularity, CNt, CNg):
+    """Assumptions:
+        - CNt, CNg is clonal
+        - mutation had occurred after fixation of CNt and CNg
+        - therefore CNm is 1
+
+    vaf = (
+        (ccf * cellularity * CNm)
+        / (cellularity * CNt + (1 - cellularity) * CNg)
+    )
+    since CNm == 1,
+    vaf = (
+        (ccf * cellularity)
+        / (cellularity * CNt + (1 - cellularity) * CNg)
+    )
+    vaf * (cellularity * CNt + (1 - cellularity) * CNg) = (ccf * cellularity)
+    ccf = vaf * (CNt + (1 / cellularity - 1) * CNg)
+    """
+    return vaf * (
+        CNt 
+        + (
+            ((1 / cellularity) - 1) 
+            * CNg
+        )
+    )
+
+
+@deco_return_squeezed
+@deco.get_deco_atleast1d(
+    (
+        'vaf', 'total_depth', 'alt_depth', 'CNg', 
+        'CNt', 'Bt', 'cellularity',  
+    )
+)
+def find_ccf(
+    vaf, total_depth, alt_depth, CNg, 
+    CNt, Bt, cellularity,  
+    clonal_pval=DEFAULT_CLONAL_PVALUE,
+):
+    """Axes:
+        vaf, total_depth, alt_depth, CNg : given values. ndim should be 1
+        CNt, Bt, cellularity : depends on cellularity. may have more than 1 ndim.
+
+        axis 0: genomic positions
+        axis 1, 2: cellularity candidates
+        axis 3: CNm candidates
+    """
+    # preprocess
+    assert all((x.ndim == 1) for x in (vaf, CNg, total_depth, alt_depth))
+    assert vaf.shape[0] == CNt.shape[0] == Bt.shape[0]
+    assert CNt.shape == Bt.shape
+
+    if CNt.ndim == 1:
+        assert cellularity.shape == (1,)
+        CNt = tools.add_dims(CNt, 0, 1)
+        Bt = tools.add_dims(Bt, 0, 1)
+    else:
+        assert CNt.shape[1:] == cellularity.shape
+
+    # invalid flag
+    invalid_flag = functools.reduce(
+        np.logical_or,
+        np.broadcast_arrays(
+            *(
+                np.isnan(x) for x in (
+                    tools.add_dims(vaf, 0, cellularity.ndim),
+                    tools.add_dims(total_depth, 0, cellularity.ndim),
+                    tools.add_dims(alt_depth, 0, cellularity.ndim),
+                    tools.add_dims(CNg, 0, cellularity.ndim),
+                    CNt,
+                    Bt,
+                    tools.add_dims(cellularity, 1, 0),
+                )
+            )
+        ),
+    )
+
+    # expand dims - to match cellularity candidates
+    total_depth_expand = tools.add_dims(total_depth, 0, cellularity.ndim)
+    alt_depth_expand = tools.add_dims(alt_depth, 0, cellularity.ndim)
+    CNg_expand = tools.add_dims(CNg, 0, cellularity.ndim)
+    cellularity_expand = tools.add_dims(cellularity, 1, 0)
+
+    # test if ccf == 1 
+    clonal_CNm_1_vafs = vaf_from_CNm(
+        cellularity=cellularity_expand, 
+        CNm=1, 
+        CNt=CNt, 
+        CNg=CNg_expand,
+    )
+    subclonal_flag = (
+        scipy.stats.binom.cdf(
+            alt_depth_expand, 
+            n=total_depth_expand,
+            p=clonal_CNm_1_vafs,
+        ) 
+        < clonal_pval
+    )
+    clonal_flag = np.logical_and(
+        np.logical_not(subclonal_flag),
+        np.logical_not (invalid_flag),
+    )
+        # this lacks CNm candidates axis
+
+    ######################
+    # handle clonal case #
+    ######################
+
+    if clonal_flag.any():
+        # make CNm candidates
+        At = CNt - Bt
+        At[~clonal_flag] = np.nan
+        CNm_candidates = (
+            tools.add_dims(At, 0, 1) - np.arange(np.nanmax(At))
+        ).astype(float)
+        CNm_candidates[CNm_candidates <= 0] = np.nan
+
+        # expand up to CNm candidate axis
+        cellularity_expand = tools.add_dims(cellularity, 1, 1)
+        CNt_expand = tools.add_dims(CNt, 0, 1)
+        CNg_expand = tools.add_dims(CNg, 0, cellularity.ndim + 1)
+
+        # calculate expected vafs for each CNm candidate => this will be used as p of binom
+        full_ccf_expected_vafs = vaf_from_CNm(
+            cellularity=cellularity_expand, 
+            CNm=CNm_candidates, 
+            CNt=CNt_expand, 
+            CNg=CNg_expand,
+        )
+
+        # get binomial pmf for each combination of total depth, expected vaf and observed vaf
+        total_depth_expand = tools.add_dims(total_depth, 0, cellularity.ndim + 1)
+        alt_depth_expand = tools.add_dims(alt_depth, 0, cellularity.ndim + 1)
+        binom_props = scipy.stats.binom.pmf(
+            alt_depth_expand, 
+            n=total_depth_expand, 
+            p=full_ccf_expected_vafs,
+        )
+
+        # pick best CNm candidate
+        argmax = tools.nanargmax(binom_props, axis=-1, keepdims=True)
+        best_CNm = np.squeeze(np.take_along_axis(CNm_candidates, argmax, axis=-1), axis=-1)
+
+    #########################
+    # handle subclonal case #
+    #########################
+
+    if subclonal_flag.any():
+        # expand up to cellularity candidate axes
+        CNt_masked = np.where(~subclonal_flag, np.nan, CNt)
+        cellularity_expand = tools.add_dims(cellularity, 1, 0)
+        vaf_expand = tools.add_dims(vaf, 0, cellularity.ndim)
+        CNg_expand = tools.add_dims(CNg, 0, cellularity.ndim)
+        calculated_ccfs = ccf_from_vaf(
+            vaf=vaf_expand, 
+            cellularity=cellularity_expand, 
+            CNt=CNt_masked, 
+            CNg=CNg_expand,
+        )
+        assert (calculated_ccfs[~np.isnan(calculated_ccfs)] < 1).all(), (
+            f'"clonal_pval" might be too high. Select a lower value.'
+        )
+
+    ##########
+    # result #
+    ##########
+
+    result_CNm = np.full(CNt.shape, np.nan)
+    if clonal_flag.any():
+        result_CNm[clonal_flag] = best_CNm[clonal_flag]
+    result_CNm[subclonal_flag] = 1
+
+    result_ccf = np.full(CNt.shape, np.nan)
+    result_ccf[clonal_flag] = 1
+    if subclonal_flag.any():
+        result_ccf[subclonal_flag] = calculated_ccfs[subclonal_flag]
+
+    return result_CNm, result_ccf
 
 
 ############################
@@ -427,33 +618,86 @@ def solution_from_segments_common_params(
     return CNt0, dd, ndivs, cellularity, K, depth0
 
 
-def solution_from_segments_fit_to_data_new(
-    depths, 
-    bafs, 
+def get_penalty_map(
+    depths,
+    bafs,
+    depth_stds,
+    baf_stds,
+    lengths,
 
-    CNg,
-    Bg,
+    pred_depths,
+    pred_bafs,
+    nanbaf_rescue_selector,
 
-    cellularity, 
-    K,
-
-    weights=None,
-    depthfit_cutoff=None,
-    baffit_cutoff=None,
+    df=5,  # degrees of freedom; 5 as in sequenza
 ):
-    """Replacement of 'baf_targetval' with 0 where nan is inevitable due to condition of genomic position, not due to combination of cellularity and K:
-        1) baf is unavailable (e.g. male X) => Bt is nan
-        2) CNg == 0 => pred_bafs is nan
-        3) CNt == 0 & cellularity == 1 => pred_bafs is nan
-    """
-    assert depths.ndim == 1
-    assert bafs.ndim == 1
-    assert CNg.ndim == 1
-    assert Bg.ndim == 1
+    """map: maximum a posteriori"""
 
-    # depth
-    CNt1 = find_clonal_CNt(depths, cellularity, K, CNg=CNg, squeeze=False)
-    pred_depths = get_predicted_depth(CNt1, K, cellularity, CNg=CNg, squeeze=False)
+    added_dims = tuple(np.arange(pred_depths.ndim - 1) + 1)
+    len_sqrt = np.sqrt(lengths)
+
+    # expand observed values
+    depth_expand = np.expand_dims(depths, added_dims)
+    baf_expand = np.expand_dims(bafs, added_dims)
+
+    # disps: dispersions
+    depth_disps = np.expand_dims(
+        depth_stds / len_sqrt,
+        added_dims,
+    )
+    baf_disps = np.expand_dims(
+        baf_stds / len_sqrt,
+        added_dims,
+    )
+
+    # rescue where depth or baf std is 0 (it seems to root from programming error)
+    depth_disp_rescue = np.expand_dims((depth_stds == 0), added_dims)
+    baf_disp_rescue = np.expand_dims((baf_stds == 0), added_dims)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)  # warning occurs when scale is 0
+        depth_probs = scipy.stats.t.pdf(
+            x=depth_expand, df=df, loc=pred_depths, scale=depth_disps,
+        )
+    depth_probs[np.broadcast_to(depth_disp_rescue, depth_probs.shape)] = 1
+    
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)  # warning occurs when scale is 0
+        baf_probs = scipy.stats.t.pdf(
+            x=baf_expand, df=df, loc=pred_bafs, scale=baf_disps,
+        )
+    baf_probs[np.broadcast_to(baf_disp_rescue, baf_probs.shape)] = 1
+
+    # rescue with inevitable nanbaf
+    baf_probs[nanbaf_rescue_selector] = 1  # rescue value is 1
+
+    log_depth_probs = np.log(depth_probs)
+    log_baf_probs = np.log(baf_probs)
+    log_total_probs = log_depth_probs + log_baf_probs
+
+    depth_targetval = -1 * log_depth_probs
+    baf_targetval = -1 * log_baf_probs
+    targetval = -1 * log_total_probs
+
+    return depth_targetval, baf_targetval, targetval
+
+
+def get_penalty_diff_fraction(
+    depths,
+    pred_depths,
+
+    K,
+    cellularity,
+
+    bafs,
+    pred_bafs,
+
+    CNt1,
+    CNg,
+    depthfit_cutoff,
+    baffit_cutoff,
+    nanbaf_rescue_selector,
+):
     depths_expand = np.expand_dims(
         depths, tuple(np.arange(pred_depths.ndim - 1) + 1),
     )
@@ -461,9 +705,6 @@ def solution_from_segments_fit_to_data_new(
     onecopy_depthdiffs = get_onecopy_depthdiff(K, cellularity, squeeze=False)
     depthdiff_fractions = depthdiffs / onecopy_depthdiffs
 
-    # baf
-    Bt = find_clonal_Bt(bafs, CNt1, cellularity, CNg=CNg, Bg=Bg, squeeze=False)
-    pred_bafs = get_predicted_baf(CNt1, Bt, cellularity, CNg=CNg, Bg=Bg, squeeze=False)
     bafs_expand = np.expand_dims(
         bafs, tuple(np.arange(pred_bafs.ndim - 1) + 1),
     )
@@ -495,17 +736,7 @@ def solution_from_segments_fit_to_data_new(
     baf_targetval = bafdiff_fractions.copy()
 
     # replacement of inevitable nan baf_targetval
-    added_dims = tuple(np.arange(CNt1.ndim - 1) + 1)
-    flag1 = np.expand_dims(np.isnan(bafs), added_dims)
-    flag2 = np.expand_dims((CNg == 0), added_dims)
-    flag3 = np.logical_and(
-        (CNt1 == 0), 
-        np.broadcast_to((cellularity == 1), CNt1.shape),
-    )
-    total_flag = functools.reduce(
-        np.logical_or, np.broadcast_arrays(flag1, flag2, flag3),
-    )
-    baf_targetval[total_flag] = 0
+    baf_targetval[nanbaf_rescue_selector] = 0
 
     # total target function
     targetval = (
@@ -513,27 +744,113 @@ def solution_from_segments_fit_to_data_new(
         + baf_targetval 
     )
 
-    def process_targetval(targetval, valid_flags, weights):
-        if weights is not None:
-            weights_expand = np.expand_dims(
-                weights, tuple(np.arange(targetval.ndim - 1) + 1),
-            )
-            targetval = targetval * weights_expand
-        targetval_sum = targetval.sum(axis=0)
-        if valid_flags is not None:
-            targetval_sum[~valid_flags] = np.nan
+    return depth_targetval, baf_targetval, targetval, valid_flags
 
-        #notna_vals = targetval_sum[~np.isnan(targetval_sum)]
-        #assert len(notna_vals) > 0
-        #mean = np.mean(notna_vals)
-        #std = np.std(notna_vals)
-        #norm_targetval_sum = (targetval_sum - mean) / std
 
-        return targetval, targetval_sum
+def process_targetval(targetval, valid_flags, weights):
+    if weights is not None:
+        weights_expand = np.expand_dims(
+            weights, tuple(np.arange(targetval.ndim - 1) + 1),
+        )
+        targetval = targetval * weights_expand
+    targetval_sum = targetval.sum(axis=0)
+    if valid_flags is not None:
+        targetval_sum[~valid_flags] = np.nan
 
-    #depth_targetval, depth_targetval_sum, norm_depth_targetval_sum = process_targetval(depth_targetval, valid_flags, weights)
-    #baf_targetval, baf_targetval_sum, norm_baf_targetval_sum = process_targetval(baf_targetval, valid_flags, weights)
-    #targetval, targetval_sum, norm_targetval_sum = process_targetval(targetval, valid_flags, weights)
+    return targetval, targetval_sum
+
+
+def get_nan_baf_rescuer(CNt1, bafs, CNg, cellularity):
+    """These indexes are to be rescued
+    """
+    # replacement of inevitable nan baf_targetval
+    added_dims = tuple(np.arange(CNt1.ndim - 1) + 1)
+    flag1 = np.expand_dims(np.isnan(bafs), added_dims)
+    flag2 = np.expand_dims((CNg == 0), added_dims)
+    flag3 = np.logical_and(
+        (CNt1 == 0), 
+        np.broadcast_to((cellularity == 1), CNt1.shape),
+    )
+    nanbaf_rescue_selector = functools.reduce(
+        np.logical_or, 
+        np.broadcast_arrays(flag1, flag2, flag3),
+    )
+    return nanbaf_rescue_selector
+
+
+def solution_from_segments_fit_to_data_new(
+    depths, 
+    bafs, 
+    depth_stds,
+    baf_stds,
+    lengths,
+
+    CNg,
+    Bg,
+
+    cellularity, 
+    K,
+
+    weights=None,
+    depthfit_cutoff=None,
+    baffit_cutoff=None,
+
+    mode='map',
+):
+    """Replacement of 'baf_targetval' with 0 where nan is inevitable due to condition of genomic position, not due to combination of cellularity and K:
+        1) baf is unavailable (e.g. male X) => Bt is nan
+        2) CNg == 0 => pred_bafs is nan
+        3) CNt == 0 & cellularity == 1 => pred_bafs is nan
+    """
+    assert mode in ('map', 'diff_frac')
+
+    assert depths.ndim == 1
+    assert bafs.ndim == 1
+    assert depth_stds.ndim == 1
+    assert baf_stds.ndim == 1
+    assert lengths.ndim == 1
+    assert CNg.ndim == 1
+    assert Bg.ndim == 1
+
+    # depth
+    CNt1 = find_clonal_CNt(depths, cellularity, K, CNg=CNg, squeeze=False)
+    pred_depths = get_predicted_depth(CNt1, K, cellularity, CNg=CNg, squeeze=False)
+
+    # baf
+    Bt = find_clonal_Bt(bafs, CNt1, cellularity, CNg=CNg, Bg=Bg, squeeze=False)
+    pred_bafs = get_predicted_baf(CNt1, Bt, cellularity, CNg=CNg, Bg=Bg, squeeze=False)
+
+    # baf rescuer
+    nanbaf_rescue_selector = get_nan_baf_rescuer(CNt1, bafs, CNg, cellularity)
+
+    # target function
+    if mode == 'diff_frac':
+        depth_targetval, baf_targetval, targetval, valid_flags = get_penalty_diff_fraction(
+            depths,
+            pred_depths,
+            K,
+            cellularity,
+            bafs,
+            pred_bafs,
+            CNt1,
+            CNg,
+            depthfit_cutoff,
+            baffit_cutoff,
+            nanbaf_rescue_selector,
+        )
+    elif mode == 'map':
+        depth_targetval, baf_targetval, targetval = get_penalty_map(
+            depths,
+            bafs,
+            depth_stds,
+            baf_stds,
+            lengths,
+
+            pred_depths,
+            pred_bafs,
+            nanbaf_rescue_selector,
+        )
+        valid_flags = None
 
     depth_targetval, depth_targetval_sum = process_targetval(depth_targetval, valid_flags, weights)
     baf_targetval, baf_targetval_sum = process_targetval(baf_targetval, valid_flags, weights)
@@ -665,147 +982,147 @@ def solution_from_segments_fit_to_data(
     )
 
 
-def solution_from_segments(
-    depths, 
-    bafs, 
-    weights=None,
-
-    all_depths=None,
-    all_bafs=None,
-    all_weights=None,
-
-    num_ndiv_cand=20,
-    num_CNt0_cand=10,
-    ndivs_offset_step=0.01,
-
-    depthfit_cutoff=0.5,
-    baffit_cutoff=0.5,
-    CNt_handicap_factor=0,
-
-    CNg=2,
-    Bg=1,
-):
-    depths, bafs, weights, all_depths, all_bafs, all_weights = solution_from_segments_arghandler(
-        depths, 
-        bafs, 
-        weights,
-
-        all_depths,
-        all_bafs,
-        all_weights,
-    )
-
-    CNt0, dd, ndivs, cellularity, K, depth0 = solution_from_segments_common_params(
-        depths,
-        num_ndiv_cand,
-        num_CNt0_cand,
-        ndivs_offset_step,
-        depthfit_cutoff,
-    )
-
-    (
-        CNt1, Bt, valid_flags,
-        depth_targetval_sum,
-        baf_targetval_sum,
-        targetval_sum,
-        pred_bafs,
-    ) = solution_from_segments_fit_to_data(
-        depth0,
-
-        depths, 
-        bafs, 
-        weights,
-
-        depthfit_cutoff,
-        baffit_cutoff,
-        CNt_handicap_factor,
-
-        CNg,
-        Bg,
-
-        CNt0, 
-        dd, 
-        cellularity, 
-
-        valid_flags=None,
-    )
-
-    argmin = np.nanargmin(targetval_sum)
-    unraveled_idx = np.unravel_index(argmin, shape=targetval_sum.shape)
-
-    if all_depths is not None:
-        (
-            all_CNt1, all_Bt, _,
-            all_depth_targetval_sum,
-            all_baf_targetval_sum,
-            all_targetval_sum,
-            _,
-        ) = solution_from_segments_fit_to_data(
-            depth0,
-
-            all_depths, 
-            all_bafs, 
-            all_weights,
-
-            depthfit_cutoff,
-            baffit_cutoff,
-            CNt_handicap_factor,
-
-            CNg,
-            Bg,
-
-            CNt0, 
-            dd, 
-            cellularity, 
-
-            valid_flags=valid_flags,
-        )
-    else:
-        all_CNt1 = None 
-        all_Bt = None 
-        all_depth_targetval_sum = None
-        all_baf_targetval_sum = None
-        all_targetval_sum = None
-
-
-    #targetval_flat = targetval.reshape(targetval.shape[0], -1).sum(axis=0)
-    #baf_errors_hdcp = bafdiffs + CNt1 * CNt_handicap_factor
-    #baf_errors_flat = baf_errors_hdcp.reshape(baf_errors_hdcp.shape[0], -1).sum(axis=0)
-    #baf_errors_flat[~valid_flags_flat] = np.nan
-    #argmin = np.nanargmin(baf_errors_flat)
-
+#def solution_from_segments(
+#    depths, 
+#    bafs, 
+#    weights=None,
+#
+#    all_depths=None,
+#    all_bafs=None,
+#    all_weights=None,
+#
+#    num_ndiv_cand=20,
+#    num_CNt0_cand=10,
+#    ndivs_offset_step=0.01,
+#
+#    depthfit_cutoff=0.5,
+#    baffit_cutoff=0.5,
+#    CNt_handicap_factor=0,
+#
+#    CNg=2,
+#    Bg=1,
+#):
+#    depths, bafs, weights, all_depths, all_bafs, all_weights = solution_from_segments_arghandler(
+#        depths, 
+#        bafs, 
+#        weights,
+#
+#        all_depths,
+#        all_bafs,
+#        all_weights,
+#    )
+#
+#    CNt0, dd, ndivs, cellularity, K, depth0 = solution_from_segments_common_params(
+#        depths,
+#        num_ndiv_cand,
+#        num_CNt0_cand,
+#        ndivs_offset_step,
+#        depthfit_cutoff,
+#    )
+#
+#    (
+#        CNt1, Bt, valid_flags,
+#        depth_targetval_sum,
+#        baf_targetval_sum,
+#        targetval_sum,
+#        pred_bafs,
+#    ) = solution_from_segments_fit_to_data(
+#        depth0,
+#
+#        depths, 
+#        bafs, 
+#        weights,
+#
+#        depthfit_cutoff,
+#        baffit_cutoff,
+#        CNt_handicap_factor,
+#
+#        CNg,
+#        Bg,
+#
+#        CNt0, 
+#        dd, 
+#        cellularity, 
+#
+#        valid_flags=None,
+#    )
+#
+#    argmin = np.nanargmin(targetval_sum)
+#    unraveled_idx = np.unravel_index(argmin, shape=targetval_sum.shape)
+#
+#    if all_depths is not None:
+#        (
+#            all_CNt1, all_Bt, _,
+#            all_depth_targetval_sum,
+#            all_baf_targetval_sum,
+#            all_targetval_sum,
+#            _,
+#        ) = solution_from_segments_fit_to_data(
+#            depth0,
+#
+#            all_depths, 
+#            all_bafs, 
+#            all_weights,
+#
+#            depthfit_cutoff,
+#            baffit_cutoff,
+#            CNt_handicap_factor,
+#
+#            CNg,
+#            Bg,
+#
+#            CNt0, 
+#            dd, 
+#            cellularity, 
+#
+#            valid_flags=valid_flags,
+#        )
+#    else:
+#        all_CNt1 = None 
+#        all_Bt = None 
+#        all_depth_targetval_sum = None
+#        all_baf_targetval_sum = None
+#        all_targetval_sum = None
+#
+#
+#    #targetval_flat = targetval.reshape(targetval.shape[0], -1).sum(axis=0)
+#    #baf_errors_hdcp = bafdiffs + CNt1 * CNt_handicap_factor
+#    #baf_errors_flat = baf_errors_hdcp.reshape(baf_errors_hdcp.shape[0], -1).sum(axis=0)
+#    #baf_errors_flat[~valid_flags_flat] = np.nan
+#    #argmin = np.nanargmin(baf_errors_flat)
+#
+##    return {
+##        'CNt0': CNt0[0, :][unraveled_idx],
+##        'onecopy_depth': dd[0, :][unraveled_idx],
+##        'cellularity': cellularity[0, :][unraveled_idx],
+##        'K': K[0, :][unraveled_idx],
+##        'CNt1': CNt1[np.index_exp[:,] + unraveled_idx],
+##        'Bt': Bt[np.index_exp[:,] + unraveled_idx],
+##        'predicted_baf': pred_bafs[np.index_exp[:,] + unraveled_idx],
+##    }
+#
 #    return {
-#        'CNt0': CNt0[0, :][unraveled_idx],
-#        'onecopy_depth': dd[0, :][unraveled_idx],
-#        'cellularity': cellularity[0, :][unraveled_idx],
-#        'K': K[0, :][unraveled_idx],
-#        'CNt1': CNt1[np.index_exp[:,] + unraveled_idx],
-#        'Bt': Bt[np.index_exp[:,] + unraveled_idx],
-#        'predicted_baf': pred_bafs[np.index_exp[:,] + unraveled_idx],
+#        'CNt0': CNt0[0, :],
+#        'onecopy_depth': dd[0, :],
+#        'num_division': ndivs[0, :],
+#        'cellularity': cellularity[0, :],
+#        'K': K[0, :],
+#
+#        'targetval': targetval_sum,
+#        'depth_targetval': depth_targetval_sum,
+#        'baf_targetval': baf_targetval_sum,
+#        'CNt': CNt1,
+#        'Bt': Bt,
+#
+#        'argmin': unraveled_idx,
+#        'predicted_baf': pred_bafs,
+#
+#        'all_targetval': all_targetval_sum,
+#        'all_depth_targetval': all_depth_targetval_sum,
+#        'all_baf_targetval': all_baf_targetval_sum,
+#        'all_CNt': all_CNt1,
+#        'all_Bt': all_Bt,
 #    }
-
-    return {
-        'CNt0': CNt0[0, :],
-        'onecopy_depth': dd[0, :],
-        'num_division': ndivs[0, :],
-        'cellularity': cellularity[0, :],
-        'K': K[0, :],
-
-        'targetval': targetval_sum,
-        'depth_targetval': depth_targetval_sum,
-        'baf_targetval': baf_targetval_sum,
-        'CNt': CNt1,
-        'Bt': Bt,
-
-        'argmin': unraveled_idx,
-        'predicted_baf': pred_bafs,
-
-        'all_targetval': all_targetval_sum,
-        'all_depth_targetval': all_depth_targetval_sum,
-        'all_baf_targetval': all_baf_targetval_sum,
-        'all_CNt': all_CNt1,
-        'all_Bt': all_Bt,
-    }
 
 
 @deco.get_deco_atleast1d([
@@ -819,8 +1136,12 @@ def solution_from_segments(
 ])
 def solution_from_depth_limits(
     picked_depths,
+
     depths, 
     bafs, 
+    depth_stds,
+    baf_stds,
+
     CNg,
     Bg,
     lengths,
@@ -828,16 +1149,20 @@ def solution_from_depth_limits(
 
     target_depths=None,
     target_bafs=None,
+    target_depth_stds=None,
+    target_baf_stds=None,
     target_weights=None,
 
     num_ndiv_cand=20,
-    num_CNt0_cand=10,
+    num_CNt0_cand=6,
     ndivs_offset_step=0.01,
 
     depthfit_cutoff=0.3,
     baffit_cutoff=0.3,
 
     major_CNg=2,
+
+    mode='map',
 ):
     CNt0, dd, ndivs, cellularity, K, _ = solution_from_segments_common_params(
         picked_depths,
@@ -857,6 +1182,9 @@ def solution_from_depth_limits(
     ) = solution_from_segments_fit_to_data_new(
         depths, 
         bafs, 
+        depth_stds,
+        baf_stds,
+        lengths,
 
         CNg,
         Bg,
@@ -867,13 +1195,12 @@ def solution_from_depth_limits(
         weights=lengths,
         depthfit_cutoff=None,
         baffit_cutoff=None,
+
+        mode=mode,
     )
 
     argsort = np.argsort(targetval_sum, axis=None)
     unraveled_indexes = [np.unravel_index(x, shape=targetval_sum.shape) for x in argsort]
-
-    #argmin = np.nanargmin(targetval_sum)
-    #unraveled_idx = np.unravel_index(argmin, shape=targetval_sum.shape)
     ploidies = get_average_ploidy(CNt1, lengths, axis=0)
 
     if target_depths is not None:
@@ -886,6 +1213,9 @@ def solution_from_depth_limits(
         ) = solution_from_segments_fit_to_data_new(
             depths=target_depths, 
             bafs=target_bafs, 
+            depth_stds=target_depth_stds,
+            baf_stds=target_baf_stds,
+            lengths=target_weights,
 
             CNg=CNg,
             Bg=Bg,
@@ -896,6 +1226,8 @@ def solution_from_depth_limits(
             weights=target_weights,
             depthfit_cutoff=depthfit_cutoff,
             baffit_cutoff=baffit_cutoff,
+
+            mode=mode,
         )
     else:
         target_CNt1 = None 

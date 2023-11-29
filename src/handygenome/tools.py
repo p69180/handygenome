@@ -660,8 +660,10 @@ def nanaverage(values, weights):
     return np.average(new_values, weights=new_weights)
 
 
-def nanargmin(arr, axis, keepdims=False):
+def nanargminmax_base(mode, arr, axis, keepdims=False):
     """When all-nan axis is encountered, 0 is returned as resultant index value"""
+    assert mode in ('max', 'min')
+
     if axis == -1:
         axis = arr.ndim - 1
 
@@ -680,7 +682,18 @@ def nanargmin(arr, axis, keepdims=False):
 
     arrcp[selector] = 0
 
-    return np.nanargmin(arrcp, axis, keepdims=keepdims)
+    if mode == 'min':
+        return np.nanargmin(arrcp, axis, keepdims=keepdims)
+    elif mode == 'max':
+        return np.nanargmax(arrcp, axis, keepdims=keepdims)
+
+
+def nanargmin(arr, axis, keepdims=False):
+    return nanargminmax_base('min', arr=arr, axis=axis, keepdims=keepdims)
+
+
+def nanargmax(arr, axis, keepdims=False):
+    return nanargminmax_base('max', arr=arr, axis=axis, keepdims=keepdims)
 
 
 def get_ranks(arr):
@@ -815,6 +828,29 @@ def gapped_linspace(starts, ends, num=50, return_indexes=False, endpoint=True):
     else:
         return result
 
+
+def add_dims(arr, pre, post):
+    assert isinstance(pre, int)
+    assert isinstance(post, int)
+
+    pre_added = tuple(np.arange(pre))
+    post_added = tuple(np.arange(post) + pre + arr.ndim)
+    added = pre_added + post_added
+    return np.expand_dims(arr, added)
+
+
+def fit_data_to_range(data, minval, maxval):
+    data = np.asarray(data)
+    ptp = data[~np.isnan(data)].ptp()
+    scale = (maxval - minval) / ptp
+
+    newdata = data * scale
+    newdata_min = np.nanmin(newdata)
+    loc = minval - newdata_min
+    newdata = newdata + loc
+
+    return newdata
+        
 
 ##############################
 # Genomic coordinate sorting #

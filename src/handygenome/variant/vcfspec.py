@@ -10,6 +10,7 @@ import handygenome.refgenome.refgenome as refgenome
 import handygenome.tools as tools
 import handygenome.annotation.annotitem as annotitem
 import handygenome.variant.repeat as librepeat
+from handygenome.variant.repeat import Repeat
 from handygenome.annotation.annotitem import AnnotItemInfoALTlist
 from handygenome.annotation.annotitem import AnnotItemInfoSingle
 
@@ -556,12 +557,12 @@ class Vcfspec:
         if repeat_range0 is None:
             return None
         else:
-            return librepeat.Repeat(
+            return Repeat(
                 chrom=normalized.chrom, 
                 start0=repeat_range0.start, 
                 unit=repeat_unit,
                 count=(len(repeat_range0) // len(repeat_unit)),
-                fasta=normalized.fasta,
+                refver=normalized.refver,
             )
 
     def check_same_firstbase(self):

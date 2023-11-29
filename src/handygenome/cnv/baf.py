@@ -568,6 +568,14 @@ class BAFSegmentDataFrame(SegmentDataFrame):
     def get_baf_mean(self, baf_index=None):
         return self[self.get_baf_mean_colname(baf_index=baf_index)]
 
+    def get_baf_std_colname(self, baf_index=None):
+        if baf_index is None:
+            baf_index = self.get_baf_index()
+        return baf_index + '_std'
+
+    def get_baf_std(self, baf_index=None):
+        return self[self.get_baf_std_colname(baf_index=baf_index)]
+
     def get_distinfo_colname(self, key, baf_index=None):
         assert key in (
             'ndata', 

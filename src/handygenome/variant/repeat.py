@@ -4,16 +4,24 @@ import handygenome.tools as tools
 
 
 class Repeat:
-    def __init__(self, chrom, start0, unit, count, fasta):
+    def __init__(self, chrom, start0, unit, count, refver):
         self.chrom = chrom
         self.start0 = start0
         self.unit = unit
         self.count = count
-        self.fasta = fasta
+        self.refver = refver
 
     def __repr__(self):
         string = tools.repr_base(self, ('chrom', 'start0', 'unit', 'count'), comma_sep_int=True)
         return f'<Repeat object({string})>'
+
+    @property
+    def chromdict(self):
+        return refgenome.get_chromdict(self.refver)
+
+    @property
+    def fasta(self):
+        return refgenome.get_fasta(self.refver)
 
     @property
     def end0(self):

@@ -288,14 +288,49 @@ def check_rpp_other_support(aiitem_rp1, aiitem_rp2, aiitem_rpp):
         aiitem_rpp['other_support'] = True
 
 
-def check_rpp_direct_alt_support(aiitem_rp1, aiitem_rp2, aiitem_rpp):
-    if any(
+def check_rpp_direct_alt_support(
+    aiitem_bnd1_rp1, aiitem_bnd1_rp2, alleleclass_item_bnd1,
+    aiitem_bnd2_rp1, aiitem_bnd2_rp2, alleleclass_item_bnd2,
+):
+    if (
         (
-            aiitem_rp1['alt_support'], 
-            aiitem_rp2['alt_support'],
+            aiitem_bnd1_rp1['alt_support']
+            and (
+                aiitem_bnd1_rp2['alt_support']
+                or aiitem_bnd2_rp2['alt_support']
+                or aiitem_bnd2_rp2['facing_frombnd']
+            )
+        )
+        or (
+            aiitem_bnd1_rp2['alt_support']
+            and (
+                aiitem_bnd1_rp1['alt_support']
+                or aiitem_bnd2_rp1['alt_support']
+                or aiitem_bnd2_rp1['facing_frombnd']
+            )
         )
     ):
-        aiitem_rpp['alt_support_direct'] = True
+        alleleclass_item_bnd1['alt_support_direct'] = True
+
+    if (
+        (
+            aiitem_bnd2_rp1['alt_support']
+            and (
+                aiitem_bnd2_rp2['alt_support']
+                or aiitem_bnd1_rp2['alt_support']
+                or aiitem_bnd1_rp2['facing_frombnd']
+            )
+        )
+        or (
+            aiitem_bnd2_rp2['alt_support']
+            and (
+                aiitem_bnd2_rp1['alt_support']
+                or aiitem_bnd1_rp1['alt_support']
+                or aiitem_bnd1_rp1['facing_frombnd']
+            )
+        )
+    ):
+        alleleclass_item_bnd2['alt_support_direct'] = True
 
 
 def check_rpp_ref_support(aiitem_rp1, aiitem_rp2, aiitem_rpp):
@@ -304,28 +339,40 @@ def check_rpp_ref_support(aiitem_rp1, aiitem_rp2, aiitem_rpp):
         or aiitem_rpp['alt_support_direct'] 
         or aiitem_rpp['alt_support_indirect']
     ):  # regarded not as ref-supporting when other- or alt- supporting
-        if any(
+        if (
             (
-                aiitem_rp1['ref_support'], 
-                aiitem_rp2['ref_support'],
+                aiitem_rp1['facing_frombnd']
+                and aiitem_rp2['facing_frompar']
             )
-        ):  # direct ref support with read crossing
-            aiitem_rpp['ref_support_direct'] = True
-        elif any(
-            (
-                (
-                    aiitem_rp1['facing_frombnd']
-                    and aiitem_rp2['facing_frompar']
-                ),
-                (
-                    aiitem_rp2['facing_frombnd'] 
-                    and aiitem_rp1['facing_frompar']
-                ),
+            or (
+                aiitem_rp2['facing_frombnd'] 
+                and aiitem_rp1['facing_frompar']
             )
         ):
             # the mate reads facing each other, one read on bndside of a 
                 # breakend and the other read on parside of the same breakend
             aiitem_rpp['ref_support_indirect'] = True
+        else:
+            if (
+                (
+                    aiitem_rp1['ref_support']
+                    and (
+                        aiitem_rp2['ref_support']
+                        or aiitem_rp2['facing_frompar']
+                        or aiitem_rp2['facing_frombnd']
+                    )
+                )
+                or (
+                    aiitem_rp2['ref_support']
+                    and (
+                        aiitem_rp1['ref_support']
+                        or aiitem_rp1['facing_frompar']
+                        or aiitem_rp1['facing_frombnd']
+                    )
+                )
+            ):
+            # direct ref support with read crossing
+                aiitem_rpp['ref_support_direct'] = True
 
 
 def check_rpp_noninformative(aiitem_rpp):
@@ -469,8 +516,10 @@ def make_alleleclass_item_readpluspair(
         alleleclass_item_bnd1['alt_support_indirect'] = True
         alleleclass_item_bnd2['alt_support_indirect'] = True
     else:
-        check_rpp_direct_alt_support(aiitem_bnd1_rp1, aiitem_bnd1_rp2, alleleclass_item_bnd1)
-        check_rpp_direct_alt_support(aiitem_bnd2_rp1, aiitem_bnd2_rp2, alleleclass_item_bnd2)
+        check_rpp_direct_alt_support(
+            aiitem_bnd1_rp1, aiitem_bnd1_rp2, alleleclass_item_bnd1,
+            aiitem_bnd2_rp1, aiitem_bnd2_rp2, alleleclass_item_bnd2,
+        )
 
     #######
     # ref #

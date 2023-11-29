@@ -1754,16 +1754,27 @@ class CNVSample:
 
     def make_merged_cnv_segment(self, corrector_id=None):
         # make
-        if corrector_id is None:
-            merged_cnv_gdf = self.get_merged_segment().merge_by_CN()
-            #self.gdfs['merged_merged_segment'] = self.get_merged_segment().merge_by_CN()
-        else:
-            merged_cnv_gdf = self.get_merged_segment(corrector_id=corrector_id).merge_by_CN()
+        nonmerged_cnv_gdf = self.get_merged_segment(corrector_id=corrector_id)
+        merged_cnv_gdf = nonmerged_cnv_gdf.merge_by_CN()
 
         # intersect with target region
         raw_target = self.get_raw_target_region()
         if raw_target is not None:
             merged_cnv_gdf = merged_cnv_gdf.intersect(raw_target)
+
+        # annotate with germline CN values
+        merged_cnv_gdf = merged_cnv_gdf.join(
+            nonmerged_cnv_gdf, 
+            (
+                [nonmerged_cnv_gdf.get_clonal_CN_colname(germline=True)]
+                + [
+                    nonmerged_cnv_gdf.get_clonal_B_colname(baf_index=x, germline=True)
+                    for x in nonmerged_cnv_gdf.get_baf_indexes()
+                ]
+            ), 
+            merge='longest',
+            suffixes={'longest': ''},
+        )
 
         # assign
         if corrector_id is None:
@@ -2281,6 +2292,7 @@ class CNVSample:
         draw_baf=False,
         draw_MQ=False,
         draw_CN=False,
+        draw_mut=False,
         draw_depth_peaks=False,
     ):
         mosaic = list()
@@ -2292,6 +2304,8 @@ class CNVSample:
             mosaic.append(['depth'])
         if draw_MQ:
             mosaic.append(['MQ'])
+        if draw_mut:
+            mosaic.append(['mut'])
 
         if draw_depth_peaks:
             for idx, x in enumerate(mosaic):
@@ -2308,6 +2322,7 @@ class CNVSample:
         draw_baf=False,
         draw_MQ=False,
         draw_CN=False,
+        draw_mut=False,
         draw_depth_peaks=False,
         subplots_kwargs=dict(),
         figsize=None,
@@ -2317,6 +2332,7 @@ class CNVSample:
             draw_baf=draw_baf,
             draw_MQ=draw_MQ,
             draw_CN=draw_CN,
+            draw_mut=draw_mut,
             draw_depth_peaks=draw_depth_peaks,
         )
 
@@ -2350,6 +2366,7 @@ class CNVSample:
         draw_depth=False,
         draw_baf=False,
         draw_MQ=False,
+        draw_mut=False,
         draw_CN=False,
 
         corrector_id=None,
@@ -2358,6 +2375,9 @@ class CNVSample:
         chromwise_peaks_density_kwargs=dict(),
         chromwise_peaks_line_kwargs=dict(),
         draw_excluded=False,
+
+        vplist=None,
+        #vcf_sampleid=None,
 
         #draw_depth_peaks=False,
         #draw_chromwise_peak=True,
@@ -2397,7 +2417,7 @@ class CNVSample:
         if draw_all:
             draw_depth = True
             draw_baf = True
-            draw_MQ = True
+            draw_mut = True
             draw_CN = True
 
         # sanitycheck
@@ -2419,6 +2439,7 @@ class CNVSample:
                 draw_baf=draw_baf,
                 draw_MQ=draw_MQ,
                 draw_CN=draw_CN,
+                draw_mut=draw_mut,
                 draw_depth_peaks=False,
                 subplots_kwargs=subplots_kwargs,
                 figsize=figsize,
@@ -2611,6 +2632,20 @@ class CNVSample:
                 )
                 gdraw_axresult_list.append(gdraw_result)
 
+        # draw mutation
+        if (draw_mut and (vplist is not None)):
+            #if vcf_sampleid is None:
+            #    vcf_sampleid = self.sampleid
+            vp_gdf = vplist.get_vafdf(self.sampleid, add_depth=True, exclude_other=False)
+            vp_gdf.draw_vaf(
+                ax=axd['mut'],
+                genomeplotter=genomeplotter,
+                setup_axes=True,
+                draw_common_kwargs=draw_common_kwargs,
+                ylabel_prefix=ylabel_prefix,
+                verbose=verbose,
+            )
+
         # draw excluded
         if draw_excluded and (corrector_id is not None):
             excluded_region = self.get_corrected_depth_excluded_region(corrector_id)
@@ -2640,6 +2675,8 @@ class CNVSample:
             corrector_id=corrector_id,
             fig=fig, 
             axd=axd,
+            genomeplotter=genomeplotter,
+            vplist=vplist,
         )
         #self.draw_result_corrector_id = corrector_id
 
@@ -2650,7 +2687,10 @@ class CNVSample:
             title = self.make_title(selected_solution=None)
             plotmisc.draw_suptitle(draw_result.fig, title, **suptitle_kwargs)
         else:
-            draw_result.draw_solution(index=selected_sol['index'], CN_kwargs=CN_kwargs)
+            try:
+                draw_result.draw_solution(index=selected_sol['index'], CN_kwargs=CN_kwargs)
+            except:
+                pass
 
         return draw_result
 
@@ -3659,6 +3699,7 @@ class CNVDrawingResult:
         color='purple',
     )
     distrib_ax_label = 'distrib'
+    solpick_common_title = f'x axis: number of divisions of selected depth range'
 
     def __init__(
         self,
@@ -3666,13 +3707,17 @@ class CNVDrawingResult:
         corrector_id,
         fig, 
         axd,
+        genomeplotter,
+        vplist=None,
     ):
         self.cnvsample = cnvsample
         self.corrector_id = corrector_id
         self.fig = fig
         self.axd = axd
+        self.genomeplotter = genomeplotter
+        self.vplist = vplist
 
-        self.predict_lines = None
+        #self.predict_lines = None
 
         self.init_depthpick_attrs()
         self.init_solutionpick_attrs()
@@ -3708,6 +3753,10 @@ class CNVDrawingResult:
 
             'best_solution_text': None,
             #'events': list(),
+            'draw_on_pick': None,
+
+            'predict_lines': None,
+            'ccf_dots': None,
         }
 
     ################
@@ -3719,13 +3768,17 @@ class CNVDrawingResult:
         chroms=None, 
         ncol=4, 
         mq_limit=50,
-        bins=np.arange(0, 3, 0.01),
+        bins=None,
         empty_prefix='__EMPTY__', 
         all_axlabel='__ALL__', 
         figsize=None, 
         gridspec_kw=dict(),
     ):
         assert 'depth' in self.axd.keys()
+
+        if bins is None:
+            depth_ax_ylim = self.axd['depth'].get_ylim()
+            bins = np.linspace(depth_ax_ylim[0], depth_ax_ylim[1], 50)
 
         # remove existing picked lines
         self.remove_previous_depthpick()
@@ -3892,6 +3945,9 @@ class CNVDrawingResult:
             picked_depths=self.depthpick_attrs['picked_values'],
             depths=CN_gdf.norm_depth_mean,
             bafs=CN_gdf.get_corrected_baf(baf_index='baf0'),
+            depth_stds=CN_gdf.norm_depth_std,
+            baf_stds=CN_gdf.get_baf_std(baf_index='baf0'),
+
             CNg=CN_gdf.get_clonal_CN(germline=True),
             Bg=CN_gdf.get_clonal_B(baf_index='baf0', germline=True),
             lengths=CN_gdf.lengths,
@@ -3902,17 +3958,115 @@ class CNVDrawingResult:
         #self.solution_attrs[corrector_id]['selected_regions'] = self.draw_result.get_region_gdfs()
         self.cnvsample.solution_attrs[self.corrector_id]['solution_candidates'] = sol_candidates
 
+    def set_ccf_candidates(
+        self, 
+        vcf_sampleid=None, 
+        exclude_other=False,
+        clonal_pval=cnvcall.DEFAULT_CLONAL_PVALUE,
+    ):
+        if vcf_sampleid is None:
+            vcf_sampleid = self.cnvsample.sampleid
+
+        assert self.vplist is not None
+        vp_gdf = self.vplist.get_vafdf(vcf_sampleid, add_depth=True, exclude_other=exclude_other)
+
+        # get indexes of CNV segments corresponding to input mutations
+        cnv_gdf_cp = self.cnvsample.get_merged_segment(self.corrector_id).copy()  # must be non-merged cnv segment
+        gCN_colname = cnv_gdf_cp.get_clonal_CN_colname(germline=True)
+        cnv_gdf_cp['index'] = np.arange(cnv_gdf_cp.nrow)
+        vp_gdf_joined = vp_gdf.join(
+            cnv_gdf_cp, 
+            ['index', gCN_colname],
+            merge='longest', 
+            how='left', 
+            suffixes={'longest': ''},
+        )
+        seg_indexes = vp_gdf_joined['index']
+        index_isnan = np.isnan(seg_indexes)
+        selector = np.where(index_isnan, 0, seg_indexes).astype(int)
+
+        # select solution candidate elements
+        solution_cands = self.cnvsample.get_solution_candidates(self.corrector_id)
+        CNt = solution_cands['CNt'].take(selector, axis=0)
+        CNt[index_isnan, :] = np.nan
+        Bt = solution_cands['Bt'].take(selector, axis=0)
+        Bt[index_isnan, :] = np.nan
+        CNg = vp_gdf_joined[gCN_colname]
+        CNg[index_isnan] = np.nan
+
+        # make variant-related parameters
+        vafs = vp_gdf_joined.get_format(vcf_sampleid, 'ALT1_vaf')
+        total_depths = vp_gdf_joined['total_depth']
+        alt_depths = vp_gdf_joined.get_format(vcf_sampleid, 'ALT1_depth').astype(float)
+        alt_depths[alt_depths == 0] = np.nan
+
+        # prepare cellularity
+        cellularity = self.cnvsample.get_solution_candidates(self.corrector_id)['cellularity']
+
+        # main
+        CNm, ccf = cnvcall.find_ccf(
+            vaf=vafs,
+            total_depth=total_depths,
+            alt_depth=alt_depths,
+            CNg=CNg,
+            CNt=CNt,
+            Bt=Bt,
+            cellularity=cellularity,
+            clonal_pval=clonal_pval,
+        )
+
+        solution_cands['CNm'] = CNm
+        solution_cands['ccf'] = ccf
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)  # mean of empty slices
+            solution_cands['ccf_mean'] = np.nanmean(ccf, axis=0)
+            solution_cands['clonal_fraction'] = np.nanmean((ccf == 1), axis=0)
+
+    #####################################
+    # show cellularity / ploidy distrib #
+    #####################################
+
+    def show_ploidy(self):
+        ploidies = self.cnvsample.get_solution_candidates(self.corrector_id)['ploidy']
+        minval = np.floor(np.nanmin(ploidies)) 
+        maxval = np.ceil(np.nanmax(ploidies))
+        xticks = np.arange(0, ploidies.shape[1] + 5, 5)
+
+        fig, axs = plt.subplots(ploidies.shape[0], 1, figsize=(12, 7), sharex=True)
+        fig.suptitle('ploidy distribution')
+        fig.supxlabel('number of division')
+        for idx, ax in enumerate(axs):
+            ax.set_ylim(minval, maxval)
+            ax.plot(ploidies[idx, :], '-o', lw=1)
+            ax.set_xticks(xticks)
+            ax.set_xticklabels(xticks + 1)
+            ax.axhline(7, color='tab:red')
+
+    def show_cellularity(self):
+        cellularities = self.cnvsample.get_solution_candidates(self.corrector_id)['cellularity']
+        xticks = np.arange(0, cellularities.shape[1] + 5, 5)
+
+        fig, axs = plt.subplots(cellularities.shape[0], 1, figsize=(12, 7), sharex=True)
+        fig.suptitle('cellularity distribution')
+        fig.supxlabel('number of division')
+        for idx, ax in enumerate(axs):
+            ax.set_ylim(0, 1)
+            ax.plot(cellularities[idx, :], '-o', lw=1)
+            ax.set_xticks(xticks)
+            ax.set_xticklabels(xticks + 1)
+
     ###################
     # solution picker #
     ###################
 
-    def draw_solution_picker(self, figsize=(12, 10), gridspec_kw=dict(), all_targetval_offset=5):
+    def draw_solution_picker(self, figsize=(12, 10), gridspec_kw=dict(), all_targetval_offset=5, draw_on_pick=False):
         """Must be run after set_solution_candidates"""
 
         assert self.corrector_id in self.cnvsample.solution_attrs
         assert self.cnvsample.solution_attrs[self.corrector_id]['solution_candidates'] is not None
 
         self.init_solutionpick_attrs()
+        self.solutionpick_attrs['draw_on_pick'] = draw_on_pick
 
         sol_cands = self.cnvsample.get_solution_candidates(corrector_id=self.corrector_id)
         assert sol_cands is not None
@@ -3923,7 +4077,24 @@ class CNVDrawingResult:
         targetvals = sol_cands['targetval']
         depth_targetvals = sol_cands['depth_targetval']
         baf_targetvals = sol_cands['baf_targetval']
+        ccf_means = sol_cands['ccf_mean']
+        clonal_fractions = sol_cands['clonal_fraction']
         CNt0s = sol_cands['CNt0']
+        ploidies = sol_cands['ploidy']
+
+        # set axes ylim
+        ymin = 0
+        ymax = 1
+        ywidth = ymax - ymin
+        ylim = (ymin - 0.2 * ywidth, ymax + 0.2 * ywidth)
+        #ploidy_ylim = (np.nanmin(ploidies), np.nanmax(ploidies))
+        ploidy_ylim = (0, 8)
+        ploidy_yticks = np.arange(0, ploidy_ylim[1] + 2, 2)
+
+        # normalize data
+        targetvals = tools.fit_data_to_range(targetvals, ymin, ymax)
+        depth_targetvals = tools.fit_data_to_range(depth_targetvals, ymin, ymax)
+        baf_targetvals = tools.fit_data_to_range(baf_targetvals, ymin, ymax)
 
         #if all_targetval_exist:
         #    all_targetvals = sol_cands['all_targetval'] + all_targetval_offset
@@ -3947,12 +4118,12 @@ class CNVDrawingResult:
         #        all_targetvals.ravel(), all_depth_targetvals.ravel(), all_baf_targetvals.ravel(),
         #    ]
         #else:
-        arrs_to_concat = [
-            targetvals.ravel(), depth_targetvals.ravel(), baf_targetvals.ravel(),
-        ]
-        targetvals_concat = np.concatenate(arrs_to_concat)
-        ymin = np.nanmin(targetvals_concat)
-        ymax = np.nanmax(targetvals_concat)
+        #arrs_to_concat = [
+        #    targetvals.ravel(), depth_targetvals.ravel(), baf_targetvals.ravel(),
+        #]
+        #targetvals_concat = np.concatenate(arrs_to_concat)
+        #ymin = np.nanmin(targetvals_concat)
+        #ymax = np.nanmax(targetvals_concat)
 
         # make mosaic
         mosaic = list()
@@ -3966,6 +4137,8 @@ class CNVDrawingResult:
         color_sum = 'black'
         color_depth = 'tab:orange'
         color_baf = 'tab:blue'
+        color_ccf = 'tab:green'
+        color_ploidy = 'tab:red'
         markersize = 3
         pickmark_lw = 5
 
@@ -3974,55 +4147,38 @@ class CNVDrawingResult:
         gridspec_kw = (
             {
                 'height_ratios': ([1] * (len(mosaic) - 1)) + [3],
-                'hspace': 1.5,
+                'hspace': 0.8,
             }
             | gridspec_kw
         )
         fig, axd = plt.subplot_mosaic(mosaic, figsize=figsize, gridspec_kw=gridspec_kw)
-        for label, ax in axd.items():
+        fig.suptitle(self.__class__.solpick_common_title)
+        for axidx, (label, ax) in enumerate(axd.items()):
             if label == self.__class__.distrib_ax_label:
                 continue
 
-            ax.set_xlim(xmin, xmax)
-            ax.set_ylim(ymin, ymax)
-
             idx = int(label)
 
-            #data = targetvals[idx, :]
-            #line2d, = ax.plot(data, marker='o', markersize=markersize, linewidth=1, picker=True, pickradius=5)
-            #self.solutionpick_attrs['data_line2ds'][label] = line2d
+            #############
+            # main axes #
+            #############
 
             _ = ax.plot(
                 depth_targetvals[idx, :], '-o', 
-                color=color_depth, markersize=markersize, alpha=0.5, linewidth=1, #picker=True, pickradius=5
+                color=color_depth, markersize=markersize, alpha=0.5, linewidth=1, 
             )
-            #if all_targetval_exist:
-            #    _ = ax.plot(
-            #        all_depth_targetvals[idx, :], '-x', 
-            #        color=color_depth, markersize=markersize, alpha=0.5, linewidth=1, picker=True, pickradius=5
-            #    )
-
             _ = ax.plot(
                 baf_targetvals[idx, :], '-o', 
-                color=color_baf, markersize=markersize, alpha=0.5, linewidth=1, #picker=True, pickradius=5
+                color=color_baf, markersize=markersize, alpha=0.5, linewidth=1, 
             )
-            #if all_targetval_exist:
-            #    _ = ax.plot(
-            #        all_baf_targetvals[idx, :], '-x', 
-            #        color=color_baf, markersize=markersize, alpha=0.5, linewidth=1, picker=True, pickradius=5
-            #    )
-
             _ = ax.plot(
                 targetvals[idx, :], '-o', 
-                color=color_sum, markersize=markersize, alpha=0.5, linewidth=1, #picker=True, pickradius=5
+                color=color_sum, markersize=markersize, alpha=0.5, linewidth=1,
             )
-            #if all_targetval_exist:
-            #    _ = ax.plot(
-            #        all_targetvals[idx, :], '-x', 
-            #        color=color_sum, markersize=markersize, alpha=0.5, linewidth=1, picker=True, pickradius=5
-            #    )
-
-            #self.solutionpick_attrs['data_line2ds'][label] = (depth_line2d, baf_line2d, sum_line2d)
+            _ = ax.plot(
+                ccf_means[idx, :], '-o', 
+                color=color_ccf, markersize=markersize, alpha=0.5, linewidth=1,
+            )
 
             picker_line2d = ax.axvline(0, color='tab:red', alpha=0.5, linewidth=pickmark_lw, visible=False)
             self.solutionpick_attrs['pickmark'][label] = picker_line2d
@@ -4030,14 +4186,35 @@ class CNVDrawingResult:
             #bestmark_linecol = ax.vlines([], *ax.get_ylim(), alpha=0.3, color='tab:green', linewidth=4, visible=False)
             #self.solutionpick_attrs['bestmark'][label] = bestmark_linecol
 
-            ax.set_xlabel('number of division', size='small')
+            #if axidx == len(axd) - 2:
+            #    ax.set_xlabel('number of division', size='small')
+
+            ax.set_xlim(xmin, xmax)
             ax.set_xticks(xticks)
             ax.set_xticklabels(xticklabels)
             ax.set_xticks(minor_xticks, minor=True)
+
+            ax.set_ylim(ylim)
+            ax.set_yticks([ymin, ymax])
+            ax.set_ylabel(f'CNt0={CNt0s[idx, 0]}', size=10, rotation=0, labelpad=35, va='center')
+
             ax.tick_params(which='both', length=0, labelsize='small')
             ax.grid(which='both', axis='x')
+            #ax.grid(which='major', axis='y')
 
-            ax.set_ylabel(f'CNt0={CNt0s[idx, 0]}', size=10, rotation=0, labelpad=25, va='center')
+            #########################
+            # twinx axes for ploidy #
+            #########################
+
+            ax2 = ax.twinx()
+            ax2.set_label(label)
+            ax2.set_ylim(ploidy_ylim)
+            ax2.plot(
+                ploidies[idx, :], '-o', 
+                color=color_ploidy, markersize=markersize, alpha=0.5, linewidth=1,
+            )
+            ax2.set_yticks(ploidy_yticks)
+            ax2.grid(which='major', axis='y')
 
         # initialize distrib axes
         axd[self.__class__.distrib_ax_label].clear()
@@ -4047,12 +4224,9 @@ class CNVDrawingResult:
         handles.add_line(marker='o', linewidth=0, color=color_depth, label='depth')
         handles.add_line(marker='o', linewidth=0, color=color_baf, label='baf')
         handles.add_line(marker='o', linewidth=0, color=color_sum, label='depth + baf')
-        #handles.add_line(marker='x', linewidth=0, color=color_depth, label='all depth')
-        #handles.add_line(marker='x', linewidth=0, color=color_baf, label='all baf')
-        #handles.add_line(marker='x', linewidth=0, color=color_sum, label='all depth + baf')
+        handles.add_line(marker='o', linewidth=0, color=color_ccf, label='mean ccf')
+        handles.add_line(marker='o', linewidth=0, color=color_ploidy, label='ploidy')
 
-        #first_ax = next(iter(axd.values()))
-        #first_ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 2))
         fig.legend(handles=handles, loc='upper right', bbox_to_anchor=(0.95, 0.99))
 
         # connect
@@ -4062,149 +4236,6 @@ class CNVDrawingResult:
 
         # keep axd
         self.solutionpick_attrs['axd'] = axd
-
-#    def draw_solution_picker_old(self, figsize=(12, 10), gridspec_kw=dict(hspace=0.9), all_targetval_offset=5):
-#        """Must be run after set_solution_candidates"""
-#
-#        assert self.corrector_id in self.cnvsample.solution_attrs
-#        assert self.cnvsample.solution_attrs[self.corrector_id]['solution_candidates'] is not None
-#
-#        self.init_solutionpick_attrs()
-#
-#        sol_cands = self.cnvsample.get_solution_candidates(corrector_id=self.corrector_id)
-#        assert sol_cands is not None
-#
-#        #all_targetval_exist = (sol_cands['all_targetval'] is not None)
-#
-#        # set data
-#        targetvals = sol_cands['targetval']
-#        depth_targetvals = sol_cands['depth_targetval']
-#        baf_targetvals = sol_cands['baf_targetval']
-#        CNt0s = sol_cands['CNt0']
-#
-#        #if all_targetval_exist:
-#        #    all_targetvals = sol_cands['all_targetval'] + all_targetval_offset
-#        #    all_depth_targetvals = sol_cands['all_depth_targetval'] + all_targetval_offset
-#        #    all_baf_targetvals = sol_cands['all_baf_targetval'] + all_targetval_offset
-#
-#        # set axes settings
-#        xmin = -2
-#        #xmax = targetvals.shape[1]
-#        max_valid_idx1 = self.get_max_valid_idx1()
-#        xmax = max_valid_idx1 + 3
-#
-#        xticks = np.arange(0, max_valid_idx1 + 5, 5)
-#        xticks = xticks[xticks <= max_valid_idx1]
-#        xticklabels = sol_cands['num_division'][0, xticks]
-#        minor_xticks = np.arange(0, max_valid_idx1 + 1, 1)
-#
-#        #if all_targetval_exist:
-#        #    arrs_to_concat = [
-#        #        targetvals.ravel(), depth_targetvals.ravel(), baf_targetvals.ravel(),
-#        #        all_targetvals.ravel(), all_depth_targetvals.ravel(), all_baf_targetvals.ravel(),
-#        #    ]
-#        #else:
-#        arrs_to_concat = [
-#            targetvals.ravel(), depth_targetvals.ravel(), baf_targetvals.ravel(),
-#        ]
-#        targetvals_concat = np.concatenate(arrs_to_concat)
-#        ymin = np.nanmin(targetvals_concat)
-#        ymax = np.nanmax(targetvals_concat)
-#
-#        # make mosaic
-#        mosaic = list()
-#        for idx, CNt0 in enumerate(CNt0s[:, 0]):
-#            label = str(idx)
-#            mosaic.append(label)
-#        mosaic = [[x] for x in mosaic]
-#
-#        # draw
-#        color_sum = 'black'
-#        color_depth = 'tab:orange'
-#        color_baf = 'tab:blue'
-#        markersize = 3
-#        pickmark_lw = 5
-#
-#        self.solutionpick_attrs['data_line2ds'] = dict()
-#        self.solutionpick_attrs['pickmark'] = dict()
-#        fig, axd = plt.subplot_mosaic(mosaic, figsize=figsize, gridspec_kw=gridspec_kw)
-#        for label, ax in axd.items():
-#            ax.set_xlim(xmin, xmax)
-#            ax.set_ylim(ymin, ymax)
-#
-#            idx = int(label)
-#
-#            #data = targetvals[idx, :]
-#            #line2d, = ax.plot(data, marker='o', markersize=markersize, linewidth=1, picker=True, pickradius=5)
-#            #self.solutionpick_attrs['data_line2ds'][label] = line2d
-#
-#            _ = ax.plot(
-#                depth_targetvals[idx, :], '-o', 
-#                color=color_depth, markersize=markersize, alpha=0.5, linewidth=1, #picker=True, pickradius=5
-#            )
-#            #if all_targetval_exist:
-#            #    _ = ax.plot(
-#            #        all_depth_targetvals[idx, :], '-x', 
-#            #        color=color_depth, markersize=markersize, alpha=0.5, linewidth=1, picker=True, pickradius=5
-#            #    )
-#
-#            _ = ax.plot(
-#                baf_targetvals[idx, :], '-o', 
-#                color=color_baf, markersize=markersize, alpha=0.5, linewidth=1, #picker=True, pickradius=5
-#            )
-#            #if all_targetval_exist:
-#            #    _ = ax.plot(
-#            #        all_baf_targetvals[idx, :], '-x', 
-#            #        color=color_baf, markersize=markersize, alpha=0.5, linewidth=1, picker=True, pickradius=5
-#            #    )
-#
-#            _ = ax.plot(
-#                targetvals[idx, :], '-o', 
-#                color=color_sum, markersize=markersize, alpha=0.5, linewidth=1, #picker=True, pickradius=5
-#            )
-#            #if all_targetval_exist:
-#            #    _ = ax.plot(
-#            #        all_targetvals[idx, :], '-x', 
-#            #        color=color_sum, markersize=markersize, alpha=0.5, linewidth=1, picker=True, pickradius=5
-#            #    )
-#
-#            #self.solutionpick_attrs['data_line2ds'][label] = (depth_line2d, baf_line2d, sum_line2d)
-#
-#            picker_line2d = ax.axvline(0, color='tab:red', alpha=0.5, linewidth=pickmark_lw, visible=False)
-#            self.solutionpick_attrs['pickmark'][label] = picker_line2d
-#
-#            #bestmark_linecol = ax.vlines([], *ax.get_ylim(), alpha=0.3, color='tab:green', linewidth=4, visible=False)
-#            #self.solutionpick_attrs['bestmark'][label] = bestmark_linecol
-#
-#            ax.set_xlabel('number of division', size='small')
-#            ax.set_xticks(xticks)
-#            ax.set_xticklabels(xticklabels)
-#            ax.set_xticks(minor_xticks, minor=True)
-#            ax.tick_params(which='both', length=0, labelsize='small')
-#            ax.grid(which='both', axis='x')
-#
-#            ax.set_ylabel(f'CNt0={CNt0s[idx, 0]}', size=10, rotation=0, labelpad=25, va='center')
-#
-#        # draw legend
-#        handles = plotmisc.LegendHandles()
-#        handles.add_line(marker='o', linewidth=0, color=color_depth, label='depth')
-#        handles.add_line(marker='o', linewidth=0, color=color_baf, label='baf')
-#        handles.add_line(marker='o', linewidth=0, color=color_sum, label='depth + baf')
-#        #handles.add_line(marker='x', linewidth=0, color=color_depth, label='all depth')
-#        #handles.add_line(marker='x', linewidth=0, color=color_baf, label='all baf')
-#        #handles.add_line(marker='x', linewidth=0, color=color_sum, label='all depth + baf')
-#
-#        #first_ax = next(iter(axd.values()))
-#        #first_ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 2))
-#        fig.legend(handles=handles, loc='upper right', bbox_to_anchor=(0.95, 0.99))
-#
-#        # connect
-#        cid = fig.canvas.mpl_connect('button_press_event', self.solution_picker_on_press)
-#        self.solutionpick_attrs['cid'] = cid
-#        self.solutionpick_attrs['fig'] = fig
-#
-#        # keep axd
-#        self.solutionpick_attrs['axd'] = axd
 
     def solution_picker_on_press(self, event):
         lastpick_label = self.solutionpick_attrs['lastpick_axlabel']
@@ -4238,13 +4269,12 @@ class CNVDrawingResult:
         picked_cellularity = sol_cands['cellularity'][idx0, idx1]
         picked_K = sol_cands['K'][idx0, idx1]
 
-        title = (
-            f'index={picked_index}'
-            + '\n'
-            + f'CNt0={picked_CNt0}, onecopy_depth={picked_dd:.3}, num_division={picked_ndivs}' 
-            + '\n'
-            + f'cellularity={picked_cellularity:.3}, K={picked_K:.3}' 
-        )
+        title = '\n'.join([
+            self.__class__.solpick_common_title + '\n',
+            f'index={picked_index}',
+            f'CNt0={picked_CNt0}, onecopy_depth={picked_dd:.3}, num_division={picked_ndivs}',
+            f'cellularity={picked_cellularity:.3}, K={picked_K:.3}',
+        ])
         self.solutionpick_attrs['fig'].suptitle(title, size=10)
 
         # assign
@@ -4256,6 +4286,10 @@ class CNVDrawingResult:
         self.draw_targetval_distribution(
             self.solutionpick_attrs['axd'][self.__class__.distrib_ax_label]
         )
+
+        # draw solution on main figure
+        if self.solutionpick_attrs['draw_on_pick']:
+            self.draw_solution()
 
     def draw_targetval_distribution(self, ax=None):
         targetvals = self.cnvsample.get_solution_candidates(self.corrector_id)['targetval']
@@ -4330,9 +4364,41 @@ class CNVDrawingResult:
         result = list(zip(*np.nonzero(~np.isnan(targetvals))))
         return result
 
-    #################
-    # draw_solution #
-    #################
+    ########
+    # draw #
+    ########
+
+    def make_ccf_added_vp_gdf(self, vplist):
+        vp_gdf = vplist.get_vafdf(self.cnvsample.sampleid, add_depth=True, exclude_other=False)
+
+        solution = self.cnvsample.get_selected_solution(corrector_id=self.corrector_id)
+        CN_gdf = self.cnvsample.get_merged_segment(corrector_id=self.corrector_id)
+        vp_gdf.add_ccf(
+            cnv_gdf=CN_gdf, 
+            cellularity=solution['cellularity'], 
+            vcf_sampleid=self.cnvsample.sampleid, 
+            clonal_pval=cnvcall.DEFAULT_CLONAL_PVALUE,
+        )
+        return vp_gdf
+
+    def draw_vplist(self, vplist, nproc=1):
+        vp_gdf = self.make_ccf_added_vp_gdf(vplist)
+
+        gdraw_result = vp_gdf.draw_vaf(
+            ax=axd['mut'],
+            genomeplotter=self.genomeplotter,
+            setup_axes=False,
+            title=None,
+            nproc=nproc,
+        )
+        gdraw_result = vp_gdf.draw_ccf(
+            ax=self.axd['mut'],
+            genomeplotter=self.genomeplotter,
+            setup_axes=False,
+            title=None,
+            nproc=nproc,
+            vaf_legend=True,
+        )
 
     def draw_solution(self, index=None, CN_kwargs=dict(), nproc=1):
         """self.cnvsample must be posessing solution candidates with the given corrector_id"""
@@ -4347,15 +4413,22 @@ class CNVDrawingResult:
                 raise Exception(f'Solution index is not available')
 
         # remove previous solution drawing
-        if self.predict_lines is not None:
-            for x in self.predict_lines:
+        if self.solutionpick_attrs['predict_lines'] is not None:
+            for x in self.solutionpick_attrs['predict_lines']:
+                try:
+                    x.remove()
+                except ValueError:
+                    pass
+        if self.solutionpick_attrs['ccf_dots'] is not None:
+            for x in self.solutionpick_attrs['ccf_dots']:
                 try:
                     x.remove()
                 except ValueError:
                     pass
 
         # init predict lines cache
-        self.predict_lines = list()
+        self.solutionpick_attrs['predict_lines'] = list()
+        self.solutionpick_attrs['ccf_dots'] = list()
 
         # clear CN axes
         plotmisc.clear_ax(self.axd['CN'])
@@ -4371,7 +4444,7 @@ class CNVDrawingResult:
         # draw CN
         CN_gdf.draw_CN(
             ax=self.axd['CN'],
-            genomeplotter=self.cnvsample.genomeplotter,
+            genomeplotter=self.genomeplotter,
             setup_axes=True,
             title=None,
             nproc=nproc,
@@ -4381,10 +4454,10 @@ class CNVDrawingResult:
         # draw predicted values
         gdraw_result = CN_gdf.draw_predicted_depth(
             ax=self.axd['depth'],
-            genomeplotter=self.cnvsample.genomeplotter,
+            genomeplotter=self.genomeplotter,
             nproc=nproc,
         )
-        self.predict_lines.append(gdraw_result.artist)
+        self.solutionpick_attrs['predict_lines'].append(gdraw_result.artist)
 
         baf_axd = {
             k: v for (k, v) in self.axd.items()
@@ -4394,10 +4467,23 @@ class CNVDrawingResult:
             gdraw_result = CN_gdf.draw_predicted_baf(
                 baf_index=baf_index,
                 ax=ax,
-                genomeplotter=self.cnvsample.genomeplotter,
+                genomeplotter=self.genomeplotter,
                 nproc=nproc,
             )
-            self.predict_lines.append(gdraw_result.artist)
+            self.solutionpick_attrs['predict_lines'].append(gdraw_result.artist)
+
+        # draw ccf
+        if self.vplist is not None:
+            vp_gdf = self.make_ccf_added_vp_gdf(self.vplist)
+            gdraw_result = vp_gdf.draw_ccf(
+                ax=self.axd['mut'],
+                genomeplotter=self.genomeplotter,
+                setup_axes=False,
+                title=None,
+                nproc=nproc,
+                vaf_legend=True,
+            )
+            self.solutionpick_attrs['ccf_dots'].append(gdraw_result.artist)
 
         # set title
         title = self.cnvsample.make_title(
@@ -4409,9 +4495,9 @@ class CNVDrawingResult:
 
     # redraw main figure
 
-    def redraw_mainfig(self, nosave=False, **kwargs):
+    def redraw_mainfig(self, save=False, **kwargs):
         draw_result = self.cnvsample.draw(corrector_id=self.corrector_id, **kwargs)
-        if not nosave:
+        if save:
             self.fig = draw_result.fig
             self.axd = {ax.get_label(): ax for ax in self.fig.get_axes()}
 

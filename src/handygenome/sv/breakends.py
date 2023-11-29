@@ -356,14 +356,14 @@ class Breakends:
     @property
     def svtype(self):
         if self.chrom_bnd1 != self.chrom_bnd2:
-            self.svtype = 'TRA'
+            return 'TRA'
         else:
             if (not self.is5prime_bnd1) and self.is5prime_bnd2:
-                self.svtype = 'DEL'
+                return 'DEL'
             elif self.is5prime_bnd1 and (not self.is5prime_bnd2):
-                self.svtype = 'DUP'
+                return 'DUP'
             elif self.is5prime_bnd1 == self.is5prime_bnd2:
-                self.svtype = 'INV'
+                return 'INV'
 
     @functools.cached_property
     def microhomology_info(self):
