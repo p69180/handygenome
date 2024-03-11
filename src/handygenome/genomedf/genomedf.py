@@ -16,7 +16,7 @@ import handygenome.deco as deco
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.tools as tools
 import handygenome.logutils as logutils
-import handygenome.cnv.rdnacopy as rdnacopy
+#import handygenome.cnv.rdnacopy as rdnacopy
 
 import handygenome.genomedf.genomedf_utils as genomedf_utils
 import handygenome.genomedf.genomedf_methods as genomedf_methods
@@ -50,6 +50,8 @@ class GenomeDataFrame(GenomeDataFrameBase, GenomeDataFrameDrawingBase):
         smooth_kwargs=dict(), 
         segment_kwargs=dict(),
     ):
+        import handygenome.cnv.rdnacopy as rdnacopy
+
         # set kwargs
         segment_kwargs = (
             dict()

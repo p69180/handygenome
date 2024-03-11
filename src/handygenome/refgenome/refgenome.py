@@ -1,3 +1,4 @@
+import operator
 import os
 import itertools
 import functools
@@ -9,9 +10,9 @@ import shutil
 import hashlib
 import json
 
+import numpy as np
 import pysam
 import pandas as pd
-import pyranges as pr
 
 import handygenome
 import handygenome.network as network
@@ -1111,7 +1112,7 @@ class ChromLengthHash:
         return cls(chrom_list, length_list)
 
     @staticmethod
-    def compare_lendicts(self_lendict, other_lendict):
+    def compare_two_lendicts(self_lendict, other_lendict):
         self_chroms = set(self_lendict.keys())
         other_chroms = set(other_lendict.keys())
 
@@ -1124,18 +1125,25 @@ class ChromLengthHash:
         )
         return length_matches, common_chroms, self_only_chroms, other_only_chroms
 
+    def compare_with_other(self, other):
+        assert isinstance(other, self.__class__)
+        length_matches, common_chroms, self_only_chroms, other_only_chroms = (
+            self.compare_two_lendicts(self.lendict, other.lendict)
+        )
+        return length_matches, common_chroms, self_only_chroms, other_only_chroms
+
     def check_length_compatibility(self, other):
         """Used for parent standard identification"""
         assert isinstance(other, self.__class__)
         length_matches, common_chroms, self_only_chroms, other_only_chroms = (
-            self.compare_lendicts(self.normchrom_lendict, other.normchrom_lendict)
+            self.compare_two_lendicts(self.normchrom_lendict, other.normchrom_lendict)
         )
         return length_matches
 
     def check_issubset(self, other):
         assert isinstance(other, self.__class__)
         length_matches, common_chroms, self_only_chroms, other_only_chroms = (
-            self.compare_lendicts(self.lendict, other.lendict)
+            self.compare_two_lendicts(self.lendict, other.lendict)
         )
         is_subset = ((len(self_only_chroms) == 0) and length_matches)
         return is_subset, other_only_chroms
@@ -1152,7 +1160,6 @@ class ChromLengthHash:
         common_chroms = set(self.lendict.keys()).intersection(other.lendict.keys())
         return self.get_hash(common_chroms) == other.get_hash(common_chroms)
                 
-                    
 
 
 ####################
@@ -1173,6 +1180,14 @@ def standardize_refver(refver):
 standardize = standardize_refver
 
 
+def get_refseq_refver(refver):
+    return REFVERINFO.get_refver_entity(refver)['RefSeq_refver']
+
+
+def get_species(refver):
+    return REFVERINFO.get_refver_entity(refver)['species']
+
+
 def compare_refvers(refver1, refver2):
     return standardize(refver1) == standardize(refver2)
 
@@ -1189,6 +1204,23 @@ def deco_standardize(func):
         ba = sig.bind(*args, **kwargs)
         ba.apply_defaults()
         ba.arguments['refver'] = standardize_refver(ba.arguments['refver'])
+        return func(**ba.arguments)
+
+    return wrapper
+
+
+def deco_refseq_refver(func):
+    sig = inspect.signature(func)
+    if 'refver' not in sig.parameters.keys():
+        raise Exception(
+            f'parameter names must include "refver".'
+        )
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        ba = sig.bind(*args, **kwargs)
+        ba.apply_defaults()
+        ba.arguments['refver'] = get_refseq_refver(ba.arguments['refver'])
         return func(**ba.arguments)
 
     return wrapper
@@ -1305,41 +1337,72 @@ def infer_refver_bampath(bampath):
 
 
 def infer_refver_base(contigs, lengths):
+    ###########################
+    # prepare compare_results #
+    ###########################
     query_hash = ChromLengthHash(contigs, lengths)
     compare_results = list()
     for standard in REFVERINFO.list_standards():
         target_hash = REFVERINFO.get_chromlenhash(standard)
-        #if target_hash is None:
-        #    continue
-        is_subset, other_only_chroms = query_hash.check_issubset(target_hash)
-        refverinfo = {
+        #is_subset, other_only_chroms = query_hash.check_issubset(target_hash)
+        (
+            length_matches, 
+            common_chroms, 
+            self_only_chroms, 
+            other_only_chroms,
+        ) = query_hash.compare_with_other(target_hash)
+        if not length_matches:
+            continue
+
+        compare_item = {
             'standard': standard, 
-            'is_subset': is_subset, 
-            'other_only_chroms': other_only_chroms,
+            #'is_subset': is_subset, 
+            'length_matches': length_matches, 
+            'common_chroms': common_chroms, 
+            'query_only_chroms': self_only_chroms, 
+            'target_only_chroms': other_only_chroms,
         }
-        compare_results.append(refverinfo)
+        compare_results.append(compare_item)
 
-    subset_refverinfos = [x for x in compare_results if x['is_subset']]
-    if len(subset_refverinfos) == 0:
-        return None
-    else:
-        if len(subset_refverinfos) == 1:
-            chosen_info = subset_refverinfos[0]
-        elif len(subset_refverinfos) > 1:
-            minimal_descrepancy_ones = tools.multi_min(
-                subset_refverinfos, 
-                key=(lambda x: len(x['other_only_chroms'])),
-            )
-            if len(minimal_descrepancy_ones) == 1:
-                chosen_info = minimal_descrepancy_ones[0]
-            else:
-                raise Exception(f'Cannot break tie: {subset_refverinfos}')
+    ####################################
+    # pick result from compare_results #
+    ####################################
+    if len(compare_results) == 0:
+        #return None
+        raise Exception(f'Could not find a reference version with matching chromosome lengths')
 
-        return chosen_info['standard']
+    minimal_descrepancies = tools.multi_max(
+        compare_results, 
+        key=(lambda x: len(x['common_chroms'])),
+    )  
+    minimal_descrepancies = tools.multi_min(
+        minimal_descrepancies, 
+        key=(lambda x: len(x['target_only_chroms'])),
+    )  
+    if len(minimal_descrepancies) > 1:
+        raise Exception(f'Cannot break tie: {minimal_descrepancies}')
+    chosen_item = minimal_descrepancies[0]
+
+    return chosen_item['standard']
 
 
 def infer_refver_pysamwrapper(wrapper):
     return infer_refver_base(wrapper.references, wrapper.lengths)
+
+
+
+####################
+# RefverObjectBase #
+####################
+
+class RefverObjectBase:
+    @property
+    def chromdict(self):
+        return get_chromdict(self.refver)
+                    
+    @property
+    def fasta(self):
+        return get_fasta(self.refver)
 
 
 

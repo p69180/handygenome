@@ -9,6 +9,7 @@ import uuid
 import textwrap
 import itertools
 import tempfile
+import shlex
 
 import pyranges as pr
 
@@ -860,7 +861,8 @@ class Job:
             raise Exception(self.scancel_err_info)
         else:
             self.update()
-            self.logger.info(f'Cancelled a job: JobID - {self.jobid}')
+            #self.logger.info(f'Cancelled a job: JobID - {self.jobid}')
+            logutils.log(f'Cancelled a job: JobID - {self.jobid}', level='info')
 
     def set_status(self, key):
         self.status[key] = True
@@ -921,7 +923,8 @@ class Job:
         else:
             self.jobid = int(p.stdout.split()[-1])
             self.submitted = True
-            self.logger.info(f'Submitted a job: JobID - {self.jobid}')
+            #self.logger.info(f'Submitted a job: JobID - {self.jobid}')
+            logutils.log(f'Submitted a job: JobID - {self.jobid}', level='info')
 
     def _submit_path(self):
         p = subprocess.run([SBATCH, self.jobscript_path],
@@ -939,7 +942,8 @@ class Job:
         else:
             self.jobid = int(p.stdout.split()[-1])
             self.submitted = True
-            self.logger.info(f'Submitted a job: JobID - {self.jobid}')
+            #self.logger.info(f'Submitted a job: JobID - {self.jobid}')
+            logutils.log(f'Submitted a job: JobID - {self.jobid}', level='info')
 
 
 class JobList(list):
@@ -1057,7 +1061,8 @@ class JobList(list):
         )
 
         # concise information (to be printed to stderr)
-        self.logger.info(
+        #self.logger.info(
+        logutils.log(
             textwrap.dedent(
                 f"""\
                 Current job status (title: {self.title}):
@@ -1065,7 +1070,8 @@ class JobList(list):
                     Pending: {n_pending}
                     Running: {n_running}
                     Finished: {n_finished}"""
-            )
+            ),
+            level='info',
         )
 
     def log_epilogue(self):
@@ -1089,14 +1095,16 @@ class JobList(list):
                 """
             )
         )
-        self.logger.info(
+        #self.logger.info(
+        logutils.log(
             textwrap.dedent(
                 f"""\
                 All finished.
                     Successful jobs: {n_success}
                     Failed jobs: {n_failure}
                     Jobs with unknown exit statuses: {n_unknown}"""
-            )
+            ),
+            level='info',
         )
 
     def submit_and_wait(self):
@@ -1112,10 +1120,14 @@ class JobList(list):
                     time.sleep(self.intv_check)
                     continue
         except KeyboardInterrupt:
-            self.logger.info(
-                f'RECEIVED A KEYBOARD INTERRUPT; '
-                f'will cancel all pending and running jobs with scancel,'
-                f' then exit immediately.'
+            #self.logger.info(
+            logutils.log(
+                (
+                    f'RECEIVED A KEYBOARD INTERRUPT; '
+                    f'will cancel all pending and running jobs with scancel,'
+                    f' then exit immediately.'
+                ),
+                level='info',
             )
             for job in itertools.chain(
                 self.sublists['pending'], self.sublists['running']
@@ -1285,15 +1297,17 @@ scontrol command: {cmdargs}'''
 def run_jobs(
     jobscript_paths, 
     sched, 
-    intv_check, 
-    intv_submit, 
-    max_submit, 
-    logger, 
-    log_dir, 
-    job_status_logpath=None,
+    log_dir=None, 
     raise_on_failure=True,
     log_paths=None,
-    title=None,
+    **kwargs,
+
+    #intv_check, 
+    #intv_submit, 
+    #max_submit, 
+    #logger, 
+    #job_status_logpath=None,
+    #title=None,
 ):
     assert sched in ('local', 'slurm')
 
@@ -1305,12 +1319,7 @@ def run_jobs(
     elif sched == 'slurm':
         joblist = JobList(
             jobscript_paths, 
-            intv_check=intv_check,
-            intv_submit=intv_submit,
-            max_submit=max_submit,
-            logger=logger,
-            job_status_logpath=job_status_logpath,
-            title=title,
+            **kwargs,
         )
         joblist.run()
 
@@ -1407,9 +1416,118 @@ def make_jobscript_string(lines, shell = False, python = False, **kwargs):
     return '\n'.join(string_list)
 
 
-def make_jobscript(jobscript_path, lines, **kwargs):
+def make_jobscript(
+    jobscript_path, 
+    lines, 
+    shebang=None, 
+    nproc=1,
+    output='/dev/null',
+    jobname=None,
+):
     check_outfile_validity(jobscript_path)
-    jobscript_string = make_jobscript_string(lines, **kwargs)
-    with open(jobscript_path, 'w') as outfile:
-        outfile.write(jobscript_string)
+
+    contents = list()
+
+    if shebang is None:
+        shebang = tools.which('bash')
+    contents.append(f'#!{shebang}')
+    contents.append(f'#SBATCH -N 1 -n 1')
+    contents.append(f'#SBATCH -c {nproc}')
+    contents.append(f'#SBATCH -o {output}')
+    if jobname is not None:
+        contents.append(f'#SBATCH -J {jobname}')
+
+    contents.append('')
+
+    contents.extend(lines)
+
+    with open(jobscript_path, 'wt') as outfile:
+        outfile.write('\n'.join(contents))
+
+
+##############
+# subprocess #
+##############
+
+def run_with_slurm(
+    args, 
+    remove_jobscript=False, 
+    tmpfile_dir=os.getcwd(), 
+    jobscript_kwargs=dict(),
+    runjob_kwargs=dict(),
+):
+    fd, jobscript_path = tempfile.mkstemp(
+        prefix=f'slurm_script_', suffix='.sbatch', dir=tmpfile_dir,
+    )
+    os.close(fd)
+
+    make_jobscript(
+        jobscript_path=jobscript_path, 
+        lines=[shlex.join(args)], 
+        **jobscript_kwargs,
+    )
+    
+    success, exitcode_list = run_jobs(
+        [jobscript_path], 
+        sched='slurm', 
+        raise_on_failure=True,
+        **runjob_kwargs,
+    )
+
+    if remove_jobscript:
+        os.remove(jobscript_path)
+
+    return success, exitcode_list, jobscript_path
+
+
+def run_subprocess(
+    args, 
+
+    set_wd=True,
+
+    use_ssh=False, 
+    hostname=None,
+
+    use_slurm=False,
+    slurm_kwargs=dict(),
+):
+    assert sum([use_ssh, use_slurm]) <= 1, f'No more than one of "use_ssh", "use_slurm" may be set True'
+
+    if use_slurm:
+        # slurm automatically sets wd
+        success, exitcode_list, jobscript_path = run_with_slurm(
+            args, 
+            **slurm_kwargs,
+        )
+        return success, exitcode_list, jobscript_path
+    else:
+        if use_ssh:
+            ssh_path = tools.which('ssh')
+            if set_wd:
+                args = [
+                    ssh_path, 
+                    hostname, 
+                    f'cd {os.getcwd()} ; {shlex.join(args)}',
+                ]
+            else:
+                args = [
+                    ssh_path, 
+                    hostname, 
+                    shlex.join(args),
+                ]
+
+        try:
+            # subprocess.run automatically sets wd
+            p = subprocess.run(
+                args, 
+                capture_output=False, 
+                #text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            msg = repr(vars(exc))
+            raise Exception(msg) from exc
+
+        return p
+
 

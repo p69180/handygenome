@@ -10,7 +10,6 @@ import logging
 import uuid
 import array
 import multiprocessing
-#import importlib
 
 import pysam
 import pyranges as pr
@@ -30,7 +29,7 @@ import handygenome.plot.filterinfo as plot_filterinfo
 import handygenome.variant.infoformat as infoformat
 import handygenome.vcfeditor.initvcf as initvcf
 import handygenome.vcfeditor.headerhandler as headerhandler
-#import handygenome.annotation.data as annotdata
+import handygenome.annotation.data as annotdata
 import handygenome.annotation.ensembl_feature as ensembl_feature
 import handygenome.annotation.ensembl_parser as ensembl_parser
 import handygenome.annotation.ensembl_rest as ensembl_rest
@@ -41,21 +40,26 @@ import handygenome.annotation.oncokb as liboncokb
 import handygenome.read.readplus as readplus
 from handygenome.read.readplus import ReadPlusPairList
 
+from handygenome.annotation.annotitem import AnnotItemInfoSingle
 import handygenome.annotation.readstats as libreadstats
 from handygenome.annotation.readstats import AlleleclassError
 import handygenome.variant.vcfspec as libvcfspec
+from handygenome.variant.vcfspec import Vcfspec
 import handygenome.vcfeditor.indexing as indexing
 #import handygenome.cnv.misc as cnvmisc
 from handygenome.variant.filter import FilterResultInfo, FilterResultFormat
 import handygenome.variant.ponbams as libponbams
 import handygenome.vcfeditor.misc as vcfmisc
 import handygenome.cnv.cnvcall as cnvcall
+from handygenome.cnv.cnvcall import CCFInfo
 
 from handygenome.genomedf.genomedf import GenomeDataFrame
 import handygenome.genomedf.genomedf_utils as genomedf_utils
 import handygenome.genomedf.genomedf_draw as genomedf_draw
 import handygenome.plot.misc as plotmisc
 from handygenome.genomedf.genomedf_draw import GenomeDrawingFigureResult
+
+#import handygenome.signature.signatureresult as libsigresult
 
 
 #READCOUNT_FORMAT_KEY = "allele_readcounts"
@@ -104,6 +108,9 @@ class VariantPlusInitParams(dict):
 
 
 class VariantPlus:
+    ONCOKB_SV_KEY_SEP = ':::'
+
+
     # CONSTRUCTORS
     @classmethod
     def from_vr(
@@ -133,6 +140,7 @@ class VariantPlus:
     @classmethod
     def from_vcfspec(
         cls, vcfspec, 
+        omit_vr=False,
         init_all_attrs=False,
         vp_init_params=dict(),
         preset_vp_init_params=None,
@@ -144,7 +152,8 @@ class VariantPlus:
 
         result.vcfspec = vcfspec
         result.refver = result.vcfspec.refver
-        result.vr = initvcf.create_vr(chromdict=result.chromdict, vcfspec=result.vcfspec)
+        if not omit_vr:
+            result.init_vr()
 
         # set init params
         result.set_vp_init_params(init_all_attrs, vp_init_params, preset_vp_init_params)
@@ -162,6 +171,26 @@ class VariantPlus:
             vcfspec = bnds.get_vcfspec_bnd2()
         return cls.from_vcfspec(vcfspec, chromdict, **kwargs)
 
+    @classmethod
+    def from_cnv(cls, cnvevent):
+        fasta = refgenome.get_fasta(cnvevent.refver)
+        ref = fasta.fetch(cnvevent.chrom, cnvevent.start0, cnvevent.start0 + 1)
+        vcfspec = Vcfspec(
+            chrom=cnvevent.chrom, 
+            pos=(cnvevent.start0 + 1), 
+            ref=ref,
+            alts=(ref,),
+            refver=cnvevent.refver,
+        )
+        result = cls.from_vcfspec(vcfspec)
+        result.cnv = cnvevent
+
+    def init_vr(self):
+        self.vr = initvcf.create_vr(
+            chromdict=self.chromdict, 
+            vcfspec=self.vcfspec,
+        )
+
     def set_vp_init_params(self, init_all_attrs, vp_init_params, preset_vp_init_params):
         if preset_vp_init_params is None:
             self.vp_init_params = VariantPlusInitParams()
@@ -171,8 +200,11 @@ class VariantPlus:
 
     def init_common(self, popfreq_metadata, cosmic_metadata):
         # SV attrs
-        self.is_sv = varianthandler.check_SV(self.vr)
         self.set_bnds_attributes()  # is_bnd1, bnds
+
+        # df caches
+        self._df = None
+        self._vafdf = None
 
         # popfreq & cosmic
         self._init_popfreq(
@@ -185,8 +217,6 @@ class VariantPlus:
         )
 
         # features
-        self._init_transcript(init_blank=(not self.vp_init_params['init_transcript']))
-
         self._init_transcript(init_blank=(not self.vp_init_params['init_transcript']))
         self._init_regulatory(init_blank=(not self.vp_init_params['init_regulatory']))
         self._init_motif(init_blank=(not self.vp_init_params['init_motif']))
@@ -211,48 +241,63 @@ class VariantPlus:
         if alteration_strings is None:
             string = str(None)
         else:
-            tmp = list()
-            for alt_idx, tups in alteration_strings.items():
-                gene_alt_concat = ", ".join(
-                    " ".join(x[:2]) for x in tups
-                )
-                tmp.append(f'alt_index {alt_idx}: {gene_alt_concat}')
-            string = '; '.join(tmp)
+            if self.is_sv:
+                string = alteration_strings
+            else:
+                tmp = list()
+                for alt_idx, tups in alteration_strings.items():
+                    gene_alt_concat = ", ".join(
+                        " ".join(x[:2]) for x in tups
+                    )
+                    tmp.append(f'alt_index {alt_idx}: {gene_alt_concat}')
+                string = '; '.join(tmp)
 
         return f'<VariantPlus(vcfspec={self.vcfspec}, alteration=({string}))>'
 
     def get_alteration_strings(self, one_letter=True):
-        if self.transcript is None:
+        if (self.transcript is None) or (self.transcript.is_missing):
             return None
         else:
-            alteration_strings = {alt_idx: set() for alt_idx in range(len(self.vcfspec.alts))}
-            for alt_idx, tr_set in enumerate(self.transcript):
-                for tr in tr_set.canon_ovlp.values():
-                    hgvsp_genename = tr.get_hgvsp_genename(one_letter=one_letter)
-                    if hgvsp_genename is None:
-                        hgvsc_genename = tr.get_hgvsc_genename()
-                        if hgvsc_genename is None:
-                            alteration_strings[alt_idx].add(str(None))
+            if self.is_sv:
+                gene1_names = self.transcript[0]['bnd1'].get_gene_names()
+                if len(gene1_names) == 1:
+                    gene1_names = gene1_names.pop()
+                gene2_names = self.transcript[0]['bnd2'].get_gene_names()
+                if len(gene2_names) == 1:
+                    gene2_names = gene2_names.pop()
+
+                return f'{gene1_names} | {gene2_names}'
+            else:
+                alteration_strings = {
+                    alt_idx: set() for alt_idx in range(len(self.vcfspec.alts))
+                }
+                for alt_idx, tr_set in enumerate(self.transcript):
+                    for tr in tr_set.canon_ovlp.values():
+                        hgvsp_genename = tr.get_hgvsp_genename(one_letter=one_letter)
+                        if hgvsp_genename is None:
+                            hgvsc_genename = tr.get_hgvsc_genename()
+                            if hgvsc_genename is None:
+                                alteration_strings[alt_idx].add(str(None))
+                            else:
+                                alteration_strings[alt_idx].add((hgvsc_genename, 'noncoding'))
                         else:
-                            alteration_strings[alt_idx].add((hgvsc_genename, 'noncoding'))
-                    else:
-                        alteration_strings[alt_idx].add((hgvsp_genename, 'coding'))
+                            alteration_strings[alt_idx].add((hgvsp_genename, 'coding'))
 
-                if (
-                    (len(alteration_strings[alt_idx]) > 1) 
-                    and (str(None) in alteration_strings[alt_idx])
-                ):
-                    alteration_strings[alt_idx].remove(str(None))
+                    if (
+                        (len(alteration_strings[alt_idx]) > 1) 
+                        and (str(None) in alteration_strings[alt_idx])
+                    ):
+                        alteration_strings[alt_idx].remove(str(None))
 
-            alteration_strings = {
-                key: set(
-                    tuple(x[0].split()) + (x[1],) 
-                    for x in val
-                )
-                for key, val in alteration_strings.items()
-            }
-                
-            return alteration_strings
+                alteration_strings = {
+                    key: set(
+                        tuple(x[0].split()) + (x[1],) 
+                        for x in val
+                    )
+                    for key, val in alteration_strings.items()
+                }
+                    
+                return alteration_strings
 
     ############
     # pickling #
@@ -267,7 +312,10 @@ class VariantPlus:
         #self.vr = initvcf.create_vr(chromdict=self.chromdict, vcfspec=self.vcfspec)
         #self.write_annots_to_vr()
 
-    # BASICS
+    ##########
+    # BASICS #
+    ##########
+
     @property
     def chromdict(self):
         return refgenome.get_chromdict(self.refver)
@@ -307,6 +355,10 @@ class VariantPlus:
     @property
     def sampleids(self):
         return tuple(self.vr.header.samples)
+  
+    @property
+    def is_sv(self):
+        return self.vcfspec.check_is_sv()
 
     def get_allele(self, allele_index):
         if allele_index == 0:
@@ -318,35 +370,39 @@ class VariantPlus:
             except IndexError:
                 return pd.NA
 
-    # BREAKENDS
+    #############
+    # BREAKENDS #
+    #############
+
     def get_vr_bnd2(self):
         assert self.bnds is not None, f'"bnds" attribute must be set.'
 
         vr_bnd2 = self.vr.header.new_record()
         vr_bnd2.id = self.bnds.get_id_bnd2()
         vcfspec_bnd2 = self.bnds.get_vcfspec_bnd2()
-        varianthandler.apply_vcfspec(vr_bnd2, vcfspec_bnd2)
+        vcfspec_bnd2.apply_to_vr(vr_bnd2)
         vr_bnd2.info["MATEID"] = self.vr.id
 
         return vr_bnd2
 
     def set_bnds_attributes(self):
         if self.is_sv:
-            vr_svinfo = libbnd.get_vr_svinfo_standard_vr(
-                self.vr,
-                self.fasta,
-                self.chromdict,
-            )
-            self.is_bnd1 = vr_svinfo["is_bnd1"]
-            self.bnds = libbnd.get_bnds_from_vr_svinfo(
-                self.vr, vr_svinfo, self.fasta, self.chromdict
-            )
+            self.bnds = self.vcfspec.get_bnds()
+            self.is_bnd1 = self.vcfspec.check_is_bnd1()
         else:
-            self.is_bnd1 = None
             self.bnds = None
+            self.is_bnd1 = None
 
-    # ANNOTATION GENERAL
-    def write_annots_to_vr(self, fill_missing_sample=True):
+    ######################
+    # ANNOTATION GENERAL #
+    ######################
+
+    def write_annots_to_vr(
+        self, 
+        omit_transcript=False,
+        omit_oncokb=False,
+        fill_missing_sample=True,
+    ):
         # Vcfspec
         if not self.vcfspec.components.is_missing:
             self.vcfspec.components.write(self.vr)
@@ -362,9 +418,18 @@ class VariantPlus:
             'oncokb',
             #'filter',
         ):
+            if omit_transcript and (key == 'transcript'):
+                continue
+            if omit_oncokb and (key == 'oncokb'):
+                continue
+
             annot = getattr(self, key)
             if not annot.is_missing:
-                annot.write(self.vr)
+                try:
+                    annot.write(self.vr)
+                except:
+                    print(annot)
+                    raise
         # FORMAT
         for key in (
             'readstats_dict',
@@ -399,7 +464,7 @@ class VariantPlus:
             self.cosmic = libcosmic.CosmicInfoALTlist.from_vr(self.vr, metadata=metadata)
 
     def create_popfreq(self):
-        dbsnp_vcf = annotdata.VCFS_DBSNP[self.refver]
+        dbsnp_vcf = annotdata.VCFS_DBSNP[refgenome.get_refseq_refver(self.refver)]
         self.popfreq = libpopfreq.PopfreqInfoALTlist.from_vcfspec(
             vcfspec=self.vcfspec, 
             dbsnp_vcf=dbsnp_vcf,
@@ -407,7 +472,7 @@ class VariantPlus:
         )
 
     def create_cosmic(self):
-        cosmic_vcf = annotdata.VCFS_COSMIC[self.refver]
+        cosmic_vcf = annotdata.VCFS_COSMIC[refgenome.get_refseq_refver(self.refver)]
         self.cosmic = libcosmic.CosmicInfoALTlist.from_vcfspec(
             vcfspec=self.vcfspec, 
             cosmic_vcf=cosmic_vcf,
@@ -421,7 +486,108 @@ class VariantPlus:
         else:
             self.oncokb = liboncokb.OncoKBInfoALTlist.from_vr(self.vr)
 
-    def create_oncokb(self, token):
+    def create_oncokb(self, *args, **kwargs):
+        if self.is_sv:
+            return self.create_oncokb_sv(*args, **kwargs)
+        else:
+            return self.create_oncokb_nonsv(*args, **kwargs)
+
+    def get_gene_align_info(self):
+        genelist_bnd1 = self.transcript[0]['bnd1'].get_gene_names()
+        genelist_bnd2 = self.transcript[0]['bnd2'].get_gene_names()
+        if len(genelist_bnd1) == 0:
+            genelist_bnd1 = {None}
+        if len(genelist_bnd2) == 0:
+            genelist_bnd2 = {None}
+
+        result = list()
+
+        gene_combs = list(itertools.product(genelist_bnd1, genelist_bnd2))
+        #is_functional_list = list()
+        for gene1, gene2 in gene_combs:
+            # gene is forward
+            if gene1 is None:
+                gene1_isforward = None
+            else:
+                gene1_isforward = self.transcript[0]['bnd1'].get_gene_is_forward(gene1)
+
+            if gene2 is None:
+                gene2_isforward = None
+            else:
+                gene2_isforward = self.transcript[0]['bnd2'].get_gene_is_forward(gene2)
+
+            # is functional
+            if any((x is None) for x in [gene1, gene2]):
+                is_functional = False
+            elif gene1 == gene2:
+                is_functional = False
+            else:
+                if self.bnds.is5prime_bnd1 == self.bnds.is5prime_bnd2:
+                    is_functional = (gene1_isforward != gene2_isforward)
+                else:
+                    is_functional = (gene1_isforward == gene2_isforward)
+
+            # result
+            subresult = dict()
+            subresult['gene_pair'] = (gene1, gene2)
+            subresult['is_functional'] = is_functional
+            subresult['gene1_isforward'] = gene1_isforward
+            subresult['gene2_isforward'] = gene2_isforward
+
+            result.append(subresult)
+            #is_functional_list.append(is_functional)
+            
+        #return gene_combs, is_functional_list
+        return result
+
+    def create_oncokb_sv(
+        self, token=None,
+        gene_combinations=None,
+        oncokb_query_result=None,
+    ):
+        refseq_refver = refgenome.get_refseq_refver(self.refver)
+        assert refseq_refver in ['GRCh37', 'GRCh38']
+        assert self.vcfspec.check_monoalt(raise_with_false=False)
+
+        if (
+            (gene_combinations is None)
+            or (oncokb_query_result is None)
+        ):
+            gene_align_info = self.get_gene_align_info()
+            gene_combinations = [x['gene_pair'] for x in gene_align_info]
+            is_functional_list = [x['is_functional'] for x in gene_align_info]
+
+            #if len(gene_combinations) == 0:
+            #    oncokb_altlist = liboncokb.OncoKBInfoALTlist()
+            #    oncokb_altlist.append(
+            #        AnnotItemInfoSingle(is_missing=False)
+            #    )
+            #    self.oncokb = oncokb_altlist
+            #    return
+
+            assert token is not None
+
+            gene1_names, gene2_names = zip(*gene_combinations)
+            oncokb_query_result = liboncokb.query_sv_post(
+                gene1_names,
+                gene2_names,
+                is_functional=is_functional_list,
+                token=token,
+                #sv_types='FUSION',
+                tumor_types=None,
+                GRCh38=(refseq_refver == 'GRCh38'),
+            )
+
+        subdic = AnnotItemInfoSingle(is_missing=False)
+        for (gene1, gene2), val in zip(gene_combinations, oncokb_query_result):
+            key = f'{gene1}{self.__class__.ONCOKB_SV_KEY_SEP}{gene2}'
+            subdic[key] = val
+        oncokb_altlist = liboncokb.OncoKBInfoALTlist()
+        oncokb_altlist.append(subdic)
+
+        self.oncokb = oncokb_altlist
+
+    def create_oncokb_nonsv(self, token):
         oncokb_altlist = liboncokb.OncoKBInfoALTlist()
         oncokb_altlist.extend(
             liboncokb.query_hgvsg_post(
@@ -464,23 +630,47 @@ class VariantPlus:
         self._init_motif(init_blank=init_blank)
         self._init_repeat(init_blank=init_blank)
 
-    def create_features(
+    def create_features(self, *args, **kwargs):
+        if self.is_sv:
+            return self.create_features_sv(*args, **kwargs)
+        else:
+            return self.create_features_nonsv(*args, **kwargs)
+
+    def create_features_sv(
+        self,
+        vep_result=None,
+    ):
+        if vep_result is None:
+            vep_result = self.bnds.get_vep_result()
+        parsed = [ensembl_parser.parse_rest_vep(x) for x in vep_result]
+
+        # transcript
+        transcript = ensembl_feature.TranscriptSetALTlist()
+        subdic = AnnotItemInfoSingle(is_missing=False)
+        subdic['bnd1'] = parsed[0]['transcript']
+        subdic['bnd2'] = parsed[1]['transcript']
+        transcript.append(subdic)
+        self.transcript = transcript
+
+    def create_features_nonsv(
         self, vep_method='rest', distance=5000, 
         with_CADD=True, with_Phenotypes=False, with_canonical=True,
         with_mane=True, with_miRNA=False, with_numbers=True, 
         with_protein=True, with_ccds=True, with_hgvs=True,
+        rest_vep_results=None,
     ):
         assert vep_method in ('rest', 'local')
 
         # run vep and parse the result
-        rest_vep_results = ensembl_rest.vep_post(
-            refver=self.refver,
-            vcfspec_list=list(self.vcfspec.iter_monoalts()),
-            distance=distance, 
-            with_CADD=with_CADD, with_Phenotypes=with_Phenotypes, with_canonical=with_canonical,
-            with_mane=with_mane, with_miRNA=with_miRNA, with_numbers=with_numbers, 
-            with_protein=with_protein, with_ccds=with_ccds, with_hgvs=with_hgvs,
-        )
+        if rest_vep_results is None:
+            rest_vep_results = ensembl_rest.vep_post(
+                refver=self.refver,
+                vcfspec_list=list(self.vcfspec.iter_monoalts()),
+                distance=distance, 
+                with_CADD=with_CADD, with_Phenotypes=with_Phenotypes, with_canonical=with_canonical,
+                with_mane=with_mane, with_miRNA=with_miRNA, with_numbers=with_numbers, 
+                with_protein=with_protein, with_ccds=with_ccds, with_hgvs=with_hgvs,
+            )
         parsed = [ensembl_parser.parse_rest_vep(x) for x in rest_vep_results]
         transcript = ensembl_feature.TranscriptSetALTlist()
         for x in parsed:
@@ -488,9 +678,9 @@ class VariantPlus:
         regulatory = parsed[0]['regulatory']
         motif = parsed[0]['motif']
         # postprocess
-        tabixfile_geneset = annotdata.TABIXFILES_GENESET[self.refver]
-        tabixfile_regulatory = annotdata.TABIXFILES_REGULATORY[self.refver]
-        tabixfile_repeats = annotdata.TABIXFILES_REPEATS[self.refver]
+        tabixfile_geneset = annotdata.TABIXFILES_GENESET[refgenome.get_refseq_refver(self.refver)]
+        tabixfile_regulatory = annotdata.TABIXFILES_REGULATORY[refgenome.get_refseq_refver(self.refver)]
+        tabixfile_repeats = annotdata.TABIXFILES_REPEATS[refgenome.get_refseq_refver(self.refver)]
         # transcript
         for alt_idx, tr_set in enumerate(transcript):
             tr_set.update_ensembl_gff(
@@ -583,7 +773,10 @@ class VariantPlus:
 #        other_alleleindexes = all_alleleindexes.difference([allele_index])
 #        return tuple(sorted(other_alleleindexes))
 
-    # ANNOTATION - readstats and related
+    ######################################
+    # ANNOTATION - readstats and related #
+    ######################################
+
     def _init_readstats(self, init_blank=False, sampleid_list=None):
         if init_blank:
             self.readstats_dict = libreadstats.ReadStatsSampledict.init_missing(self.vr)
@@ -772,45 +965,48 @@ class VariantPlus:
         for allele_index, allele in enumerate(self.alleles):
             print(allele, self.get_vaf(sampleid, allele_index=allele_index, exclude_other=exclude_other))
 
-    # CNV-RELATED
-    def fetch_cnvinfo(self, segments_df):
-        nearest = self.get_gr().nearest(pr.PyRanges(segments_df))
-        seg_row = nearest.df.iloc[0, :]
-        CNt = int(seg_row.CNt)
-        A = np.nan if np.isnan(seg_row.A) else int(seg_row.A)
-        B = np.nan if np.isnan(seg_row.B) else int(seg_row.B)
-        return CNt, A, B
+#    # CNV-RELATED
+#    def fetch_cnvinfo(self, segments_df):
+#        nearest = self.get_gr().nearest(pr.PyRanges(segments_df))
+#        seg_row = nearest.df.iloc[0, :]
+#        CNt = int(seg_row.CNt)
+#        A = np.nan if np.isnan(seg_row.A) else int(seg_row.A)
+#        B = np.nan if np.isnan(seg_row.B) else int(seg_row.B)
+#        return CNt, A, B
+#
+#    def get_ccf_CNm(self, segments_df, is_female, cellularity, sampleid, allele_index=1, likelihood='diff'):
+#        # set params
+#        CNt, A, B = self.fetch_cnvinfo(segments_df)
+#        if cnvmisc.check_haploid(is_female, self.chrom):
+#            CNn = 1
+#            CNB = None
+#        else:
+#            CNn = 2
+#            CNB = B
+#
+#        if likelihood == 'binom':
+#            readstats = self.readstats_dict[sampleid]
+#            total_read = readstats.get_total_rppcount()
+#            var_read = readstats['rppcounts'][allele_index]
+#        elif likelihood == 'diff':
+#            total_read = None
+#            var_read = None
+#
+#        return cnvmisc.get_ccf_CNm(
+#            vaf=self.get_vaf(sampleid, allele_index), 
+#            cellularity=cellularity, 
+#            CNt=CNt, 
+#            CNB=CNB, 
+#            likelihood=likelihood, 
+#            total_read=total_read, 
+#            var_read=var_read, 
+#            CNn=CNn,
+#        )
 
-    def get_ccf_CNm(self, segments_df, is_female, cellularity, sampleid, allele_index=1, likelihood='diff'):
-        # set params
-        CNt, A, B = self.fetch_cnvinfo(segments_df)
-        if cnvmisc.check_haploid(is_female, self.chrom):
-            CNn = 1
-            CNB = None
-        else:
-            CNn = 2
-            CNB = B
+    ###########
+    # filters #
+    ###########
 
-        if likelihood == 'binom':
-            readstats = self.readstats_dict[sampleid]
-            total_read = readstats.get_total_rppcount()
-            var_read = readstats['rppcounts'][allele_index]
-        elif likelihood == 'diff':
-            total_read = None
-            var_read = None
-
-        return cnvmisc.get_ccf_CNm(
-            vaf=self.get_vaf(sampleid, allele_index), 
-            cellularity=cellularity, 
-            CNt=CNt, 
-            CNB=CNB, 
-            likelihood=likelihood, 
-            total_read=total_read, 
-            var_read=var_read, 
-            CNn=CNn,
-        )
-
-    # filters
     def reset_sample_filter(self, sampleid):
         self.set_format(sampleid, libfilter.FORMAT_FILTER_META["ID"], None)
 
@@ -847,7 +1043,10 @@ class VariantPlus:
                 ),
             )
 
-    # visualizations
+    ##################
+    # visualizations #
+    ##################
+
     def show_igv(
         self, igv, bam_dict, 
         max_width_oneside=None,
@@ -965,10 +1164,14 @@ class VariantPlus:
         else:
             if colorby is None:
                 if self.is_sv:
-                    colorby = 'PAIR_ORIENTATION'
+                    #colorby = 'PAIR_ORIENTATION INSERT_SIZE'
+                    colorby = 'NONE'
                 else:
-                    colorby = 'FIRST_OF_PAIR_STRAND'
-            igv.cmd(f"colorBy {colorby}")
+                    colorby = 'PAIR_ORIENTATION INSERT_SIZE'
+                    #colorby = 'FIRST_OF_PAIR_STRAND'
+
+            if not self.is_sv:
+                igv.cmd(f"colorBy {colorby}")
 
         try:
             shutil.rmtree(tmpbam_dir)
@@ -1004,7 +1207,10 @@ class VariantPlus:
         )
         fig.show()
 
-    # miscellaneous
+    #################
+    # miscellaneous #
+    #################
+
     def get_gr(self):
         return pr.from_dict(
             {
@@ -1014,22 +1220,120 @@ class VariantPlus:
             }
         )
 
-    def get_gene_names(self, canonical=True, overlap=True, coding=False):
+    def populate_gdf_data(
+        self, 
+        chroms, 
+        start0s, 
+        end0s, 
+        alleles, 
+        idlist, 
+        is_bnd1_list,
+        vcfspec_id=None,
+    ):
+        # positions
+        chroms.append(self.vcfspec.chrom)
+        start0s.append(self.vcfspec.pos0)
+        end0s.append(self.vcfspec.end0)
+
+        for allele_idx, alleles_sublist in enumerate(alleles):
+            alleles_sublist.append(self.get_allele(allele_idx))
+
+        # unique id
+        if vcfspec_id is None:
+            vcfspec_id = self.vcfspec.get_id()
+        idlist.append(vcfspec_id)
+
+        # is_bnd1
+        if self.vcfspec.check_is_sv():
+            is_bnd1_list.append(self.vcfspec.check_is_bnd1())
+        else:
+            is_bnd1_list.append(np.nan)
+
+    def get_gdf(self):
+        chroms = list()
+        start0s = list()
+        end0s = list()
+        alleles = [list() for x in range(len(self.alleles))]
+        idlist = list()
+        is_bnd1_list = list()
+
+        if self.is_sv:
+            bnds = self.vcfspec.get_bnds()
+            vcfspec_bnd1 = bnds.get_vcfspec_bnd1()
+            vcfspec_bnd2 = bnds.get_vcfspec_bnd2()
+            tmpvp_bnd1 = VariantPlus.from_vcfspec(vcfspec_bnd1)
+            tmpvp_bnd2 = VariantPlus.from_vcfspec(vcfspec_bnd2)
+            for vp in [tmpvp_bnd1, tmpvp_bnd2]:
+                vp.populate_gdf_data(
+                    chroms, 
+                    start0s, 
+                    end0s, 
+                    alleles, 
+                    idlist, 
+                    is_bnd1_list,
+                )
+        else:
+            self.populate_gdf_data(
+                chroms, 
+                start0s, 
+                end0s, 
+                alleles, 
+                idlist, 
+                is_bnd1_list,
+            )
+
+        data = dict()
+
+        data['chroms'] = chroms
+        data['start0s'] = start0s
+        data['end0s'] = end0s
+
+        # alleles
+        allele_colnames = get_vafdf_allele_columns(len(self.alleles))
+        for colname, sublist in zip(allele_colnames, alleles):
+            data[colname] = sublist
+
+        # ids
+        data['ID'] = idlist
+        data['is_bnd1'] = is_bnd1_list
+
+        return VCFDataFrame.from_data(refver=self.refver, **data)
+
+    def get_gene_names_base(self, transcript_set, canonical=True, overlap=True, coding=False):
         result = set()
-        for tr_set in self.transcript:
-            for tr in tr_set.values():
-                if canonical:
-                    if not tr['is_canonical']:
-                        continue
-                if overlap:
-                    if tr['distance'] is not None:
-                        continue
-                if coding:
-                    if not tr['subtype_flags']['coding']:
-                        continue
-                result.add(tr['gene_name'])
+        #for tr_set in self.transcript:
+        for tr in transcript_set.values():
+            if canonical:
+                if not tr['is_canonical']:
+                    continue
+            if overlap:
+                if tr['distance'] is not None:
+                    continue
+            if coding:
+                if not tr['subtype_flags']['coding']:
+                    continue
+            result.add(tr['gene_name'])
 
         return result
+
+    def get_gene_names(self, canonical=True, overlap=True, coding=False):
+        assert len(self.transcript) == 1
+        if self.is_sv:
+            return {
+                'bnd1': self.get_gene_names_base(
+                    self.transcript[0]['bnd1'],
+                    canonical=canonical, overlap=overlap, coding=coding,
+                ),
+                'bnd2': self.get_gene_names_base(
+                    self.transcript[0]['bnd2'],
+                    canonical=canonical, overlap=overlap, coding=coding,
+                ),
+            }
+        else:
+            return self.get_gene_names_base(
+                self.transcript[0],
+                canonical=canonical, overlap=overlap, coding=coding,
+            )
 
     def get_protein_changes(self, one_letter=True):
         result = set()
@@ -1040,6 +1344,24 @@ class VariantPlus:
                     result.add(hgvsp)
                 
         return result
+
+    def get_exon_intron_number_base(self, transcript_set):
+        canon_ovlp_coding = transcript_set.canon_ovlp_coding
+        assert len(canon_ovlp_coding) == 1
+
+        tr = next(iter(canon_ovlp_coding.values()))
+        exon = (tr['involved_exons'] if (tr['involved_exons'] is None) else tr['involved_exons'][0])
+        intron = (tr['involved_introns'] if (tr['involved_introns'] is None) else tr['involved_introns'][0])
+        return {'exon': exon, 'intron': intron}
+
+    def get_exon_intron_number(self):
+        if self.is_sv:
+            return {
+                'bnd1': self.get_exon_intron_number_base(self.transcript[0]['bnd1']),
+                'bnd2': self.get_exon_intron_number_base(self.transcript[0]['bnd2']),
+            }
+        else:
+            return self.get_exon_intron_number_base(self.transcript[0])
 
     def get_info(self, key, collapse_tuple=True):
         return infoformat.get_value_info(self.vr, key, collapse_tuple=collapse_tuple)
@@ -1110,6 +1432,15 @@ class VariantPlusList(list):
         # others
         self.is_sorted = False
         self._index_gr = None
+
+    def __getitem__(self, x):
+        super_result = super().__getitem__(x)
+        if isinstance(super_result, list):
+            result = self.spawn()
+            result.extend(super_result)
+        else:
+            result = super_result
+        return result
 
     @property
     def vcf(self):
@@ -1610,6 +1941,112 @@ class VariantPlusList(list):
         else:
             return random.sample(self, k=n)
 
+    ###########
+    # algebra #
+    ###########
+
+    def subset(self, *, gdf=None, chroms=None, start0s=None, end0s=None):
+        if gdf is None:
+            gdf = GenomeDataFrame.from_data(refver=self.refver, chroms=chroms, start0s=start0s, end0s=end0s)
+
+        indexes = self.get_gdf().overlap(gdf, how='first')['index']
+        result = self.spawn()
+        result.extend(self[idx] for idx in indexes)
+        return result
+
+    def get_isec_other_indexes(self, other):
+        return self.get_gdf().get_isec_other_indexes(other.get_gdf())
+
+    def var_intersect(self, other):
+        isec_indexes = self.get_isec_other_indexes(other)
+        selector = ~np.isnan(isec_indexes)
+        result = self.spawn()
+        result.extend(itertools.compress(self, selector))
+        return result
+
+    def var_difference(self, other):
+        isec_indexes = self.get_isec_other_indexes(other)
+        selector = np.isnan(isec_indexes)
+        result = self.spawn()
+        result.extend(itertools.compress(self, selector))
+        return result
+
+    def get_gdf(self, n_allele=2):
+        if n_allele is None:
+            n_allele = max(len(vp.alleles) for vp in self)
+
+        # set data component lists
+        chroms = list()
+        starts = list()
+        ends = list()
+        alleles = [list() for x in range(n_allele)]
+
+        idlist = list()
+        is_bnd1_list = list()
+
+        indexes = list()
+
+        vp_iterator = iter(self)
+
+        # extract information for vps
+        def populate_data(vp, vp_idx, vcfspec_id=None):
+            # positions
+            chroms.append(vp.vcfspec.chrom)
+            starts.append(vp.vcfspec.pos0)
+            ends.append(vp.vcfspec.end0)
+
+            for allele_idx, alleles_sublist in enumerate(alleles):
+                alleles_sublist.append(vp.get_allele(allele_idx))
+
+            # unique id
+            if vcfspec_id is None:
+                vcfspec_id = vp.vcfspec.get_id()
+            idlist.append(vcfspec_id)
+
+            # is_bnd1
+            if vp.vcfspec.check_is_sv():
+                is_bnd1_list.append(vp.vcfspec.check_is_bnd1())
+            else:
+                is_bnd1_list.append(np.nan)
+
+            # index
+            indexes.append(vp_idx)
+
+        for vp_idx, vp in enumerate(vp_iterator):
+            if vp.vcfspec.check_is_sv():
+                bnds = vp.vcfspec.get_bnds()
+                vcfspec_bnd1 = bnds.get_vcfspec_bnd1()
+                vcfspec_bnd2 = bnds.get_vcfspec_bnd2()
+                tmpvp_bnd1 = VariantPlus.from_vcfspec(vcfspec_bnd1)
+                tmpvp_bnd2 = VariantPlus.from_vcfspec(vcfspec_bnd2)
+
+                uid = vcfspec_bnd1.get_id()
+                
+                populate_data(tmpvp_bnd1, vp_idx, vcfspec_id=uid)
+                populate_data(tmpvp_bnd2, vp_idx, vcfspec_id=uid)
+            else:
+                populate_data(vp, vp_idx)
+
+        data = dict()
+
+        data['chroms'] = chroms
+        data['start0s'] = starts
+        data['end0s'] = ends
+
+        # alleles
+        allele_colnames = get_vafdf_allele_columns(n_allele)
+        for colname, sublist in zip(allele_colnames, alleles):
+            data[colname] = sublist
+
+        # ids
+        data['ID'] = idlist
+        data['is_bnd1'] = is_bnd1_list
+
+        # index
+        data['index'] = indexes
+
+        return VCFDataFrame.from_data(refver=self.refver, **data)
+
     @deco.get_deco_atleast1d(['sampleids'])
     def get_vafdf(
         self, 
@@ -1793,8 +2230,8 @@ class VariantPlusList(list):
 
         return VCFDataFrame.from_data(refver=self.refver, **data)
 
-    def get_gr(self, vaf_sampleid=None):
-        return self.get_df(vaf_sampleid=vaf_sampleid, as_gr=True)
+    #jdef get_gr(self, vaf_sampleid=None):
+        #return self.get_df(vaf_sampleid=vaf_sampleid, as_gr=True)
 
     def spawn(self):
         kwargs = {
@@ -1830,12 +2267,14 @@ class VariantPlusList(list):
             return result
 
     def get_sigresult(self, catalogue_type="sbs96", **kwargs):
-        import handygenome.signature.signatureresult as libsig
+        import handygenome.signature.signatureresult as libsigresult
+        assert len(self) > 0
 
-        vcfspec_iter = (vp.vcfspec for vp in self)
-        refver = self[0].refver
-        sigresult = libsig.get_sigresult_from_vcfspecs(
-            vcfspec_iter, refver=refver, catalogue_type=catalogue_type, **kwargs
+        sigresult = libsigresult.get_sigresult_from_vcfspecs(
+            vcfspec_iter=(vp.vcfspec for vp in self), 
+            refver=self[0].refver, 
+            catalogue_type=catalogue_type, 
+            **kwargs,
         )
         return sigresult
 
@@ -1900,10 +2339,25 @@ class VariantPlusList(list):
         # write
         out_vcf.write(out_vr)
 
-    def write(self, outfile_path, mode_bcftools="z", mode_pysam=None, index=True):
+    def write(
+        self, 
+        outfile_path, 
+        mode_bcftools="z", 
+        mode_pysam=None, 
+        index=True,
+        omit_transcript=False,
+        omit_oncokb=False,
+    ):
         # write annotation items to vr
         for vp in self:
-            vp.write_annots_to_vr(fill_missing_sample=True)
+            if vp.vr is None:
+                vp.init_vr()
+
+            vp.write_annots_to_vr(
+                fill_missing_sample=True,
+                omit_transcript=omit_transcript,
+                omit_oncokb=omit_oncokb,
+            )
         # prepare header
         header, conflicting_keys = self.get_output_header()
         # main
@@ -1914,7 +2368,7 @@ class VariantPlusList(list):
             for vp in self.get_vp_iter_from_self():
                 if vp.is_sv:
                     self.write_each_vr(vp.vr, out_vcf, conflicting_keys)
-                    self.write_each_vr(vp.get_vr_bnd2(), out_vcf, conflicting_keys)
+                    #self.write_each_vr(vp.get_vr_bnd2(), out_vcf, conflicting_keys)
                 else:
                     self.write_each_vr(vp.vr, out_vcf, conflicting_keys)
         if index:
@@ -1930,13 +2384,130 @@ class VariantPlusList(list):
             for vp in self.get_vp_iter_from_vcf(vpfilter=vpfilter):
                 if vp.is_sv:
                     out_vcf.write(vp.vr)
-                    out_vcf.write(vp.get_vr_bnd2())
+                    #out_vcf.write(vp.get_vr_bnd2())
                 else:
                     out_vcf.write(vp.vr)
 
         if index:
             indexing.index_vcf(outfile_path)
 
+    ##############
+    # annotation #
+    ##############
+
+    def create_features(self, *args, **kwargs):
+        assert all(x.is_sv for x in self)
+
+        vep_input_vcfspecs = list()
+        for vp in self:
+            if vp.is_sv:
+                vep_input_vcfspecs.extend(vp.bnds.get_vep_input_vcfspecs())
+            else:
+                pass
+
+        vep_result = ensembl_rest.vep_post(
+            refver=self.refver,
+            vcfspec_list=vep_input_vcfspecs,
+            distance=0,
+            with_CADD=False, 
+            with_Phenotypes=False, 
+            with_canonical=True,
+            with_mane=False, 
+            with_miRNA=False, 
+            with_numbers=True, 
+            with_protein=False, 
+            with_ccds=False, 
+            with_hgvs=False,
+        )
+
+        if len(vep_result) != len(self) * 2:
+            logutils.log(f'Number of vep results does not match', level='error')
+            return vep_result
+        else:
+            for idx in range(len(self)):
+                self[idx].create_features_sv(
+                    vep_result=vep_result[(2 * idx):(2 * (idx + 1))],
+                )
+
+    def create_oncokb(self, token):
+        # sanitycheck
+        assert all(x.is_sv for x in self)
+        refseq_refver = refgenome.get_refseq_refver(self.refver)
+        assert refseq_refver in ['GRCh37', 'GRCh38']
+
+        # setup
+        counts = list()
+        gene_combination_list = list()
+        is_functional_list = list()
+        for vp in self:
+            gene_align_info = self.get_gene_align_info()
+            gcombs = [x['gene_pair'] for x in gene_align_info]
+            functionals = [x['is_functional'] for x in gene_align_info]
+
+            counts.append(len(gcombs))
+            gene_combination_list.append(gcombs)
+            is_functional_list.append(functionals)
+
+        # run oncokb API query
+        gene1_names, gene2_names = zip(
+            *itertools.chain.from_iterable(gene_combination_list)
+        )
+        is_functional_list = np.concatenate(is_functional_list)
+        oncokb_query_result = liboncokb.query_sv_post(
+            gene1_names,
+            gene2_names,
+            is_functional=is_functional_list,
+            token=token,
+            #sv_types='FUSION',
+            tumor_types=None,
+            GRCh38=(refseq_refver == 'GRCh38'),
+        )
+
+        # assign to each vp
+        pointer = 0
+        for vp, n, gcomb in zip(self, counts, gene_combination_list):
+            if n == 0:
+                vp.create_oncokb_sv(
+                    gene_combinations=None,
+                    oncokb_query_result=None,
+                )
+            else:
+                vp.create_oncokb_sv(
+                    gene_combinations=gcomb,
+                    oncokb_query_result=oncokb_query_result[pointer:(pointer + n)],
+                )
+                pointer += n
+
+    # copy
+
+    def copy(self):
+        result = self.__class__(refver=self.refver)
+        result.extend(self)
+        return result
+
+    #######
+    # ccf #
+    #######
+    
+    def add_ccf(
+        self, sampleid, cnv_gdf, cellularity, 
+        clonal_pval=cnvcall.DEFAULT_CLONAL_PVALUE,
+    ):
+        CNt_colname = cnv_gdf.get_clonal_CN_colname(germline=False)
+        B_colname = cnv_gdf.get_clonal_B_colname('baf0', germline=False)
+        CNg_colname = cnv_gdf.get_clonal_CN_colname(germline=True)
+
+        vgdf = self.get_vafdf(sampleids=sampleid, add_depth=True)
+        vgdf.add_ccf(cnv_gdf, cellularity, vcf_sampleid=sampleid, clonal_pval=clonal_pval)
+        for (vp, CNt, Bt, CNm, ccf) in zip(
+            self, 
+            vgdf[CNt_colname], 
+            vgdf[B_colname], 
+            vgdf[vgdf.__class__.CNm_COLNAME],
+            vgdf[vgdf.__class__.CCF_COLNAME],
+        ):
+            ccfinfo = CCFInfo(CNt, Bt, CNm, ccf, cellularity)
+            vp.ccfinfo = ccfinfo
 
 #########
 # vcfdf #
@@ -1949,7 +2520,7 @@ def get_vafdf_allele_columns(num):
 class VariantDataFrame(GenomeDataFrame):
     COMMON_ALLELE_COLUMNS = ['REF', 'ALT1']
     COMMON_COLUMNS = GenomeDataFrame.COMMON_COLUMNS + COMMON_ALLELE_COLUMNS
-    ALLELE_COLNAME_PAT = re.compile('(REF|ALT[1-9][0-9]*)')
+    ALLELE_COLNAME_PAT = re.compile(r'(REF|ALT[1-9][0-9]*)')
 
     DEFAULT_DTYPES = (
         GenomeDataFrame.DEFAULT_DTYPES
@@ -1997,10 +2568,38 @@ class VariantDataFrame(GenomeDataFrame):
     def num_alleles(self):
         return len(self.allele_columns)
 
-    def get_var_indexed_df(self):
-        index_cols = ['Chromosome', 'Start'] + self.allele_columns
-        result = self.df.set_index(index_cols)
-        result.drop('End', axis=1, inplace=True)
+    ##################
+    # set operations #
+    ##################
+
+    def get_uids(self):
+        allele_values = self[self.allele_columns]
+        ref_list = list(allele_values[:, 0])
+        alts_list = list()
+        for row in allele_values[:, 1:]:
+            alts_list.append(
+                tuple(row[pd.notna(row)])
+            )
+
+        values = list()
+        for chrom, pos, ref, alts in zip(
+            self.chroms, self.POS, ref_list, alts_list,
+        ):
+            values.append(
+                libvcfspec.make_vcfspec_id(
+                    chrom, pos, ref, alts
+                )
+            )
+        return pd.Index(values)
+
+    def get_isec_other_indexes(self, other):
+        self_uids = self.get_uids()
+        other_uids = other.get_uids()
+        joined_uids, self_indexes, other_indexes = self_uids.join(other_uids, how='left', return_indexers=True)
+        if other_indexes is None:  # when all elements should be selected, "self_indexes" or "other_indexes" becomes None
+            other_indexes = np.arange(len(other_uids))
+            
+        result = np.where((other_indexes == -1), np.nan, other_indexes)
         return result
 
     @classmethod
@@ -2173,7 +2772,11 @@ class VCFDataFrame(VariantDataFrame):
             selected_colnames = selected_colnames[0]
             return self[selected_colnames]
         else:
-            return self.loc[:, selected_colnames]
+            return np.stack(
+                [self.loc[:, x] for x in selected_colnames],
+                axis=1,
+            )
+            #return self.loc[:, selected_colnames]
 
     def get_sample_annots(self, sample):
         colnames = [
@@ -2223,6 +2826,9 @@ class VCFDataFrame(VariantDataFrame):
 
         self[self.__class__.CCF_COLNAME] = ccf
         self[self.__class__.CNm_COLNAME] = CNm
+        self[CNt_colname] = joined_df[CNt_colname]
+        self[B_colname] = joined_df[B_colname]
+        self[CNg_colname] = joined_df[CNg_colname]
 
     ########
     # draw #

@@ -16,6 +16,7 @@ import handygenome.logutils as logutils
 import handygenome.workflow as workflow
 import handygenome.annotation.annotitem as annotitem
 import handygenome.variant.infoformat as infoformat
+from handygenome.variant.vcfspec import Vcfspec
 import handygenome.read.readplus as readplus
 from handygenome.read.readplus import ReadPlusPairList
 import handygenome.read.alleleclass as liballeleclass
@@ -474,6 +475,12 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
     }
     unit_class = ReadStats
 
+    @classmethod
+    def init_missing(cls, vr):
+        result = super().init_missing(vr)
+        result.vcfspec = Vcfspec.from_vr(vr)
+        return result
+
     @staticmethod
     def handle_limits_arg(limits, bam_dict):
         if isinstance(limits, (tuple, list)):
@@ -500,11 +507,13 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         mq_limits=DEFAULT_MQ_LIMITS,
         init_invalid=False,
         include_mNM_items=False,
+        verbose=False,
     ):
         depth_limits = cls.handle_limits_arg(depth_limits, bam_dict)
         mq_limits = cls.handle_limits_arg(mq_limits, bam_dict)
 
         result = cls()
+        result.vcfspec = vcfspec
         if init_invalid:
             for sampleid, bam in bam_dict.items():
                 if not vcfspec.check_is_sv():
@@ -515,6 +524,8 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
                     result[sampleid]['bnd2'] = ReadStats.init_invalid(vcfspec, countonly=countonly)
         else:
             for sampleid, bam in bam_dict.items():
+                if verbose:
+                    logutils.log(f'Creating ReadStats for {repr(sampleid)}')
                 result[sampleid] = ReadStats.from_bam(
                     vcfspec, 
                     bam, 
@@ -533,10 +544,6 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
 
     def get_first_readstats(self):
         return next(iter(self.values()))
-
-    @property
-    def vcfspec(self):
-        return self.get_first_readstats().vcfspec
 
     @property
     def refver(self):
@@ -637,15 +644,30 @@ def rpplist_to_readstats_data_countonly_sv(
             )
 
     for rpp in rpplist:
-        aiitem_bnd1 = rpp.alleleclass[bnds]['bnd1']
-        aiitem_bnd2 = rpp.alleleclass[bnds]['bnd2']
-        for aiitem, data in zip([aiitem_bnd1, aiitem_bnd2], [data_bnd1, data_bnd2]):
-            data['count'][None] += aiitem['noninformative']
-            data['count'][-1] += aiitem['other_support']
-            data['count'][0] += aiitem['ref_support_direct']
-            data['count'][0] += aiitem['ref_support_indirect']
-            data['count'][1] += aiitem['alt_support_direct']
-            data['count'][1] += aiitem['alt_support_indirect']
+        aiitem = rpp.alleleclass[bnds]
+        data_bnd1['count'][None] += aiitem['noninformative']
+        data_bnd2['count'][None] += aiitem['noninformative']
+
+        data_bnd1['count'][-1] += aiitem['other_support']
+        data_bnd2['count'][-1] += aiitem['other_support']
+
+        data_bnd1['count'][0] += (
+            aiitem['ref_support_direct_bnd1']
+            + aiitem['ref_support_indirect_bnd1']
+        )
+        data_bnd2['count'][0] += (
+            aiitem['ref_support_direct_bnd2']
+            + aiitem['ref_support_indirect_bnd2']
+        )
+
+        data_bnd1['count'][1] += (
+            aiitem['alt_support_direct']
+            + aiitem['alt_support_indirect']
+        )
+        data_bnd2['count'][1] += (
+            aiitem['alt_support_direct']
+            + aiitem['alt_support_indirect']
+        )
 
     return data_bnd1, data_bnd2
 

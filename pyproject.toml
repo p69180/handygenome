@@ -22,7 +22,7 @@ dependencies = [
     "jupyterlab",
     "notebook",
     "ipympl",
-    #"statsmodels",
+    "statsmodels",
     #"pomegranate",
 ]
 authors = [
@@ -42,6 +42,8 @@ Documentation = "https://handygenome.readthedocs.io/en/latest/"
 Repository = "https://github.com/p69180/handygenome.git"
 
 [project.scripts]
+#testprog = "handygenome.bin.testprog:main"
 annotate-readstats = "handygenome.bin.annotate_readstats:main"
 annotate-feature = "handygenome.bin.annotate_feature:main"
 alignment = "handygenome.bin.alignment:main"
+conda-wrapper = "handygenome.bin.conda_wrapper:main"

@@ -14,6 +14,7 @@ import handygenome.interval as libinterval
 import handygenome.workflow as workflow
 import handygenome.vcfeditor.misc as vcfmisc
 import handygenome.ucscdata as ucscdata
+from handygenome.genomedf.genomedf_base import GenomeDataFrameBase
 #import handygenome.blacklist as blacklist
 
 
@@ -160,7 +161,7 @@ def write_jobscripts(
         script_contents = list()
         script_contents.append(
             textwrap.dedent(f"""\
-                #!{handygenome.OPTION["python"]}
+                #!{handygenome.PARAMS["python"]}
 
                 #SBATCH -N 1
                 #SBATCH -n 1
@@ -173,8 +174,6 @@ def write_jobscripts(
                 import os
                 import contextlib
                 import traceback
-                import sys
-                sys.path.append({repr(handygenome.PROJECT_PATH)})
                 from {module_name} import {unit_job_func_name}
 
                 log = open({repr(log_path)}, 'w')
@@ -267,10 +266,20 @@ def make_infile_copy(infile_path, tmpdir_root, logger):
             
         
 def get_blacklist_gr(refver):
-    cytoband_gr = ucscdata.get_cytoband(refver=refver, as_gr=True)
-    centromere_gr = cytoband_gr[cytoband_gr.Stain == 'acen']
-    blacklist_gr = pr.concat([centromere_gr, blacklist.HIGHDEPTH_BLACKLIST_GR])
-    blacklist_gr = blacklist_gr.sort().merge()
+    cytoband_gdf = ucscdata.get_cytoband(refver=refver)
+    centromere_gdf = cytoband_gdf.loc[cytoband_gdf['Stain'] == 'acen', :]
+    blacklist_gdf = GenomeDataFrameBase.concat(
+        [
+            centromere_gdf, 
+            GenomeDataFrameBase.from_frame(blacklist.HIGHDEPTH_BLACKLIST_GR, refver=refver),
+        ]
+    )
+    blacklist_gdf.sort()
+    blacklist_gr = blacklist_gdf.merge().gr
+
+    #centromere_gr = cytoband_gr[(cytoband_gr.Stain == 'acen').to_list()]
+    #blacklist_gr = pr.concat([centromere_gr, blacklist.HIGHDEPTH_BLACKLIST_GR])
+    #blacklist_gr = blacklist_gr.sort().merge()
 
     return blacklist_gr
 

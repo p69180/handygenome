@@ -1028,9 +1028,20 @@ class CNVSample:
         self.log(f'Finished saving')
 
     @classmethod
-    def load_pickle_asdf(cls, topdir):
+    def load_pickle_asdf(
+        cls, topdir,
+        load_all=True,
+        load_rawdata=False,
+        load_segment=False,
+        load_corrected=False,
+    ):
         if not os.path.exists(topdir):
             raise Exception(f'Directory does not exist: {topdir}')
+
+        if load_all:
+            load_rawdata = True
+            load_segment = True
+            load_corrected = True
 
         result = cls()
 
@@ -1050,23 +1061,27 @@ class CNVSample:
         result.load_nonbafidx_gdf_aspickle('excluded_region', topdir)
 
         # raw data
-        result.load_nonbafidx_gdf_aspickle('depth_rawdata', topdir)
-        result.load_nonbafidx_gdf_aspickle('baf_rawdata', topdir)
-        #result.load_nonbafidx_gdf_aspickle('baf_hetalt_rawdata', topdir)
+        if load_rawdata:
+            result.load_nonbafidx_gdf_aspickle('depth_rawdata', topdir)
+            result.load_nonbafidx_gdf_aspickle('baf_rawdata', topdir)
+            #result.load_nonbafidx_gdf_aspickle('baf_hetalt_rawdata', topdir)
 
         # segment
-        result.load_nonbafidx_gdf_aspickle('depth_segment', topdir)
-        result.load_bafidx_gdf_aspickle('baf_segment', topdir)
-        result.load_bafidx_gdf_aspickle('baf_noedit_segment', topdir)
-        result.load_bafidx_gdf_aspickle('baf_edited_segment', topdir)
-        result.load_bafidx_gdf_aspickle('baf_rmzero_noedit_segment', topdir)
+        if load_segment:
+            result.load_nonbafidx_gdf_aspickle('depth_segment', topdir)
+            result.load_bafidx_gdf_aspickle('baf_segment', topdir)
+            result.load_bafidx_gdf_aspickle('baf_noedit_segment', topdir)
+            result.load_bafidx_gdf_aspickle('baf_edited_segment', topdir)
+            result.load_bafidx_gdf_aspickle('baf_rmzero_noedit_segment', topdir)
+
         result.load_nonbafidx_gdf_aspickle('merged_segment', topdir)
 
         # corrected_gdfs
-        cgdfs_dir = os.path.join(topdir, 'corrected_gdfs')
-        for fname in os.listdir(cgdfs_dir):
-            savepath = os.path.join(cgdfs_dir, fname)
-            result.load_corrected_gdfs(savepath)
+        if load_corrected:
+            cgdfs_dir = os.path.join(topdir, 'corrected_gdfs')
+            for fname in os.listdir(cgdfs_dir):
+                savepath = os.path.join(cgdfs_dir, fname)
+                result.load_corrected_gdfs(savepath)
 
         # genomeplotter
         result.init_genomeplotter(**result.genomeplotter_kwargs)
@@ -1761,6 +1776,8 @@ class CNVSample:
         raw_target = self.get_raw_target_region()
         if raw_target is not None:
             merged_cnv_gdf = merged_cnv_gdf.intersect(raw_target)
+        excl_region = self.get_corrected_depth_excluded_region(corrector_id=corrector_id)
+        merged_cnv_gdf = merged_cnv_gdf.subtract(excl_region)
 
         # annotate with germline CN values
         merged_cnv_gdf = merged_cnv_gdf.join(
@@ -1818,6 +1835,7 @@ class CNVSample:
         segment_kwargs=dict(),
         winsorize=libdepth.DEFAULT_WINSORIZE,
     ):
+        assert raw_depth_cutoff[0] is not None
         corrected_depth_rawdata = self.get_depth_rawdata().copy()
         corrected_depth_rawdata.sort()
         corrector_gdf.sort()
@@ -1830,7 +1848,10 @@ class CNVSample:
         corrector_depth = corrector_gdf.norm_depth
         corrector_depth[corrector_depth == 0] = np.nan  # corrector depth may contain zeros (e.g. leading N region where CN call is not 0)
         corrected_norm_depth = corrected_depth_rawdata.norm_depth / corrector_depth
-        #corrected_depth_rawdata[DepthRawDF.corrected_norm_depth_colname] = corrected_norm_depth
+        corrected_norm_depth[
+            corrected_depth_rawdata.raw_depth < raw_depth_cutoff[0]
+        ] = np.nan
+            # Where raw panel seq depth is too low, results in artefactual spikes in depth segment data
         corrected_depth_rawdata[DepthRawDF.norm_depth_colname] = corrected_norm_depth
 
         # 3. make segment from corrected norm depth
@@ -2294,6 +2315,7 @@ class CNVSample:
         draw_CN=False,
         draw_mut=False,
         draw_depth_peaks=False,
+        with_legend=True,
     ):
         mosaic = list()
         if draw_CN:
@@ -2306,6 +2328,10 @@ class CNVSample:
             mosaic.append(['MQ'])
         if draw_mut:
             mosaic.append(['mut'])
+
+        if with_legend:
+            for x in mosaic:
+                x.append(x[0] + '_legend')
 
         if draw_depth_peaks:
             for idx, x in enumerate(mosaic):
@@ -2326,6 +2352,7 @@ class CNVSample:
         draw_depth_peaks=False,
         subplots_kwargs=dict(),
         figsize=None,
+        with_legend=True,
     ):
         mosaic = self.make_mosaic(
             draw_depth=draw_depth,
@@ -2334,11 +2361,16 @@ class CNVSample:
             draw_CN=draw_CN,
             draw_mut=draw_mut,
             draw_depth_peaks=draw_depth_peaks,
+            with_legend=with_legend,
         )
 
         default_subplots_kwargs = {
             'figsize': (12, 4 * len(mosaic)),
-            'gridspec_kw': {'hspace': 0.6},
+            'gridspec_kw': (
+                {'hspace': 0.6, 'width_ratios': [1, 0.2]}
+                if with_legend else
+                {'hspace': 0.6}
+            ),
         }
         if draw_depth_peaks:
             default_subplots_kwargs['gridspec_kw'].update(
@@ -2349,6 +2381,9 @@ class CNVSample:
             subplots_kwargs.update({'figsize': figsize})
 
         fig, axd = plt.subplot_mosaic(mosaic, **subplots_kwargs)
+        for key, ax in axd.items():
+            if key.endswith('_legend'):
+                plotmisc.clear_ax(ax)
 
         for key, ax in axd.items():
             if key.startswith('blank'):
@@ -2394,6 +2429,7 @@ class CNVSample:
 
         # kwargs for low level drawers
         draw_common_kwargs=dict(),
+
         depth_rawdata_kwargs=dict(),
         depth_segment_kwargs=dict(),
         #depth_peaks_kwargs=dict(),
@@ -2402,6 +2438,10 @@ class CNVSample:
         MQ_kwargs=dict(),
         CN_kwargs=dict(),
         excluded_kwargs=dict(),
+
+        setup_axes=True,
+        with_legend=True,
+
         #chromwise_peak_bw_method=1,
         #chromwise_peak_limit=None,
 
@@ -2409,6 +2449,7 @@ class CNVSample:
         ylabel_prefix='',
         title=False,
         suptitle_kwargs=dict(),
+        omit_title_mode=False,
 
         # multiprocessing
         nproc=0,
@@ -2443,6 +2484,7 @@ class CNVSample:
                 draw_depth_peaks=False,
                 subplots_kwargs=subplots_kwargs,
                 figsize=figsize,
+                with_legend=with_legend,
             )
         else:
             fig = next(iter(axd.values())).figure
@@ -2478,7 +2520,7 @@ class CNVSample:
                 gdraw_result = baf_segment_gdf.draw_baf(
                     ax=baf_ax, 
                     genomeplotter=genomeplotter,
-                    setup_axes=True,
+                    setup_axes=setup_axes,
                     title=None,
                     ylabel_prefix=ylabel_prefix,
                     nproc=nproc,
@@ -2491,9 +2533,15 @@ class CNVSample:
             # segment - corrected baf
             if CN_exists:
                 for baf_idx, baf_ax in baf_axd.items():
+                    legend_ax = (
+                        axd[baf_idx + '_legend']
+                        if with_legend else
+                        None
+                    )
                     gdraw_result = CN_gdf.draw_corrected_baf(
                         baf_index=baf_idx,
                         ax=baf_ax,
+                        legend_ax=legend_ax,
                         genomeplotter=genomeplotter,
                         plotdata=CN_plotdata,
 
@@ -2529,7 +2577,7 @@ class CNVSample:
                             genomeplotter=genomeplotter,
                             plotdata=baf_rawdata_plotdata,
                             ylabel_prefix=ylabel_prefix,
-                            setup_axes=False,
+                            setup_axes=setup_axes,
                             verbose=verbose,
                             **baf_rawdata_kwargs,
                         )
@@ -2585,7 +2633,7 @@ class CNVSample:
                     chromwise_peaks=chromwise_peaks,
                     chromwise_peaks_density_kwargs=chromwise_peaks_density_kwargs,
                     chromwise_peaks_line_kwargs=chromwise_peaks_line_kwargs,
-                    setup_axes=True,
+                    setup_axes=setup_axes,
                     draw_common_kwargs=draw_common_kwargs,
                     ylabel_prefix=ylabel_prefix,
                     verbose=verbose,
@@ -2624,7 +2672,7 @@ class CNVSample:
                     ax=axd['MQ'],
                     genomeplotter=genomeplotter,
                     plotdata=depth_seg_plotdata,
-                    setup_axes=True,
+                    setup_axes=setup_axes,
                     draw_common_kwargs=draw_common_kwargs,
                     ylabel_prefix=ylabel_prefix,
                     verbose=verbose,
@@ -2640,7 +2688,7 @@ class CNVSample:
             vp_gdf.draw_vaf(
                 ax=axd['mut'],
                 genomeplotter=genomeplotter,
-                setup_axes=True,
+                setup_axes=setup_axes,
                 draw_common_kwargs=draw_common_kwargs,
                 ylabel_prefix=ylabel_prefix,
                 verbose=verbose,
@@ -2667,7 +2715,7 @@ class CNVSample:
                     color_colname='colors', 
                     plot_kwargs=excluded_kwargs,
                     plotdata=excluded_region_plotdata,
-                    setup_axes=False,
+                    setup_axes=setup_axes,
                 )
 
         draw_result = CNVDrawingResult(
@@ -2684,13 +2732,19 @@ class CNVSample:
 
         selected_sol = self.get_selected_solution(corrector_id=corrector_id)
         if selected_sol is None:
-            title = self.make_title(selected_solution=None)
+            title = self.make_title(selected_solution=None, omit_mode=omit_title_mode)
             plotmisc.draw_suptitle(draw_result.fig, title, **suptitle_kwargs)
         else:
             try:
-                draw_result.draw_solution(index=selected_sol['index'], CN_kwargs=CN_kwargs)
+                if draw_CN:
+                    draw_result.draw_solution(
+                        index=selected_sol['index'], 
+                        verbose=verbose, 
+                        omit_title_mode=omit_title_mode,
+                        **CN_kwargs,
+                    )
             except:
-                pass
+                raise
 
         return draw_result
 
@@ -2711,10 +2765,15 @@ class CNVSample:
     # ax drawing helpers #
     ######################
 
-    def make_title(self, selected_solution=None):
+    def make_title(self, selected_solution=None, omit_mode=False):
+        basic_keys = (
+            ['sampleid', 'is_female']
+            if omit_mode else
+            ['sampleid', 'is_female', 'mode']
+        )
         result = ', '.join(
             f'{key}={getattr(self, key)}' 
-            for key in ['sampleid', 'is_female', 'mode']
+            for key in basic_keys
         )
         if selected_solution is not None:
             cellularity = selected_solution['cellularity']
@@ -2883,9 +2942,21 @@ class CNVManager:
             assert cnvsample.sampleid not in self.cnvsamples
         self.cnvsamples[cnvsample.sampleid] = cnvsample
 
-    def load_cnvsample_pickle(self, cnvsample_topdir):
+    def load_cnvsample_pickle(
+        self, cnvsample_topdir,
+        load_all=True,
+        load_rawdata=False,
+        load_segment=False,
+        load_corrected=False,
+    ):
         logutils.log(f'Loading CNVSample from directory {cnvsample_topdir}')
-        cnvsample = CNVSample.load_pickle_asdf(cnvsample_topdir)
+        cnvsample = CNVSample.load_pickle_asdf(
+            cnvsample_topdir,
+            load_all=load_all,
+            load_rawdata=load_rawdata,
+            load_segment=load_segment,
+            load_corrected=load_corrected,
+        )
         self.add_cnvsample(cnvsample)
 
     def save_cnvsample(self, cnvsample_id, all_topdir, force=False):
@@ -3021,6 +3092,13 @@ class CNVManager:
         cnvsamples=None, 
         load_corrector=False,
         correctors=None,
+
+        ###
+
+        load_all=True,
+        load_rawdata=False,
+        load_segment=False,
+        load_corrected=False,
     ):
         result = cls()
         result.init_datadicts()
@@ -3045,7 +3123,13 @@ class CNVManager:
             )
 
         for fname in cnvsamples:
-            result.load_cnvsample_pickle(os.path.join(cnvsample_dir, fname))
+            result.load_cnvsample_pickle(
+                os.path.join(cnvsample_dir, fname),
+                load_all=load_all,
+                load_rawdata=load_rawdata,
+                load_segment=load_segment,
+                load_corrected=load_corrected,
+            )
 
         logutils.log(f'Finished loading CNVSamples')
 
@@ -4077,10 +4161,18 @@ class CNVDrawingResult:
         targetvals = sol_cands['targetval']
         depth_targetvals = sol_cands['depth_targetval']
         baf_targetvals = sol_cands['baf_targetval']
-        ccf_means = sol_cands['ccf_mean']
-        clonal_fractions = sol_cands['clonal_fraction']
+        #clonal_fractions = sol_cands['clonal_fraction']
         CNt0s = sol_cands['CNt0']
-        ploidies = sol_cands['ploidy']
+
+        if 'ccf_mean' in sol_cands:
+            ccf_means = sol_cands['ccf_mean']
+        else:
+            ccf_means = None
+
+        if 'ploidy' in sol_cands:
+            ploidies = sol_cands['ploidy']
+        else:
+            ploidies = None
 
         # set axes ylim
         ymin = 0
@@ -4175,10 +4267,12 @@ class CNVDrawingResult:
                 targetvals[idx, :], '-o', 
                 color=color_sum, markersize=markersize, alpha=0.5, linewidth=1,
             )
-            _ = ax.plot(
-                ccf_means[idx, :], '-o', 
-                color=color_ccf, markersize=markersize, alpha=0.5, linewidth=1,
-            )
+
+            if ccf_means is not None:
+                _ = ax.plot(
+                    ccf_means[idx, :], '-o', 
+                    color=color_ccf, markersize=markersize, alpha=0.5, linewidth=1,
+                )
 
             picker_line2d = ax.axvline(0, color='tab:red', alpha=0.5, linewidth=pickmark_lw, visible=False)
             self.solutionpick_attrs['pickmark'][label] = picker_line2d
@@ -4209,10 +4303,11 @@ class CNVDrawingResult:
             ax2 = ax.twinx()
             ax2.set_label(label)
             ax2.set_ylim(ploidy_ylim)
-            ax2.plot(
-                ploidies[idx, :], '-o', 
-                color=color_ploidy, markersize=markersize, alpha=0.5, linewidth=1,
-            )
+            if ploidies is not None:
+                ax2.plot(
+                    ploidies[idx, :], '-o', 
+                    color=color_ploidy, markersize=markersize, alpha=0.5, linewidth=1,
+                )
             ax2.set_yticks(ploidy_yticks)
             ax2.grid(which='major', axis='y')
 
@@ -4224,10 +4319,13 @@ class CNVDrawingResult:
         handles.add_line(marker='o', linewidth=0, color=color_depth, label='depth')
         handles.add_line(marker='o', linewidth=0, color=color_baf, label='baf')
         handles.add_line(marker='o', linewidth=0, color=color_sum, label='depth + baf')
-        handles.add_line(marker='o', linewidth=0, color=color_ccf, label='mean ccf')
-        handles.add_line(marker='o', linewidth=0, color=color_ploidy, label='ploidy')
 
-        fig.legend(handles=handles, loc='upper right', bbox_to_anchor=(0.95, 0.99))
+        if ccf_means is not None:
+            handles.add_line(marker='o', linewidth=0, color=color_ccf, label='mean ccf')
+        if ploidies is not None:
+            handles.add_line(marker='o', linewidth=0, color=color_ploidy, label='ploidy')
+
+        fig.legend(handles=handles, loc='upper right', bbox_to_anchor=(0.9, 0.99))
 
         # connect
         cid = fig.canvas.mpl_connect('button_press_event', self.solution_picker_on_press)
@@ -4400,7 +4498,7 @@ class CNVDrawingResult:
             vaf_legend=True,
         )
 
-    def draw_solution(self, index=None, CN_kwargs=dict(), nproc=1):
+    def draw_solution(self, index=None, verbose=True, nproc=1, omit_title_mode=False, **kwargs):
         """self.cnvsample must be posessing solution candidates with the given corrector_id"""
         assert self.corrector_id in self.cnvsample.solution_attrs
         assert self.cnvsample.solution_attrs[self.corrector_id]['solution_candidates'] is not None
@@ -4442,13 +4540,19 @@ class CNVDrawingResult:
         )
 
         # draw CN
+        if 'CN_legend' in self.axd:
+            legend_ax = self.axd['CN_legend']
+        else:
+            legend_ax = None
         CN_gdf.draw_CN(
             ax=self.axd['CN'],
+            legend_ax=legend_ax,
             genomeplotter=self.genomeplotter,
             setup_axes=True,
             title=None,
             nproc=nproc,
-            **CN_kwargs,
+            verbose=verbose,
+            **kwargs,
         )
 
         # draw predicted values
@@ -4489,7 +4593,8 @@ class CNVDrawingResult:
         title = self.cnvsample.make_title(
             selected_solution=self.cnvsample.pick_solution(
                 index=index, corrector_id=self.corrector_id,
-            )
+            ),
+            omit_mode=omit_title_mode,
         )
         plotmisc.draw_suptitle(self.fig, title)
 
@@ -4559,7 +4664,4 @@ class SolutionDrawingResult(GenomeDrawingFigureResult):
             yticks=yticks,
         )
         self.old_artists = artists
-
-
-
 

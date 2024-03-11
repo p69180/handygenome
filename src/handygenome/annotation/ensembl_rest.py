@@ -1,3 +1,5 @@
+import inspect
+import functools
 import re
 
 import handygenome.tools as tools
@@ -60,7 +62,12 @@ MAX_POST_SIZE = {
     'sequence': 50,
 }
 
+########
+# main #
+########
 
+
+@refgenome.deco_refseq_refver
 def lookup_id(ID, refver, expand=False):
     """start, end are 1-based inclusive coordinates"""
     prefix = PREFIX_LOOKUP_ID[refver]
@@ -70,6 +77,7 @@ def lookup_id(ID, refver, expand=False):
     return network.http_get(url, params=params, headers=HTTP_HEADERS_GET)
 
 
+@refgenome.deco_refseq_refver
 def lookup_id_post(ID_list, refver, expand=False):
     """start, end are 1-based inclusive coordinates"""
     result = list()
@@ -84,18 +92,20 @@ def lookup_id_post(ID_list, refver, expand=False):
     return result
 
 
+@refgenome.deco_refseq_refver
 def lookup_symbol(symbol, refver, expand=False):
     prefix = PREFIX_LOOKUP_SYMBOL[refver]
-    species = refgenome.RefverDict.find_species(refver)
+    species = refgenome.get_species(refver)
     url = '/'.join([prefix, species, symbol])
     params = {'expand' : int(expand)}
 
     return network.http_get(url, params=params, headers=HTTP_HEADERS_GET)
 
 
+@refgenome.deco_refseq_refver
 def lookup_symbol_post(symbols, refver, expand=False):
     prefix = PREFIX_LOOKUP_SYMBOL[refver]
-    species = refgenome.RefverDict.find_species(refver)
+    species = refgenome.get_species(refver)
     url = '/'.join([prefix, species])
     params = {'expand' : int(expand)}
 
@@ -108,6 +118,7 @@ def lookup_symbol_post(symbols, refver, expand=False):
     return result
 
 
+@refgenome.deco_refseq_refver
 def regulatory(ID, refver, activity=True):
     prefix = PREFIX_REGULATORY[refver]
     url = '/'.join([prefix, ID])
@@ -122,6 +133,7 @@ def regulatory(ID, refver, activity=True):
     return result
 
 
+@refgenome.deco_refseq_refver
 def vep(
     refver, hgvsg=None, vcfspec=None, distance=5000, 
     with_CADD=True, with_Phenotypes=False, with_canonical=True, 
@@ -158,11 +170,14 @@ def vep(
     return network.http_get(url, params=params, headers=HTTP_HEADERS_GET)
 
 
+@refgenome.deco_refseq_refver
 def vep_post(
     refver, vcfspec_list=None, hgvsg_list=None, distance=5000,
     with_CADD=True, with_Phenotypes=False, with_canonical=True,
     with_mane=True, with_miRNA=False, with_numbers=True, 
     with_protein=True, with_ccds=True, with_hgvs=True,
+    #max_post_size=MAX_POST_SIZE['vep'],
+    max_post_size=6,
 ):
     url = PREFIX_VEP[refver]
     if hgvsg_list is None:
@@ -192,13 +207,15 @@ def vep_post(
         params.update({'Phenotypes': int(with_Phenotypes)})
 
     result = list()
-    for sublist in tools.chunk_iter(hgvsg_list, MAX_POST_SIZE['vep']):
-        data = {'hgvs_notations': sublist}
+    for sublist in tools.chunk_iter(hgvsg_list, max_post_size):
+        data = {'hgvs_notations': list(sublist)}
+        #print(sublist)
         result.extend(network.http_post(url, data, params=params, headers=HTTP_HEADERS_POST))
 
     return result
 
 
+@refgenome.deco_refseq_refver
 def overlap(
     chrom, start1, end1, refver,
     transcript=True, regulatory=True, motif=False, repeat=False,
@@ -206,7 +223,7 @@ def overlap(
     """start1, end1: 1-based closed system"""
 
     prefix = PREFIX_OVERLAP[refver]
-    species = refgenome.RefverDict.find_species(refver)
+    species = refgenome.get_species(refver)
 
     suffix_list = list()
     if transcript: 
@@ -225,6 +242,7 @@ def overlap(
     return network.http_get(url, headers=HTTP_HEADERS_GET)
 
 
+@refgenome.deco_refseq_refver
 @deco.get_deco_arg_choices({'mode': ('cdna', 'cds', 'translation')})
 def map(ID, start1, end1, mode, refver):
     prefix = PREFIX_MAP[refver]
@@ -232,6 +250,7 @@ def map(ID, start1, end1, mode, refver):
     return network.http_get(url, headers=HTTP_HEADERS_GET)
     
 
+@refgenome.deco_refseq_refver
 def sequence_get(ID, refver, type='genomic'):
     prefix = PREFIX_SEQUENCE[refver]
     url = '/'.join([prefix, ID])
@@ -247,6 +266,7 @@ def sequence_get(ID, refver, type='genomic'):
     )
 
 
+@refgenome.deco_refseq_refver
 def sequence_post(ID_list, refver, type='genomic'):
     url = PREFIX_SEQUENCE[refver]
     params = {

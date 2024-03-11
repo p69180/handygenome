@@ -104,5 +104,17 @@ class IGVHandle:
         self.cmd(f'maxPanelHeight {maxPanelHeight}')
         self.cmd(f'snapshot {basename}')
 
+    def group(self, option, tagname=None):
+        if tagname is not None:
+            assert option == 'TAG'
+            cmd = f'group {option} {tagname}'
+        else:
+            cmd = f'group {option}'
 
+        self.cmd(cmd)
+
+    def group_pairorient(self):
+        self.group('PAIR_ORIENTATION')
         
+    def sort(self, key):
+        self.cmd(f'sort {key}')

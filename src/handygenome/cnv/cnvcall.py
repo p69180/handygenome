@@ -151,9 +151,18 @@ def get_average_ploidy(CNt, lengths, axis=None):
 #######
 
 class CCFInfo(
-    collections.namedtuple('CCFInfo', ('CNm', 'ccf', 'mutated_allele'))
+    collections.namedtuple(
+        'CCFInfo', 
+        ('CNt', 'Bt', 'CNm', 'ccf', 'cellularity'),
+    )
 ):
     pass
+
+
+#class CCFInfo(
+#    collections.namedtuple('CCFInfo', ('CNm', 'ccf', 'mutated_allele'))
+#):
+#    pass
 
 
 class CPPair(

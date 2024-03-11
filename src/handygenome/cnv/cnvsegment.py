@@ -22,6 +22,10 @@ from handygenome.genomedf.genomedf_draw import GenomeDrawingFigureResult
 
 
 BAF_COLNAME_PAT = re.compile(libbaf.BAFINDEX_PAT.pattern + '.*')
+LEGEND_AX_KWARGS = {
+    'loc': 'center left',
+    'bbox_to_anchor': (0.05, 0.5),
+}
 
 
 class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
@@ -380,6 +384,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
     def draw_CN(
         self,
         ax=None,
+        legend_ax=None,
         genomeplotter=None,
         plotdata=None,
 
@@ -528,7 +533,10 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
                 color=color, 
                 label=f'{baf_idx} B allele copy number',
             )
-        ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
+        if legend_ax is None:
+            ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
+        else:
+            legend_ax.legend(handles=handles, **LEGEND_AX_KWARGS)
 
         gdraw_figresult = GenomeDrawingFigureResult(gdraw_result_list)
         return gdraw_figresult
@@ -537,6 +545,7 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
         self,
         baf_index,
         ax=None,
+        legend_ax=None,
         genomeplotter=None,
         plotdata=None,
 
@@ -581,7 +590,10 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
             color=BAFSegmentDataFrame.default_plot_kwargs['color'], 
             label='BAF data mean'
         )
-        gdraw_result.ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
+        if legend_ax is None:
+            gdraw_result.ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
+        else:
+            legend_ax.legend(handles=handles, **LEGEND_AX_KWARGS)
 
         gdraw_result.set_name(self.__class__.baf_drawresult_name)
         return gdraw_result
@@ -641,5 +653,86 @@ class CNVSegmentDataFrame(DepthSegmentDataFrame, BAFSegmentDataFrame):
 
         return gdraw_result
 
+    def find_oncogenic_cnv(
+        self, mean_ploidy, meaningful_cancergene_gdf, 
+        merge=True, 
+        return_joined=False, 
+        winsorize=None,
+        amp_factor=3,
+        amp_minCN=5,
+        del_factor=0.2,
+    ):
+        CN_colname = self.get_clonal_CN_colname(germline=False)
+        gCN_colname = self.get_clonal_CN_colname(germline=True)
+        B_colname = self.get_clonal_B_colname(baf_index='baf0', germline=False)
+        gB_colname = self.get_clonal_B_colname(baf_index='baf0', germline=True)
+
+        joined_columns = [CN_colname, gCN_colname, B_colname, gB_colname]
+        if merge:
+            joined_gdf = meaningful_cancergene_gdf.join(
+                self, 
+                joined_columns, 
+                merge='weighted_mean', 
+                suffixes={'weighted_mean': ''},  
+                how='left',
+                winsorize=winsorize,
+            )
+        else:
+            joined_gdf = meaningful_cancergene_gdf.join(
+                self, 
+                joined_columns, 
+                merge=None,  
+                how='left',
+            )
+
+        joined_gdf = joined_gdf.loc[~np.isnan(joined_gdf[CN_colname]), :]
+
+        if return_joined:
+            return joined_gdf
+        
+        for key in (CN_colname, B_colname, gCN_colname, gB_colname):
+            joined_gdf[key + '_rint'] = np.rint(joined_gdf[key])
+            joined_gdf[key + '_ratio'] = joined_gdf[key] / mean_ploidy
+
+        # joined_gdf['is_amp'] = np.logical_and(
+        #     (joined_gdf[CN_colname] - joined_gdf[gCN_colname] >= 3),
+        #     (joined_gdf[CN_colname] >= np.rint(mean_ploidy) * 2),
+        # )
+        # joined_gdf['is_del'] = np.logical_and(
+        #     (joined_gdf[CN_colname] == 0),  
+        #     (joined_gdf[gCN_colname] != 0),
+        # )
+        # joined_gdf['is_amp'] = joined_gdf['CN_ratio'] > 3
+        # joined_gdf['is_del'] = joined_gdf[CN_colname] < 0.2
+        joined_gdf['is_amp'] = functools.reduce(
+            np.logical_and,
+            (
+                (joined_gdf[CN_colname] >= (mean_ploidy * amp_factor)),
+                (joined_gdf[CN_colname] >= amp_minCN),
+                (joined_gdf[gCN_colname] != 0),
+            )
+        )
+        joined_gdf['is_del'] = np.logical_and(
+            (joined_gdf[CN_colname] <= del_factor),
+            (joined_gdf[gCN_colname] != 0),
+        )
+        
+        oncogenic_cnvs = joined_gdf.loc[
+            np.logical_or(
+                (joined_gdf['is_amp'] & joined_gdf['amp_oncogenic']),
+                (joined_gdf['is_del'] & joined_gdf['del_oncogenic']),
+            ),
+            :,
+        ]
+
+        targetable_cnvs = joined_gdf.loc[
+            np.logical_or(
+                (joined_gdf['is_amp'] & joined_gdf['amp_target']),
+                (joined_gdf['is_del'] & joined_gdf['del_target']),
+            ),
+            :,
+        ]
+
+        return {'oncogenic': oncogenic_cnvs, 'target': targetable_cnvs}
 
 

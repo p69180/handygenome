@@ -178,9 +178,9 @@ class NotBinnedError(Exception):
 class GenomeDataFrameBase:
     COMMON_COLUMNS = genomedf_utils.COMMON_COLUMNS
     DEFAULT_DTYPES = {
-        'Chromosome': 'string', 
-        'Start': int, 
-        'End': int,
+        'Chromosome': pd.StringDtype(), 
+        'Start': pd.Int64Dtype(),  # nullable integer dtype
+        'End': pd.Int64Dtype(),
     }
 
     ##################
@@ -483,13 +483,20 @@ class GenomeDataFrameBase:
         if not set(cls.COMMON_COLUMNS).issubset(df.columns):
             raise Exception(f'Required columns: {cls.COMMON_COLUMNS}')
 
-        assert (df['End'] > df['Start']).all()  # this works with 0-row DataFrame
+        notna_selector = np.logical_and(pd.notna(df['End']), pd.notna(df['Start']))
+        assert (df['End'][notna_selector] > df['Start'][notna_selector]).all()  
+        #assert (df['End'] > df['Start']).all()  # this works with 0-row DataFrame
 
         #self.sanitycheck_common(df['Chromosome'], df['End'], self.chromdict)
 
     @classmethod
     def postprocess_df(cls, df, dtype=dict()):
         # all processes work for 0-row dataframe
+        df = df.copy()
+
+        df['Chromosome'] = np.where(pd.isna(df['Chromosome']), pd.NA, df['Chromosome'])
+        df['Start'] = np.where(pd.isna(df['Start']), pd.NA, df['Start'])
+        df['End'] = np.where(pd.isna(df['End']), pd.NA, df['End'])
 
         # dtype setting
         astype_arg = cls.DEFAULT_DTYPES | dtype
@@ -747,6 +754,7 @@ class GenomeDataFrameBase:
     ###########################################
 
     def __getitem__(self, key):
+        #assert key not in ('Chromosome', 'Start', 'End')
         return self.df.__getitem__(key).to_numpy().copy()
 
     def __setitem__(self, key, val):
@@ -819,7 +827,13 @@ class GenomeDataFrameBase:
 
     @property
     def chromosomes(self):
-        return self['Chromosome'].astype(str)
+        #return self.df['Chromosome'].to_numpy().astype(str)
+        values = self.df['Chromosome']
+        if pd.isna(values).any():
+            dtype = object
+        else:
+            dtype = str
+        return np.asarray(self.df['Chromosome'], dtype=dtype)
 
     chroms = chromosomes
 
@@ -834,13 +848,24 @@ class GenomeDataFrameBase:
 
     @property
     def starts(self):
-        return self['Start']
+        values = self.df['Start']
+        if pd.isna(values).any():
+            dtype = object
+        else:
+            dtype = int
+        return np.asarray(self.df['Start'], dtype=dtype)
 
     start0s = starts
 
     @property
     def ends(self):
-        return self['End']
+        values = self.df['End']
+        if pd.isna(values).any():
+            dtype = object
+        else:
+            dtype = int
+        return np.asarray(self.df['End'], dtype=dtype)
+        #return self.df['End'].to_numpy().astype(int)
 
     end0s = ends
 

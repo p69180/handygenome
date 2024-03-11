@@ -7,21 +7,22 @@ import matplotlib.pyplot as plt
 
 
 class LegendHandles(collections.UserList):
-    def add_line(self, color='blue', marker='o', linewidth=0, markersize=8, label='label'):
+    #def add_line(self, color='blue', marker='o', linewidth=0, markersize=8, label=None, alpha=1):
+    def add_line(self, label=None, **kwargs):
+        kwargs = (
+            dict(
+                color='blue', marker='o', linewidth=0, markersize=8, alpha=1,
+            ) 
+            | dict(label=label)
+            | kwargs
+        )
         self.append(
-            mpl.lines.Line2D(
-                [], [], 
-                color=color, 
-                marker=marker, 
-                markersize=markersize, 
-                linewidth=linewidth,
-                label=label,
-            )
+            mpl.lines.Line2D([], [], **kwargs)
         )
     
-    def add_patch(self):
+    def add_patch(self, color='red', label=None):
         self.append(
-            mpl.patches.Patch(color='red', label='The red data')
+            mpl.patches.Patch(color=color, label=label)
         )
 
 
@@ -102,5 +103,128 @@ def data_into_point(ax):
     point_y = inch_y * 72
 
     return inch_x, inch_y, point_x, point_y
+
+
+def vstacked_barplot(
+    data, 
+    colors=None, 
+    xlabels=None, 
+    legend_labels=None, 
+    ax=None, 
+    xs=None, 
+    bar_width=None, 
+    rotation=0, 
+    align='center',
+    zorder=3,
+    dont_set_xticks=False,
+):
+    """Args:
+        data: 
+            - ndim == 2 
+            - axis 0 means different kinds of data, axis 1 means samples
+                (same spatial arrangement as plot itself)
+            - upper row (rows with smaller index) comes on top in the figure
+    """
+    data = np.asarray(data)
+    assert data.ndim == 2
+
+    # arg handling
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.figure
+
+    if xlabels is None:
+        xlabels = np.arange(data.shape[1])
+    else:
+        assert len(xlabels) == data.shape[1]
+
+    if legend_labels is None:
+        legend_labels = np.repeat(None, data.shape[0])
+    else:
+        assert len(legend_labels) == data.shape[0]
+
+    if colors is None:
+        colors = mpl.cm.viridis(np.linspace(0, 1, data.shape[0], endpoint=False))
+    else:
+        assert len(colors) == data.shape[0]
+
+    # main
+    bottoms = np.concatenate(
+        [
+            np.repeat(0, data.shape[1])[np.newaxis, :],
+            np.cumsum(data[:-1, :], axis=0),
+        ],
+        axis=0,
+    )
+    if xs is None:
+        xs = np.arange(data.shape[1])
+
+    bars = list()
+    for val, bot, col, leglabel in zip(data, bottoms, colors, legend_labels):
+        kwargs = dict(
+            x=xs, 
+            height=val, 
+            bottom=bot, 
+            facecolor=col, 
+            label=leglabel, 
+            align=align,
+            zorder=zorder,
+        )
+        if bar_width is not None:
+            kwargs['width'] = bar_width
+        bar = ax.bar(**kwargs)
+        textxs = xs
+        textys = np.asarray(bot) + 0.5 * np.asarray(val)
+        texts = np.asarray(val)
+        for x, y, t in zip(textxs, textys, texts):
+            if t != 0:
+                ax.text(x, y, str(t), ha='center', va='center')
+
+        
+        bars.append(bar)
+
+    if not dont_set_xticks:
+        ax.set_xticks(xs, labels=xlabels, rotation=rotation)
+
+    if not all((x is None) for x in legend_labels):
+        ax.legend()
+
+    return fig, ax, bars
+
+
+stacked_barplot = vstacked_barplot
+
+
+def hstacked_barplot(data, group_width, xlabels, legend_labels=None, ax=None):
+    data = np.asarray(data)
+    assert data.ndim == 2
+
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.figure
+
+    bar_width = group_width / data.shape[0]
+    xs_common = np.arange(data.shape[1])
+    xs_offsets = -0.5 * group_width + np.linspace(0, group_width, data.shape[0], endpoint=False)
+
+    if legend_labels is None:
+        legend_labels = np.repeat(None, data.shape[0])
+    else:
+        assert len(legend_labels) == data.shape[0]
+
+    bars = list()
+    for subdata, offset, label in zip(data, xs_offsets, legend_labels):
+        xs = xs_common + offset
+        bar = ax.bar(xs, subdata, width=bar_width, label=label, align='edge')
+        bars.append(bar)
+
+    ax.set_xticks(xs_common, labels=xlabels)
+    if not all((x is None) for x in legend_labels):
+        ax.legend()
+
+    return fig, ax, bars
+
 
 

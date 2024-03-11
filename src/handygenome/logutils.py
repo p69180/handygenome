@@ -13,19 +13,19 @@ LOCATION_LOGLEVELS = [logging.DEBUG]
 LOCATION_EXCL_PAT = re.compile(
     '|'.join(
         (
-            '^<.*>$',
-            '^/tmp/ipykernel_',
-            '/IPython/core/interactiveshell\.py$',
-            '/IPython/core/async_helpers\.py$',
-            '/ipykernel/zmqshell\.py$',
-            '/ipykernel/ipkernel\.py$',
-            '/ipykernel/kernelbase\.py$',
-            '/asyncio/events\.py$',
-            '/asyncio/base_events\.py$',
-            '/tornado/platform/asyncio\.py$',
-            '/ipykernel/kernelapp\.py$',
-            '/traitlets/config/application\.py$',
-            '/ipykernel_launcher\.py$',
+            r'^<.*>$',
+            r'^/tmp/ipykernel_',
+            r'/IPython/core/interactiveshell\.py$',
+            r'/IPython/core/async_helpers\.py$',
+            r'/ipykernel/zmqshell\.py$',
+            r'/ipykernel/ipkernel\.py$',
+            r'/ipykernel/kernelbase\.py$',
+            r'/asyncio/events\.py$',
+            r'/asyncio/base_events\.py$',
+            r'/tornado/platform/asyncio\.py$',
+            r'/ipykernel/kernelapp\.py$',
+            r'/traitlets/config/application\.py$',
+            r'/ipykernel_launcher\.py$',
         )
     )
 )
@@ -82,27 +82,48 @@ printlog = print_timestamp
 
 # main logger
 
-def log(msg, level='info', add_locstring=None, verbose_locstring=None):
+#def log(msg, level='info', add_locstring=None, verbose_locstring=None):
+def log(
+    msg, 
+    level='info', 
+    add_locstring=None, locstring_mode=None,
+    filename=None, append=False,
+):
     # postprocess params
     level = getattr(logging, level.upper())
     if add_locstring is None:
         add_locstring = True
-    if verbose_locstring is None:
-        verbose_locstring = (level == getattr(logging, 'DEBUG'))
+    if locstring_mode is None:
+        if level == getattr(logging, 'DEBUG'):
+            locstring_mode = 'verbose'
+        else:
+            locstring_mode = 'default'
 
     # main
-    STREAMHANDLER.setFormatter(
-        logging.Formatter(
-            fmt=make_logformat(level, add_locstring=add_locstring),
-            datefmt='%Z %Y-%m-%d %H:%M:%S', # KST 2022-03-23 22:12:34
-        )
+    formatter = logging.Formatter(
+        fmt=make_logformat(level, add_locstring=add_locstring),
+        datefmt='%Z %Y-%m-%d %H:%M:%S', # KST 2022-03-23 22:12:34
     )
+    # streamhandler
+    STREAMHANDLER.setFormatter(formatter)
+    # filehandler
+    if filename is not None:
+        fh = make_filehandler(
+            filename, 
+            level=level, 
+            formatter=formatter, 
+            append=append,
+        )
+        LOGGER.addHandler(fh)
     
     if add_locstring:
-        locstring = make_locstring(verbose=verbose_locstring)
+        locstring = make_locstring(mode=locstring_mode)
         LOGGER.log(level, msg, extra={'locstring': locstring})
     else:
         LOGGER.log(level, msg)
+
+    if filename is not None:
+        LOGGER.removeHandler(fh)
 
 
 def log_old(msg, level='info', add_locstring=None, verbose_locstring=None):
@@ -131,18 +152,32 @@ def log_old(msg, level='info', add_locstring=None, verbose_locstring=None):
         logging.log(level, msg)
 
 
-def make_locstring(verbose=False):
-    if verbose:
+def make_filehandler(filename, level, formatter, append=False):
+    fh = logging.FileHandler(filename, mode=('a' if append else 'w'))
+    fh.setLevel(level)
+    fh.setFormatter(formatter)
+    return fh
+
+
+def make_locstring(mode='default'):
+    assert mode in ['default', 'verbose', 'last']
+
+    if mode in ['verbose', 'last']:
+        verbose_loc_list = [
+            f'{os.path.basename(finfo.filename)}: {finfo.function} (lineno {finfo.lineno})'
+            for finfo in inspect.stack()
+            if LOCATION_EXCL_PAT.search(finfo.filename) is None
+        ]
+
+    if mode == 'verbose':
         return (
             '\n'
-            + '\n--> '.join(
-                f'{os.path.basename(finfo.filename)}: {finfo.function} (lineno {finfo.lineno})'
-                for finfo in inspect.stack()
-                if LOCATION_EXCL_PAT.search(finfo.filename) is None
-            )
+            + '\n--> '.join(verbose_loc_list)
             + '\n\n'
         )
-    else:
+    elif mode == 'last':
+        return verbose_loc_list[-1] + ' |'
+    elif mode == 'default':
         finfo = get_calling_frameinfo()
         return f'{os.path.basename(finfo.filename)}: {finfo.function} (lineno {finfo.lineno}) |'
 

@@ -1,5 +1,6 @@
 import collections
 import pprint
+import operator
 
 #import pyranges as pr
 import numpy as np
@@ -23,7 +24,13 @@ from handygenome.sv.breakends import Breakends
 #    pass
 
 
-def call_breakends(bam, chrom, start0, end0, SA_extend=30, mate_match_length=5, aligner=alignhandler.ALIGNER_EQUAL_MM_GAP):
+def call_breakends(
+    bam, chrom, start0, end0, 
+    consensus_cutoff_gt=0, 
+    SA_extend=30, 
+    mate_match_frac=0.5, 
+    aligner=alignhandler.ALIGNER_EQUAL_MM_GAP,
+):
 
     # make rpplist
     rpplist = ReadPlusPairList.from_bam(bam, chrom, start0, end0)
@@ -39,27 +46,48 @@ def call_breakends(bam, chrom, start0, end0, SA_extend=30, mate_match_length=5, 
 
     # get consensus sequences
     consensus_result = get_consensus_from_clipspecs(
-        clipspec_list, SA_extend=SA_extend,
+        clipspec_list, 
+        SA_extend=SA_extend,
+        cutoff_gt=consensus_cutoff_gt, 
+        aligner=aligner,
     )
+
+    # remove items without SA region
+    consensus_result = [
+        x for x in consensus_result 
+        if (x['SA_regions'] is not None)
+    ]
 
     # find alignment with each consensus
     alignments = list()
     for consensus_item in consensus_result:
-        if consensus_item['SA_regions'] is None:
-            continue
-        aln_results = align_consensus_toSA(consensus_item, fasta, match_length=mate_match_length, aligner=aligner)
+        #if consensus_item['SA_regions'] is None:
+        #    continue
+        aln_results = align_consensus_toSA(consensus_item, fasta, match_frac=mate_match_frac, aligner=aligner)
         valid_aln_results = [x for x in aln_results if x is not None]
-        assert len(valid_aln_results) == 1
-        consensus_item.update(valid_aln_results[0])
+
+        assert len(valid_aln_results) != 0
+        selected_aln_result = max(valid_aln_results, key=operator.itemgetter('alignment_score'))
+        #if len(valid_aln_results) == 1:
+        #    selected_aln_result = valid_aln_results[0]
+        #else:
+            #raise Exception(
+            #    f'More than one valid alignments for a consensus item:\n'
+            #    f'valid_aln_results = {pprint.pformat(valid_aln_results)}\n'
+            #    f'consensus_item: {pprint.pformat(consensus_item)}'
+            #)
+
+        consensus_item.update(selected_aln_result)
 
     # make breakends object
     bnds_list = list()
-    for x in consensus_result:
+    for consensus_item in consensus_result:
+        #pprint.pprint(consensus_item)
         bnds = Breakends(
-            bndspec1=(x['chrom'], x['pos0'], x['is5prime']),
-            bndspec2=(x['mate_chrom'], x['mate_bnd_pos0'], x['mate_is5prime']),
+            bndspec1=(consensus_item['chrom'], consensus_item['pos0'], consensus_item['is5prime']),
+            bndspec2=(consensus_item['mate_chrom'], consensus_item['mate_bnd_pos0'], consensus_item['mate_is5prime']),
             refver=refver,
-            inserted_seq_view1=x['insseq_clipsideview'],
+            inserted_seq_view1=consensus_item['insseq_clipsideview'],
         )
         bnds_list.append(bnds)
 
@@ -70,7 +98,8 @@ def call_breakends(bam, chrom, start0, end0, SA_extend=30, mate_match_length=5, 
 # find alignment of consensus sequence #
 ########################################
 
-def align_consensus_toSA(consensus_item, fasta, match_length=5, aligner=alignhandler.ALIGNER_EQUAL_MM_GAP):
+
+def align_consensus_toSA(consensus_item, fasta, match_frac=0.5, aligner=alignhandler.ALIGNER_EQUAL_MM_GAP):
     SA_gdf = consensus_item['SA_regions']
     result = list()
     for idx, row in SA_gdf.df.iterrows():
@@ -89,18 +118,24 @@ def align_consensus_toSA(consensus_item, fasta, match_length=5, aligner=alignhan
             (not is_reversed) if consensus_item['is5prime'] else is_reversed
         )
         if tmp_flip_aln:
-            aln = alignhandler.tiebreaker(
-                aligner.align(target[::-1], query[::-1])
-            )[:, ::-1]
+            aln, aln_score = alignhandler.tiebreaker(
+                aligner.align(target[::-1], query[::-1]),
+                return_score=True,
+            )
+            aln = aln[:, ::-1]
         else:
-            aln = alignhandler.tiebreaker(aligner.align(target, query))
+            aln, aln_score = alignhandler.tiebreaker(
+                aligner.align(target, query),
+                return_score=True,
+            )
 
         ###
 
         cigartuples, target_offset = alignhandler.alignment_to_cigartuples(
             aln, match_as_78=False, remove_left_del=False, remove_right_del=False,
         )
-        long_matches = [(x[0] == 0 and x[1] >= match_length) for x in cigartuples]
+        matchlen_cutoff = len(query) * match_frac
+        long_matches = [((x[0] == 0) and (x[1] >= matchlen_cutoff)) for x in cigartuples]
 
         if not any(long_matches):
             subresult = None
@@ -146,7 +181,10 @@ def align_consensus_toSA(consensus_item, fasta, match_length=5, aligner=alignhan
                 'mate_bnd_pos0': mate_bnd_pos0,
                 'mate_is5prime': mate_is5prime,
                 'insseq_clipsideview': insseq_clipsideview,
+                'alignment': aln,
+                'alignment_score': aln_score,
             }
+            print(aln)
 
         result.append(subresult)
     return result
@@ -156,7 +194,7 @@ def align_consensus_toSA(consensus_item, fasta, match_length=5, aligner=alignhan
 # SA tag parsing #
 ##################
 
-def get_SA_region_info(rp_list, extend=30):
+def get_SA_region_info(rp_list, clipid, extend=30):
     """Args:
         rp_list: list of ReadPlus objects which harbor a softclip of a given consensus
     """
@@ -208,7 +246,7 @@ def get_SA_region_info(rp_list, extend=30):
         for key, subdf in groupby:
             values = subdf['is_reversed']
             if len(set(values)) == 1:
-                new_is_reversed_list.append(values[0])
+                new_is_reversed_list.append(values.iloc[0])
             else:
                 new_is_reversed_list.append(None)
                 
@@ -222,7 +260,8 @@ def get_SA_region_info(rp_list, extend=30):
         
         # sanitycheck
         if merged_SA_gdf.nrow != 1:
-            raise Exception(f'More than 1 SA regions: {merged_SA_gdf}')
+            pass
+            #raise Exception(f'More than 1 SA regions: {merged_SA_gdf}')
 
         # step 3: extend
         new_start0s = np.maximum(
@@ -406,7 +445,7 @@ def get_consensus_from_clipspecs(
                 seqrec.annotations['clipspec'].rp
                 for seqrec in msa
             ]
-            SA_region_gdf = get_SA_region_info(rp_list, extend=SA_extend)
+            SA_region_gdf = get_SA_region_info(rp_list, clipid, extend=SA_extend)
 
             # result
             result.append(

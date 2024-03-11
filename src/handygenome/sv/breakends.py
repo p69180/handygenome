@@ -1,4 +1,3 @@
-
 import re
 import collections
 import itertools
@@ -8,21 +7,16 @@ import operator
 
 import Bio.Seq
 
+import handygenome.sequtils as sequtils
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.tools as tools
+import handygenome.logutils as logutils
 import handygenome.deco as deco
-import handygenome.workflow as workflow
 import handygenome.sv.structvars as structvars
 import handygenome.variant.vcfspec as libvcfspec
+import handygenome.annotation.ensembl_rest as ensembl_rest
 from handygenome.variant.vcfspec import Vcfspec, NonStandardSVAlt
 
-
-LOGGER = workflow.get_logger(
-    name=__name__,
-    formatter=logging.Formatter(
-        fmt='[%(asctime)s  %(levelname)s] %(name)s - %(message)s',
-        datefmt=workflow.DEFAULT_DATEFMT),
-    level='info', stderr=True, filenames=None, append=False)
 
 
 class BreakendSpec(
@@ -227,8 +221,15 @@ class Breakends:
         return func2(self)
 
     def __hash__(self):
+        #hashed_bnds = self.get_bnd1adv_form()
+        hashed_bnds = self
         return hash(
-            (self.bndspec1, self.bndspec2, self.inserted_seq, self.refver)
+            (
+                hashed_bnds.bndspec1, 
+                hashed_bnds.bndspec2, 
+                hashed_bnds.inserted_seq, 
+                hashed_bnds.refver,
+            )
         )
         #return hash((self.chrom_bnd1, self.pos_bnd1, self.is5prime_bnd1,
         #             self.chrom_bnd2, self.pos_bnd2, self.is5prime_bnd2,
@@ -294,6 +295,47 @@ class Breakends:
         bnds = get_bnds_from_vr_svinfo(vr, vr_svinfo, fasta, chromdict)
 
         return bnds
+
+    ###############
+    # vep running #
+    ###############
+
+    def get_vep_vcfspec_bnd1(self):
+        chrom = self.chrom_bnd1
+        pos = self.pos_bnd1
+        ref = self.fasta.fetch(chrom, pos - 1, pos)
+        alts = (sequtils.get_different_base(ref),)
+        return Vcfspec(chrom, pos, ref, alts, refver=self.refver)
+
+    def get_vep_vcfspec_bnd2(self):
+        chrom = self.chrom_bnd2
+        pos = self.pos_bnd2
+        ref = self.fasta.fetch(chrom, pos - 1, pos)
+        alts = (sequtils.get_different_base(ref),)
+        return Vcfspec(chrom, pos, ref, alts, refver=self.refver)
+
+    def get_vep_input_vcfspecs(self):
+        return [
+            self.get_vep_vcfspec_bnd1(),
+            self.get_vep_vcfspec_bnd2(),
+        ]
+
+    def get_vep_result(self):
+        vep_result = ensembl_rest.vep_post(
+            refver=self.refver,
+            vcfspec_list=self.get_vep_input_vcfspecs(),
+            distance=0,
+            with_CADD=False, 
+            with_Phenotypes=False, 
+            with_canonical=True,
+            with_mane=False, 
+            with_miRNA=False, 
+            with_numbers=True, 
+            with_protein=False, 
+            with_ccds=False, 
+            with_hgvs=False,
+        )
+        return vep_result
 
     ##############
     # properties #
@@ -617,6 +659,8 @@ class Breakends:
 
     @functools.cache
     def get_seq_beyond_bnd_alt(self, is_bnd1, length, with_border_seq):
+        assert length > len(self.inserted_seq)
+
         # get parameters
         is5prime = self.is5prime_bnd1 if is_bnd1 else self.is5prime_bnd2
         (chrom_mate, pos_range0_mate, is5prime_mate) = self.get_params(
@@ -1315,8 +1359,13 @@ def get_bnds_from_vcfspec_parseinfo(
 
 def get_bnds_from_vr_svinfo(vr, vr_svinfo, fasta, chromdict):
     def warn():
-        LOGGER.warning(f'"t" portion of SV ALT string is not an extension '
-                       f'of REF string for this variant record:\n{vr}')
+        logutils.log(
+            (
+                f'"t" portion of SV ALT string is not an extension '
+                f'of REF string for this variant record:\n{vr}'
+            ),
+            level='warning',
+        )
 
     if vr_svinfo['is_bnd1']:
         chrom_bnd1 = vr.contig

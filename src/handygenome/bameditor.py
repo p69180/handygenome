@@ -36,6 +36,10 @@ def get_index_path(bam_path):
         return None
 
 
+def check_has_index(bam_path):
+    return get_index_path(bam_path) is not None
+
+
 def samtools_view(in_bam_path, out_bam_path, region_bed_path=None, index=True):
     args = ['-h', '-b']
     if region_bed_path is not None:

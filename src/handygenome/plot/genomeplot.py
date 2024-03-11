@@ -151,6 +151,8 @@ class CoordinateConverter:
                     weight=weights,
                 )
 
+        self.trim_coords(region_gdf)
+
         # insert gap regions into region_gdf
         region_gdf = self.insert_gap_to_region_gdf(region_gdf, region_gaps)
 
@@ -158,9 +160,15 @@ class CoordinateConverter:
         self.set_params(region_gdf)
 
     @staticmethod
+    def trim_coords(region_gdf):
+        chromdict = refgenome.get_chromdict(region_gdf.refver)
+        region_gdf['Start'] = np.maximum(0, region_gdf.start0s)
+        region_gdf['End'] = np.minimum([chromdict[x] for x in region_gdf.chroms], region_gdf.end0s)
+
+    @staticmethod
     def insert_gap_to_region_gdf(gdf, region_gaps, last=False):
         new_gdf = gdf.copy().choose_annots('weight')
-        assert not np.char.startswith(new_gdf.chroms, GAPREGION_PREFIX).any()
+        assert not np.char.startswith(new_gdf.chroms.astype(str), GAPREGION_PREFIX).any()
 
         # intercalate with gap rows
         do_make_gaps = (
@@ -218,7 +226,7 @@ class CoordinateConverter:
         totalregion_gdf['plot_region_start0'] = plot_start0s
 
         # set dfs without gap regions
-        gap_selector = np.char.startswith(totalregion_gdf.chroms, GAPREGION_PREFIX)
+        gap_selector = np.char.startswith(totalregion_gdf.chroms.astype(str), GAPREGION_PREFIX)
         totalregion_gdf_wogap = totalregion_gdf.loc[~gap_selector, :]
         gapregion_gdf = totalregion_gdf.loc[gap_selector, :]
 
@@ -380,7 +388,7 @@ class CoordinateConverter:
         if return_modified:
             # move to nearest integer positions
             #wogap_regions = self.totalregion_gdf_wogap
-            #region_genomic_lengths = wogap_regions['End'] - wogap_regions['Start']
+            #region_genomic_lengths = wogap_regions.end0s - wogap_regions.start0s
             #region_plot_lengths = wogap_regions['plot_region_end0'] - wogap_regions['plot_region_start0']
             #onebase_lengths = region_plot_lengths / region_genomic_lengths
             onebase_lengths = (
@@ -518,7 +526,7 @@ class CoordinateConverter:
         if return_modified:
             # move to nearest integer positions
             wogap_regions = self.totalregion_gdf_wogap
-            region_genomic_lengths = wogap_regions['End'] - wogap_regions['Start']
+            region_genomic_lengths = wogap_regions.end0s - wogap_regions.start0s
             region_plot_lengths = wogap_regions['plot_region_end0'] - wogap_regions['plot_region_start0']
             onebase_lengths = region_plot_lengths / region_genomic_lengths
 
@@ -998,8 +1006,8 @@ class GenomePlotter:
 
         if plotdata.nrow > 1:
             ys, xmins, xmaxs = self._merge_adjacent_data_new(
-                genome_xmins=plotdata['Start'], 
-                genome_xmaxs=plotdata['End'], 
+                genome_xmins=plotdata.start0s, 
+                genome_xmaxs=plotdata.end0s, 
                 plot_xmins=plotdata['plot_start0s'], 
                 plot_xmaxs=plotdata['plot_end0s'], 
                 ys=ys,
@@ -1218,8 +1226,8 @@ class GenomePlotter:
         # x
         if plotdata.nrow > 1:
             _, xmins, xmaxs = self._merge_adjacent_data_new(
-                genome_xmins=plotdata['Start'], 
-                genome_xmaxs=plotdata['End'], 
+                genome_xmins=plotdata.start0s, 
+                genome_xmaxs=plotdata.end0s, 
                 plot_xmins=plotdata['plot_start0s'], 
                 plot_xmaxs=plotdata['plot_end0s'], 
                 ys=None,
@@ -1366,8 +1374,8 @@ class GenomePlotter:
                     xmaxs = subgdf['plot_end0s']
                 else:
                     _, xmins, xmaxs = self._merge_adjacent_data_new(
-                        genome_xmins=subgdf['Start'], 
-                        genome_xmaxs=subgdf['End'], 
+                        genome_xmins=subgdf.start0s, 
+                        genome_xmaxs=subgdf.end0s, 
                         plot_xmins=subgdf['plot_start0s'], 
                         plot_xmaxs=subgdf['plot_end0s'], 
                         ys=None,
@@ -2047,7 +2055,7 @@ class GenomePlotter:
 #
 #    def calculate_tumor_ploidy(self, sampleid, segment_df):
 #        if self.data[sampleid]['mode'] == 'wgs':
-#            weights = segment_df['End'] - segment_df['Start']
+#            weights = segment_df['End'] - segment_df.start0s
 #        else:
 #            stripped_segment_df = segment_df.loc[:, ['Chromosome', 'Start', 'End']].copy()
 #            all_indexes = list(range(stripped_segment_df.shape[0]))  # index of segments
@@ -2063,7 +2071,7 @@ class GenomePlotter:
 #
 #            index_annotated_targetregion_df['length'] = (
 #                index_annotated_targetregion_df['End']
-#                - index_annotated_targetregion_df['Start']
+#                - index_annotated_targetregion_df.start0s
 #            )
 #            weights_dict = index_annotated_targetregion_df.loc[
 #                :, ['length', 'index']
@@ -3549,7 +3557,7 @@ class GenomePlotter:
 #        segment_df = segment_df.loc[segment_df['CNn'] == 2, :]
 #
 #        depthratio_list = segment_df['depthratio_segment_mean']
-#        weights = (segment_df['End'] - segment_df['Start'])
+#        weights = (segment_df['End'] - segment_df.start0s)
 #
 #        # set ylim
 #        ax.set_ylim(*depth_ylim)
@@ -4077,7 +4085,7 @@ class GenomePlotter:
 #        # select copy-neutral depth segments
 #        global_mean = np.average(
 #            upscaled_depth_df['mean_depth'], 
-#            weights=(upscaled_depth_df['End'] - upscaled_depth_df['Start']),
+#            weights=(upscaled_depth_df['End'] - upscaled_depth_df.start0s),
 #        )
 #        selector = segdf['depth_segment_mean'].between(
 #            global_mean * factors[0], 
@@ -4261,7 +4269,7 @@ class GenomePlotter:
 #            depth_ratio=segdf['depthratio_segment_mean'], 
 #            baf=segdf['corrected_baf_segment_mean'],
 #            CNn=segdf['CNn'],
-#            lengths=(segdf['End'] - segdf['Start']),
+#            lengths=(segdf['End'] - segdf.start0s),
 #            cellularity=cellularity,
 #            tumor_ploidy=ploidy,
 #            normal_ploidy=self.data[sampleid]['normal_mean_ploidy'],
@@ -4288,7 +4296,7 @@ class GenomePlotter:
 #
 #    def select_fixed_ccfs(self, sampleid, bandwidth=0.1):
 #        segdf = self.data[sampleid]['merged_segment']
-#        lengths = (segdf['End'] - segdf['Start']).to_numpy()
+#        lengths = (segdf['End'] - segdf.start0s).to_numpy()
 #        fixed_ccfs, ccf_plotdata = cnvmisc.select_fixed_ccfs(
 #            freeccf_solution=self.data[sampleid]['freeccf_result']['freeccf_solution'], 
 #            lengths=lengths, 
@@ -4313,7 +4321,7 @@ class GenomePlotter:
 #            depth_ratio=segdf['depthratio_segment_mean'].to_numpy(),
 #            baf=segdf['corrected_baf_segment_mean'].to_numpy(),
 #            CNn=segdf['CNn'].to_numpy(),
-#            lengths=(segdf['End'] - segdf['Start']).to_numpy(),
+#            lengths=(segdf['End'] - segdf.start0s).to_numpy(),
 #            cellularity=cellularity,
 #            tumor_ploidy=ploidy,
 #            normal_ploidy=self.data[sampleid]['normal_mean_ploidy'],

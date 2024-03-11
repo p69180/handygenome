@@ -10,7 +10,7 @@ def get_dbsnp_path(refver):
     standard = refgenome.REFVERINFO.standardize(refver)
     refveritem = refgenome.REFVERINFO.access_refveritem(standard)
     if refveritem['dbsnp_path'] is None:
-        return os.path.join(handygenome.DIRS['data'], 'popfreq', f'dbSNP_{standard}.vcf.gz')
+        return os.path.join(handygenome.USERDATA_DIR, 'popfreq', f'dbSNP_{standard}.vcf.gz')
     else:
         return refveritem['dbsnp_path']
 
@@ -31,12 +31,12 @@ REGULATORY_PATH = refgenome.RefverDict({
 })
 
 DBSNP_PATHS = refgenome.RefverDict({
-    'GRCh37': f'{handygenome.DIRS["data"]}/popfreq/dbSNP_b155_GRCh37.p13.vcf.gz',
-    'GRCh38': f'{handygenome.DIRS["data"]}/popfreq/dbSNP_b156_GRCh38.p13.vcf.gz',
+    'GRCh37': f'{handygenome.USERDATA_DIR}/popfreq/dbSNP_b155_GRCh37.p13.vcf.gz',
+    'GRCh38': f'{handygenome.USERDATA_DIR}/popfreq/dbSNP_b156_GRCh38.p13.vcf.gz',
 })
 
 COSMIC_PATHS = refgenome.RefverDict({
-    'GRCh37': f'{handygenome.DIRS["data"]}/cosmic/v96/grch37/nonSV.vcf.gz',
+    'GRCh37': f'{handygenome.USERDATA_DIR}/cosmic/v96/grch37/nonSV.vcf.gz',
     'GRCh38': None,
 })
 

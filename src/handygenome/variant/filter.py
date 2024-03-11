@@ -297,7 +297,8 @@ class SamplewiseFilter(FilterBase):
 
         #other_allele_indexes = vp.get_other_allele_indexes(allele_index)
         other_allele_indexes = tuple(sorted(
-            set(range(len(vp.vr.alleles))).difference({allele_index})
+            #set(range(len(vp.vr.alleles))).difference({allele_index})
+            set(range(len(vp.vcfspec.alleles))).difference({allele_index})
         ))
         other_value = readstats.get_allele_indexes_average(
             readstats_key, other_allele_indexes
@@ -500,17 +501,19 @@ class AvgCliplenFilter(SamplewiseFilter):
 
 
 class AbsCliplenFilter(SamplewiseFilter):
-    def __init__(self, cutoff=20):
+    def __init__(self, cutoff=20, allele_index=1):
         self.params = {
             "cutoff": cutoff,
+            "allele_index": allele_index,
         }
 
-    def check(self, vp, sampleid, allele_index=1):
+    #def check(self, vp, sampleid, allele_index=1):
+    def check(self, vp, sampleid, allele_index=None):
         return self._check_absvalue(
             readstats_key="mean_cliplens",
             vp=vp,
             sampleid=sampleid,
-            allele_index=allele_index,
+            allele_index=self.params["allele_index"],
             cutoff=self.params["cutoff"],
             gt=False,
         )

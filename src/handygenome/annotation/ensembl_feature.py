@@ -624,6 +624,18 @@ class TranscriptSet(EnsemblFeatureSetPlain):
         return result
 
     @property
+    def canon_ovlp_coding(self):
+        result = self.__class__.init_nonmissing()
+        for key, val in self.items():
+            if (
+                val['is_canonical'] 
+                and val.is_overlapping
+                and val['subtype_flags']['coding']
+            ):
+                result[key] = val
+        return result
+
+    @property
     def is_exonic(self):
         return any(tr['is_exon_involved'] for tr in self.canon_ovlp.values())
 
@@ -676,6 +688,19 @@ class TranscriptSet(EnsemblFeatureSetPlain):
 
     def update_postvep(self, vcfspec, chromdict, distance, tabixfile_geneset):
         self.update_ensembl_gff(vcfspec, chromdict, distance, tabixfile_geneset, refver=None, fill_missing_canonical=False)
+
+    def get_gene_is_forward(self, gene_name):
+        data = set()
+        for key, val in self.items():
+            if val['gene_name'] == gene_name:
+                data.add(val['is_forward'])
+
+        if len(data) == 0:
+            return None  # signifies the gene is not present
+        else:
+            if len(data) > 1:
+                raise Exception(f'Strand differs between transcript variants')
+            return data.pop()
 
 
 class TranscriptSetALTlist(annotitem.AnnotItemInfoALTlist):

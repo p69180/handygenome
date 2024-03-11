@@ -248,23 +248,23 @@ def vectorize(func):
     return wrapper
 
 
-#def args_into_array(func):
-#    @functools.wraps(func)
-#    def wrapper(*args, **kwargs):
-#        keys = list(kwargs.keys())
-#        arglist = [
-#            np.atleast_1d(x) for x in 
-#            itertools.chain(args, kwargs.values())
-#        ]
-#
-#        new_args = arglist[:len(args)]
-#        new_kwargs = dict(zip(keys, arglist[len(args):]))
-#
-#        result = np.squeeze(func(*new_args, **new_kwargs))
-#
-#        return result
-#
-#    return wrapper
+def args_into_array(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        keys = list(kwargs.keys())
+        arglist = [
+            np.atleast_1d(x) for x in 
+            itertools.chain(args, kwargs.values())
+        ]
+
+        new_args = arglist[:len(args)]
+        new_kwargs = dict(zip(keys, arglist[len(args):]))
+
+        result = np.squeeze(func(*new_args, **new_kwargs))
+
+        return result
+
+    return wrapper
 
 
 def get_deco_asarray(names, keep_none=True):

@@ -2,7 +2,7 @@ import sys
 import collections
 import itertools
 import functools
-import logging
+#import logging
 import inspect
 import random
 import uuid
@@ -11,20 +11,23 @@ import pysam
 import Bio.Align
 import numpy as np
 import pandas as pd
-import pyranges as pr
+#import pyranges as pr
 
+from handygenome.genomedf.genomedf_base import GenomeDataFrameBase
 import handygenome.deco as deco
 import handygenome.workflow as workflow
 import handygenome.variant.vcfspec as libvcfspec
-import handygenome.read.pileup as libpileup
+#import handygenome.read.pileup as libpileup
+from handygenome.read.pileup import PileupBase
 import handygenome.align.alignhandler as alignhandler
 import handygenome.bameditor as bameditor
 import handygenome.read.readhandler as readhandler
 import handygenome.read.readplus as readplus
 import handygenome.align.realign.base as realign_base
+from handygenome.align.realign.base import RealignerPileupBase
 
 
-class RealignerPileup(realign_base.RealignerPileupBase):
+class RealignerPileup(RealignerPileupBase):
     # initializers
     def __init__(
         self, 
@@ -32,14 +35,14 @@ class RealignerPileup(realign_base.RealignerPileupBase):
         chrom, 
         start0=None, 
         end0=None, 
-        refver=None, 
-        fasta=None,
+
+        _refver=None, # only for spawn
 
         aligner=realign_base.DEFAULT_ALIGNER,
         init_df=True,
 
         verbose=False,
-        logger=None,
+        #logger=None,
 
         **kwargs,
     ):
@@ -47,13 +50,14 @@ class RealignerPileup(realign_base.RealignerPileupBase):
             start0 and end0 are only required when init_df == True
         """
         # initiation
-        libpileup.PileupBase.__init__(
+        PileupBase.__init__(
             self, 
             bam=bam, 
             chrom=chrom, start0=start0, end0=end0, 
-            refver=refver, fasta=fasta,
+            _refver=_refver,
             init_df=init_df, 
-            verbose=verbose, logger=logger,
+            verbose=verbose, 
+            #logger=logger,
         )
 
         # set other parameters
@@ -72,23 +76,20 @@ class RealignerPileup(realign_base.RealignerPileupBase):
         chrom, 
         start0, 
         end0, 
-        refver=None, 
-        fasta=None,
         aligner=realign_base.DEFAULT_ALIGNER,
         verbose=False, 
-        logger=None, 
+        #logger=None, 
         **kwargs,
     ):
         result = cls(
             bam=bam, 
             chrom=chrom, start0=start0, end0=end0, 
-            refver=refver, fasta=fasta,
             aligner=aligner,
 
             init_df=True,
 
             verbose=verbose,
-            logger=logger,
+            #logger=logger,
 
             **kwargs,
         )
@@ -100,12 +101,11 @@ class RealignerPileup(realign_base.RealignerPileupBase):
         result = self.__class__(
             bam=self.bam,
             chrom=self.chrom,
-            refver=self.refver,
-            fasta=self.fasta,
+            _refver=self.refver,
             aligner=self.aligner,
             init_df=False,
             verbose=self.verbose,
-            logger=self.logger,
+            #logger=self.logger,
             **self.params,
         )
         result.read_store = self.read_store
@@ -114,10 +114,10 @@ class RealignerPileup(realign_base.RealignerPileupBase):
     def subset(self, start0, end0, inplace=False):
         new_active_info = self.active_info.loc[start0:(end0 - 1)]
         if inplace:
-            libpileup.PileupBase._subset_base(self, start0, end0, inplace=inplace)
+            PileupBase._subset_base(self, start0, end0, inplace=inplace)
             self.active_info = new_active_info
         else:
-            result = libpileup.PileupBase._subset_base(self, start0, end0, inplace=inplace)
+            result = PileupBase._subset_base(self, start0, end0, inplace=inplace)
             result.active_info = new_active_info
             return result
 
@@ -187,12 +187,11 @@ class RealignerPileup(realign_base.RealignerPileupBase):
             chrom=self.chrom, 
             start0=start0,
             end0=end0,
-            refver=self.refver,
-            fasta=self.fasta,
+            _refver=self.refver,
             aligner=self.aligner,
             init_df=True,
             verbose=self.verbose,
-            logger=self.logger,
+            #logger=self.logger,
             **self.params,
         )
 
@@ -219,20 +218,21 @@ class RealignerPileup(realign_base.RealignerPileupBase):
 
     # extension and reduction in search for realignment area
     def augment_margins(self):
-        self.logger.debug(f'Beginning "augment_margins"')
+        #self.logger.debug(f'Beginning "augment_margins"')
 
         # immediately after seeding
         if self.active_info.any():
-            self.logger.debug(f'\tskipping initial search')
+            #self.logger.debug(f'\tskipping initial search')
+            pass
         else:
-            self.logger.debug(f'\tbeginning initial search')
+            #self.logger.debug(f'\tbeginning initial search')
 
             self.search_for_active_position()
 
-            self.logger.debug(f'\tfinished initial search')
+            #self.logger.debug(f'\tfinished initial search')
 
             if not self.active_info.any():
-                self.logger.debug(f'Finished "augment_margins" without secure_margins')
+                #self.logger.debug(f'Finished "augment_margins" without secure_margins')
 
                 result_inactive = None
                 result_vcfspec = None
@@ -242,11 +242,11 @@ class RealignerPileup(realign_base.RealignerPileupBase):
         self.reduce_left()
         self.reduce_right()
         # do after-discovery
-        self.logger.debug(f'\tbeginning after-discovery')
+        #self.logger.debug(f'\tbeginning after-discovery')
         result_inactive, result_vcfspec = self.secure_margins()
-        self.logger.debug(f'\tfinished after-discovery')
+        #self.logger.debug(f'\tfinished after-discovery')
 
-        self.logger.debug(f'Finished "augment_margins"')
+        #self.logger.debug(f'Finished "augment_margins"')
         return result_inactive, result_vcfspec
 
     def search_for_active_position(self):
@@ -277,29 +277,31 @@ class RealignerPileup(realign_base.RealignerPileupBase):
         # subset
         self.subset(gen.current_start0, gen.current_end0, inplace=True)
 
-    def secure_margins(self):
-        self.logger.debug(f'Began secure_margins')
-
-        while True:
-            self.logger.debug(f'Began secure_inactive_padding')
+    def secure_margins(self, inactive_only=True):
+        if inactive_only:
             result_inactive = self.secure_inactive_padding()
-            self.logger.debug(f'Finished secure_inactive_padding. Margins: {self.range0}')
+            result_vcfspec = None
+        else:
+            while True:
+                #self.logger.debug(f'Began secure_inactive_padding')
+                result_inactive = self.secure_inactive_padding()
+                #self.logger.debug(f'Finished secure_inactive_padding. Margins: {self.range0}')
 
-            self.logger.debug(f'Began prepare_vcfspecs')
-            self.prepare_vcfspecs()
-            self.logger.debug(f'Finished prepare_vcfspecs')
+                #self.logger.debug(f'Began prepare_vcfspecs')
+                self.prepare_vcfspecs()
+                #self.logger.debug(f'Finished prepare_vcfspecs')
 
-            self.logger.debug(f'Began secure_vcfspec_margins')
-            result_vcfspec = self.secure_vcfspec_margins()
-            self.logger.debug(f'Finished secure_vcfspec_margins. Margins: {self.range0}')
+                #self.logger.debug(f'Began secure_vcfspec_margins')
+                result_vcfspec = self.secure_vcfspec_margins()
+                #self.logger.debug(f'Finished secure_vcfspec_margins. Margins: {self.range0}')
 
-            if not result_vcfspec.edited:
-                break
-            #if (not result_inactive.left_okay) and (not result_inactive.right_okay):
-            #    break
-            #else:
+                if not result_vcfspec.edited:
+                    break
+                #if (not result_inactive.left_okay) and (not result_inactive.right_okay):
+                #    break
+                #else:
 
-        self.logger.debug(f'Finished secure_margins')
+            #self.logger.debug(f'Finished secure_margins')
 
         return result_inactive, result_vcfspec
 
@@ -432,13 +434,13 @@ class RealignerPileup(realign_base.RealignerPileupBase):
         self.set_contig_vcfspecs()
 
     def secure_vcfspec_margins(self):
-        vcfspec_margins_gr = self.get_vcfspec_margins_gr(
+        vcfspec_margins_gdf = self.get_vcfspec_margins_gdf(
             subseq_portion_threshold=self.params['allele_portion_threshold'],
             inverse=False,
             split_contig_vcfspec=True,
         )
 
-        if vcfspec_margins_gr.empty:
+        if vcfspec_margins_gdf.is_empty:
             # When there is no contig vcfspec
             return realign_base.SecureResult(
                 touched_left_limit=self.check_touches_left_limit(),
@@ -456,9 +458,9 @@ class RealignerPileup(realign_base.RealignerPileupBase):
             )
 
         # set parameters
-        desired_start0 = min(vcfspec_margins_gr.Start)  #min(candidate_start0s)
+        desired_start0 = min(vcfspec_margins_gdf.start0s)  #min(candidate_start0s)
         #desired_end0 = max(candidate_end0s)
-        desired_end0 = max(vcfspec_margins_gr.End)
+        desired_end0 = max(vcfspec_margins_gdf.end0s)
         left_okay = self.start0 <= desired_start0
         right_okay = self.end0 >= desired_end0
 
@@ -523,10 +525,15 @@ class RealignerPileup(realign_base.RealignerPileupBase):
         return (leftmost.start0 - padding, rightmost.end0 + padding)
 
     # pyranges
-    def get_gr(self):
-        return pr.PyRanges(chromosomes=[self.chrom], starts=[self.start0], ends=[self.end0])
+    #def get_gr(self):
+    #    return pr.PyRanges(chromosomes=[self.chrom], starts=[self.start0], ends=[self.end0])
+    def get_gdf(self):
+        return GenomeDataFrameBase.from_data(
+            chroms=self.chrom, start0s=self.start0, end0s=self.end0, refver=self.refver,
+        )
 
-    def get_active_info_gr(self):
+    #def get_active_info_gr(self):
+    def get_active_info_gdf(self):
         chroms = list()
         start0s = list()
         end0s = list()
@@ -539,11 +546,14 @@ class RealignerPileup(realign_base.RealignerPileupBase):
             start0s.append(subiter[0][0])
             end0s.append(subiter[-1][0] + 1)
             is_active.append(key)
-        return pr.from_dict(
-            {'Chromosome': chroms, 'Start': start0s, 'End': end0s, 'Active': is_active}
-        )
 
-    def get_vcfspec_margins_gr(self, subseq_portion_threshold, inverse=False, split_contig_vcfspec=True):
+        return GenomeDataFrameBase.from_data(refver=self.refver, chroms=chroms, start0s=start0s, end0s=end0s, Active=is_active)
+        #return pr.from_dict(
+        #    {'Chromosome': chroms, 'Start': start0s, 'End': end0s, 'Active': is_active}
+        #)
+
+    #def get_vcfspec_margins_gr(self, subseq_portion_threshold, inverse=False, split_contig_vcfspec=True):
+    def get_vcfspec_margins_gdf(self, subseq_portion_threshold, inverse=False, split_contig_vcfspec=True):
         """Args:
             split_contig_vcfspec: If False, spaces between component vcfspecs of a contig vcfspec are incoporated into result pyranges.
             inverse: If True, subtraction from whole pileup region to vcfspec region is returned.
@@ -585,17 +595,26 @@ class RealignerPileup(realign_base.RealignerPileupBase):
 
         # make pyranges object
         if len(start0s) == 0:
-            vcfspec_margins_gr = pr.PyRanges()
+            #vcfspec_margins_gr = pr.PyRanges()
+            vcfspec_margins_gdf = GenomeDataFrameBase.init_empty(refver=self.refver)
         else:
-            chroms = [self.chrom] * len(start0s)
-            vcfspec_margins_gr = pr.from_dict(
-                {'Chromosome': chroms, 'Start': start0s, 'End': end0s, 'Name': names}
+            #chroms = [self.chrom] * len(start0s)
+            #vcfspec_margins_gr = pr.from_dict(
+            #    {'Chromosome': chroms, 'Start': start0s, 'End': end0s, 'Name': names}
+            #)
+            vcfspec_margins_gdf = GenomeDataFrameBase.from_data(
+                refver=self.refver, 
+                chroms=self.chrom, 
+                start0s=start0s, 
+                end0s=end0s, 
+                Name=names,
             )
+
         # return; inverse if needed
         if inverse:
-            return self.get_gr().subtract(vcfspec_margins_gr)
+            return self.get_gdf().subtract(vcfspec_margins_gdf)
         else:
-            return vcfspec_margins_gr
+            return vcfspec_margins_gdf
 
 
     # secure_inactive_padding
@@ -683,7 +702,7 @@ class RealignerPileup(realign_base.RealignerPileupBase):
             self.aligner, 
             reverse_align=reverse_align, 
             raise_with_tie=raise_with_tie, 
-            logger=self.logger, 
+            #logger=self.logger, 
             row_spec=row_spec, 
             target_reversed=ref_seq_reversed,
         )
@@ -701,7 +720,7 @@ class RealignerPileup(realign_base.RealignerPileupBase):
         except Exception as exc:
             raise Exception(f'Failed alignment:\nrow_spec: {row_spec}\nReference seq: {ref_seq}') from exc
 
-        self.logger.debug(f'Num of alignments: {len(alns)}; row_spec: {row_spec}')
+        #self.logger.debug(f'Num of alignments: {len(alns)}; row_spec: {row_spec}')
 
         # treat dirty alignments
         if len(alns) > 10000:
@@ -709,7 +728,7 @@ class RealignerPileup(realign_base.RealignerPileupBase):
             if reverse_align:
                 aln = alignhandler.reverse_alignment(aln)
             #aln = alignhandler.amend_outer_insdel_both(aln)
-            self.logger.debug(f'Skipped dirty alignment; row_spec: {row_spec}')
+            #self.logger.debug(f'Skipped dirty alignment; row_spec: {row_spec}')
         else:
             # recover reversed alignment
             if reverse_align:
@@ -723,7 +742,7 @@ class RealignerPileup(realign_base.RealignerPileupBase):
                 try:
                     aln = self.align_row_spec_to_ref_helper(alns, raise_with_tie, row_spec)
                 except TimeoutError:
-                    self.logger.debug(f'skipping alignments tiebreaking due to timeout;\nrow_spec: {row_spec}')
+                    #self.logger.debug(f'skipping alignments tiebreaking due to timeout;\nrow_spec: {row_spec}')
                     aln = alns[0]
                     aln = alignhandler.amend_outer_insdel_both(aln)
             
@@ -810,13 +829,14 @@ class RealignerPileup(realign_base.RealignerPileupBase):
     def get_split_points(self):
         """Result may be empty"""
         # without splitting contig vcfspec
-        splittable_region = self.get_vcfspec_margins_gr(
+        #splittable_region = self.get_vcfspec_margins_gr(
+        splittable_region = self.get_vcfspec_margins_gdf(
             subseq_portion_threshold=(self.params['allele_portion_threshold'] * 2),
             inverse=True,
             split_contig_vcfspec=False,
         )
 
-        if splittable_region.empty:
+        if splittable_region.is_empty:
             return list()
 #            # split contig vcfspec
 #            splittable_region = self.get_vcfspec_margins_gr(
@@ -845,15 +865,17 @@ class RealignerPileup(realign_base.RealignerPileupBase):
 
     def get_split_point_from_inactive_runs(self):
         """Midpoint of the widest non-marginal inactive area"""
-        active_info_gr = self.get_active_info_gr()
-        inactive_gr = active_info_gr[~active_info_gr.Active]
+        #active_info_gr = self.get_active_info_gr()
+        #inactive_gr = active_info_gr[~active_info_gr.Active]
+        active_info_gdf = self.get_active_info_gdf()
+        inactive_gdf = active_info_gdf.loc[~active_info_gdf['Active'], :]
 
-        if inactive_gr.empty:
+        if inactive_gdf.is_empty:
             raise realign_base.SparseInactiveRegionError(f'{self}')
 
-        max_width_index = inactive_gr.lengths().argmax()
-        max_width_row = inactive_gr.df.iloc[max_width_index, :]
-        return int((max_width_row.Start + max_width_row.End) / 2)
+        max_width_index = inactive_gdf.lengths.argmax()
+        max_width_row = inactive_gdf.iloc[max_width_index, :]
+        return int((max_width_row['Start'] + max_width_row['End']) / 2)
 
     def get_result_vcfspecs(self, as_components=False, merge=True, subseq_portion_threshold=None, MQ_threshold=40): 
         if subseq_portion_threshold is None:

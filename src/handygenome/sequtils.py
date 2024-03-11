@@ -5,3 +5,10 @@ def to_pyrimidine(base):
         return Bio.Seq.reverse_complement(base)
     else:
         return base
+
+
+def get_different_base(base):
+    if base == 'A':
+        return 'C'
+    else:
+        return 'A'

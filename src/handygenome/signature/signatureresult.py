@@ -1,17 +1,18 @@
+import re
+
 import pysam
 import pandas as pd
 
-import handygenome.workflow as workflow
 import handygenome.variant.varianthandler as varianthandler
 import handygenome.signature.misc as signature_misc
 import handygenome.signature.sigprofiler as sigprofiler
 import handygenome.signature.cataloguing as cataloguing
-import handygenome.signature.plotter_sbs96 as plotter_sbs96
-import handygenome.variant.vcfspec as libvcfspec
+#import handygenome.signature.plotter_sbs96 as plotter_sbs96
+import handygenome.signature.plot as sigplot
+from handygenome.variant.vcfspec import Vcfspec
 import handygenome.deco as deco
-
-
-LOGGER = workflow.get_logger(__name__, level='info')
+import handygenome.logutils as logutils
+import handygenome.signature.misc as sigmisc
 
 
 class SignatureResult:
@@ -44,14 +45,26 @@ class SignatureResult:
         self.nonzero_sigs = tuple(
             self.exposure.index[self.exposure > 0])
 
-    def plot(self, sampleid=None):
+    def get_catalogue_sbs6(self):
+        return sigplot.make_sbs6_dict_from_sbs96(self.catalogue)
+
+    def plot(self, **kwargs):
         if self.catalogue_type == 'sbs96':
-            plotter_sbs96.main(self, sampleid=sampleid)
+            return sigplot.draw_onesample(self, **kwargs)
         else:
             raise Exception(f'Unavailable catalogue type')
 
+    def get_artefact_burden(self):
+        exposure = sum(
+            (self.exposure[key] if (key in self.exposure) else 0)
+            for key in sigmisc.ARTEFACTS
+        )
+        exp_sum = sum(self.exposure)
+        fraction = exposure / exp_sum
+        return {'exposure': exposure, 'fraction': fraction}
 
-@deco.get_deco_arg_choices({'refver': signature_misc.AVAILABLE_REFVERS})
+
+#@deco.get_deco_arg_choices({'refver': signature_misc.AVAILABLE_REFVERS})
 @deco.get_deco_arg_choices({'catalogue_type': ('sbs96', 'id83')})
 @deco.get_deco_arg_choices({'cataloguer': ('custom', 'sigprofiler')})
 def get_sigresult_from_vcfspecs(vcfspec_iter, refver='GRCh37', 
@@ -70,12 +83,11 @@ def get_sigresult_from_vcfspecs(vcfspec_iter, refver='GRCh37',
                                 use_connected_sigs=True):
     # get catalogue
     if verbose:
-        LOGGER.info('Creating mutation catalogue')
+        logutils.log(f'Creating mutation catalogue', level='info')
 
     if cataloguer == 'custom':
         if catalogue_type == 'sbs96':
-            catalogue = cataloguing.get_sbs96_catalogue_vcfspecs(vcfspec_iter, 
-                                                                 refver)
+            catalogue = cataloguing.get_sbs96_catalogue_vcfspecs(vcfspec_iter, refver)
         else:
             raise Exception(f'Custom cataloguer is available only for sbs96.')
     elif cataloguer == 'sigprofiler':
@@ -88,7 +100,7 @@ def get_sigresult_from_vcfspecs(vcfspec_iter, refver='GRCh37',
 
     # fitting signature components
     if verbose:
-        LOGGER.info('Running SigProfilerAssignment')
+        logutils.log(f'Running SigProfilerAssignment', level='info')
 
     sigresult = sigprofiler.run_assignment(
         catalogue, sigdata,
@@ -103,16 +115,15 @@ def get_sigresult_from_vcfspecs(vcfspec_iter, refver='GRCh37',
         verbose=verbose_assign)
 
     if verbose:
-        LOGGER.info('All finished.')
+        logutils.log(f'All finished.', level='info')
 
     return sigresult
 
 
-@deco.get_deco_arg_choices({'refver': signature_misc.AVAILABLE_REFVERS})
+#@deco.get_deco_arg_choices({'refver': signature_misc.AVAILABLE_REFVERS})
 def get_sigresult_from_vcfpath(vcf_path, refver='GRCh37', **kwargs):
     vcfspec_iter = (
-        libvcfspec.Vcfspec.from_vr(vr)
-        #varianthandler.get_vcfspec(vr)
+        Vcfspec.from_vr(vr)
         for vr in pysam.VariantFile(vcf_path).fetch()
     )
     sigresult = get_sigresult_from_vcfspecs(vcfspec_iter, refver, **kwargs)

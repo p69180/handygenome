@@ -12,6 +12,7 @@ import urllib.parse
 
 import handygenome.logutils as logutils
 import handygenome.deco as deco
+import handygenome.tools as tools
 
 
 HTTP_HEADER_POST = {
@@ -209,7 +210,7 @@ def http_get(url, params=None, headers=None, text=False, retry_count=10, retry_i
 
 def http_post(url, data, params=None, headers=None, text=False, retry_count=10, retry_interval=1):
     # set params
-    data = json.dumps(data).encode('ascii')
+    data_code = json.dumps(data).encode('ascii')
     if params is not None:
         url = url + '?' + urllib.parse.urlencode(params)
     if headers is None:
@@ -218,8 +219,9 @@ def http_post(url, data, params=None, headers=None, text=False, retry_count=10, 
         else:
             headers = {'Accept': 'application/json'}
     # main
-    req = urllib.request.Request(url, data=data, headers=headers, method='POST')
-    return http_send_request(req, text, retry_count, retry_interval)
+    req = urllib.request.Request(url, data=data_code, headers=headers, method='POST')
+    result = http_send_request(req, text, retry_count, retry_interval)
+    return result
 
 
 def http_send_request(req, text, retry_count=10, retry_interval=1, urlopen_timeout=5):

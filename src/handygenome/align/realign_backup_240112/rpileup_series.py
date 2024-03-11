@@ -2,7 +2,7 @@ import sys
 import collections
 import itertools
 import functools
-import logging
+#import logging
 import inspect
 import random
 import uuid
@@ -11,9 +11,13 @@ import pysam
 import Bio.Align
 import numpy as np
 import pandas as pd
-import pyranges as pr
+#import pyranges as pr
 
+from handygenome.genomedf.genomedf_base import GenomeDataFrameBase
 import handygenome.tools as tools
+import handygenome.refgenome.refgenome as refgenome
+from handygenome.refgenome.refgenome import RefverObjectBase
+
 import handygenome.workflow as workflow
 import handygenome.variant.vcfspec as libvcfspec
 import handygenome.read.pileup as libpileup
@@ -22,21 +26,20 @@ import handygenome.bameditor as bameditor
 import handygenome.read.readhandler as readhandler
 import handygenome.read.readplus as readplus
 import handygenome.align.realign.base as realign_base
-import handygenome.align.realign.rpileup as realign_rpileup
+from handygenome.align.realign.base import LoggingBase
+from handygenome.align.realign.rpileup import RealignerPileup
 
 
-class RealignerPileupSeries:
+class RealignerPileupSeries(RefverObjectBase, LoggingBase):
     def __init__(
         self, 
         bam, 
         chrom, 
         start0, 
         end0, 
-        refver=None, 
-        fasta=None,
+        _refver=None,
         aligner=realign_base.DEFAULT_ALIGNER,
         verbose=False,
-        logger=None,
         **kwargs,
     ):
         """Args:
@@ -46,9 +49,12 @@ class RealignerPileupSeries:
         # set params
         self.chrom = chrom
         self.bam = bam
-        self.refver, self.fasta = realign_base.RealignerPileupBase.refver_fasta_arghandler(refver, fasta)
+        if _refver is None:
+            self.refver = refgenome.infer_refver_bamheader(bam.header)
+        else:
+            self.refver = _refver
         self.aligner = aligner
-        self.verbose, self.logger = realign_base.RealignerPileupBase.logger_arghandler(verbose, logger)
+        self.verbose = verbose
         self.params = realign_base.parse_rpileup_kwargs(**kwargs)
 
         # setup pileup_list
@@ -60,23 +66,21 @@ class RealignerPileupSeries:
 
     def _init_pileup_list(self, start0, end0):
         # initiate pileup_list
-        self.logger.debug(f'Initial pileup generation')
+        self.log_debug(f'Initial pileup generation')
 
-        initial_pileup, result_inactive, result_vcfspec = realign_rpileup.RealignerPileup.init_and_augment(
+        initial_pileup, result_inactive, result_vcfspec = RealignerPileup.init_and_augment(
             bam=self.bam, 
             chrom=self.chrom, start0=start0, end0=end0, 
-            refver=self.refver, fasta=self.fasta,
             aligner=self.aligner,
             verbose=self.verbose, 
-            logger=self.logger, 
             **self.params,
         )
         self.pileup_list = [initial_pileup]
 
-        self.logger.debug(f'Initial pileup: {initial_pileup}')
-        self.logger.debug(f'result_inactive: {result_inactive}')
-        self.logger.debug(f'result_vcfspec: {result_vcfspec}')
-        self.logger.debug(f'Initial pileup generation Finished\n')
+        #self.log_debug(f'Initial pileup: {initial_pileup}')
+        #self.log_debug(f'result_inactive: {result_inactive}')
+        #self.log_debug(f'result_vcfspec: {result_vcfspec}')
+        #self.log_debug(f'Initial pileup generation Finished\n')
 
         if (result_inactive is None) and (result_vcfspec is None):
             # When there is no active region in the initial pileup
@@ -90,7 +94,7 @@ class RealignerPileupSeries:
         if right_insufficient:
             self.secure_right()
 
-        self.logger.debug(f'Finished initial pileup generation\n')
+        #self.logger.debug(f'Finished initial pileup generation\n')
 
     def __repr__(self):
         string = '\n'.join(
@@ -123,7 +127,8 @@ class RealignerPileupSeries:
     def width(self):
         return self.pileup_list[-1].end0 - self.pileup_list[0].start0
 
-    def get_gr(self):
+    #def get_gr(self):
+    def get_gdf(self):
         start0s = list()
         end0s = list()
         for pileup in self.pileup_list:
@@ -131,18 +136,24 @@ class RealignerPileupSeries:
             end0s.append(pileup.end0)
         chroms = [self.chrom] * len(self.pileup_list)
         self_indexes = list(range(len(self.pileup_list)))
-        return pr.from_dict(
-            {'Chromosome': chroms, 'Start': start0s, 'End': end0s, 'Self_index': self_indexes}
+        #return pr.from_dict(
+        #    {'Chromosome': chroms, 'Start': start0s, 'End': end0s, 'Self_index': self_indexes}
+        #)
+        return GenomeDataFrameBase.from_data(
+            refver=self.refver, chroms=self.chrom, start0s=start0s, end0s=end0s, Self_index=self_indexes,
         )
 
     def spawn_new_pileup(self, start0, end0):
-        return realign_rpileup.RealignerPileup(
+        return RealignerPileup(
             bam=self.bam, 
-            chrom=self.chrom, start0=start0, end0=end0, 
-            refver=self.refver, fasta=self.fasta, 
+            chrom=self.chrom, 
+            start0=start0, 
+            end0=end0, 
+            _refver=self.refver, 
             aligner=self.aligner,
             init_df=True,
-            verbose=self.verbose, logger=self.logger,
+            verbose=self.verbose, 
+            #logger=self.logger,
             **self.params,
         )
 
@@ -265,7 +276,7 @@ class RealignerPileupSeries:
 
     # init helpers #
     def secure_left(self):
-        self.logger.debug(f'Beginning RealignerPileupSeries secure_left')
+        self.log_debug(f'Beginning RealignerPileupSeries secure_left')
 
         left_pileup = self.pileup_list[0]
         left_pileup.params = self.params.copy()
@@ -273,10 +284,10 @@ class RealignerPileupSeries:
         while True:
             result_inactive, result_vcfspec = left_pileup.secure_margins()
 
-            self.logger.debug(self.pileup_list)
-            self.logger.debug(f'self.start0: {self.start0}')
-            self.logger.debug(f'result_inactive: {result_inactive}')
-            self.logger.debug(f'result_vcfspec: {result_vcfspec}')
+            self.log_debug(self.pileup_list)
+            self.log_debug(f'self.start0: {self.start0}')
+            self.log_debug(f'result_inactive: {result_inactive}')
+            self.log_debug(f'result_vcfspec: {result_vcfspec}')
 
             if (
                 (result_inactive.left_okay and result_vcfspec.left_okay)
@@ -303,12 +314,12 @@ class RealignerPileupSeries:
 
         touched_width_limit = self.width >= self.params['max_series_width']
 
-        self.logger.debug(f'Finished RealignerPileupSeries secure_left')
+        self.log_debug(f'Finished RealignerPileupSeries secure_left')
 
         return result_inactive, result_vcfspec, touched_width_limit
 
     def secure_right(self):
-        self.logger.debug(f'Beginning RealignerPileupSeries secure_right')
+        #self.logger.debug(f'Beginning RealignerPileupSeries secure_right')
 
         right_pileup = self.pileup_list[-1]
         right_pileup.params = self.params.copy()
@@ -316,10 +327,10 @@ class RealignerPileupSeries:
         while True:
             result_inactive, result_vcfspec = right_pileup.secure_margins()
 
-            self.logger.debug(self.pileup_list)
-            self.logger.debug(f'self.end0: {self.end0}')
-            self.logger.debug(f'result_inactive: {result_inactive}')
-            self.logger.debug(f'result_vcfspec: {result_vcfspec}')
+            #self.logger.debug(self.pileup_list)
+            #self.logger.debug(f'self.end0: {self.end0}')
+            #self.logger.debug(f'result_inactive: {result_inactive}')
+            #self.logger.debug(f'result_vcfspec: {result_vcfspec}')
 
             if (
                 (result_inactive.right_okay and result_vcfspec.right_okay)
@@ -346,7 +357,7 @@ class RealignerPileupSeries:
 
         touched_width_limit = self.width >= self.params['max_series_width']
 
-        self.logger.debug(f'Finished RealignerPileupSeries secure_right')
+        #self.logger.debug(f'Finished RealignerPileupSeries secure_right')
 
         return result_inactive, result_vcfspec, touched_width_limit
 
@@ -452,9 +463,9 @@ class RealignerPileupSeries:
 
     def get_splittable_region_best(self):
         # without splitting contig vcfspec
-        return pr.concat(
+        return GenomeDataFrameBase.concat(
             [
-                rpileup.get_vcfspec_margins_gr(
+                rpileup.get_vcfspec_margins_gdf(
                     subseq_portion_threshold=(
                         rpileup.params['allele_portion_threshold'] * 2
                     ),
@@ -466,9 +477,9 @@ class RealignerPileupSeries:
         ).merge()
 
     def get_splittable_region_split_contig(self):
-        return pr.concat(
+        return GenomeDataFrameBase.concat(
             [
-                rpileup.get_vcfspec_margins_gr(
+                rpileup.get_vcfspec_margins_gdf(
                     subseq_portion_threshold=(
                         rpileup.params['allele_portion_threshold'] * 2
                     ),
@@ -480,50 +491,78 @@ class RealignerPileupSeries:
         ).merge()
 
     def get_splittable_region_inactive_runs(self):
-        inactive_runs_gr_list = list()
+        #inactive_runs_gr_list = list()
+        inactive_runs_gdf_list = list()
         for rpileup in self.pileup_list:
-            active_info_gr = rpileup.get_active_info_gr()
-            inactive_gr = active_info_gr[~active_info_gr.Active]
-            inactive_runs_gr_list.append(inactive_gr)
-        result = pr.concat(inactive_runs_gr_list).merge()
-        if result.empty:
+            #active_info_gr = rpileup.get_active_info_gr()
+            #inactive_gr = active_info_gr[~active_info_gr.Active]
+            #inactive_runs_gr_list.append(inactive_gr)
+            active_info_gdf = rpileup.get_active_info_gdf()
+            inactive_gdf = active_info_gdf.loc[~active_info_gdf['Active'], :]
+            inactive_runs_gdf_list.append(inactive_gdf)
+        result = GenomeDataFrameBase.concat(inactive_runs_gdf_list).merge()
+        if result.is_empty:
             raise Exception(f'No inactive runs in this RealignerPileupSeries object.')
         return result
 
+    @staticmethod
+    def rearrange_merger(left_pileup, right_pileup):
+        left_pileup.merge(right_pileup, other_on_left=False)
+        return left_pileup
+
     def rearrange(self, start0_list, prepare_vcfspecs=True):
         """Mutates in-place"""
-        def merger(left_pileup, right_pileup):
-            left_pileup.merge(right_pileup, other_on_left=False)
-            return left_pileup
+        #def merger(left_pileup, right_pileup):
+        #    left_pileup.merge(right_pileup, other_on_left=False)
+        #    return left_pileup
         
         # sanity check
         if not (start0_list[0] >= self.start0 and start0_list[-1] <= self.end0):
             raise Exception(f'Input splitting range is out of PileupSeries object range.')
         
         # make new pileup_list
-        split_ranges_gr = pr.from_dict(
-            {
-                'Chromosome': [self.chrom] * (len(start0_list) - 1),
-                'Start': start0_list[:-1],
-                'End': start0_list[1:],
-                'Ranges_index': list(range(len(start0_list) - 1)),
-            }
+#        split_ranges_gr = pr.from_dict(
+#            {
+#                'Chromosome': [self.chrom] * (len(start0_list) - 1),
+#                'Start': start0_list[:-1],
+#                'End': start0_list[1:],
+#                'Ranges_index': list(range(len(start0_list) - 1)),
+#            }
+#        )
+        split_ranges_gdf = GenomeDataFrameBase.from_data(
+            chroms=self.chrom,
+            start0s=start0_list[:-1],
+            end0s=start0_list[1:],
+            Ranges_index=list(range(len(start0_list) - 1)),
         )
-        joined_gr = split_ranges_gr.join(self.get_gr())
+        #joined_gr = split_ranges_gr.join(self.get_gr())
+        joined_gdf = split_ranges_gdf.join(self.get_gdf(), merge=None, how='left')
+
+        #new_pileup_list = list()
+        #for ranges_index, subiter in itertools.groupby(
+        #    (x[1] for x in joined_gr.df.iterrows()),
+        #    key=(lambda x: x.Ranges_index),
+        #):
+#            partial_pileups = list()
+#            for row in subiter:
+#                new_start0 = max(row.Start, row.Start_b)
+#                new_end0 = min(row.End, row.End_b)
+#                partial_pileups.append(
+#                    self.pileup_list[row.Self_index].subset(new_start0, new_end0)
+#                )
+#            new_pileup_list.append(functools.reduce(merger, partial_pileups))
 
         new_pileup_list = list()
-        for ranges_index, subiter in itertools.groupby(
-            (x[1] for x in joined_gr.df.iterrows()),
-            key=(lambda x: x.Ranges_index),
-        ):
+        for key, subdf in joined_gdf.df.groupby('Ranges_index'):
             partial_pileups = list()
-            for row in subiter:
-                new_start0 = max(row.Start, row.Start_b)
-                new_end0 = min(row.End, row.End_b)
+            for new_start0, new_end0 in zip(
+                np.maximum(subdf['Start'], subdf['Start_b']),
+                np.minimum(subdf['End'], subdf['End_b']),
+            ):
                 partial_pileups.append(
                     self.pileup_list[row.Self_index].subset(new_start0, new_end0)
                 )
-            new_pileup_list.append(functools.reduce(merger, partial_pileups))
+            new_pileup_list.append(functools.reduce(self.rearrange_merger, partial_pileups))
 
         # prepare vcfspecs
         if prepare_vcfspecs:

@@ -1,4 +1,5 @@
 import os
+import re
 import itertools
 import functools
 
@@ -7,7 +8,34 @@ import pandas as pd
 
 import handygenome
 import handygenome.network as network
+import handygenome.refgenome.refgenome as refgenome
 import handygenome.deco as deco
+
+
+PAT_SIGNAME_SUBPART = r'(([0-9]+)([a-z]+)?)'
+PAT_SIGNAME = re.compile(f'SBS{PAT_SIGNAME_SUBPART}(\\+{PAT_SIGNAME_SUBPART})*')
+
+ARTEFACTS = (
+    'SBS27',
+    'SBS43',
+    'SBS45',
+    'SBS46',
+    'SBS47',
+    'SBS48',
+    'SBS49',
+    'SBS50',
+    'SBS51',
+    'SBS52',
+    'SBS53',
+    'SBS54',
+    'SBS55',
+    'SBS56',
+    'SBS57',
+    'SBS58',
+    'SBS59',
+    'SBS60',
+    'SBS95',
+)
 
 
 COLORS_SBS6 = {
@@ -20,12 +48,12 @@ COLORS_SBS6 = {
     'other': 'y',
 }
 
-AVAILABLE_REFVERS = ('GRCh38', 'GRCh37', 'mm10')
+AVAILABLE_REFVERS = ('GRCh38', 'GRCh37', 'GRCm38')
 AVAILABLE_CAT_TYPES = ('sbs96', 'id83', 'dbs78', 'cn48')
 
-DATA_DIR = os.path.join(handygenome.DATADIR, 'signature_data')
-if not os.path.exists(DATA_DIR):
-    os.mkdir(DATA_DIR)
+DATA_DIR = os.path.join(handygenome.USERDATA_DIR, 'signature_data')
+#if not os.path.exists(DATA_DIR):
+#    os.mkdir(DATA_DIR)
 
 # SIGNATURE_DATA_URLS
 SIGNATURE_DATA_URLS = dict()
@@ -43,7 +71,7 @@ SIGNATURE_DATA_URLS['GRCh38'] = {
     'dbs78': 'https://cancer.sanger.ac.uk/signatures/documents/1903/COSMIC_v3.3_DBS_GRCh38.txt',
     'cn48': SIGNATURE_DATA_URLS['cn48'],
     }
-SIGNATURE_DATA_URLS['mm10'] = {
+SIGNATURE_DATA_URLS['GRCm38'] = {
     'sbs96': 'https://cancer.sanger.ac.uk/signatures/documents/1911/COSMIC_v3.3_SBS_mm10.txt',
     'id83': SIGNATURE_DATA_URLS['id83'],
     'dbs78': 'https://cancer.sanger.ac.uk/signatures/documents/1905/COSMIC_v3.3_DBS_mm10.txt',
@@ -61,6 +89,13 @@ for refver in AVAILABLE_REFVERS:
         subdict[catalogue_type] = path
     SIGNATURE_DATA_FILE_PATHS[refver] = subdict
 ###
+
+
+
+def signame_sortkey(signame):
+    mat = PAT_SIGNAME.fullmatch(signame)
+    num_part = mat.group(2)
+    return int(num_part)
 
 
 def get_cossim(v1, v2):
@@ -106,18 +141,19 @@ def create_catalogue_keys_sbs96(as_tuple=False):
     return tuple(result)
 
 
-@deco.get_deco_arg_choices({'refver': AVAILABLE_REFVERS})
+#@deco.get_deco_arg_choices({'refver': AVAILABLE_REFVERS})
 @deco.get_deco_arg_choices({'catalogue_type': AVAILABLE_CAT_TYPES})
 def download_signature_data(refver, catalogue_type):
     """Args:
         catalogue_type: Mutation type (e.g. sbs, id, dbs, cn)
     """
-    data_url = SIGNATURE_DATA_URLS[refver][catalogue_type]
-    data_file_path = SIGNATURE_DATA_FILE_PATHS[refver][catalogue_type]
+    refseq_refver = refgenome.get_refseq_refver(refver)
+    data_url = SIGNATURE_DATA_URLS[refseq_refver][catalogue_type]
+    data_file_path = SIGNATURE_DATA_FILE_PATHS[refseq_refver][catalogue_type]
     network.download(data_url, data_file_path)
     
 
-@deco.get_deco_arg_choices({'refver': AVAILABLE_REFVERS})
+#@deco.get_deco_arg_choices({'refver': AVAILABLE_REFVERS})
 @deco.get_deco_arg_choices({'catalogue_type': AVAILABLE_CAT_TYPES})
 @functools.cache
 def load_signature_data(refver, catalogue_type):
@@ -127,7 +163,8 @@ def load_signature_data(refver, catalogue_type):
         dbs: 78
         cn: 48
     """
-    data_file_path = SIGNATURE_DATA_FILE_PATHS[refver][catalogue_type]
+    refseq_refver = refgenome.get_refseq_refver(refver)
+    data_file_path = SIGNATURE_DATA_FILE_PATHS[refseq_refver][catalogue_type]
     if not os.path.exists(data_file_path):
         download_signature_data(refver, catalogue_type)
     sigdata = pd.read_csv(data_file_path, sep='\t', index_col=0)
@@ -158,3 +195,20 @@ def get_catalogue_type(pd_index):
     else:
         raise Exception(f'Unknown catalogue type')
         
+
+def merge_signature(exposure, sigs_to_merge):
+    assert isinstance(exposure, pd.Series)
+    exp_cp = exposure.copy()
+    for signames in sigs_to_merge:
+        newname = 'SBS' + '+'.join(PAT_SIGNAME.fullmatch(x).group(1) for x in signames)
+        newval = sum(
+            exp_cp[x] if (x in exp_cp) else 0
+            for x in signames
+        )
+        exp_cp[newname] = newval
+
+        exp_cp.drop(exp_cp.index.intersection(signames), inplace=True)
+    return exp_cp
+
+
+

@@ -11,7 +11,7 @@ import handygenome.refgenome.refgenome as refgenome
 # curated blacklist
 
 CURATED_BLACKLIST = refgenome.RefverDict({
-    'GRCh37': {
+    'GRCh37_1kg': {
         'peri_centromere': [
             ('10', 38_000_000, 42_523_247),
             ('10', 42_527_152, 42_546_687),
@@ -50,13 +50,16 @@ def make_blacklist_gr(data, refver):
 
 
 CURATED_BLACKLIST_GRS = refgenome.RefverDict(
-    {refver: make_blacklist_gr(data, refver) for refver, data in CURATED_BLACKLIST.items()}
+    {
+        refver: make_blacklist_gr(data, refver) 
+        for refver, data in CURATED_BLACKLIST.items()
+    }
 )
 
 
 # blacklist generated with excessive depth region calculation with normal bams
 
-HIGHDEPTH_BLACKLIST_PATH = os.path.join(handygenome.DIRS['data'], 'custom_blacklist.tsv.gz')
+HIGHDEPTH_BLACKLIST_PATH = os.path.join(handygenome.USERDATA_DIR, 'custom_blacklist.tsv.gz')
 HIGHDEPTH_BLACKLIST_DF = pd.read_csv(
     HIGHDEPTH_BLACKLIST_PATH, 
     sep='\t',

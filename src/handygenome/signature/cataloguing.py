@@ -4,6 +4,7 @@ import pandas as pd
 
 import handygenome.signature.misc as signature_misc
 import handygenome.deco as deco
+import handygenome.refgenome.refgenome as refgenome
 
 
 #@deco.get_deco_arg_choices({'refver': common.AVAILABLE_REFVERS_PLUSNONE})

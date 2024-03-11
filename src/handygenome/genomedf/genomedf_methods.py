@@ -134,49 +134,52 @@ def join_base(
 
         # matched left
         matched_left = joined_df.loc[~unmatched_selector, left_columns]
-        counts, groupkey = genomedf_utils.get_coord_groupkey(matched_left, left_gdf.chromdict)
-            # "counts" is aligned with "groupkey"
+        if matched_left.shape[0] == 0:
+            result_df = joined_df
+        else:
+            counts, groupkey = genomedf_utils.get_coord_groupkey(matched_left, left_gdf.chromdict)
+                # "counts" is aligned with "groupkey"
 
-        merged_left = matched_left.drop_duplicates()
-        merged_left.reset_index(drop=True, inplace=True)
-        if not omit_N:
-            merged_left.insert(merged_left.shape[1], N_colname, counts)
+            merged_left = matched_left.drop_duplicates()
+            merged_left.reset_index(drop=True, inplace=True)
+            if not omit_N:
+                merged_left.insert(merged_left.shape[1], N_colname, counts)
 
-        # matched right
-        matched_right = joined_df.loc[
-            ~unmatched_selector, 
-            ~joined_df.columns.isin(left_columns)
-        ]
-        matched_right.reset_index(drop=True, inplace=True)
-        if winsorize is not None:
-            winsorize_matched_right(
-                matched_right, 
-                groupkey, 
-                winsorize,
-            )
+            # matched right
+            matched_right = joined_df.loc[
+                ~unmatched_selector, 
+                ~joined_df.columns.isin(left_columns)
+            ]
+            matched_right.reset_index(drop=True, inplace=True)
+            if winsorize is not None:
+                winsorize_matched_right(
+                    matched_right, 
+                    groupkey, 
+                    winsorize,
+                )
 
-        merged_right_list = [
-            merge_right(
-                matched_right, 
-                groupkey, 
-                right_gdf_cols, 
-                mergetype, 
-                suffixes, 
-                ddof,
-                merge_args, 
-                merge_kwargs,
-            )
-            for mergetype in merge
-        ]
-        merged_right = pd.concat(merged_right_list, axis=1)
+            merged_right_list = [
+                merge_right(
+                    matched_right, 
+                    groupkey, 
+                    right_gdf_cols, 
+                    mergetype, 
+                    suffixes, 
+                    ddof,
+                    merge_args, 
+                    merge_kwargs,
+                )
+                for mergetype in merge
+            ]
+            merged_right = pd.concat(merged_right_list, axis=1)
 
-        # concat all
-        matched = pd.concat([merged_left, merged_right], axis=1)
-        result_df = pd.concat([unmatched_df, matched], axis=0)
+            # concat all
+            matched = pd.concat([merged_left, merged_right], axis=1)
+            result_df = pd.concat([unmatched_df, matched], axis=0)
 
-        # coerce dtype
-        if not omit_N:
-            result_df = result_df.astype({N_colname: int})
+            # coerce dtype
+            if not omit_N:
+                result_df = result_df.astype({N_colname: int})
 
     # return
     result = left_gdf.spawn(result_df)
@@ -487,7 +490,7 @@ def merge_right_weighted_simpleagg(matched_right, groupkey, right_gdf_cols, merg
     assert mergetype in MERGETYPES_WEIGHTED_SIMPLEAGG
     #assert (matched_right.index == pd.RangeIndex(start=0, end=matched_right.shape[0])).all()
 
-    new_matched_right = make_weighted_right(matched_right, right_gdf_cols)
+    new_matched_right = make_weighted_right(matched_right, right_gdf_cols, groupkey)
     groupby_obj = new_matched_right.groupby(groupkey, sort=False)[right_gdf_cols]
 
     if mergetype == 'weighted_mean':
@@ -498,13 +501,15 @@ def merge_right_weighted_simpleagg(matched_right, groupkey, right_gdf_cols, merg
     return merged_right
 
 
-def make_weighted_right(matched_right, right_gdf_cols):
+def make_weighted_right(matched_right, right_gdf_cols, groupkey):
     if 'Overlap' in matched_right.columns:
         lengths = matched_right['Overlap']
     else:
         lengths = matched_right['End_b'] - matched_right['Start_b']
 
-    lengthsum = lengths.sum()
+    lengthsum = np.asarray(lengths.groupby(groupkey, sort=False).sum())
+    repeats = tools.array_grouper(groupkey)[1]
+    lengthsum = np.repeat(lengthsum, repeats)
 
     src_data = {
         key: ((matched_right[key] * lengths) / lengthsum)

@@ -274,6 +274,16 @@ class GenomeDataFrameDrawingBase:
             plotdata=plotdata,
         )
 
+        if plotdata is False:
+            return GenomeDrawingAxesResult(
+                ax=ax, 
+                genomeplotter=genomeplotter, 
+                artist=None,
+                draw_common_artists=None,
+                y_colname=y_colname,
+                plotdata=plotdata,
+            )
+
         # drawing parameters
         plot_kwargs = (
             {
@@ -373,6 +383,16 @@ class GenomeDataFrameDrawingBase:
             verbose=verbose,
             plotdata=plotdata,
         )
+
+        if plotdata is False:
+            return GenomeDrawingAxesResult(
+                ax=ax, 
+                genomeplotter=genomeplotter, 
+                artist=None,
+                draw_common_artists=None,
+                y_colname=y_colname,
+                plotdata=plotdata,
+            )
 
         # drawing parameters
         plot_kwargs = (
@@ -481,9 +501,19 @@ class GenomeDataFrameDrawingBase:
             plotdata=plotdata,
         )
 
+        if plotdata is False:
+            return GenomeDrawingAxesResult(
+                ax=ax, 
+                genomeplotter=genomeplotter, 
+                artist=None,
+                draw_common_artists=None,
+                y_colname=y_colnames,
+                plotdata=plotdata,
+            )
+
         # drawing parameters
         plot_kwargs = (
-            {'alpha': 0.1, 'zorder': 0}
+            {'alpha': 0.8, 'zorder': 0}
             | plot_kwargs
         )
         if ymin_colname is None:

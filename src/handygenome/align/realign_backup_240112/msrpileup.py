@@ -2,7 +2,6 @@ import sys
 import collections
 import itertools
 import functools
-import logging
 import inspect
 import random
 import uuid
@@ -11,38 +10,39 @@ import pysam
 import Bio.Align
 import numpy as np
 import pandas as pd
-import pyranges as pr
 
-import handygenome.refgenome.refgenome as refgenome
-import handygenome.workflow as workflow
+from handygenome.refgenome.refgenome import RefverObjectBase
 import handygenome.variant.vcfspec as libvcfspec
-import handygenome.read.pileup as libpileup
-import handygenome.align.alignhandler as alignhandler
-import handygenome.bameditor as bameditor
-import handygenome.read.readhandler as readhandler
-import handygenome.read.readplus as readplus
+from handygenome.read.readplus import ReadPlusPairList
 import handygenome.align.realign.base as realign_base
+from handygenome.align.realign.base import RealignerPileupBase
 
 
-class MultisampleRealignerPileup(realign_base.RealignerPileupBase):
+class MultisampleRealignerPileup(RealignerPileupBase, RefverObjectBase):
     def __init__(
         self, 
         pileup_dict, 
-        refver=None,
-        fasta=None, 
+
+        _refver=None,
         aligner=realign_base.DEFAULT_ALIGNER,
         verbose=False, 
-        logger=None,
+
         **kwargs,
     ):
         """Args:
             pileup_dict: keys - sampleid; values - Pileup object
         """
         # set params
+        self.init_sanitycheck(pileup_dict)
+
         self.pileup_dict = pileup_dict
-        self.refver, self.fasta = realign_base.RealignerPileupBase.refver_fasta_arghandler(refver, fasta)
+        if _refver is None:
+            self.refver = self.first_pileup.refver
+        else:
+            self.refver = _refver
+
         self.aligner = aligner
-        self.verbose, self.logger = realign_base.RealignerPileupBase.logger_arghandler(verbose, logger)
+        self.verbose = verbose
         self.params = realign_base.parse_rpileup_kwargs(**kwargs)
 
         # setup data structure
@@ -51,6 +51,12 @@ class MultisampleRealignerPileup(realign_base.RealignerPileupBase):
         self.save_subseq_alignments()
         self.allocate_subseq_alignments()
         self.set_row_spec_groups_bysample()
+
+    def init_sanitycheck(self, pileup_dict):
+        assert len(set(x.refver for x in pileup_dict.values())) == 1
+        assert len(set(x.range0 for x in self.pileup_dict.values())) == 1, (
+            f'Genomic ranges of pileup objects are different.'
+        )
 
     @property
     def first_pileup(self):
@@ -73,8 +79,6 @@ class MultisampleRealignerPileup(realign_base.RealignerPileupBase):
         return self.first_pileup.range0
 
     def set_df(self):
-        assert len(set(x.range0 for x in self.pileup_dict.values())) == 1, f'Genomic ranges of pileup objects are different.'
-
         self.df = pd.concat(
             {key: val.seq_df for key, val in self.pileup_dict.items()},
             names=['SampleID', 'ReadUID'],
@@ -231,10 +235,8 @@ class MultisampleRealignerPileup(realign_base.RealignerPileupBase):
         # make rpplist using the range with each sample
         rpplist_dict = dict()
         for sampleid, pileup in self.pileup_dict.items():
-            rpplist_dict[sampleid] = readplus.get_rpplist_nonsv(
+            rpplist_dict[sampleid] = ReadPlusPairList.from_bam(
                 bam=pileup.bam, 
-                fasta=self.fasta, 
-                chromdict=refgenome.get_default_chromdict(self.refver),
                 chrom=self.chrom,
                 start0=merged_ref_range0.start,
                 end0=merged_ref_range0.stop,
@@ -312,10 +314,8 @@ class MultisampleRealignerPileup(realign_base.RealignerPileupBase):
         )
         rpplist_dict = dict()
         for sampleid, pileup in self.pileup_dict.items():
-            rpplist_dict[sampleid] = readplus.get_rpplist_nonsv(
+            rpplist_dict[sampleid] = ReadPlusPairList.from_bam(
                 bam=pileup.bam, 
-                fasta=self.fasta, 
-                chromdict=refgenome.get_default_chromdict(self.refver),
                 chrom=self.chrom,
                 start0=merged_ref_range0.start,
                 end0=merged_ref_range0.stop,

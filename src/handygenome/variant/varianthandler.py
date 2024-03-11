@@ -15,12 +15,33 @@ import handygenome.vcfeditor.initvcf as initvcf
 import handygenome.variant.vcfspec as libvcfspec
 
 
+
+END_INFO_PAT = re.compile(r'(END)=([0-9]+)')
+
+
+
 def check_SV(vr):
     return libvcfspec.check_SV_altstring(vr.alts[0])
 
 
 def check_cpgmet(vr):
     return vr.alts[0] == f'<{libvcfspec.CPGMET_ALT}>'
+
+
+def get_END(vr):
+    infostring = str(vr).split('\t')[7]
+    matches = [END_INFO_PAT.fullmatch(x) for x in infostring.split(';')]
+    matches = [x for x in matches if x is not None]
+    if len(matches) == 0:
+        return None
+    elif len(matches) == 1:
+        return int(matches[0].group(2))
+    else:
+        raise Exception(f'More than one END fields')
+
+
+def check_filter_pass(vr):
+    return (tuple(vr.filter)[0] == 'PASS')
 
 
 # sorting helpers

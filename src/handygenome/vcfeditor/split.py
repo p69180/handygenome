@@ -10,9 +10,6 @@ import handygenome.vcfeditor.misc as vcfmisc
 import handygenome.deco as deco
 
 
-LOGGER = logutils.get_logger()
-
-
 def sanity_check(vcf_path, outdir):
     vcf_path = workflow.arghandler_infile(vcf_path)
     outdir = workflow.arghandler_outdir(outdir)
@@ -36,9 +33,11 @@ def get_output_lineno_list(total_lineno, n_file=None, n_line=None):
     """
 
     def warn():
-        LOGGER.warning(
+        logutils.log(
             f'"n_file" is greater than "total_lineno". It will be '
-            f'changed to be the same with "total_lineno".')
+            f'changed to be the same with "total_lineno".',
+            level='warning',
+        )
     
     assert total_lineno > 0, f'"total_lineno" must be a positive integer.'
 

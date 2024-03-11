@@ -496,7 +496,7 @@ def get_bafdfs_from_vafdf(vafdf):
     vaf_formatkeys = [f'{x}_vaf' for x in vafdf.allele_columns]
     result = dict()
     for sid in vafdf.samples:
-        vafs = vafdf.get_format(sid, vaf_formatkeys).to_numpy()
+        vafs = vafdf.get_format(sid, vaf_formatkeys)
         bafs = get_baf_from_vaf(vafs)
 
         src_data = dict()
@@ -507,7 +507,7 @@ def get_bafdfs_from_vafdf(vafdf):
             src_data[colname] = vafdf[colname]
 
         # assign vaf columns
-        vafs = vafdf.get_format(sid, vaf_formatkeys).to_numpy()
+        vafs = vafdf.get_format(sid, vaf_formatkeys)
         for colname, values in zip(vaf_formatkeys, np.swapaxes(vafs, 0, 1)):
             src_data[colname] = values
 

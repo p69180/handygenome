@@ -10,16 +10,18 @@ import numpy as np
 import pandas as pd
 
 import handygenome.tools as tools
+import handygenome.logutils as logutils
 import handygenome.refgenome.refgenome as refgenome
+from handygenome.refgenome.refgenome import RefverObjectBase
 import handygenome.workflow as workflow
 import handygenome.read.readhandler as readhandler
 import handygenome.align.alignhandler as alignhandler
 import handygenome.read.readplus as readplus
 
 
-class PileupBase:
-    pat_insclip = re.compile("(\(.+\))?([^()]+)(\(.+\))?")
-    pat_parenthesis = re.compile("[()]")
+class PileupBase(RefverObjectBase):
+    pat_insclip = re.compile(r"(\(.+\))?([^()]+)(\(.+\))?")
+    pat_parenthesis = re.compile(r"[()]")
     DEL_VALUE = "*"
     EMPTY_VALUE = "_"
     DF_FILL_VALUES = {
@@ -35,6 +37,7 @@ class PileupBase:
     ##########################
     # methods for direct use #
     ##########################
+
     @property
     def start0(self):
         return self.seq_df.columns[0]
@@ -123,23 +126,27 @@ class PileupBase:
             return self.dfs['queryonly_added_main']
         except KeyError:
             return self.dfs['main']
-            
 
     ############
     # backends #
     ############
     def __init__(
         self, 
-        bam, chrom, 
-        start0=None, end0=None, 
-        refver=None, fasta=None,
+        bam, 
+        chrom, 
+
+        start0=None, 
+        end0=None, 
+        #fasta=None,
+
+        _refver=None, # only for spawn
 
         init_df=True, 
 
         lowbq_cutoff=15,
 
         verbose=False, 
-        logger=None,
+        #logger=None,
     ):
         """Args:
             start0 and end0 are only required when init_df == True
@@ -147,16 +154,20 @@ class PileupBase:
         # set params
         self.bam = bam
         self.chrom = chrom
-        self.refver, self.fasta = self.refver_fasta_arghandler(refver, fasta)
+        if _refver is None:
+            self.refver = refgenome.infer_refver_bamheader(bam.header)
+        else:
+            self.refver = _refver
 
         # set logger
-        self.verbose, self.logger = self.logger_arghandler(verbose, logger)
+        #self.verbose, self.logger = self.logger_arghandler(verbose, logger)
+        self.verbose = verbose
 
         # init df and subsequent ones
         if init_df:
             (
                 df, bq_df, queryonly_df, queryonly_bq_df, onleft_df, read_store,
-            )= make_pileup_components(
+            ) = make_pileup_components(
                 chrom,
                 start0,
                 end0,
@@ -164,7 +175,7 @@ class PileupBase:
                 truncate=True,
                 as_array=False,
                 verbose=self.verbose,
-                logger=self.logger,
+                #logger=self.logger,
             )
             self.dfs = {
                 'main': df,
@@ -249,6 +260,7 @@ class PileupBase:
         for key in attrs_to_copy: 
             kwargs[key] = getattr(self, key)
         kwargs['init_df'] = init_df
+        kwargs['_refver'] = self.refver
 
         result = self.__class__(**kwargs)
         result.read_store = self.read_store
@@ -380,63 +392,69 @@ class PileupBase:
         new_pileup = self._make_extend_pileup(width, left)
         self.merge(new_pileup, other_on_left=left)
 
-    @staticmethod
-    def refver_fasta_arghandler(refver, fasta):
-        if (refver is None) and (fasta is None):
-            raise Exception(f'At least one of "refver" or "fasta" must be set.')
+#    @staticmethod
+#    def refver_fasta_arghandler(refver, fasta):
+#        if (refver is None) and (fasta is None):
+#            raise Exception(f'At least one of "refver" or "fasta" must be set.')
+#
+#        if refver is None:
+#            refver_result = refgenome.infer_refver_fasta(fasta)
+#        else:
+#            refver_result = refver
+#
+#        if fasta is None:
+#            fasta_result = refgenome.get_fasta(refver_result)
+#        else:
+#            fasta_result = fasta
+#
+#        return refver_result, fasta_result
 
-        if refver is None:
-            refver_result = refgenome.infer_refver_fasta(fasta)
-        else:
-            refver_result = refver
+#    @classmethod
+#    def logger_arghandler(cls, verbose, logger):
+#        verbose_result = verbose
+#        if logger is None:
+#            logger_result = cls.get_logger(verbose_result)
+#        else:
+#            logger_result = logger
+#
+#        return verbose_result, logger_result
 
-        if fasta is None:
-            fasta_result = refgenome.get_fasta(refver_result)
-        else:
-            fasta_result = fasta
-
-        return refver_result, fasta_result
-
-    @classmethod
-    def logger_arghandler(cls, verbose, logger):
-        verbose_result = verbose
-        if logger is None:
-            logger_result = cls.get_logger(verbose_result)
-        else:
-            logger_result = logger
-
-        return verbose_result, logger_result
-
-    @staticmethod
-    def get_logger(verbose):
-        formatter = logging.Formatter(
-            fmt='[%(asctime)s.%(msecs)03d] Pileup: %(message)s', 
-            datefmt='%Z %Y-%m-%d %H:%M:%S'
-        )
-        return workflow.get_logger(
-            name=str(uuid.uuid4()),
-            level=('debug' if verbose else 'info'),
-            formatter=formatter,
-        )
+#    @staticmethod
+#    def get_logger(verbose):
+#        formatter = logging.Formatter(
+#            fmt='[%(asctime)s.%(msecs)03d] Pileup: %(message)s', 
+#            datefmt='%Z %Y-%m-%d %H:%M:%S'
+#        )
+#        return workflow.get_logger(
+#            name=str(uuid.uuid4()),
+#            level=('debug' if verbose else 'info'),
+#            formatter=formatter,
+#        )
 
 
 class Pileup(PileupBase):
     # initializers
     def __init__(
         self, 
-        bam, chrom, 
-        start0=None, end0=None, 
-        refver=None, fasta=None,
+        bam, 
+        chrom, 
+
+        start0=None, 
+        end0=None, 
+        #fasta=None,
         init_df=True, 
-        verbose=False, logger=None,
+        verbose=False, 
+        #logger=None,
     ):
         PileupBase.__init__(
             self, 
-            bam=bam, chrom=chrom, 
-            start0=start0, end0=end0, 
-            refver=refver, fasta=fasta,
+            bam=bam, 
+            chrom=chrom, 
+            start0=start0, 
+            end0=end0, 
             init_df=init_df, 
-            verbose=verbose, logger=logger,
+            verbose=verbose, 
+            #logger=logger,
         )
 
     def subset(self, start0, end0, inplace=False):
@@ -450,7 +468,7 @@ class Pileup(PileupBase):
 
     def spawn(self):
         return self._spawn_base(
-            ('bam', 'chrom', 'refver', 'fasta', 'verbose', 'logger'),
+            ('bam', 'chrom', 'verbose'),
             init_df=False,
         )
 
@@ -469,7 +487,7 @@ class Pileup(PileupBase):
             start0 = self.end0
             end0 = self.end0 + width
         return self.__class__(
-            fasta=self.fasta, 
+            #fasta=self.fasta, 
             bam=self.bam, 
             chrom=self.chrom, 
             start0=start0,
@@ -487,7 +505,8 @@ class MultisamplePileup(PileupBase):
 
         self.first_pileup = next(iter(self.pileup_dict.values()))
         self.chrom = self.first_pileup.chrom
-        self.fasta = self.first_pileup.fasta
+        self.refver = self.first_pileup.refver
+        #self.fasta = self.first_pileup.fasta
 
     def _get_active_threshold(self):
         depth_sum = sum(x.df.shape[0] for x in self.pileup_dict.values())
@@ -618,6 +637,10 @@ class MultisamplePileup(PileupBase):
             self._show_row_spec_alignments_helper(self.row_spec_groups[sampleid], self.superseq_row_specs, skip_zero_hits, show_subseqs)
 
 
+##########################
+# make_pileup_components #
+##########################
+
 def make_pileup_components(
     chrom,
     start0,
@@ -628,7 +651,7 @@ def make_pileup_components(
     del_value=PileupBase.DEL_VALUE,
     empty_value=PileupBase.EMPTY_VALUE,
     verbose=False,
-    logger=None,
+    #logger=None,
     trailing_queryonly_to_right=False,
     preserve_trailing_queryonly=True,
 ):
@@ -648,152 +671,25 @@ def make_pileup_components(
                 and "ref_span_range" becomes range(start0, end0).
     """
     # set logger
-    if logger is None:
-        logger = PileupBase.get_logger(verbose)
-    else:
-        logger = logger
+    #if logger is None:
+    #    logger = PileupBase.get_logger(verbose)
+    #else:
+    #    logger = logger
 
-    def make_read_store(bam, chrom, start0, end0):
-        target_range0 = range(start0, end0)
-        readlist = list()
-        uid_list = list()
-        start_list = list()
-        end_list = list()
-        for read in readhandler.get_fetch(bam, chrom, start0, end0, readfilter=readhandler.readfilter_pileup):
-            if readhandler.check_cigarN_includes_range(read, start0, end0):
-                continue
-
-#            target_seq = readplus.ReadPlus(read, minimal=True).get_seq_from_range0(
-#                target_range0,
-#                flanking_queryonly_default_mode=True,
-#            )
-#            if target_seq == '':
-#                print(read)
-#                continue
-
-            readlist.append(read)
-            uid_list.append(readhandler.get_uid(read))
-            start_list.append(read.reference_start)
-            end_list.append(read.reference_end)
-
-        if len(start_list) == 0:
-            tmp_pileup_range = None
-        else:
-            tmp_pileup_range = range(
-                min(min(start_list), start0), 
-                max(max(end_list), end0) + 1,
-            )
-
-        read_store = collections.OrderedDict(zip(uid_list, readlist))
-
-        return read_store, tmp_pileup_range
-
-    def raise_cigarpattern_error(read):
-        raise Exception(f"Unexpected cigar pattern:\n{read.to_string()}")
-
-    def cigar_sanitycheck(read):
-        """Assumes M.* or [IS]M.*"""
-        error = False
-        first_cigarop = read.cigartuples[0][0]
-        if first_cigarop != 0:
-            if first_cigarop not in (1, 4):
-                error = True
-            else:
-                if read.cigartuples[1][0] != 0:
-                    error = True
-        if error:
-            raise_cigarpattern_error(read)
-
-    def truncate_array(arr, tmp_pileup_range, ref_span_range):
-        sl_start = tmp_pileup_range.index(ref_span_range.start)
-        if ref_span_range.stop == tmp_pileup_range.stop:
-            sl_end = None
-        else:
-            sl_end = tmp_pileup_range.index(ref_span_range.stop)
-        return arr[:, slice(sl_start, sl_end)]
-
-    def make_array(
-        start0, end0, tmp_pileup_range, read_store, empty_value, del_value, trailing_queryonly_to_right,
-    ):
-        if tmp_pileup_range is None:  # zero depth
-            ref_span_range = range(start0, end0)
-            arr = np.empty((0, len(ref_span_range)))
-            bq_arr = arr.copy()
-            queryonly_arr = arr.copy()
-            queryonly_bq_arr = arr.copy()
-            onleft_arr = arr.copy()
-        else:
-            # initialize array
-            arr = np.full(
-                shape=(len(read_store), len(tmp_pileup_range)),
-                fill_value=PileupBase.DF_FILL_VALUES['main'],
-                dtype=str,
-            )
-            bq_arr = np.full(
-                shape=(len(read_store), len(tmp_pileup_range)),
-                fill_value=PileupBase.DF_FILL_VALUES['bq'],
-                dtype=int,
-            )
-            queryonly_arr = np.full(
-                shape=(len(read_store), len(tmp_pileup_range)),
-                fill_value=PileupBase.DF_FILL_VALUES['queryonly'],
-                dtype=object,
-            )
-            queryonly_bq_arr = np.full(
-                shape=(len(read_store), len(tmp_pileup_range)),
-                fill_value=PileupBase.DF_FILL_VALUES['queryonly_bq'],
-                dtype=object,
-            )
-            onleft_arr = np.full(
-                shape=(len(read_store), len(tmp_pileup_range)),
-                fill_value=PileupBase.DF_FILL_VALUES['onleft'],
-                dtype=bool,
-            )
-
-            for arr_row_idx, read in enumerate(read_store.values()):
-                arr_col_idx = read.reference_start - tmp_pileup_range.start
-                try:
-                    _write_read_to_array_row(
-                        read, arr, arr_row_idx, arr_col_idx, del_value, 
-                        bq_arr, queryonly_arr, queryonly_bq_arr, onleft_arr, 
-                        trailing_queryonly_to_right,
-                    )
-                except Exception as exc:
-                    try:
-                        cigar_sanitycheck(read)
-                    except Exception as exc_cigarpattern:
-                        raise exc_cigarpattern from exc
-                    else:
-                        raise exc
-
-            last_col_is_empty = (set(arr[:, -1]) == {empty_value})
-            if last_col_is_empty:
-                arr = arr[:, :-1]
-                bq_arr = bq_arr[:, :-1]
-                queryonly_arr = queryonly_arr[:, :-1]
-                queryonly_bq_arr = queryonly_bq_arr[:, :-1]
-                onleft_arr = onleft_arr[:, :-1]
-                tmp_pileup_range = range(tmp_pileup_range.start, tmp_pileup_range.stop - 1)
-
-            # truncate array
-            if truncate:
-                ref_span_range = range(start0, end0)
-                arr = truncate_array(arr, tmp_pileup_range, ref_span_range)
-                bq_arr = truncate_array(bq_arr, tmp_pileup_range, ref_span_range)
-                queryonly_arr = truncate_array(queryonly_arr, tmp_pileup_range, ref_span_range)
-                queryonly_bq_arr = truncate_array(queryonly_bq_arr, tmp_pileup_range, ref_span_range)
-                onleft_arr = truncate_array(onleft_arr, tmp_pileup_range, ref_span_range)
-            else:
-                ref_span_range = tmp_pileup_range
-
-        return arr, bq_arr, queryonly_arr, queryonly_bq_arr, onleft_arr, ref_span_range
 
     # main
     read_store, tmp_pileup_range = make_read_store(bam, chrom, start0, end0)
         # tmp_pileup_range contains end0 of the rightmost fetched read
 
     arr, bq_arr, queryonly_arr, queryonly_bq_arr, onleft_arr, ref_span_range = make_array(
-        start0, end0, tmp_pileup_range, read_store, empty_value, del_value, trailing_queryonly_to_right,
+        start0, 
+        end0, 
+        tmp_pileup_range, 
+        read_store, 
+        empty_value, 
+        del_value, 
+        trailing_queryonly_to_right, 
+        truncate,
     )
 
     # final result
@@ -828,13 +724,159 @@ def make_pileup_components(
         return df, bq_df, queryonly_df, queryonly_bq_df, onleft_df, read_store
 
 
+########################################
+# helpers for 'make_pileup_components' #
+########################################
+
+def make_read_store(bam, chrom, start0, end0):
+    target_range0 = range(start0, end0)
+    readlist = list()
+    uid_list = list()
+    start_list = list()
+    end_list = list()
+    for read in readhandler.get_fetch(bam, chrom, start0, end0, readfilter=readhandler.readfilter_pileup):
+        if readhandler.check_cigarN_includes_range(read, start0, end0):
+            continue
+
+        #target_seq = readplus.ReadPlus(read, minimal=True).get_seq_from_range0(
+        #    target_range0,
+        #    flanking_queryonly_default_mode=True,
+        #)
+        #if target_seq == '':
+        #    print(read)
+        #    continue
+
+        readlist.append(read)
+        uid_list.append(readhandler.get_uid(read))
+        start_list.append(read.reference_start)
+        end_list.append(read.reference_end)
+
+    if len(start_list) == 0:
+        tmp_pileup_range = None
+    else:
+        tmp_pileup_range = range(
+            min(min(start_list), start0), 
+            max(max(end_list), end0) + 1,
+        )
+
+    read_store = collections.OrderedDict(zip(uid_list, readlist))
+
+    return read_store, tmp_pileup_range
+
+
+def cigar_sanitycheck(read):
+    """Assumes M.* or [IS]M.*"""
+    error = False
+    first_cigarop = read.cigartuples[0][0]
+    if first_cigarop != 0:
+        if first_cigarop not in (1, 4):
+            error = True
+        else:
+            if read.cigartuples[1][0] != 0:
+                error = True
+    if error:
+        raise Exception(f"Unexpected cigar pattern:\n{read.to_string()}")
+
+
+def truncate_array(arr, tmp_pileup_range, ref_span_range):
+    sl_start = tmp_pileup_range.index(ref_span_range.start)
+    if ref_span_range.stop == tmp_pileup_range.stop:
+        sl_end = None
+    else:
+        sl_end = tmp_pileup_range.index(ref_span_range.stop)
+    return arr[:, slice(sl_start, sl_end)]
+
+
+def make_array(
+    start0, 
+    end0, 
+    tmp_pileup_range, 
+    read_store, 
+    empty_value, 
+    del_value, 
+    trailing_queryonly_to_right, 
+    truncate,
+):
+    if tmp_pileup_range is None:  # zero depth
+        ref_span_range = range(start0, end0)
+        arr = np.empty((0, len(ref_span_range)))
+        bq_arr = arr.copy()
+        queryonly_arr = arr.copy()
+        queryonly_bq_arr = arr.copy()
+        onleft_arr = arr.copy()
+    else:
+        # initialize array
+        arr = np.full(
+            shape=(len(read_store), len(tmp_pileup_range)),
+            fill_value=PileupBase.DF_FILL_VALUES['main'],
+            dtype=str,
+        )
+        bq_arr = np.full(
+            shape=(len(read_store), len(tmp_pileup_range)),
+            fill_value=PileupBase.DF_FILL_VALUES['bq'],
+            dtype=int,
+        )
+        queryonly_arr = np.full(
+            shape=(len(read_store), len(tmp_pileup_range)),
+            fill_value=PileupBase.DF_FILL_VALUES['queryonly'],
+            dtype=object,
+        )
+        queryonly_bq_arr = np.full(
+            shape=(len(read_store), len(tmp_pileup_range)),
+            fill_value=PileupBase.DF_FILL_VALUES['queryonly_bq'],
+            dtype=object,
+        )
+        onleft_arr = np.full(
+            shape=(len(read_store), len(tmp_pileup_range)),
+            fill_value=PileupBase.DF_FILL_VALUES['onleft'],
+            dtype=bool,
+        )
+
+        for arr_row_idx, read in enumerate(read_store.values()):
+            arr_col_idx = read.reference_start - tmp_pileup_range.start
+            try:
+                _write_read_to_array_row(
+                    read, arr, arr_row_idx, arr_col_idx, del_value, 
+                    bq_arr, queryonly_arr, queryonly_bq_arr, onleft_arr, 
+                    trailing_queryonly_to_right,
+                )
+            except Exception as exc:
+                try:
+                    cigar_sanitycheck(read)
+                except Exception as exc_cigarpattern:
+                    raise exc_cigarpattern from exc
+                else:
+                    raise exc
+
+        last_col_is_empty = (set(arr[:, -1]) == {empty_value})
+        if last_col_is_empty:
+            arr = arr[:, :-1]
+            bq_arr = bq_arr[:, :-1]
+            queryonly_arr = queryonly_arr[:, :-1]
+            queryonly_bq_arr = queryonly_bq_arr[:, :-1]
+            onleft_arr = onleft_arr[:, :-1]
+            tmp_pileup_range = range(tmp_pileup_range.start, tmp_pileup_range.stop - 1)
+
+        # truncate array
+        if truncate:
+            ref_span_range = range(start0, end0)
+            arr = truncate_array(arr, tmp_pileup_range, ref_span_range)
+            bq_arr = truncate_array(bq_arr, tmp_pileup_range, ref_span_range)
+            queryonly_arr = truncate_array(queryonly_arr, tmp_pileup_range, ref_span_range)
+            queryonly_bq_arr = truncate_array(queryonly_bq_arr, tmp_pileup_range, ref_span_range)
+            onleft_arr = truncate_array(onleft_arr, tmp_pileup_range, ref_span_range)
+        else:
+            ref_span_range = tmp_pileup_range
+
+    return arr, bq_arr, queryonly_arr, queryonly_bq_arr, onleft_arr, ref_span_range
+
+
 def _write_read_to_array_row(
     read, arr, arr_row_idx, arr_col_idx, del_value, 
     bq_arr, queryonly_arr, queryonly_bq_arr, onleft_arr, 
     trailing_queryonly_to_right=True,
     bq_array_includes_queryonly=False,
 ):
-    """Helper function for 'make_pileup_components'"""
     query_idx = 0
     queryonly_seq = None
     for idx, (key, subiter) in enumerate(
@@ -904,7 +946,6 @@ def _write_read_to_array_row_old(
     trailing_queryonly_to_right=True,
     bq_array_includes_queryonly=False,
 ):
-    """Helper function for 'make_pileup_components'"""
     query_idx = 0
     queryonly_seq = None
     for idx, (key, subiter) in enumerate(
@@ -1172,70 +1213,5 @@ def _write_read_to_array_row_deprecated(read, arr, arr_row_idx, initial_arr_col_
             arr[arr_row_idx, initial_arr_col_idx] = (
                 f"({leading_insseq})" + arr[arr_row_idx, initial_arr_col_idx]
             )
-
-
-#def get_pileup(
-#    chrom,
-#    start0,
-#    end0,
-#    bam,
-#    fasta,
-#    truncate=True,
-#    del_value=DEL_VALUE,
-#    empty_value=EMPTY_VALUE,
-#):
-#    df, read_store = make_pileup_components(
-#        chrom,
-#        start0,
-#        end0,
-#        bam,
-#        truncate=truncate,
-#        as_array=False,
-#        del_value=del_value,
-#        empty_value=empty_value,
-#    )
-#    pileup = Pileup(df, chrom, fasta, bam, read_store)
-#
-#    return pileup
-
-
-
-
-
-#def get_pileup_multisample(
-#    chrom,
-#    start0,
-#    end0,
-#    bam_dict,
-#    fasta,
-#    active_threshold_onesample=None,
-#    del_value=PileupBase.DEL_VALUE,
-#    empty_value=PileupBase.EMPTY_VALUE,
-#):
-#    # parameter handling
-#    if active_threshold_onesample is None:
-#        active_threshold_onesample = librealign.DEFAULT_ACTIVE_THRESHOLD
-#    # initialize pileup_dict
-#    pileup_dict = dict()
-#    for sampleid, bam in bam_dict.items():
-#        pileup_dict[sampleid] = get_pileup(
-#            chrom,
-#            start0,
-#            end0,
-#            bam=bam,
-#            fasta=fasta,
-#            active_threshold=active_threshold_onesample,
-#            truncate=True,
-#            as_array=False,
-#            return_range=False,
-#            del_value=del_value,
-#            empty_value=empty_value,
-#        )
-#    # create MultisamplePileup object and postprocess
-#    mspileup = MultisamplePileup(pileup_dict)
-#    mspileup.set_df()
-#
-#    return mspileup
-
 
 

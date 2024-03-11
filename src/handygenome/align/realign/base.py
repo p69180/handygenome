@@ -2,7 +2,7 @@ import sys
 import collections
 import itertools
 import functools
-import logging
+#import logging
 import inspect
 import random
 import uuid
@@ -11,16 +11,13 @@ import pysam
 import Bio.Align
 import numpy as np
 import pandas as pd
-import pyranges as pr
 
 import handygenome.deco as deco
 import handygenome.workflow as workflow
+import handygenome.logutils as logutils
 import handygenome.variant.vcfspec as libvcfspec
-import handygenome.read.pileup as libpileup
+from handygenome.read.pileup import PileupBase
 import handygenome.align.alignhandler as alignhandler
-import handygenome.bameditor as bameditor
-import handygenome.read.readhandler as readhandler
-import handygenome.read.readplus as readplus
 
 
 #logging.basicConfig(level=logging.INFO)
@@ -39,46 +36,6 @@ import handygenome.read.readplus as readplus
 
 #DEFAULT_AUGMENT_FACTOR_REPEAT_AREA = 1
 
-#ALIGNER_FILLED = Bio.Align.PairwiseAligner(
-#    mode='local',
-#    match_score=2,
-#    mismatch_score=-3,
-#    query_internal_open_gap_score=-7,
-#    query_internal_extend_gap_score=-2,
-#    target_internal_open_gap_score=-7,
-#    target_internal_extend_gap_score=-2,
-#    query_left_open_gap_score=-7,
-#    query_left_extend_gap_score=-2,
-#)
-
-#ALIGNER_UNFILLED = Bio.Align.PairwiseAligner(
-#    mode='local',
-#    match_score=2,
-#    mismatch_score=-3,
-#    query_internal_open_gap_score=-7,
-#    query_internal_extend_gap_score=-2,
-#    target_internal_open_gap_score=-7,
-#    target_internal_extend_gap_score=-2,
-#)
-
-#ALIGNER_BLASTN = Bio.Align.PairwiseAligner(
-#    match_score=2,
-#    mismatch_score=-3,
-#    query_internal_open_gap_score=-7,
-#    query_internal_extend_gap_score=-2,
-#    target_internal_open_gap_score=-7,
-#    target_internal_extend_gap_score=-2,
-#)
-#
-#ALIGNER_EQUAL_MM_GAP = Bio.Align.PairwiseAligner(
-#    mode='global',
-#    match_score=3,
-#    mismatch_score=-3,
-#    query_internal_open_gap_score=-3,
-#    query_internal_extend_gap_score=0,
-#    target_internal_open_gap_score=-3,
-#    target_internal_extend_gap_score=0,
-#)
 
 DEFAULT_ALIGNER = alignhandler.ALIGNER_EQUAL_MM_GAP
 
@@ -99,22 +56,26 @@ DEFAULT_PARAMS = {
 }
 
 
-class RealignerPileupBase(libpileup.PileupBase):
-    row_spec_exluded_vals = (
-        libpileup.PileupBase.DEL_VALUE, libpileup.PileupBase.EMPTY_VALUE
-    )
+class LoggingBase:
+    def log_debug(self, msg):
+        if self.verbose:
+            logutils.log(msg, level='debug', add_locstring=True, locstring_mode='last')
 
-    @staticmethod
-    def get_logger(verbose):
-        formatter = logging.Formatter(
-            fmt='[%(asctime)s.%(msecs)03d RealignerPileup] line %(lineno)d: %(message)s', 
-            datefmt='%Z %Y-%m-%d %H:%M:%S'
-        )
-        return workflow.get_logger(
-            name=str(uuid.uuid4()),
-            level=('debug' if verbose else 'info'),
-            formatter=formatter,
-        )
+
+class RealignerPileupBase(PileupBase, LoggingBase):
+    row_spec_exluded_vals = (PileupBase.DEL_VALUE, PileupBase.EMPTY_VALUE)
+
+#    @staticmethod
+#    def get_logger(verbose):
+#        formatter = logging.Formatter(
+#            fmt='[%(asctime)s.%(msecs)03d RealignerPileup] line %(lineno)d: %(message)s', 
+#            datefmt='%Z %Y-%m-%d %H:%M:%S'
+#        )
+#        return workflow.get_logger(
+#            name=str(uuid.uuid4()),
+#            level=('debug' if verbose else 'info'),
+#            formatter=formatter,
+#        )
 
     def _active_info_generator(self, start0, end0, reverse=False):
         self._coord_arg_sanitycheck(start0, end0)
@@ -654,7 +615,14 @@ def parse_rpileup_kwargs(**kwargs):
     return params
 
 
-def main_aligner(target, query, aligner, reverse_align=False, raise_with_tie=False, logger=None, row_spec=None, target_reversed=None):
+def main_aligner(
+    target, query, aligner, 
+    reverse_align=False, 
+    raise_with_tie=False, 
+    #logger=None, 
+    row_spec=None, 
+    target_reversed=None,
+):
     if reverse_align:
         if target_reversed is None:
             target = target[::-1]
@@ -704,5 +672,8 @@ def main_aligner_helper(alns, raise_with_tie, reverse_align):
 
     return aln
 
+
+#def logging_debug(msg):
+#    logutils.log(msg, level='debug', verbose_locstring=False)
 
 

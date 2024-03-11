@@ -2,14 +2,15 @@ import pyranges as pr
 
 import handygenome.annotation.data as annotdata
 import handygenome.annotation.annotitem as libannotitem
-import handygenome.analysis.feature as anal_feature
+import handygenome.analysis.feature as libfeature
+#import handygenome.annotation.oncokb as liboncokb
 
 
 def gene_cosmic_occurrences(gene_names, refver):
     result = dict()
     cosmic_vcf = annotdata.VCFS_COSMIC[refver]
     # print(f'getting coordinates for each gene')
-    gene_coords = anal_feature.get_gene_coords(gene_names, refver)
+    gene_coords = libfeature.get_gene_coords(gene_names, refver)
     for gene_name, interval in gene_coords.items():
         # print(f'counting occurrence for gene {gene_name}')
         occurrence = 0
@@ -19,3 +20,5 @@ def gene_cosmic_occurrences(gene_names, refver):
         result[gene_name] = occurrence
     
     return result
+
+

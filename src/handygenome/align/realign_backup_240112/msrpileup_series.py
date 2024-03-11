@@ -2,7 +2,7 @@ import sys
 import collections
 import itertools
 import functools
-import logging
+#import logging
 import inspect
 import random
 import uuid
@@ -11,9 +11,11 @@ import pysam
 import Bio.Align
 import numpy as np
 import pandas as pd
-import pyranges as pr
 
 import handygenome.tools as tools
+#import handygenome.logutils as logutils
+import handygenome.refgenome.refgenome as refgenome
+from handygenome.refgenome.refgenome import RefverObjectBase
 import handygenome.workflow as workflow
 import handygenome.variant.vcfspec as libvcfspec
 import handygenome.read.pileup as libpileup
@@ -21,12 +23,14 @@ import handygenome.align.alignhandler as alignhandler
 import handygenome.bameditor as bameditor
 import handygenome.read.readhandler as readhandler
 import handygenome.read.readplus as readplus
+
 import handygenome.align.realign.base as realign_base
-import handygenome.align.realign.msrpileup as realign_msrpileup
-import handygenome.align.realign.rpileup_series as realign_rpileup_series
+from handygenome.align.realign.base import LoggingBase
+from handygenome.align.realign.msrpileup import MultisampleRealignerPileup
+from handygenome.align.realign.rpileup_series import RealignerPileupSeries
 
 
-class MultisampleRealignerPileupSeries:
+class MultisampleRealignerPileupSeries(RefverObjectBase, LoggingBase):
     def __repr__(self):
         return str(self.pileupseries_dict)
 
@@ -37,7 +41,7 @@ class MultisampleRealignerPileupSeries:
         return iter(self.mspileup_list)
 
     @functools.cached_property
-    def df(self):
+    def rpileup_df(self):
         data = list()
         index = list()
         for idx, (sampleid, rpileup_series) in enumerate(self.pileupseries_dict.items()):
@@ -50,6 +54,12 @@ class MultisampleRealignerPileupSeries:
                     breaks.append(rpileup.end0)
                 columns = pd.IntervalIndex.from_breaks(breaks, closed='left')
         return pd.DataFrame.from_records(data, index=index, columns=columns)
+
+    def get_row(self, sampleid):
+        return self.pileupseries_dict[sampleid]
+
+    def get_col(self, idx):
+        return self.mspileup_list[idx]
 
 #    @property
 #    def rows(self):
@@ -65,11 +75,6 @@ class MultisampleRealignerPileupSeries:
 #                }
 #            ]
 #        )
-
-    #@property
-    #def series_length(self):
-        #return len(self.rows.iloc[0, :])
-    #    return len(next(iter(self.pileupseries_dict.values())))
 
     @property
     def ranges(self):
@@ -146,27 +151,32 @@ class MultisampleRealignerPileupSeries:
         chrom, 
         start0, 
         end0, 
-        refver=None,
-        fasta=None,
         aligner=realign_base.DEFAULT_ALIGNER,
         verbose=False, 
-        logger=None, 
         init_blank=False,
         **kwargs,
     ):
         # set params
+        self.init_sanitycheck(bam_dict)
+
         self.chrom = chrom
         self.bam_dict = bam_dict
-        self.refver, self.fasta = realign_base.RealignerPileupBase.refver_fasta_arghandler(refver, fasta)
+        self.refver = refgenome.infer_refver_bamheader(next(iter(bam_dict.values())).header)
         self.aligner = aligner
-        self.verbose, self.logger = realign_base.RealignerPileupBase.logger_arghandler(verbose, logger)
+        self.verbose = verbose
         self.params = realign_base.parse_rpileup_kwargs(**kwargs)
 
         # setup data
         if not init_blank:
             self.set_series_dict(start0, end0)  # self.pileupseries_dict
+            return
             self.set_multisample_pileups()  # self.mspileup_list
             self.set_realigned_reads()
+
+    def init_sanitycheck(self, bam_dict):
+        assert len(set(refgenome.infer_refver_bamheader(x.header) for x in bam_dict.values())) == 1, (
+            f'Refver differs between input bams'
+        )
 
     def set_series_dict(self, seed_start0, seed_end0):
         self.pileupseries_dict = dict()
@@ -174,30 +184,30 @@ class MultisampleRealignerPileupSeries:
 
         # initialize
         for sampleid, bam in self.bam_dict.items():
-            self.logger.debug(f'@@@ Initializing RealignerPileupSeries of sample {sampleid} @@@\n')
-            self.pileupseries_dict[sampleid] = realign_rpileup_series.RealignerPileupSeries(
+            self.log_debug(f'@@@ Initializing RealignerPileupSeries of sample {sampleid} @@@\n')
+
+            self.pileupseries_dict[sampleid] = RealignerPileupSeries(
                 bam=bam, 
                 chrom=self.chrom, start0=seed_start0, end0=seed_end0, 
-                refver=self.refver,
-                fasta=self.fasta, 
+                _refver=self.refver,
                 aligner=self.aligner,
                 verbose=self.verbose,
-                logger=self.logger,
                 **self.params,
             )
-            self.logger.debug(f'@@@ Finished initialization of RealignerPileupSeries of sample {sampleid} @@@\n\n')
+
+            self.log_debug(f'@@@ Finished initialization of RealignerPileupSeries of sample {sampleid} @@@\n\n')
 
         # equalize whole margins
         self.equalize_left()
         self.equalize_right()
 
         # equalize sub-pileup margins
-        self.logger.debug(f'@@@ Beginning inner margin equalization @@@\n')
+        #self.log_debug(f'@@@ Beginning inner margin equalization @@@\n')
         self.equalize_inner_margins()
-        self.logger.debug(f'@@@ Finished inner margin equalization @@@\n')
+        #self.log_debug(f'@@@ Finished inner margin equalization @@@\n')
 
     def equalize_left(self):
-        self.logger.debug(f'@@@ Beginning equalize_left @@@\n')
+        self.log_debug(f'@@@ Beginning equalize_left @@@\n')
 
         # equalize left
         while True:
@@ -205,14 +215,14 @@ class MultisampleRealignerPileupSeries:
                 break
             # extend
             target_start0 = min(x.start0 for x in self.pileupseries_dict.values())
-            self.logger.debug(f'target_start0: {target_start0}')
+            self.log_debug(f'target_start0: {target_start0}')
             for sampleid, pileup_ser in self.pileupseries_dict.items():
                 width = pileup_ser.start0 - target_start0
                 if width > 0:
-                    self.logger.debug(f'Beginning EXTEND of {sampleid}')
-                    self.logger.debug(f'current start0 of {sampleid}: {pileup_ser.start0}')
+                    self.log_debug(f'Beginning EXTEND of {sampleid}')
+                    self.log_debug(f'current start0 of {sampleid}: {pileup_ser.start0}')
                     pileup_ser.extend_left(width)
-                    self.logger.debug(f'Finished EXTEND of {sampleid}\n')
+                    self.log_debug(f'Finished EXTEND of {sampleid}\n')
 
             #for sampleid, pileup_ser in self.pileupseries_dict.items():
                 #print(sampleid)
@@ -229,28 +239,28 @@ class MultisampleRealignerPileupSeries:
                 break
             # secure
             for sampleid, pileup_ser in self.pileupseries_dict.items():
-                self.logger.debug(f'Beginning SECURE of {sampleid}')
+                self.log_debug(f'Beginning SECURE of {sampleid}')
                 pileup_ser.secure_left()
-                self.logger.debug(f'Finished SECURE of {sampleid}\n')
+                self.log_debug(f'Finished SECURE of {sampleid}\n')
 
-        self.logger.debug(f'@@@ Finished equalize_left @@@\n')
+        self.log_debug(f'@@@ Finished equalize_left @@@\n')
 
     def equalize_right(self):
-        self.logger.debug(f'@@@ Beginning equalize_right @@@\n')
+        #self.logger.debug(f'@@@ Beginning equalize_right @@@\n')
 
         while True:
             if len(set(x.end0 for x in self.pileupseries_dict.values())) == 1:
                 break
             # extend
             target_end0 = max(x.end0 for x in self.pileupseries_dict.values())
-            self.logger.debug(f'target_end0: {target_end0}')
+            #self.logger.debug(f'target_end0: {target_end0}')
             for sampleid, pileup_ser in self.pileupseries_dict.items():
                 width = target_end0 - pileup_ser.end0
                 if width > 0:
-                    self.logger.debug(f'Beginning EXTEND of {sampleid}')
-                    self.logger.debug(f'current end0 of {sampleid}: {pileup_ser.end0}')
+                    #self.logger.debug(f'Beginning EXTEND of {sampleid}')
+                    #self.logger.debug(f'current end0 of {sampleid}: {pileup_ser.end0}')
                     pileup_ser.extend_right(width)
-                    self.logger.debug(f'Finished EXTEND of {sampleid}\n')
+                    #self.logger.debug(f'Finished EXTEND of {sampleid}\n')
 
             for sampleid, pileup_ser in self.pileupseries_dict.items():
                 print(sampleid)
@@ -267,11 +277,11 @@ class MultisampleRealignerPileupSeries:
                 break
             # secure
             for pileup_ser in self.pileupseries_dict.values():
-                self.logger.debug(f'Beginning SECURE of {sampleid}')
+                #self.logger.debug(f'Beginning SECURE of {sampleid}')
                 pileup_ser.secure_right()
-                self.logger.debug(f'Finished SECURE of {sampleid}\n')
+                #self.logger.debug(f'Finished SECURE of {sampleid}\n')
 
-        self.logger.debug(f'@@@ Finished equalize_right @@@\n')
+        #self.logger.debug(f'@@@ Finished equalize_right @@@\n')
 
     def equalize_inner_margins(self):
         # set interim parameters
@@ -469,13 +479,12 @@ class MultisampleRealignerPileupSeries:
                 for sampleid in self.pileupseries_dict.keys()
             }
             self.mspileup_list.append(
-                realign_msrpileup.MultisampleRealignerPileup(
+                MultisampleRealignerPileup(
                     pileup_dict=pileup_dict, 
-                    refver=self.refver,
-                    fasta=self.fasta, 
+                    _refver=self.refver,
                     aligner=self.aligner,
                     verbose=self.verbose, 
-                    logger=self.logger,
+                    #logger=self.logger,
                     **self.params,
                 )
             )

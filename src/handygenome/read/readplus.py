@@ -9,6 +9,7 @@ import pysam
 
 import handygenome.tools as tools
 import handygenome.refgenome.refgenome as refgenome
+from handygenome.refgenome.refgenome import RefverObjectBase
 import handygenome.interval as libinterval
 import handygenome.workflow as workflow
 import handygenome.read.readhandler as readhandler
@@ -75,22 +76,28 @@ class ClipSpec:
         return f'(qname={self.rp.read.query_name}, pos0={self.pos0:,}, is5prime={self.is5prime})'
 
 
-class ReadPlus:
-    def __init__(self, read, fasta=None, minimal=False, skip_attrs_setting=False, recalc_NMMD=False):
+class ReadPlus(RefverObjectBase):
+    def __init__(
+        self, read, 
+        *,
+        refver=None, 
+        #fasta=None, 
+        minimal=False, 
+        skip_attrs_setting=False, 
+        recalc_NMMD=False,
+    ):
         self.read = read
-        # fasta
-        if minimal:
-            self.fasta = fasta
+        if refver is None:
+            self.refver = refgenome.infer_refver_bamheader(self.read.header)
         else:
-            if fasta is None:
-                self.fasta = refgenome.get_fasta(
-                    refgenome.infer_refver_bamheader(self.read.header)
-                )
-            else:
-                self.fasta = fasta
+            self.refver = refver
+
         # pairs_dict
         self.pairs_dict = readhandler.get_pairs_dict(
-            self.read, fasta=self.fasta, skip_refseq=minimal, set_cigarop=False,
+            self.read, 
+            fasta=self.fasta, 
+            skip_refseq=minimal, 
+            set_cigarop=False,
         )
         # NMMD
         if (
@@ -98,8 +105,8 @@ class ReadPlus:
             (
                 (not minimal) and 
                 (
-                    (not self.read.has_tag('NM')) or 
-                    (not self.read.has_tag('MD'))
+                    (not self.read.has_tag('NM'))
+                    or (not self.read.has_tag('MD'))
                 )
             )
         ):
@@ -858,7 +865,7 @@ class ReadPlus:
         return SAinfo
 
 
-class ReadPlusPair:
+class ReadPlusPair(RefverObjectBase):
     """
     Requires two readplus objects which are mates of each other and all of 
         primary alignment.
@@ -870,17 +877,13 @@ class ReadPlusPair:
         self, 
         rplist_primary, 
         rplist_nonprimary, 
-        chromdict,
         threshold_tlen=THRESHOLD_TEMPLATE_LENGTH,
     ):
-        self._set_rp1_rp2(rplist_primary, chromdict)
+        self.refver = rplist_primary[0].refver
+        self._set_rp1_rp2(rplist_primary)
         self.rplist_nonprimary = rplist_nonprimary
         self.alleleclass = dict()
         self.monoalt_support = dict()
-
-        #self._set_is_proper_pair()
-        #self._set_sv_supporting()
-        #self.irrelevant = (self.rp1.irrelevant or self.rp2.irrelevant)
 
     def __del__(self):
         del self.rp1
@@ -912,7 +915,7 @@ class ReadPlusPair:
 
         return (f'<ReadPlusPair object ({infostring})>')
 
-    def _set_rp1_rp2(self, rplist_primary, chromdict):
+    def _set_rp1_rp2(self, rplist_primary):
         if len(rplist_primary) == 1:
             self.rp1 = rplist_primary[0]
             self.rp2 = None
@@ -922,7 +925,7 @@ class ReadPlusPair:
                 rplist_primary[0].fiveprime_end,
                 rplist_primary[1].read.reference_name, 
                 rplist_primary[1].fiveprime_end,
-                chromdict,
+                self.chromdict,
             )
             if order <= 0:
                 self.rp1 = rplist_primary[0]
@@ -969,6 +972,11 @@ class ReadPlusPair:
     # non-alleleclass methods #
     ##########################
 
+    def get_iter_rps(self):
+        for rp in (self.rp1, self.rp2):
+            if rp is not None:
+                yield rp
+
     def get_range0(self, chrom):
         relevant_rps = list()
         if self.rp1.read.reference_name == chrom:
@@ -984,6 +992,12 @@ class ReadPlusPair:
                 min(x.read.reference_start for x in relevant_rps),
                 max(x.read.reference_end for x in relevant_rps),
             )
+
+    def check_overlaps(self, rng0):
+        return any(rp.check_overlaps(rng0) for rp in self.get_iter_rps())
+
+    def check_softclip_overlaps(self, rng0):
+        return any(rp.check_softclip_overlaps(rng0) for rp in self.get_iter_rps())
 
     def check_softclip_overlaps_vcfspec(self, vcfspec):
         if self.rp2 is None:
@@ -1036,20 +1050,31 @@ class ReadPlusPair:
         flanklen_parside=liballeleclass_sv.DEFAULT_FLANKLEN_PARSIDE,
         flanklen_bndside=liballeleclass_sv.DEFAULT_FLANKLEN_BNDSIDE,
     ):
-        self.rp1.update_alleleclass_sv(bnds,
-                                      flanklen_parside=flanklen_parside,
-                                      flanklen_bndside=flanklen_bndside)
-        self.rp2.update_alleleclass_sv(bnds,
-                                      flanklen_parside=flanklen_parside,
-                                      flanklen_bndside=flanklen_bndside)
-        aiitem_bnd1, aiitem_bnd2 = liballeleclass_sv.make_alleleclass_item_readpluspair(
-            aiitem_bnd1_rp1=self.rp1.alleleclass[bnds]['bnd1'], 
-            aiitem_bnd1_rp2=self.rp2.alleleclass[bnds]['bnd1'],
-            aiitem_bnd2_rp1=self.rp1.alleleclass[bnds]['bnd2'], 
-            aiitem_bnd2_rp2=self.rp2.alleleclass[bnds]['bnd2'],
-        )
+        if self.rp2 is None:
+            self.rp1.update_alleleclass_sv(
+                bnds,
+                flanklen_parside=flanklen_parside,
+                flanklen_bndside=flanklen_bndside,
+            )
+            aiitem_rpp = liballeleclass_sv.make_alleleclass_item_readpluspair_wo_rp2(
+                aiitem_bnd1_rp1=self.rp1.alleleclass[bnds]['bnd1'], 
+                aiitem_bnd2_rp1=self.rp1.alleleclass[bnds]['bnd2'], 
+            )
+        else:
+            self.rp1.update_alleleclass_sv(bnds,
+                                          flanklen_parside=flanklen_parside,
+                                          flanklen_bndside=flanklen_bndside)
+            self.rp2.update_alleleclass_sv(bnds,
+                                          flanklen_parside=flanklen_parside,
+                                          flanklen_bndside=flanklen_bndside)
+            aiitem_rpp = liballeleclass_sv.make_alleleclass_item_readpluspair(
+                aiitem_bnd1_rp1=self.rp1.alleleclass[bnds]['bnd1'], 
+                aiitem_bnd1_rp2=self.rp2.alleleclass[bnds]['bnd1'],
+                aiitem_bnd2_rp1=self.rp1.alleleclass[bnds]['bnd2'], 
+                aiitem_bnd2_rp2=self.rp2.alleleclass[bnds]['bnd2'],
+            )
 
-        self.alleleclass[bnds] = {'bnd1': aiitem_bnd1, 'bnd2': aiitem_bnd2}
+        self.alleleclass[bnds] = aiitem_rpp
 
     def set_alleleclass_tag_sv(self, bnds):
 #        alleleclass_list = [k for (k, v) 
@@ -1065,30 +1090,19 @@ class ReadPlusPair:
 #        #value = f'{bnds.get_id()}_{alleleclass}'
 #        value = str(alleleclass)
 
-        aiitem_bnd1 = self.alleleclass[bnds]['bnd1']
-        aiitem_bnd2 = self.alleleclass[bnds]['bnd2']
+        aiitem_rpp = self.alleleclass[bnds]
 
-        if aiitem_bnd1['noninformative'] and aiitem_bnd2['noninformative']:
+        if aiitem_rpp['noninformative']:
             tag = 'noninformative'
         else:
-            bnd1_flags = '&'.join(
-                key for (key, val) in aiitem_bnd1.items() 
-                if (val and (key != 'noninformative'))
+            tag = '&'.join(
+                key for (key, val) in aiitem_rpp.items() 
+                if val
             )
-            bnd2_flags = '&'.join(
-                key for (key, val) in aiitem_bnd2.items() 
-                if (val and (key != 'noninformative'))
-            )
-            valid_flags = list()
-            if bnd1_flags != '':
-                valid_flags.append(f'bnd1={bnd1_flags}')
-            if bnd2_flags != '':
-                valid_flags.append(f'bnd2={bnd2_flags}')
-            tag = ', '.join(valid_flags)
 
         self.rp1.read.set_tag(ALLELECLASS_TAG_RPP, tag, 'Z', replace=True)
-        self.rp2.read.set_tag(ALLELECLASS_TAG_RPP, tag, 'Z', replace=True)
-
+        if self.rp2 is not None:
+            self.rp2.read.set_tag(ALLELECLASS_TAG_RPP, tag, 'Z', replace=True)
 
     #############################################
     # ReadStats non-rppcount attributes-related #
@@ -1162,18 +1176,23 @@ class ReadPlusPair:
 # ReadPlusPairList-related classes and functions #
 ##################################################
 
-class ReadPlusPairList(list):
-    def __init__(self, refver, chromdict):
+class ReadPlusPairList(collections.UserList, RefverObjectBase):
+    def __init__(self, refver):
+        super().__init__()
         self.refver = refver
-        self.chromdict = chromdict
+
+    @classmethod
+    def from_rpps(cls, rpp_iter):
+        rpp_iter = iter(rpp_iter)
+        first_rpp = next(rpp_iter)
+        rpplist = cls(refver=first_rpp.refver)
+        rpplist.extend(rpp_iter)
+        return rpplist
 
     @classmethod
     def from_bam(
         cls, 
         bam, chrom, start0, end0, 
-
-        #fasta=None, 
-        #chromdict=None, 
 
         view=False, 
         no_matesearch=True,
@@ -1183,14 +1202,14 @@ class ReadPlusPairList(list):
         long_insert_threshold=LONG_INSERT_THRESHOLD,
         recalc_NMMD=False,
         include_irrelevant_reads=False,
+
+        verbose=False,
     ):
         refver = refgenome.infer_refver_bamheader(bam.header)
-        #if (fasta is None) or (chromdict is None):
-        fasta = refgenome.get_fasta(refver)
-        chromdict = refgenome.ChromDict.from_refver(refver)
-
-        LOGGER_RPPLIST.info('Beginning initial fetch')
-        chromlen = chromdict[chrom]
+        rpplist = cls(refver=refver)
+        if verbose:
+            logutils.log('Beginning initial fetch', level='debug')
+        chromlen = rpplist.chromdict[chrom]
         (relevant_qname_set, new_fetch_range) = initial_fetch_nonsv(
             bam=bam, 
             chrom=chrom, 
@@ -1204,20 +1223,21 @@ class ReadPlusPairList(list):
             long_insert_threshold=long_insert_threshold,
         )
 
-        rpplist = cls(refver=refver, chromdict=chromdict)
         if (
             include_irrelevant_reads
             or ((not include_irrelevant_reads) and (len(relevant_qname_set) > 0))
         ):
-            LOGGER_RPPLIST.info('Beginning refined fetch')
+            if verbose:
+                logutils.log('Beginning refined fetch', level='debug')
             fetchresult_dict = refined_fetch_nonsv(
                 bam, chrom, new_fetch_range, relevant_qname_set, include_irrelevant_reads,
             )
 
-            LOGGER_RPPLIST.info('Beginning assembly into readpluspair')
+            if verbose:
+                logutils.log('Beginning assembly into readpluspair', level='debug')
             for readlist in fetchresult_dict.values():
                 rpp = get_rpp_from_refinedfetch(
-                    readlist, bam, fasta, chromdict, no_matesearch, recalc_NMMD=recalc_NMMD,
+                    readlist, bam, rpplist.fasta, rpplist.chromdict, no_matesearch, recalc_NMMD=recalc_NMMD,
                 )
                 del readlist
                 if rpp is not None:
@@ -1233,18 +1253,18 @@ class ReadPlusPairList(list):
         bam, bnds,
 
         view=False,
-        #no_matesearch=False,
+        no_matesearch=True,
         fetch_padding_common=FETCH_PADDING_COMMON,
         fetch_padding_sv=FETCH_PADDING_SV,
         fetch_padding_view=FETCH_PADDING_VIEW,
         new_fetch_padding=NEW_FETCH_PADDING,
         long_insert_threshold=LONG_INSERT_THRESHOLD,
+
+        verbose=False,
     ):
-        """
-        """
         refver = refgenome.infer_refver_bamheader(bam.header)
-        fasta = refgenome.get_fasta(refver)
-        chromdict = refgenome.ChromDict.from_refver(refver)
+        rpplist = cls(refver=refver)
+
         LOGGER_RPPLIST.info('Beginning initial fetch')
 
         ###
@@ -1261,7 +1281,6 @@ class ReadPlusPairList(list):
             new_fetch_padding, long_insert_threshold,
         )
 
-        rpplist = ReadPlusPairList(refver=refver, chromdict=chromdict)
         if len(relevant_qname_set_union) > 0:
             LOGGER_RPPLIST.info('Beginning refined fetch')
             fetchresult_dict = refined_fetch_sv(
@@ -1273,10 +1292,15 @@ class ReadPlusPairList(list):
             LOGGER_RPPLIST.info('Beginning assembly into readpluspair')
             for readlist in fetchresult_dict.values():
                 rpp = get_rpp_from_refinedfetch(
-                    readlist, bam, fasta, chromdict, no_matesearch=False,
+                    readlist, bam, rpplist.fasta, rpplist.chromdict, no_matesearch=no_matesearch,
                 )
                 if rpp is not None:
                     rpplist.append(rpp)
+
+            # remove rpp without rp2
+            #rpps_tobe_removed = list(x for x in rpplist if x.rp2 is None)
+            #for x in rpps_tobe_removed:
+            #    rpplist.remove(x)
 
             # sort
             rpplist.sortby_rp1()
@@ -1352,6 +1376,9 @@ class ReadPlusPairList(list):
 
         for rpp in self:
             for rp in (rpp.rp1, rpp.rp2):
+                if rp is None:
+                    continue
+
                 bnd1_relevant = (
                     (rp.read.reference_name == bnds.chrom_bnd1)
                     and (
@@ -1374,8 +1401,14 @@ class ReadPlusPairList(list):
                     start_list_bnd2.append(rp.read.reference_start)
                     end_list_bnd2.append(rp.read.reference_end)
 
-        ref_range0_bnd1 = range(min(start_list_bnd1), max(end_list_bnd1))
-        ref_range0_bnd2 = range(min(start_list_bnd2), max(end_list_bnd2))
+        ref_range0_bnd1 = range(
+            (bnds.pos_bnd1 if len(start_list_bnd1) == 0 else min(start_list_bnd1)), 
+            (bnds.pos_bnd1 + 1 if len(end_list_bnd1) == 0 else max(end_list_bnd1)), 
+        )
+        ref_range0_bnd2 = range(
+            (bnds.pos_bnd2 if len(start_list_bnd2) == 0 else min(start_list_bnd2)), 
+            (bnds.pos_bnd2 + 1 if len(end_list_bnd2) == 0 else max(end_list_bnd2)), 
+        )
 
         return ref_range0_bnd1, ref_range0_bnd2
 
@@ -1432,7 +1465,8 @@ class ReadPlusPairList(list):
     def set_alleleclass_tag_rp_sv(self, bnds):
         for rpp in self:
             rpp.rp1.set_alleleclass_tag_sv(bnds)
-            rpp.rp2.set_alleleclass_tag_sv(bnds)
+            if rpp.rp2 is not None:
+                rpp.rp2.set_alleleclass_tag_sv(bnds)
 
     def write_bam(self, outfile_path=None, outfile_dir=None):
         # set outfile_path 
@@ -1442,30 +1476,35 @@ class ReadPlusPairList(list):
             else:
                 outfile_path=workflow.get_tmpfile_path(suffix='.bam', where=outfile_dir)
 
-        # get a list of reads
-        readlist = list()
-        for rpp in self:
-            readlist.append(rpp.rp1.read)
-            if rpp.rp2 is not None:
-                readlist.append(rpp.rp2.read)
+        if len(self) > 0:
+            # get a list of reads
+            readlist = list()
+            for rpp in self:
+                readlist.append(rpp.rp1.read)
+                if rpp.rp2 is not None:
+                    readlist.append(rpp.rp2.read)
 
-        # sort & write
-        if not bameditor.check_header_compatibility(
-            [rpp.rp1.read.header for rpp in self]
-        ):
-            raise Exception(f'Contig specs are different between read headers.')
+            # sort & write
+            if not bameditor.check_header_compatibility(
+                [rpp.rp1.read.header for rpp in self]
+            ):
+                pass
+                #raise Exception(f'Contig specs are different between read headers.')
 
-        bamheader = self[0].rp1.read.header.copy()
-        sortkey = readhandler.get_read_sortkey(refgenome.ChromDict.from_bamheader(bamheader))
-        readlist.sort(key=sortkey)
+            bamheader = self[0].rp1.read.header.copy()
+            sortkey = readhandler.get_read_sortkey(refgenome.ChromDict.from_bamheader(bamheader))
+            readlist.sort(key=sortkey)
 
-        with pysam.AlignmentFile(outfile_path, mode='wb', header=bamheader) as out_bam:
-            for read in readlist:
-                out_bam.write(read)
-        # index
-        pysam.index(outfile_path)
+            with pysam.AlignmentFile(outfile_path, mode='wb', header=bamheader) as out_bam:
+                for read in readlist:
+                    out_bam.write(read)
+            # index
+            pysam.index(outfile_path)
 
-        #self.bam_path = outfile_path
+        else:
+            with open(outfile_path, 'wb') as outfile:
+                pass
+
 
 
 #def get_rpplist_nonsv(
@@ -1934,13 +1973,20 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch, re
             del read
         del readlist_nonprimary
     else:
+        refver = refgenome.infer_refver_bamheader(bam.header)
         rplist_nonprimary = [
-            ReadPlus(x, fasta, recalc_NMMD=recalc_NMMD)
+            ReadPlus(x, refver=refver, recalc_NMMD=recalc_NMMD)
             for x in readlist_nonprimary
         ]
         if len(readlist_primary) == 1: # mate read is somewhere far away
             if no_matesearch:
-                rplist_primary = [ReadPlus(readlist_primary[0], fasta, recalc_NMMD=recalc_NMMD)]
+                rplist_primary = [
+                    ReadPlus(
+                        readlist_primary[0], 
+                        refver=refver, 
+                        recalc_NMMD=recalc_NMMD,
+                    )
+                ]
             else:
                 mate = readhandler.get_primary_mate(readlist_primary[0], bam)
                 if mate is None:
@@ -1950,19 +1996,20 @@ def get_rpp_from_refinedfetch(readlist, bam, fasta, chromdict, no_matesearch, re
 
                 if mate.reference_name in chromdict.contigs:
                     rplist_primary = [
-                        ReadPlus(readlist_primary[0], fasta, recalc_NMMD=recalc_NMMD), 
-                        ReadPlus(mate, fasta, recalc_NMMD=recalc_NMMD)
+                        ReadPlus(readlist_primary[0], refver=refver, recalc_NMMD=recalc_NMMD), 
+                        ReadPlus(mate, refver=refver, recalc_NMMD=recalc_NMMD)
                     ]
                 else:
-                    rplist_primary = [ReadPlus(readlist_primary[0], fasta, recalc_NMMD=recalc_NMMD)]
+                    rplist_primary = [ReadPlus(readlist_primary[0], refver=refver, recalc_NMMD=recalc_NMMD)]
 
         else: # len(readlist_primary) == 2
             rplist_primary = [
-                ReadPlus(x, fasta, recalc_NMMD=recalc_NMMD) 
+                ReadPlus(x, refver=refver, recalc_NMMD=recalc_NMMD) 
                 for x in readlist_primary
             ]
 
-        rpp = ReadPlusPair(rplist_primary, rplist_nonprimary, chromdict)
+        #rpp = ReadPlusPair(rplist_primary, rplist_nonprimary, chromdict)
+        rpp = ReadPlusPair(rplist_primary, rplist_nonprimary)
 
     return rpp
 

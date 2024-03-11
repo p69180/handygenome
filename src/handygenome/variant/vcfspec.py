@@ -51,6 +51,12 @@ class NonStandardSVAlt(Exception):
     pass
 
 
+def make_vcfspec_id(chrom, pos, ref, alts):
+    return '_'.join(
+        [chrom, str(pos), ref, '|'.join(alts)]
+    )
+
+
 class Vcfspec:
     # I/O
 #    def __init__(
@@ -228,7 +234,9 @@ class Vcfspec:
         return iter(range(len(self.alts)))
 
     def get_id(self):
-        return '_'.join([self.chrom, str(self.pos), self.ref, '|'.join(self.alts)])
+        return make_vcfspec_id(
+            self.chrom, self.pos, self.ref, self.alts,
+        )
 
     def to_string(self):
         return f'{self.chrom}:{self.pos} {self.ref}>{"|".join(self.alts)}'
@@ -524,11 +532,10 @@ class Vcfspec:
         )
 
     def check_monoalt(self, raise_with_false=True):
-        if raise_with_false:
-            if len(self.alts) != 1:
-                raise Exception('Vcfspec is not with a single ALT: {self}')
-        else:
-            return len(self.alts) == 1
+        result = (len(self.alts) == 1)
+        if raise_with_false and (not result):
+            raise Exception('Vcfspec is not with a single ALT: {self}')
+        return result
 
     @functools.cached_property
     def repeat_specs(self):
@@ -633,7 +640,7 @@ class Vcfspec:
     ######
 
     def check_is_sv(self):
-        assert len(self.alts) == 1
+        #assert len(self.alts) == 1
         return check_SV_altstring(self.alts[0])
 
     def check_is_bnd1(self):

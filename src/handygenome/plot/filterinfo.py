@@ -209,6 +209,7 @@ def show_pon(
     pon_samples=None, 
     ponfilter_mode='wgs',
     zoom_lower=False,
+    vaf_ylim=None,
     **kwargs,
 ):
     assert ponfilter_mode in ('wgs', 'panel_germline', 'panel_somatic')
@@ -281,10 +282,11 @@ def show_pon(
         for x in all_samples
     ]
 
-    if ponfilter.cache['upper_cutoff'] is not None:
-        dot_ylim = (0, max(ponfilter.cache['upper_cutoff'] + 0.1, 1))
-    else:
-        dot_ylim = (0, 1)
+    if vaf_ylim is None:
+        if ponfilter.cache['upper_cutoff'] is not None:
+            vaf_ylim = (0, max(ponfilter.cache['upper_cutoff'] + 0.1, 1))
+        else:
+            vaf_ylim = (0, 1)
 
     fig, ax_bar, ax_dot = show_readcounts(
         vp.readstats_dict, 
@@ -295,7 +297,7 @@ def show_pon(
         xlabel='sample ID (low-depth samples in red)',
         title=title,
         title_pad=30,
-        dot_ylim=dot_ylim,
+        dot_ylim=vaf_ylim,
     )
 
     # Partition between query and PON samples 

@@ -67,7 +67,10 @@ def unit_job(
     logutils.print_timestamp(f"Memory usage: {shareddict['parent_memuse_gb']} GB")
 
     # setup paramaters
-    blacklist_gr = toolsetup.get_blacklist_gr(refver)
+    if include_blacklist:
+        blacklist_gr = None
+    else:
+        blacklist_gr = toolsetup.get_blacklist_gr(refver)
 
     # make subprocess arguments
     subproc_kwargs = {
@@ -206,13 +209,18 @@ def update_new_vr(
     depth_limits, mq_limits, blacklist_gr,
 ):
     vcfspec = libvcfspec.Vcfspec.from_vr(new_vr)
-    if vcfspec.to_gr().intersect(blacklist_gr).empty:
+
+    if blacklist_gr is None:
         init_invalid = False
     else:
-        init_invalid = True
+        if vcfspec.to_gr().intersect(blacklist_gr).empty:
+            init_invalid = False
+        else:
+            init_invalid = True
 
     readstats_dict = libreadstats.ReadStatsSampledict.from_bam_dict(
-        bam_dict, vcfspec, fasta, chromdict,
+        bam_dict=bam_dict, 
+        vcfspec=vcfspec, 
         rpplist_kwargs={'no_matesearch': no_matesearch},
         countonly=countonly,
         depth_limits=depth_limits, 

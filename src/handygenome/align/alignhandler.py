@@ -7,7 +7,6 @@ import numpy as np
 
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.tools as tools
-#import handygenome.variant.vcfspec as libvcfspec
 from handygenome.variant.vcfspec import Vcfspec
 
 
@@ -32,6 +31,28 @@ ALIGNER_EQUAL_MM_GAP = Bio.Align.PairwiseAligner(
     query_internal_extend_gap_score=0,
     target_internal_open_gap_score=-3,
     target_internal_extend_gap_score=0,
+)
+
+ALIGNER_FILLED = Bio.Align.PairwiseAligner(
+    mode='local',
+    match_score=2,
+    mismatch_score=-3,
+    query_internal_open_gap_score=-7,
+    query_internal_extend_gap_score=-2,
+    target_internal_open_gap_score=-7,
+    target_internal_extend_gap_score=-2,
+    query_left_open_gap_score=-7,
+    query_left_extend_gap_score=-2,
+)
+
+ALIGNER_UNFILLED = Bio.Align.PairwiseAligner(
+    mode='local',
+    match_score=2,
+    mismatch_score=-3,
+    query_internal_open_gap_score=-7,
+    query_internal_extend_gap_score=-2,
+    target_internal_open_gap_score=-7,
+    target_internal_extend_gap_score=-2,
 )
 
 
@@ -956,62 +977,15 @@ def remove_flanking_query_gaps(alignment):
     return new_aln, leading_offset
 
 
+########################
+# alignment_to_vcfspec #
+########################
+
 def alignment_to_vcfspec(
     alignment, target_start0, chrom, fasta, lstrip_query_gaps=True, rstrip_query_gaps=True,
 ):
     """May return an empty tuple"""
 
-    def groupkey_walks(x):
-        if len(x[0]) == 0 or len(x[1]) == 0:
-            return 'indel'
-        else:
-            return 'match'
-
-    def groupkey_matches(x):
-        return x[0] != x[1]
-
-    def handle_single_ins(current_pos0, target_idx, query_idx, query_walk, fasta, chrom, new_aln, vcfspec_list, refver):
-        pos = current_pos0
-        if target_idx == 0:
-            ref = fasta.fetch(chrom, current_pos0 - 1, current_pos0)
-        else:
-            ref = new_aln.target[target_idx - 1]
-        inserted_seq = new_aln.query[query_idx:(query_idx + len(query_walk))]
-        alt = ref + inserted_seq
-        vcfspec_list.append(Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta))
-
-    def handle_single_del(current_pos0, target_idx, target_walk, fasta, chrom, new_aln, vcfspec_list, refver):
-        pos = current_pos0
-        if target_idx == 0:
-            preceding_base = fasta.fetch(chrom, current_pos0 - 1, current_pos0)
-        else:
-            preceding_base = new_aln.target[target_idx - 1]
-        ref = preceding_base + new_aln.target[target_idx:(target_idx + len(target_walk))]
-        alt = ref[0]
-        vcfspec_list.append(Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta))
-
-    def handle_consecutive_indels(new_aln, walks_subset, target_idx, query_idx, current_pos0, chrom, fasta, vcfspec_list, refver):
-        target_walk_length = sum(len(target_walk) for target_walk, query_walk in walks_subset)
-        query_walk_length = sum(len(query_walk) for target_walk, query_walk in walks_subset)
-        ref = new_aln.target[target_idx:(target_idx + target_walk_length)]
-        alt = new_aln.query[query_idx:(query_idx + query_walk_length)]
-        pos = current_pos0 + 1
-        vcfspec = Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta)
-        #vcfspec = vcfspec.parsimonious()
-        vcfspec_list.append(vcfspec)
-
-    def handle_match(new_aln, target_idx, query_idx, target_walk, current_pos0, chrom, fasta, vcfspec_list, refver):
-        target_seq = new_aln.target[target_idx:(target_idx + len(target_walk))]
-        query_seq = new_aln.query[query_idx:(query_idx + len(target_walk))]
-        idx_offset = 0
-        for is_mismatch, seq_pairs in itertools.groupby(zip(target_seq, query_seq), key=groupkey_matches):
-            seq_pairs = tuple(seq_pairs)
-            if is_mismatch:
-                pos = current_pos0 + idx_offset + 1
-                ref = ''.join(x[0] for x in seq_pairs)
-                alt = ''.join(x[1] for x in seq_pairs)
-                vcfspec_list.append(Vcfspec(chrom, pos, ref, (alt,), refver=refver, fasta=fasta))
-            idx_offset += len(seq_pairs)
 
     # set paramters
     refver = refgenome.infer_refver_fasta(fasta)
@@ -1036,7 +1010,7 @@ def alignment_to_vcfspec(
     vcfspec_list = list()
     
     # main
-    for walktype, walks_subset in itertools.groupby(get_walks(new_aln, copy=False), key=groupkey_walks):
+    for walktype, walks_subset in itertools.groupby(get_walks(new_aln, copy=False), key=_alignment_to_vcfspec_groupkey_walks):
         walks_subset = tuple(walks_subset)
 
         if walktype == 'match':
@@ -1047,14 +1021,14 @@ def alignment_to_vcfspec(
                     f'{alignment}'
                 )
             target_walk, query_walk = walks_subset[0]
-            handle_match(new_aln, target_idx, query_idx, target_walk, current_pos0, chrom, fasta, vcfspec_list, refver)
+            _alignment_to_vcfspec_handle_match(new_aln, target_idx, query_idx, target_walk, current_pos0, chrom, fasta, vcfspec_list, refver)
         elif walktype == 'indel':
             if len(walks_subset) == 1:
                 target_walk, query_walk = walks_subset[0]
                 if len(target_walk) == 0:  # ins
-                    handle_single_ins(current_pos0, target_idx, query_idx, query_walk, fasta, chrom, new_aln, vcfspec_list, refver)
+                    _alignment_to_vcfspec_handle_single_ins(current_pos0, target_idx, query_idx, query_walk, fasta, chrom, new_aln, vcfspec_list, refver)
                 elif len(query_walk) == 0:  # del
-                    handle_single_del(current_pos0, target_idx, target_walk, fasta, chrom, new_aln, vcfspec_list, refver)
+                    _alignment_to_vcfspec_handle_single_del(current_pos0, target_idx, target_walk, fasta, chrom, new_aln, vcfspec_list, refver)
             else:
                 if not (
                     any(len(target_walk) > 0 for target_walk, query_walk in walks_subset) and 
@@ -1065,7 +1039,7 @@ def alignment_to_vcfspec(
                         f'Input alignment:\n'
                         f'{alignment}'
                     )
-                handle_consecutive_indels(new_aln, walks_subset, target_idx, query_idx, current_pos0, chrom, fasta, vcfspec_list, refver)
+                _alignment_to_vcfspec_handle_consecutive_indels(new_aln, walks_subset, target_idx, query_idx, current_pos0, chrom, fasta, vcfspec_list, refver)
 
         for target_walk, query_walk in walks_subset:
             current_pos0 += len(target_walk)
@@ -1074,6 +1048,72 @@ def alignment_to_vcfspec(
         
     return tuple(vcfspec_list)
 
+
+###################################
+# helpers of alignment_to_vcfspec #
+###################################
+
+def _alignment_to_vcfspec_groupkey_walks(x):
+    if len(x[0]) == 0 or len(x[1]) == 0:
+        return 'indel'
+    else:
+        return 'match'
+
+
+def _alignment_to_vcfspec_handle_single_ins(current_pos0, target_idx, query_idx, query_walk, fasta, chrom, new_aln, vcfspec_list, refver):
+    pos = current_pos0
+    if target_idx == 0:
+        ref = fasta.fetch(chrom, current_pos0 - 1, current_pos0)
+    else:
+        ref = new_aln.target[target_idx - 1]
+    inserted_seq = new_aln.query[query_idx:(query_idx + len(query_walk))]
+    alt = ref + inserted_seq
+    vcfspec_list.append(Vcfspec(chrom, pos, ref, (alt,), refver=refver))
+
+
+def _alignment_to_vcfspec_handle_single_del(current_pos0, target_idx, target_walk, fasta, chrom, new_aln, vcfspec_list, refver):
+    pos = current_pos0
+    if target_idx == 0:
+        preceding_base = fasta.fetch(chrom, current_pos0 - 1, current_pos0)
+    else:
+        preceding_base = new_aln.target[target_idx - 1]
+    ref = preceding_base + new_aln.target[target_idx:(target_idx + len(target_walk))]
+    alt = ref[0]
+    vcfspec_list.append(Vcfspec(chrom, pos, ref, (alt,), refver=refver))
+
+
+def _alignment_to_vcfspec_handle_consecutive_indels(new_aln, walks_subset, target_idx, query_idx, current_pos0, chrom, fasta, vcfspec_list, refver):
+    target_walk_length = sum(len(target_walk) for target_walk, query_walk in walks_subset)
+    query_walk_length = sum(len(query_walk) for target_walk, query_walk in walks_subset)
+    ref = new_aln.target[target_idx:(target_idx + target_walk_length)]
+    alt = new_aln.query[query_idx:(query_idx + query_walk_length)]
+    pos = current_pos0 + 1
+    vcfspec = Vcfspec(chrom, pos, ref, (alt,), refver=refver)
+    #vcfspec = vcfspec.parsimonious()
+    vcfspec_list.append(vcfspec)
+
+
+def _alignment_to_vcfspec_groupkey_matches(x):
+    return x[0] != x[1]
+
+
+def _alignment_to_vcfspec_handle_match(new_aln, target_idx, query_idx, target_walk, current_pos0, chrom, fasta, vcfspec_list, refver):
+    target_seq = new_aln.target[target_idx:(target_idx + len(target_walk))]
+    query_seq = new_aln.query[query_idx:(query_idx + len(target_walk))]
+    idx_offset = 0
+    for is_mismatch, seq_pairs in itertools.groupby(zip(target_seq, query_seq), key=_alignment_to_vcfspec_groupkey_matches):
+        seq_pairs = tuple(seq_pairs)
+        if is_mismatch:
+            pos = current_pos0 + idx_offset + 1
+            ref = ''.join(x[0] for x in seq_pairs)
+            alt = ''.join(x[1] for x in seq_pairs)
+            vcfspec_list.append(Vcfspec(chrom, pos, ref, (alt,), refver=refver))
+        idx_offset += len(seq_pairs)
+
+
+############################
+# alignment post-selection #
+############################
 
 def alignment_hasher(aln):
     return (
@@ -1092,10 +1132,6 @@ def remove_identical_alignments(alignments):
             hash_store.add(hash_val)
             yield x
 
-
-############################
-# alignment post-selection #
-############################
 
 class AlignmentTieError(Exception):
     pass
@@ -1163,15 +1199,9 @@ def tiebreakers_merged_main(alignments):
     return selected_alns
 
 
-def alignment_tiebreaker(alignments, raise_with_failure=True):
+def alignment_tiebreaker(alignments, raise_with_failure=True, return_score=False):
     selected_alns = tiebreakers_merged_main(alignments)
     if len(selected_alns) != 1 and raise_with_failure:
-        #alignments_string = list()
-        #for x in selected_alns:
-        #    alignments_string.append(
-        #        f'target: {x.target}\nquery: {x.query}\npath: {x.path}\n{str(x)}'
-        #    )
-        #alignments_string = '\n'.join(alignments_string)
         alignments_string = '\n'.join(
             [
                 f'target: {x.target}\nquery: {x.query}\ncoordinates: {x.coordinates}\n{str(x)}'
@@ -1182,6 +1212,22 @@ def alignment_tiebreaker(alignments, raise_with_failure=True):
             f'Failed to break alignment tie. Alignments are:\n{alignments_string}'
         )
         
-    return selected_alns[0]
+    if return_score:
+        return selected_alns[0], alignments.score
+    else:
+        return selected_alns[0]
+
 
 tiebreaker = alignment_tiebreaker
+
+
+#############################
+# default aligning function #
+#############################
+
+def do_align(target, query):
+    aligner = ALIGNER_EQUAL_MM_GAP
+    alns = aligner.align(target, query)
+    aln = tiebreaker(alns)
+    return aln
+

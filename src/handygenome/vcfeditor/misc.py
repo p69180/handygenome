@@ -116,6 +116,8 @@ def get_vcf_positions_new(vcf_path, split=100, nproc=1):
     allregion_gdf = GenomeDataFrameBase.all_regions(refver, assembled_only=False)
     allregion_split = allregion_gdf.equal_length_split(n=split)
 
+    #print(os.path.exists(vcf_path), flush=True)
+
     with multiprocessing.Pool(nproc) as pool:
         args = (
             (vcf_path, gdf) 

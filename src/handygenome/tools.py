@@ -10,7 +10,10 @@ import inspect
 import functools
 import math
 import pathlib
+import pwd
+import builtins
 
+import psutil
 import numpy as np
 import pandas as pd
 import scipy.stats
@@ -805,8 +808,8 @@ def digitize_type2(arr, bins=None, start=None, stop=None, step=None):
 
 
 def gapped_linspace(starts, ends, num=50, return_indexes=False, endpoint=True):
-    starts = np.asarray(starts)
-    ends = np.asarray(ends)
+    starts = np.asarray(starts).astype(float)
+    ends = np.asarray(ends).astype(float)
     assert (starts[1:] > starts[:-1]).all()
     assert (ends[1:] > ends[:-1]).all()
     assert (ends[:-1] <= starts[1:]).all()
@@ -850,6 +853,19 @@ def fit_data_to_range(data, minval, maxval):
     newdata = newdata + loc
 
     return newdata
+
+
+def cosine_similarity(x1, x2):
+    x1 = np.asarray(x1)
+    x2 = np.asarray(x2)
+    assert x1.ndim == 1
+    assert x2.ndim == 1
+    norm1 = np.linalg.norm(x1)
+    norm2 = np.linalg.norm(x2)
+    if norm1 == 0 or norm2 == 0:
+        return np.nan
+    else:
+        return np.dot(x1, x2) / (norm1 * norm2)
         
 
 ##############################
@@ -930,6 +946,114 @@ def check_is_lambda(obj):
     )
 
 
+def get_callable_spec(obj):
+    assert callable(obj), f'Argument {repr(obj)} is not a callable.'
+
+    if inspect.isbuiltin(obj):
+        isbuiltin = True
+        module = inspect.getmodule(obj)
+        if module is None:  # a builtin method of another class (e.g. datetime.datetime.now)
+            bound_class = getattr(obj, '__self__')
+            assert inspect.isclass(bound_class), f'Unexpected case: obj={obj}, bound_class={bound_class}'
+            module = inspect.getmodule(bound_class)
+            assert module is not None
+            isfunction = False
+            isclsmthd = None
+        else:  # a true builtin function (e.g. print, numpy.arange)
+            bound_class = None
+            isfunction = True
+            isclsmthd = False
+    else:
+        isbuiltin = False
+        if inspect.isfunction(obj):
+            module = inspect.getmodule(obj)
+            isclsmthd = False
+            if '.' in obj.__qualname__:  # "obj" is an unbound method of a class
+                dotsplit = obj.__qualname__.split('.')
+                assert len(dotsplit) == 2  # only one dot is expected
+                bound_class = getattr(module, dotsplit[0])
+                isfunction = False
+            else:  # "obj" is a module-level function
+                bound_class = None
+                isfunction = True
+        elif inspect.ismethod(obj):  # "obj" can be 1) a classmethod or 2) a plain method of a class instance
+            bound_to = obj.__self__
+            isfunction = False
+            if isinstance(bound_to, type):  # classmethod
+                bound_class = bound_to  
+                isclsmthd = True
+            else:  # instance method
+                bound_class = bound_to.__class__
+                isclsmthd = False
+            module = inspect.getmodule(bound_class)
+        else:
+            raise Exception(f'isbuiltin, isfunction, and ismethod are all False for the input object')
+                
+        
+    result = {
+        'module': module,
+        'isbuiltin': isbuiltin,
+        'bound_class': bound_class,
+        'isfunction': isfunction,
+        'isclsmthd': isclsmthd,
+    }
+
+#    if result['isbuiltin']:
+#        pkgname = None
+#    else:
+#        modulename_split = result['module'].__name__.split('.')
+#        if len(modulename_split) == 1:
+#            pkgname = None
+#        else:
+#            pkgname = modulename_split[0]
+#            assert importlib.util.find_spec(pkgname) is not None, f'Module name {pkgname} could not be found.'
+#
+#    result['pkgname'] = pkgname
+
+    return result
+
+
+def get_class_that_defined_method(meth):
+    """
+    Modified from "https://stackoverflow.com/questions/3589311/get-defining-class-of-unbound-method-object-in-python-3/25959545#25959545"
+    """
+    if isinstance(meth, functools.partial):
+        return get_class_that_defined_method(meth.func)
+
+    if (
+        inspect.ismethod(meth) 
+        or (
+            inspect.isbuiltin(meth) 
+            and getattr(meth, '__self__', None) is not None 
+            and getattr(meth.__self__, '__class__', None)
+        )
+    ):
+        # modified portion #
+        if inspect.isclass(meth.__self__):
+            clsobj = meth.__self__
+        else:
+            clsobj = meth.__self__.__class__
+            assert inspect.isclass(clsobj)
+
+        for cls in inspect.getmro(clsobj):
+            #if meth.__name__ in cls.__dict__:
+            if hasattr(cls, meth.__name__):
+                return cls
+        ####################
+
+        meth = getattr(meth, '__func__', meth)  # fallback to __qualname__ parsing
+    if inspect.isfunction(meth):
+        cls = getattr(
+            inspect.getmodule(meth),
+            meth.__qualname__.split('.<locals>', 1)[0].rsplit('.', 1)[0],
+            None,
+        )
+        if isinstance(cls, type):
+            return cls
+
+    return getattr(meth, '__objclass__', None)  # handle special descriptor objects
+
+
 ##################
 # set operations #
 ##################
@@ -938,5 +1062,28 @@ def check_unique(seq):
     seq = tuple(seq) 
     seq_set = set(seq)
     return len(seq) == len(seq_set)
+
+
+#######################
+# get executable path #
+#######################
+
+def which(cmd):
+    result = shutil.which(cmd)
+    assert result is not None, f'Executable cannot be found.'
+    return result
+
+
+
+##########################
+# user information check #
+##########################
+
+def get_username():
+    return pwd.getpwuid(os.getuid()).pw_name
+
+
+def check_root():
+    return os.geteuid() == 0
 
 
