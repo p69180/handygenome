@@ -1,3 +1,4 @@
+import sys
 import re
 import os
 import stat
@@ -20,6 +21,7 @@ import handygenome.logutils as logutils
 import handygenome.tools as tools
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.workflow as workflow
+import handygenome.workflow.parallel as libparallel
 import handygenome.workflow.toolsetup as toolsetup
 import handygenome.annotation.readstats as libreadstats
 import handygenome.variant.varianthandler as varianthandler
@@ -35,9 +37,8 @@ import handygenome.bameditor as bameditor
 import handygenome.ucscdata as ucscdata
 import handygenome.blacklist as blacklist
 import handygenome.vcfeditor.misc as vcfmisc
-
-
-LOGGER_NAME = __name__.split('.')[-1]
+import handygenome.workflow.shell_wrapper as shell_wrapper
+import handygenome.utils.workflow_utils as workflow_utils
 
 
 def unit_job(
@@ -241,58 +242,61 @@ def update_new_vr(
     gc.collect()
 
 
-#########################################################
+####################
+# argument parsing #
+####################
+
+def argparsing_sanitycheck(args):
+    if all(
+        [
+            (args.bamlist is None),
+            (args.bamlist_file_path is None),
+            (args.pon_cohorts is None),
+        ]
+    ):
+        raise Exception(f'You must use at least one of "--bamlist", "--bamlist-file", or "--pon-cohorts".')
+
+    if (args.bamlist is None) != (args.idlist is None):
+        raise Exception(f'--bamlist and --idlist options must be used together.')
+
+    # --bamlist and --idlist length comparison
+    if (args.bamlist is not None) and (args.idlist is not None):
+        if len(args.bamlist) != len(args.idlist):
+            raise Exception(f'The number of --bamlist and --idlist arguments must be the same.')
 
 
-def argument_parser():
-    def sanity_check(args):
-        if all(
-            [
-                (args.bamlist is None),
-                (args.bamlist_file_path is None),
-                (args.pon_cohorts is None),
-            ]
-        ):
-            raise Exception(f'You must use at least one of "--bamlist", "--bamlist-file", or "--pon-cohorts".')
+def argparsing_bampath_processing(args):
+    # all information specified by --bamlist/--idlist, --bamlist-file, --pon-cohorts are added
+    # handling --bamlist-file
+    if args.bamlist_file_path is not None:
+        with open(args.bamlist_file_path, 'r') as infile:
+            for line in infile:
+                linesp = line.replace('\n', '').split('\t')
+                if len(linesp) != 2:
+                    raise Exception(f'The number of tab-seperated fields must be 2 in the bamlist file.')
 
-        if (args.bamlist is None) != (args.idlist is None):
-            raise Exception(f'--bamlist and --idlist options must be used together.')
+                sampleid = linesp[0]
+                bam_path = linesp[1]
+                if not bam_path.endswith('.bam'):
+                    raise Exception(
+                        f'Bam file path does not end with ".bam" in the '
+                        f'bamlist file. Please check if column 1 is '
+                        f'sample ID and column 2 is bam file path.'
+                    )
 
-        # --bamlist and --idlist length comparison
-        if (args.bamlist is not None) and (args.idlist is not None):
-            if len(args.bamlist) != len(args.idlist):
-                raise Exception(f'The number of --bamlist and --idlist arguments must be the same.')
+                args.idlist.append(sampleid)
+                args.bamlist.append(bam_path)
+    # handling --pon-cohorts
+    args.pon_idlist = list()
+    args.pon_bamlist = list()
+    if args.pon_cohorts is not None:
+        for cohort in args.pon_cohorts:
+            for sampleid, bam_path in libponbams.PON_BAM_PATHS[args.refver][cohort].items():
+                args.pon_idlist.append(sampleid)
+                args.pon_bamlist.append(bam_path)
 
-    def bam_path_processing(args):
-        # all information specified by --bamlist/--idlist, --bamlist-file, --pon-cohorts are added
-        # handling --bamlist-file
-        if args.bamlist_file_path is not None:
-            with open(args.bamlist_file_path, 'r') as infile:
-                for line in infile:
-                    linesp = line.replace('\n', '').split('\t')
-                    if len(linesp) != 2:
-                        raise Exception(f'The number of tab-seperated fields must be 2 in the bamlist file.')
 
-                    sampleid = linesp[0]
-                    bam_path = linesp[1]
-                    if not bam_path.endswith('.bam'):
-                        raise Exception(
-                            f'Bam file path does not end with ".bam" in the '
-                            f'bamlist file. Please check if column 1 is '
-                            f'sample ID and column 2 is bam file path.'
-                        )
-
-                    args.idlist.append(sampleid)
-                    args.bamlist.append(bam_path)
-        # handling --pon-cohorts
-        args.pon_idlist = list()
-        args.pon_bamlist = list()
-        if args.pon_cohorts is not None:
-            for cohort in args.pon_cohorts:
-                for sampleid, bam_path in libponbams.PON_BAM_PATHS[args.refver][cohort].items():
-                    args.pon_idlist.append(sampleid)
-                    args.pon_bamlist.append(bam_path)
-
+def argparsing(cmdargs=None):
     parser_dict = workflow.init_parser(
         description=(
             f'Calculates allele-supporting read count information for each '
@@ -445,12 +449,16 @@ def argument_parser():
     )
 
     # main
-    args = parser_dict['main'].parse_args()
-    sanity_check(args)
-    bam_path_processing(args)
+    args = parser_dict['main'].parse_args(cmdargs)
+    argparsing_sanitycheck(args)
+    argparsing_bampath_processing(args)
 
     return args
 
+
+########
+# main #
+########
 
 def depth_mq_limit_processing(args):
     def rawarg_handler(rawarg, nsample):
@@ -490,10 +498,13 @@ def depth_mq_limit_processing(args):
         depth_limits = dict()
         for sampleid, bam_path in zip(sampleid_list, bampath_list):
             with pysam.AlignmentFile(bam_path) as in_bam:
-                upper = (
-                    bameditor.get_average_depth(in_bam, aligned_region_length=region_length) 
-                    * args.depthlimit_cov_ratio
-                )
+                if in_bam.is_cram:
+                    upper = np.inf
+                else:
+                    upper = (
+                        bameditor.get_average_depth(in_bam, aligned_region_length=region_length) 
+                        * args.depthlimit_cov_ratio
+                    )
             depth_limits[sampleid] = [0, upper]
     else:
         depth_limits = dict(zip(sampleid_list, rawarg_handler(args.depth_limits, nsample)))
@@ -573,12 +584,13 @@ def write_jobscripts(
     return jobscript_path_list
 
 
-def main():
-    args = argument_parser()
+def main_core(cmdargs):
+    args = argparsing(cmdargs)
+
+    logutils.log('Beginning', level='info')
 
     # make tmpdir tree
-    tmpdir_paths = workflow.get_tmpdir_paths(
-        ['scripts', 'logs', 'slurm_logs', 'split_outfiles'],
+    tmpdir_paths = workflow.get_tmpdir_paths_vcfeditor(
         prefix = (
             os.path.basename(args.infile_path)
             + '_'
@@ -586,71 +598,122 @@ def main():
             + '_'
         ),
         where=os.path.dirname(args.infile_path),
-    )
 
-    # setup logger
-    logger = toolsetup.setup_logger(
-        args=args,
-        tmpdir_root=tmpdir_paths['root'],
-        with_genlog=True,
+        nproc=args.parallel,
+        make_outfiles=True,
+        make_logs=True,
+        other_subdirs=['scripts'],
     )
-    logger.info('Beginning')
 
     # postprocess depth and mq limits
-    logger.info(f'Processing depth and MQ limits (may take a while calculating average depths of bam files)')
+    logutils.log(f'Processing depth and MQ limits (may take a while calculating average depths of bam files)', level="info")
     depth_limits, mq_limits = depth_mq_limit_processing(args)
-    logger.info(f'Depth limits: {depth_limits}')
-    logger.info(f'MQ limits: {mq_limits}')
+    logutils.log(f'Depth limits: {depth_limits}', level="info")
+    logutils.log(f'MQ limits: {mq_limits}', level="info")
 
     # make infile copy
     infile_copy_path, infile_copy_index_path = toolsetup.make_infile_copy(
-        args.infile_path, tmpdir_paths['root'], logger,
+        args.infile_path, tmpdir_paths['root'],
     )
 
     # make split fetchregions
-    logger.info(f'Getting split fetch regions of input VCF')
+    logutils.log(f'Getting split fetch regions of input VCF', level="info")
     fetchregion_list = vcfmisc.get_vcf_fetchregions(
-        infile_copy_path, args.parallel, args.refver, verbose=False,
+        infile_copy_path, 
+        args.parallel, 
+        args.refver, 
+        verbose=False,
     )
-    #logger.info(f'Split fetch regions: {fetchregion_list}')
+    #logutils.log(f'Split fetch regions: {fetchregion_list}', level="info")
 
     # make job scripts and run
-    logger.info(f'Creating split job scripts')
-    jobscript_path_list = write_jobscripts(
-        tmpdir_paths, 
-        fetchregion_list,
+#    logutils.log(f'Creating split job scripts', level="info")
+#
+#    jobscript_path_list = write_jobscripts(
+#        tmpdir_paths, 
+#        fetchregion_list,
+#        args.parallel,
+#        infile_copy_path,
+#        args.bamlist, 
+#        args.idlist, 
+#        args.pon_bamlist, 
+#        args.pon_idlist, 
+#        args.refver, 
+#        (not args.do_matesearch),
+#        args.countonly,
+#        args.memuse_limit_gb,
+#        depth_limits,
+#        mq_limits,
+#        args.include_blacklist,
+#    )
+#    logutils.log('Running annotation jobs for each split file', level="info")
+#    libparallel.run_jobs(
+#        jobscript_path_list, 
+#        sched=args.sched, 
+#        intv_check=args.intv_check, 
+#        intv_submit=args.intv_submit, 
+#        max_submit=args.max_submit, 
+#        logger=logger, 
+#        log_dir=tmpdir_paths['logs'],
+#        job_status_logpath=os.path.join(tmpdir_paths['root'], 'job_status_log.gz'),
+#        raise_on_failure=True,
+#    )
+
+    # run split jobs
+
+#        fetchregion_list,
+#        args.parallel,
+#        infile_copy_path,
+#        args.bamlist, 
+#        args.idlist, 
+#        args.pon_bamlist, 
+#        args.pon_idlist, 
+#        args.refver, 
+#        (not args.do_matesearch),
+#        args.countonly,
+#        args.memuse_limit_gb,
+#        depth_limits,
+#        mq_limits,
+#        args.include_blacklist,
+
+    kwargs = workflow_utils.prepare_kwargs(
         args.parallel,
-        infile_copy_path,
-        args.bamlist, 
-        args.idlist, 
-        args.pon_bamlist, 
-        args.pon_idlist, 
-        args.refver, 
-        (not args.do_matesearch),
-        args.countonly,
-        args.memuse_limit_gb,
-        depth_limits,
-        mq_limits,
-        args.include_blacklist,
+
+        split_outfile_path=tmpdir_paths['split_outfiles']['files'],
+        fetchregion=fetchregion_list,
+        infile_copy_path=infile_copy_path,
+        bam_path_list=args.bamlist,
+        id_list=args.idlist,
+        pon_bam_path_list=args.pon_bamlist,
+        pon_id_list=args.pon_idlist,
+        refver=args.refver,
+        no_matesearch=(not args.do_matesearch), 
+        countonly=args.countonly, 
+        memuse_limit_gb=args.memuse_limit_gb,
+        depth_limits=depth_limits,
+        mq_limits=mq_limits,
+        include_blacklist=args.include_blacklist,
     )
-    logger.info('Running annotation jobs for each split file')
-    workflow.run_jobs(
-        jobscript_path_list, 
-        sched=args.sched, 
-        intv_check=args.intv_check, 
-        intv_submit=args.intv_submit, 
-        max_submit=args.max_submit, 
-        logger=logger, 
-        log_dir=tmpdir_paths['logs'],
-        job_status_logpath=os.path.join(tmpdir_paths['root'], 'job_status_log.gz'),
-        raise_on_failure=True,
+    jobnames = [f'{args.jobname}_{idx}' for idx in range(args.parallel)]
+    shell_wrapper.run_func(
+        func=unit_job,
+        kwargs=kwargs,
+        logpath=tmpdir_paths['logs']['files'],
+        use_condaenv=True,
+        use_slurm=True,
+        slurm_kwargs=dict(
+            nproc=args.parallel,
+            jobname=jobnames,
+            intv_check=args.intv_check, 
+            intv_submit=args.intv_submit, 
+            max_submit=args.max_submit, 
+        ),
     )
 
     # concatenates split files
-    logger.info('Merging split files')
-    outfile_path_list = tools.listdir(tmpdir_paths['split_outfiles'])
+    logutils.log('Merging split files', level="info")
     libconcat.main(
-        infile_path_list=outfile_path_list,
+        infile_path_list=tmpdir_paths['split_outfiles']['files'],
         outfile_path=args.outfile_path, 
         mode_pysam=args.mode_pysam,
         outfile_must_not_exist='no',
@@ -662,6 +725,14 @@ def main():
     if not args.donot_index:
         indexing.index_vcf(args.outfile_path)
 
-    logger.info('All successfully finished')
+    logutils.log('All successfully finished', level="info")
+
+
+def main():
+    shell_wrapper.run_func(
+        main_core,
+        args=(sys.argv[1:],),
+        use_condaenv=True,
+    )
 
 

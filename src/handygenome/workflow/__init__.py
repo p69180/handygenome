@@ -13,7 +13,6 @@ import shlex
 
 import pyranges as pr
 
-import handygenome
 import handygenome.logutils as logutils
 import handygenome.interval as libinterval
 import handygenome.tools as tools
@@ -22,12 +21,6 @@ import handygenome.refgenome.refgenome as refgenome
 import handygenome.vcfeditor.misc as vcfmisc
 
 
-SLURMBIN = '/usr/local/slurm/bin'
-SQUEUE = os.path.join(SLURMBIN, 'squeue')
-SBATCH = os.path.join(SLURMBIN, 'sbatch')
-SCONTROL = os.path.join(SLURMBIN, 'scontrol')
-SCANCEL = os.path.join(SLURMBIN, 'scancel')
-SINFO = os.path.join(SLURMBIN, 'sinfo')
 
 PBSBIN = '/usr/local/pbs/bin/'
 PBSNODES = os.path.join(PBSBIN, 'pbsnodes')
@@ -242,15 +235,21 @@ def get_tmpfile_path(prefix=None, suffix=None, dir=None, where=None, delete=Fals
     return path
 
 
-def get_tmpdir_paths(subdirs, prefix=None, suffix=None, where=os.getcwd(), 
-                     top_path=None, root_path=None):
+def get_tmpdir_paths(
+    subdirs, 
+    prefix=None, 
+    suffix=None, 
+    where=os.getcwd(), 
+    top_path=None, 
+    root_path=None,
+):
     """Args:
         subdirs: An iterable which contains subdirectory basenames
     """
-
     root_name = 'root'
     assert root_name not in subdirs, (
-        f'"subdirs" argument must not include the name "{root_name}".')
+        f'"subdirs" argument must not include the name "{root_name}".'
+    )
 
     # alias handling
     if (top_path is not None) and (root_path is None):
@@ -258,8 +257,11 @@ def get_tmpdir_paths(subdirs, prefix=None, suffix=None, where=os.getcwd(),
 
     if root_path is None:
         root_path = os.path.abspath(
-            get_tmpfile_path(prefix=prefix, suffix=suffix, where=where, 
-                             delete=False, is_dir=True))
+            get_tmpfile_path(
+                prefix=prefix, suffix=suffix, where=where, 
+                delete=False, is_dir=True,
+            )
+        )
     else:
         exists = check_outdir_validity(root_path)
         if not exists:
@@ -268,9 +270,85 @@ def get_tmpdir_paths(subdirs, prefix=None, suffix=None, where=os.getcwd(),
     tmpdir_paths = dict()
     tmpdir_paths[root_name] = root_path
     for basename in subdirs:
-        tmpdir_paths[basename] = os.path.join(tmpdir_paths[root_name], 
-                                              basename)
+        tmpdir_paths[basename] = os.path.join(tmpdir_paths[root_name], basename)
         os.mkdir(tmpdir_paths[basename])
+
+    return tmpdir_paths
+
+
+def get_tmpdir_paths_vcfeditor(
+    *,
+
+    prefix=None, 
+    suffix=None, 
+    where=os.getcwd(), 
+    top_path=None, 
+    root_path=None,
+
+    nproc=1,
+    make_outfiles=True,
+    make_logs=True,
+    other_subdirs=[], 
+):
+    """Args:
+        subdirs: An iterable which contains subdirectory basenames
+    """
+    root_name = 'root'
+    assert root_name not in other_subdirs, (
+        f'"other_subdirs" argument must not include the name "{root_name}".'
+    )
+
+    # alias handling
+    if (top_path is not None) and (root_path is None):
+        root_path = top_path
+
+    # make root path
+    if root_path is None:
+        root_path = os.path.abspath(
+            get_tmpfile_path(
+                prefix=prefix, suffix=suffix, where=where, 
+                delete=False, is_dir=True,
+            )
+        )
+    else:
+        exists = check_outdir_validity(root_path)
+        if not exists:
+            os.mkdir(root_path)
+
+    # main
+    tmpdir_paths = dict()
+    tmpdir_paths[root_name] = root_path
+
+    if make_outfiles:
+        subdic = dict()
+        subdic['top'] = os.path.join(root_path, 'split_outfiles')
+        os.mkdir(subdic['top'])
+        subdic['files'] = [
+            os.path.join(subdic['top'], f'{zidx}.vcf.gz')
+            for zidx in tools.zrange(nproc)
+        ]
+        tmpdir_paths['split_outfiles'] = subdic
+
+    if make_logs:
+        subdic = dict()
+        subdic['top'] = os.path.join(root_path, 'logs')
+        os.mkdir(subdic['top'])
+        subdic['files'] = [
+            os.path.join(subdic['top'], f'{zidx}.log')
+            for zidx in tools.zrange(nproc)
+        ]
+        tmpdir_paths['logs'] = subdic
+
+    if set(other_subdirs).intersection(tmpdir_paths.keys()):
+        raise Exception(
+            f'Names of custom subdirs overlap with preset '
+            f'subdir names. custom: {other_subdirs}, preset: '
+            f'{list(tmpdir_paths.keys())}'
+        )
+    for key in other_subdirs:
+        top = os.path.join(root_path, key)
+        os.mkdir(top)
+        tmpdir_paths[key] = top
 
     return tmpdir_paths
 
@@ -498,11 +576,28 @@ def add_maxsubmit_arg(
     )
 
 
+def add_jobname_arg(
+    parser, 
+    required=False, 
+    default=None,
+    help=(
+        f'Slurm job name prefix. There are preset default values '
+        f'for each application.'
+    ),
+):
+    parser.add_argument(
+        '--jobname', dest='jobname', required=required, default=default, 
+        metavar='<Slurm job name prefix>', 
+        help=textwrap.fill(help, width=HELP_WIDTH),
+    )
+
+
 def add_index_arg(parser_dict,
                   help='If set, output vcf file is not indexed.'):
     parser_dict['flag'].add_argument(
         '--donot-index', dest='donot_index', action='store_true',
         help=textwrap.fill(help, width=HELP_WIDTH))
+
 
 #######
 
@@ -594,6 +689,7 @@ def add_scheduler_args(
     add_checkint_arg(parser_dict['optional'], required=False, default=default_check_interval)
     add_submitint_arg(parser_dict['optional'], required=False, default=default_submit_interval)
     add_maxsubmit_arg(parser_dict['optional'], required=False, default=default_max_submit)
+    add_jobname_arg(parser_dict['optional'], required=False)
 
 
 def add_rmtmp_arg(parser_dict):
@@ -750,784 +846,4 @@ def get_deco_arghandler_infilelist(argname):
         return wrapper
 
     return decorator
-
-
-##########################################################
-
-
-# SLURM JOB HANDLING
-
-class Job:
-    """Designed for slurm
-
-    Attributes:
-        jobscript_path: Path of job script file to run.
-        jobscript_string: Multi-line string to be written to stdin of sbatch.
-        jobid: JobId as integer. None before job submission.
-        submitted: True if job has been submitted, False otherwise.
-        jobstate
-        exitcode: type int
-        success: 
-            None: 
-                1) before job has been finished
-                2) job has been finished but its state cannot be checked 
-                    because job id has disappeared from slurm
-            True if the job has finished successfully
-            False if the job has finished not successfully
-        no_jobid: 
-            None: before job has been submitted
-            True: job id is no longer remaining on slurm
-            False: job id exists on slurm
-        scontrol_result: Dictionary which contains result of 
-            "scontrol show job <jobid>" command.
-        sbatch_err_info: An informative string created when sbatch returns 
-            a nonzero exit code.
-        stdout_path: job stdout path
-        stderr_path: job stderr path
-        status
-        logger
-    """
-    jobstates_pending = [
-        'CONFIGURING', 'PENDING',
-    ]
-    jobstates_running = [
-        'COMPLETING', 'RUNNING', 'RESV_DEL_HOLD', 
-        'REQUEUE_FED', 'REQUEUE_HOLD', 'RESIZING', 
-        'SIGNALING', 'SPECIAL_EXIT', 'STAGE_OUT', 'STOPPED', 
-        'SUSPENDED',
-    ]
-    jobstates_finished = [
-        'CANCELLED', 'COMPLETED', 'BOOT_FAIL', 'DEADLINE', 
-        'FAILED', 'NODE_FAIL', 'OUT_OF_MEMORY', 'PREEMPTED', 
-        'TIMEOUT',
-    ]
-    jobstates_unknown = [
-        'REVOKED',
-    ]
-
-    @deco.get_deco_num_set_differently(('jobscript_path', 'jobscript_string'), 1)
-    def __init__(self, jobscript_path=None, jobscript_string=None, 
-                 verbose=True, logger=None):
-        self.jobscript_path = jobscript_path
-        self.jobscript_string = jobscript_string
-        self.jobid = None
-        self.submitted = False
-        self.jobstate = None
-        self.exitcode = None
-        self.success = None
-        self.no_jobid = None
-        self.scontrol_result = None
-        self.sbatch_err_info = None
-        self.stdout_path = None
-        self.stderr_path = None
-        self.status = {
-            'pending': False, 
-            'running': False, 
-            'finished': False,
-        }
-
-        if logger is None:
-            self.logger = get_logger(
-                formatter=DEFAULT_LOG_FORMATTERS['without_name'], 
-                stderr=verbose)
-        else:
-            self.logger = logger
-
-    def __repr__(self):
-        infostr = ', '.join(
-            f'{key}: {getattr(self, key)}'
-            for key in ('jobid', 'jobstate', 'exitcode', 'jobscript_path')
-        )
-        return f'<Job ({infostr})>'
-
-    def submit(self):
-        if self.jobscript_path is None:
-            self._submit_string()
-        else:
-            self._submit_path()
-
-    def cancel(self):
-        assert self.submitted, f'The job is not yet submitted.'
-        p = subprocess.run([SCANCEL, str(self.jobid)],
-                           capture_output=True, text=True)
-        if p.returncode != 0:
-            self.scancel_err_info = textwrap.dedent(f"""\
-                Job cancellation using scancel failed.
-
-                job id: {self.jobid}
-                scancel stdout: {p.stdout}
-                scancel stderr: {p.stderr}
-                scancel exit code: {p.returncode}""")
-            raise Exception(self.scancel_err_info)
-        else:
-            self.update()
-            #self.logger.info(f'Cancelled a job: JobID - {self.jobid}')
-            logutils.log(f'Cancelled a job: JobID - {self.jobid}', level='info')
-
-    def set_status(self, key):
-        self.status[key] = True
-        other_keys = set(self.status.keys()).difference([key])
-        for x in other_keys:
-            self.status[x] = False
-
-    def update(self):
-        assert self.submitted
-
-        scontrol_result, no_jobid = get_scontrol_job_result(self.jobid)[:2]
-        self.no_jobid = no_jobid
-
-        if self.no_jobid:
-            # self.success and self.scontrol_result are not touched
-            self.set_status('finished')
-        else:
-            self.scontrol_result = scontrol_result
-
-            # update self.stderr/stdout path
-            self.stdout_path = self.scontrol_result['StdOut']
-            self.stderr_path = self.scontrol_result['StdErr']
-
-            # update self.jobstate and self.status
-            self.jobstate = self.scontrol_result['JobState']
-            if self.jobstate in self.__class__.jobstates_pending:
-                self.set_status('pending')
-            elif self.jobstate in self.__class__.jobstates_running:
-                self.set_status('running')
-            elif self.jobstate in self.__class__.jobstates_finished:
-                self.set_status('finished')
-            else:
-                raise Exception(textwrap.dedent(f"""\
-                    Unable to interpret JobState.
-                    JobState: {self.jobstate}
-                    scontrol result: {self.scontrol_result}"""))
-
-            # update self.exitcode, self.success
-            if self.status['finished']:
-                self.success = (self.jobstate == 'COMPLETED')
-                self.exitcode = int(scontrol_result['ExitCode'].split(':')[0])
-
-    ##########################
-
-    def _submit_string(self):
-        p = subprocess.run([SBATCH], input=self.jobscript_string,
-                           capture_output=True, text=True)
-
-        if p.returncode != 0:
-            self.sbatch_err_info = textwrap.dedent(f"""\
-                Job submission using sbatch failed.
-
-                string written to the stdin of sbatch: {self.jobscript_string}
-                sbatch stdout: {p.stdout}
-                sbatch stderr: {p.stderr}
-                sbatch exit code: {p.returncode}""")
-            raise Exception(self.sbatch_err_info)
-        else:
-            self.jobid = int(p.stdout.split()[-1])
-            self.submitted = True
-            #self.logger.info(f'Submitted a job: JobID - {self.jobid}')
-            logutils.log(f'Submitted a job: JobID - {self.jobid}', level='info')
-
-    def _submit_path(self):
-        p = subprocess.run([SBATCH, self.jobscript_path],
-                           capture_output=True, text=True)
-
-        if p.returncode != 0:
-            self.sbatch_err_info = textwrap.dedent(f"""\
-                Job submission using sbatch failed.
-
-                job script path: {self.jobscript_path}
-                sbatch stdout: {p.stdout}
-                sbatch stderr: {p.stderr}
-                sbatch exit code: {p.returncode}""")
-            raise Exception(self.sbatch_err_info)
-        else:
-            self.jobid = int(p.stdout.split()[-1])
-            self.submitted = True
-            #self.logger.info(f'Submitted a job: JobID - {self.jobid}')
-            logutils.log(f'Submitted a job: JobID - {self.jobid}', level='info')
-
-
-class JobList(list):
-    """
-    Attributes:
-        logger
-        success
-        
-    """
-
-    def __init__(
-        self, 
-        jobscript_path_list, 
-        intv_submit=DEFAULT_INTV_SUBMIT,
-        intv_check=DEFAULT_INTV_CHECK,
-        max_submit=DEFAULT_MAX_SUBMIT,
-        verbose=True, 
-        logpath=None, 
-        logger=None,
-        job_status_logpath=None,
-        title=None,
-    ):
-        # general logger
-        self.verbose = verbose
-        if logger is None:
-            self.logger = get_logger(
-                formatter=DEFAULT_LOG_FORMATTERS['without_name'], 
-                stderr=verbose, 
-                filenames=(
-                    None if logpath is None else [logpath]
-                ),
-            )
-        else:
-            self.logger = logger
-
-        # job status summary logger
-        self.job_status_logpath = job_status_logpath
-
-        # other attrs
-        for jobscript_path in jobscript_path_list:
-            self.append(
-                Job(jobscript_path=jobscript_path, verbose=verbose, logger=self.logger)
-            )
-
-        self.title = title
-        self.intv_submit = intv_submit
-        self.intv_check = intv_check
-        self.max_submit = max_submit
-        self.success = None
-        self.sublists = dict()
-        self.update()
-
-    def write_job_status_log(self, msg):
-        if self.job_status_logpath is not None:
-            #with open(self.job_status_logpath, 'wt') as f:
-            with tools.openfile(self.job_status_logpath, 'a') as f:
-                f.write(f'[{logutils.get_timestamp()}] {msg}')
-
-    def get_num_pending_running(self):
-        return len(self.sublists['pending']) + len(self.sublists['running'])
-
-    def submit(self):
-        if self.max_submit is None:
-            num_to_submit = len(self.sublists['notsubmit'])
-        else:
-            num_pending_running = self.get_num_pending_running()
-            num_to_submit = min(
-                self.max_submit - num_pending_running, 
-                len(self.sublists['notsubmit']),
-            )
-
-        if num_to_submit > 0:
-            for job in self.sublists['notsubmit'][:num_to_submit]:
-                job.submit()
-                time.sleep(self.intv_submit)
-            self.update()
-
-    def cancel_all_running(self):
-        for job in self.sublists['running']:
-            job.cancel()
-
-
-    def make_infostring(self, sublist_key):
-        n_jobs = len(self.sublists[sublist_key])
-        details = ', '.join(
-            job.__repr__()  # 'jobid', 'jobstate', 'exitcode'
-            for job in self.sublists[sublist_key]
-        )
-        return f'{n_jobs} ({details})'
-
-    def log_status(self):
-        n_notsubmit = len(self.sublists['notsubmit'])
-        n_pending = len(self.sublists['pending'])
-        n_running = len(self.sublists['running'])
-        n_finished = len(self.sublists['finished'])
-
-        info_pending = self.make_infostring('pending')
-        info_running = self.make_infostring('running')
-        info_finished = self.make_infostring('finished')
-
-        # more verbose information
-        self.write_job_status_log(
-            textwrap.dedent(
-                f"""\
-                Current job status (title: {self.title}):
-                    Not submitted yet: {n_notsubmit}
-
-                    Pending: {info_pending}
-
-                    Running: {info_running}
-
-                    Finished: {info_finished}
-                """
-            )
-        )
-
-        # concise information (to be printed to stderr)
-        #self.logger.info(
-        logutils.log(
-            textwrap.dedent(
-                f"""\
-                Current job status (title: {self.title}):
-                    Not submitted yet: {n_notsubmit}
-                    Pending: {n_pending}
-                    Running: {n_running}
-                    Finished: {n_finished}"""
-            ),
-            level='info',
-        )
-
-    def log_epilogue(self):
-        n_success = len(self.sublists['success'])
-        n_failure = len(self.sublists['failure'])
-        n_unknown = len(self.sublists['unknown'])
-
-        info_success = self.make_infostring('success')
-        info_failure = self.make_infostring('failure')
-        info_unknown = self.make_infostring('unknown')
-
-        self.write_job_status_log(
-            textwrap.dedent(
-                f"""\
-                All finished.
-                    Successful jobs: {info_success}
-
-                    Failed jobs: {info_failure}
-
-                    Jobs with unknown exit statuses: {info_unknown}
-                """
-            )
-        )
-        #self.logger.info(
-        logutils.log(
-            textwrap.dedent(
-                f"""\
-                All finished.
-                    Successful jobs: {n_success}
-                    Failed jobs: {n_failure}
-                    Jobs with unknown exit statuses: {n_unknown}"""
-            ),
-            level='info',
-        )
-
-    def submit_and_wait(self):
-        # main
-        try:
-            while True:
-                self.update()
-                self.submit()
-                self.log_status()
-                if all(job.status['finished'] for job in self):
-                    break
-                else:
-                    time.sleep(self.intv_check)
-                    continue
-        except KeyboardInterrupt:
-            #self.logger.info(
-            logutils.log(
-                (
-                    f'RECEIVED A KEYBOARD INTERRUPT; '
-                    f'will cancel all pending and running jobs with scancel,'
-                    f' then exit immediately.'
-                ),
-                level='info',
-            )
-            for job in itertools.chain(
-                self.sublists['pending'], self.sublists['running']
-            ):
-                job.cancel()
-            raise SystemExit(1)
-        else:
-            self.set_sublists()
-            self.log_epilogue()
-            self.success = all(job.success for job in self)
-
-    def recover_cancelled_jobs(self):
-        cancelled_jobs = [
-            (idx, job) for (idx, job) in enumerate(self) if job.jobstate == 'CANCELLED'
-        ]
-        for idx, job in cancelled_jobs:
-            del self[idx]
-
-        for idx, job in cancelled_jobs:
-            self.append(
-                Job(
-                    jobscript_path=job.jobscript_path, 
-                    verbose=self.verbose, 
-                    logger=self.logger,
-                )
-            )
-
-    def run(self):
-        while True:
-            self.submit_and_wait()
-            if any((job.jobstate == 'CANCELLED') for job in self):
-                self.recover_cancelled_jobs()
-                continue
-            else:
-                break
-
-    def get_exitcodes(self):
-        return [job.exitcode for job in self]
-
-    def update(self):
-        self.update_jobs()
-        self.set_sublists()
-
-    def update_jobs(self):
-        for job in self:
-            if job.submitted:
-                job.update()
-
-    def set_sublists(self):
-        for key in (
-            'notsubmit', 
-            'pending', 
-            'running', 
-            'finished', 
-            'success', 
-            'failure', 
-            'unknown',
-        ):
-            self.sublists[key] = list()
-
-        for job in self:
-            if not job.submitted:
-                self.sublists['notsubmit'].append(job)
-            if job.status['pending']:
-                self.sublists['pending'].append(job)
-            if job.status['running']:
-                self.sublists['running'].append(job)
-            if job.status['finished']:
-                self.sublists['finished'].append(job)
-
-            if job.success is True:
-                self.sublists['success'].append(job)
-            if job.success is False:
-                self.sublists['failure'].append(job)
-            if job.success is None:
-                self.sublists['unknown'].append(job)
-
-#    def set_sublists_statuses(self):
-#        self.sublists['notsubmit'] = [job for job in self 
-#                                      if not job.submitted]
-#        self.sublists['pending'] = [job for job in self 
-#                                    if job.status['pending']]
-#        self.sublists['running'] = [job for job in self 
-#                                    if job.status['running']]
-#        self.sublists['finished'] = [job for job in self 
-#                                     if job.status['finished']]
-#
-#    def set_sublists_exitcodes(self):
-#        self.sublists['success'] = [job for job in self 
-#                                    if job.success is True]
-#        self.sublists['failure'] = [job for job in self 
-#                                    if job.success is False]
-#        self.sublists['unknown'] = [job for job in self 
-#                                    if job.success is None]
-
-
-def get_scontrol_job_result(jobid):
-    """
-    Returns:
-        A tuple (scontrol_result, no_jobid, returncode, stderr)
-
-        scontrol_result: A dict with keys: 'JobId', 'JobName', 'UserId', 
-            'GroupId', 'MCS_label', 'Priority', 'Nice', 'Account', 'QOS', 
-            'JobState', 'Reason', 'Dependency', 'Requeue', 'Restarts', 
-            'BatchFlag', 'Reboot', 'ExitCode', 'RunTime', 'TimeLimit', 
-            'TimeMin', 'SubmitTime', 'EligibleTime', 'AccrueTime', 
-            'StartTime', 'EndTime', 'Deadline', 'SuspendTime', 
-            'SecsPreSuspend', 'LastSchedEval', 'Partition', 'AllocNode:Sid', 
-            'ReqNodeList', 'ExcNodeList', 'NodeList', 'BatchHost', 'NumNodes', 
-            'NumCPUs', 'NumTasks', 'CPUs/Task', 'ReqB:S:C:T', 'TRES', 
-            'Socks/Node', 'NtasksPerN:B:S:C', 'CoreSpec', 'MinCPUsNode', 
-            'MinMemoryNode', 'MinTmpDiskNode', 'Features', 'DelayBoot', 
-            'OverSubscribe', 'Contiguous', 'Licenses', 'Network', 'Command', 
-            'WorkDir', 'StdErr', 'StdIn', 'StdOut', 'Power', 'NtasksPerTRES:0'
-        no_jobid: True or False 
-        returncode
-        stderr
-    """
-
-    cmdargs = [ SCONTROL, '-o', 'show', 'job', str(jobid) ]
-    p = subprocess.run(args=cmdargs, text=True, capture_output=True)
-
-    returncode = p.returncode
-    stderr = p.stderr
-
-    if p.returncode != 0:
-        if p.stderr.strip() == 'slurm_load_jobs error: Invalid job id specified':
-            scontrol_result = None
-            no_jobid = True
-        else:
-            e_msg = f'''\
-scontrol show job finished with nonzero exit code.
-commands: {cmdargs}
-stdout: {p.stdout}
-stderr: {p.stderr}
-exit code: {p.returncode}'''
-            raise Exception(e_msg)
-
-    else:
-        no_jobid = False
-
-        scontrol_result = dict()
-        for word in p.stdout.split():
-            wordsp = word.split('=', maxsplit = 1)
-            if len(wordsp) == 1:
-                key = wordsp[0]
-                val = None
-            elif len(wordsp) == 2:
-                key, val = wordsp
-                """
-            else:
-                e_msg = f'''\
-Field with more than 2 "=" character found from "scontrol show job" output.
-Field: {word}
-scontrol command: {cmdargs}'''
-                raise Exception(e_msg)
-                """
-    
-            scontrol_result[key] = val
-    
-    return scontrol_result, no_jobid, returncode, stderr
-
-
-###############################
-
-
-def run_jobs(
-    jobscript_paths, 
-    sched, 
-    log_dir=None, 
-    raise_on_failure=True,
-    log_paths=None,
-    **kwargs,
-
-    #intv_check, 
-    #intv_submit, 
-    #max_submit, 
-    #logger, 
-    #job_status_logpath=None,
-    #title=None,
-):
-    assert sched in ('local', 'slurm')
-
-    if log_paths is not None:
-        assert all(x.endswith('.log') for x in log_paths)
-
-    if sched == 'local':
-        success, exitcode_list = run_jobs_local(jobscript_paths, log_paths=log_paths)
-    elif sched == 'slurm':
-        joblist = JobList(
-            jobscript_paths, 
-            **kwargs,
-        )
-        joblist.run()
-
-        success = joblist.success
-        exitcode_list = joblist.get_exitcodes()
-
-    if log_paths is not None:
-        for code, filepath in zip(exitcode_list, log_paths):
-            if code == 0:
-                os.rename(filepath, re.sub(r'\.log$', '.success', filepath))
-            else:
-                os.rename(filepath, re.sub(r'\.log$', '.failure', filepath))
-
-    if raise_on_failure:
-        if not success:
-            #raise SystemExit(
-            #    (f'One or more jobs have finished unsuccessfully. Refer to '
-            #     f'log files in {log_dir}'))
-            raise SystemExit(f'One or more jobs have finished unsuccessfully.')
-        #else:
-        #    return None
-    #else:
-
-    return success, exitcode_list
-
-
-def run_jobs_local(jobscript_path_list, log_paths=None):
-    if not all(os.access(x, os.R_OK | os.X_OK) for x in jobscript_path_list):
-        raise Exception(f'read/execute permission is not set for job script files')
-    if log_paths is not None:
-        assert len(log_paths) == len(jobscript_path_list)
-
-    plist = list()
-    if log_paths is not None:
-        log_files = [open(x, 'wt') for x in log_paths]
-        for jobscript_path, logfile in zip(jobscript_path_list, log_files):
-            p = subprocess.Popen([jobscript_path], stdout=logfile, stderr=logfile, text=True)
-            plist.append(p)
-    else:
-        for jobscript_path in jobscript_path_list:
-            p = subprocess.Popen([jobscript_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            plist.append(p)
-
-    for p in plist:
-        p.wait()
-
-    if log_paths is not None:
-        for x in log_files:
-            x.close()
-
-    exitcode_list = [p.returncode for p in plist]
-    success = all(x == 0 for x in exitcode_list)
-
-    return success, exitcode_list
-
-
-"""
-JOB SCRIPT GENERATION
-"""
-
-def make_multiline_command(lines, leading_taps = 0):
-    new_lines = list()
-    new_lines.append( '\t'*leading_taps + lines[0] + ' \\' )
-    new_lines.extend( [ '\t'*(leading_taps+1) + x + ' \\' for x in lines[1:-1] ] )
-    new_lines.append( '\t'*(leading_taps+1) + lines[-1] )
-
-    return '\n'.join(new_lines)
-
-
-def make_jobscript_string(lines, shell = False, python = False, **kwargs):
-    string_list = list()
-
-
-    string_list.append('#!' + handygenome.OPTION['bash'])
-
-    if 'N' not in kwargs:
-        kwargs['N'] = 1
-    if 'n' not in kwargs:
-        kwargs['n'] = 1
-    if 'o' not in kwargs:
-        kwargs['o'] = '/dev/null'
-    if 'c' not in kwargs:
-        kwargs['c'] = 1
-
-    for k,v in kwargs.items():
-        if v is not None:
-            string_list.append(f'#SBATCH -{k} {v}')
-
-    string_list.append('')
-
-    for line in lines:
-        string_list.append(line)
-
-    return '\n'.join(string_list)
-
-
-def make_jobscript(
-    jobscript_path, 
-    lines, 
-    shebang=None, 
-    nproc=1,
-    output='/dev/null',
-    jobname=None,
-):
-    check_outfile_validity(jobscript_path)
-
-    contents = list()
-
-    if shebang is None:
-        shebang = tools.which('bash')
-    contents.append(f'#!{shebang}')
-    contents.append(f'#SBATCH -N 1 -n 1')
-    contents.append(f'#SBATCH -c {nproc}')
-    contents.append(f'#SBATCH -o {output}')
-    if jobname is not None:
-        contents.append(f'#SBATCH -J {jobname}')
-
-    contents.append('')
-
-    contents.extend(lines)
-
-    with open(jobscript_path, 'wt') as outfile:
-        outfile.write('\n'.join(contents))
-
-
-##############
-# subprocess #
-##############
-
-def run_with_slurm(
-    args, 
-    remove_jobscript=False, 
-    tmpfile_dir=os.getcwd(), 
-    jobscript_kwargs=dict(),
-    runjob_kwargs=dict(),
-):
-    fd, jobscript_path = tempfile.mkstemp(
-        prefix=f'slurm_script_', suffix='.sbatch', dir=tmpfile_dir,
-    )
-    os.close(fd)
-
-    make_jobscript(
-        jobscript_path=jobscript_path, 
-        lines=[shlex.join(args)], 
-        **jobscript_kwargs,
-    )
-    
-    success, exitcode_list = run_jobs(
-        [jobscript_path], 
-        sched='slurm', 
-        raise_on_failure=True,
-        **runjob_kwargs,
-    )
-
-    if remove_jobscript:
-        os.remove(jobscript_path)
-
-    return success, exitcode_list, jobscript_path
-
-
-def run_subprocess(
-    args, 
-
-    set_wd=True,
-
-    use_ssh=False, 
-    hostname=None,
-
-    use_slurm=False,
-    slurm_kwargs=dict(),
-):
-    assert sum([use_ssh, use_slurm]) <= 1, f'No more than one of "use_ssh", "use_slurm" may be set True'
-
-    if use_slurm:
-        # slurm automatically sets wd
-        success, exitcode_list, jobscript_path = run_with_slurm(
-            args, 
-            **slurm_kwargs,
-        )
-        return success, exitcode_list, jobscript_path
-    else:
-        if use_ssh:
-            ssh_path = tools.which('ssh')
-            if set_wd:
-                args = [
-                    ssh_path, 
-                    hostname, 
-                    f'cd {os.getcwd()} ; {shlex.join(args)}',
-                ]
-            else:
-                args = [
-                    ssh_path, 
-                    hostname, 
-                    shlex.join(args),
-                ]
-
-        try:
-            # subprocess.run automatically sets wd
-            p = subprocess.run(
-                args, 
-                capture_output=False, 
-                #text=True,
-                check=True,
-            )
-        except subprocess.CalledProcessError as exc:
-            msg = repr(vars(exc))
-            raise Exception(msg) from exc
-
-        return p
-
 

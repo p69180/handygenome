@@ -3,6 +3,7 @@ import logging
 import handygenome.tools as tools
 import handygenome.workflow as workflow
 import handygenome.workflow.toolsetup as toolsetup
+from handygenome.workflow.slurm import JobList
 
 
 DEFAULT_NUM_SUBMITTED = 400
@@ -40,7 +41,7 @@ def main(cmdargs):
     logger = toolsetup.setup_logger(args)
 
     jobscript_path_list = tools.listdir(args.indir_path)
-    joblist = workflow.JobList(jobscript_path_list, logger=logger)
+    joblist = JobList(jobscript_path_list, logger=logger)
     joblist.submit(intv_submit=args.intv_submit)
     if not args.nowait:
         joblist.wait(intv_check=args.intv_check, edit_log_suffix=True)

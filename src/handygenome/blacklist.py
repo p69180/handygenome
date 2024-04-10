@@ -1,5 +1,6 @@
 import os
 import itertools
+import warnings
 
 import pandas as pd
 import pyranges as pr
@@ -44,7 +45,9 @@ def make_blacklist_gr(data, refver):
     df_data = list(itertools.chain.from_iterable(data.values()))
     df = pd.DataFrame.from_records(df_data, columns=['Chromosome', 'Start', 'End'])
     assert set(df['Chromosome']).issubset(refgenome.get_chromdict(refver).contigs)
-    gr = pr.PyRanges(df).merge().sort()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', category=FutureWarning)
+        gr = pr.PyRanges(df).merge().sort()
 
     return gr
 
@@ -67,7 +70,9 @@ HIGHDEPTH_BLACKLIST_DF = pd.read_csv(
     usecols=['Chromosome', 'Start', 'End'],
     dtype={'Chromosome': str, 'Start': int, 'End': int},
 )
-HIGHDEPTH_BLACKLIST_GR = pr.PyRanges(HIGHDEPTH_BLACKLIST_DF)
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore', category=FutureWarning)
+    HIGHDEPTH_BLACKLIST_GR = pr.PyRanges(HIGHDEPTH_BLACKLIST_DF)
 
 
 

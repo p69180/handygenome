@@ -13,6 +13,7 @@ import handygenome.tools as tools
 import handygenome.logutils as logutils
 import handygenome.tools as tools
 import handygenome.workflow as workflow
+import handygenome.workflow.parallel as libparallel
 import handygenome.workflow.toolsetup as toolsetup
 import handygenome.vcfeditor.varscan_editing as varscan_editing
 
@@ -347,7 +348,7 @@ def main(cmdargs):
     # job1
     logger.info("Beginning job1 - making pileup for normal and tumor bam")
     script_path_list_job1 = write_job1_scripts(args=args, tmpdir_paths=tmpdir_paths, num_split=args.parallel)
-    workflow.run_jobs(
+    libparallel.run_jobs(
         script_path_list_job1,
         sched=args.sched,
         intv_check=args.intv_check,
@@ -361,7 +362,7 @@ def main(cmdargs):
     # job2
     logger.info("Beginning job2 - running VarScan")
     script_path_list_job2 = write_job2_scripts(args=args, tmpdir_paths=tmpdir_paths, num_split=args.parallel)
-    workflow.run_jobs(
+    libparallel.run_jobs(
         script_path_list_job2,
         sched=args.sched,
         intv_check=args.intv_check,

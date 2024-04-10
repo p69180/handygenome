@@ -1070,7 +1070,8 @@ def check_unique(seq):
 
 def which(cmd):
     result = shutil.which(cmd)
-    assert result is not None, f'Executable cannot be found.'
+    if result is None:
+        raise Exception(f'Executable cannot be found.')
     return result
 
 

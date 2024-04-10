@@ -11,6 +11,7 @@ import pysam
 import handygenome.tools as tools
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.workflow as workflow
+import handygenome.workflow.parallel as libparallel
 import handygenome.workflow.toolsetup as toolsetup
 
 import handygenome.vcfeditor.split as libsplit
@@ -797,7 +798,7 @@ def main():
         args.oncokb_token,
     )
     logger.info("Running annotation jobs for each split file")
-    workflow.run_jobs(
+    libparallel.run_jobs(
         jobscript_path_list,
         sched=args.sched,
         intv_check=args.intv_check,

@@ -10,6 +10,7 @@ import pyranges as pr
 
 import handygenome
 import handygenome.tools as tools
+import handygenome.logutils as logutils
 import handygenome.interval as libinterval
 import handygenome.workflow as workflow
 import handygenome.vcfeditor.misc as vcfmisc
@@ -235,22 +236,22 @@ def get_script_log_paths(script_dir, log_dir, num_split):
     return script_path_list, log_path_list
 
 
-def make_infile_copy(infile_path, tmpdir_root, logger):
+def make_infile_copy(infile_path, tmpdir_root):
     infile_link_path = os.path.join(tmpdir_root, 'infile_link.vcf.gz')
     is_vcf, comp, is_bgzf = vcfmisc.get_vcf_format(infile_path)
     if is_bgzf:
         os.symlink(infile_path, infile_link_path)
         indexfile_path = vcfmisc.get_indexfile_path(infile_path)
         if indexfile_path is None:
-            logger.info(
-                f'Making index of input VCF (which will be saved in the temporary directory)'
+            logutils.log(
+                f'Making index of input VCF (which will be saved in the temporary directory)',
             )
             infile_link_index_path = vcfmisc.make_index(infile_link_path)
         else:
             infile_link_index_path = f'{infile_link_path}.csi'
             os.symlink(indexfile_path, infile_link_index_path)
     else:
-        logger.info(f'Making bgzipped copy of input VCF')
+        logutils.log(f'Making bgzipped copy of input VCF')
         in_vcf = pysam.VariantFile(infile_path)
         out_vcf = pysam.VariantFile(infile_link_path, mode='wz', header=in_vcf.header.copy())
         for vr in in_vcf.fetch():
@@ -259,7 +260,7 @@ def make_infile_copy(infile_path, tmpdir_root, logger):
         out_vcf.close()
         in_vcf.close()
 
-        logger.info(f'Making index of the copied VCF')
+        logutils.log(f'Making index of the copied VCF')
         infile_link_index_path = vcfmisc.make_index(infile_link_path)
 
     return infile_link_path, infile_link_index_path

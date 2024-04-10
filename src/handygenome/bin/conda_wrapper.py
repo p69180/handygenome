@@ -3,7 +3,7 @@ import os
 import argparse
 import tempfile
 
-import handygenome.shell_wrapper as shell_wrapper
+import handygenome.workflow.shell_wrapper as shell_wrapper
 
 
 def argument_parsing(args=None):

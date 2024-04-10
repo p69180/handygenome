@@ -21,6 +21,7 @@ import handygenome.logutils as logutils
 import handygenome.tools as tools
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.workflow as workflow
+import handygenome.workflow.parallel as libparallel
 import handygenome.workflow.toolsetup as toolsetup
 import handygenome.align.bwa as libbwa
 
@@ -448,7 +449,7 @@ def main():
 
     # run jobs
     def run_jobs(script_path, script_log_path, title):
-        workflow.run_jobs(
+        libparallel.run_jobs(
             jobscript_paths=[script_path], 
             sched=args.sched, 
             intv_check=args.intv_check, 

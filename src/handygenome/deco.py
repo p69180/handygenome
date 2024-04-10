@@ -8,6 +8,7 @@ import numpy as np
 
 import handygenome.tools as tools
 import handygenome.logutils as logutils
+import handygenome.utils.workflow_utils as workflow_utils
 
 
 def make_errmsg(deconame, funcname):
@@ -363,7 +364,8 @@ def get_deco_squeeze_atleast1d(names):
     return decorator
 
 
-def get_deco_broadcast(names):
+def get_deco_broadcast_ndarray(names):
+    """Resulting new arguments are at least 1d."""
     def decorator(func):
         sig = inspect.signature(func)
         if not set(names).issubset(sig.parameters.keys()):
@@ -376,8 +378,40 @@ def get_deco_broadcast(names):
             ba = sig.bind(*args, **kwargs)
             ba.apply_defaults()
 
-            bc_args = np.broadcast_arrays(*[ba.arguments[key] for key in names])
-            for key, newarg in zip(names, bc_args):
+            bcast_args = np.broadcast_arrays(
+                *[
+                    np.atleast_1d(ba.arguments[key]) 
+                    for key in names
+                ]
+            )
+            for key, newarg in zip(names, bcast_args):
+                ba.arguments[key] = newarg
+
+            return func(*ba.args, **ba.kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+def get_deco_broadcast(names):
+    """Resulting new arguments are at least 1d."""
+    def decorator(func):
+        sig = inspect.signature(func)
+        if not set(names).issubset(sig.parameters.keys()):
+            raise Exception(
+                make_errmsg('get_deco_broadcast', func.__name__)
+            )
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            ba = sig.bind(*args, **kwargs)
+            ba.apply_defaults()
+
+            bcast_args = workflow_utils.broadcast_args(
+                *[ba.arguments[key] for key in names]
+            )
+            for key, newarg in zip(names, bcast_args):
                 ba.arguments[key] = newarg
 
             return func(*ba.args, **ba.kwargs)
