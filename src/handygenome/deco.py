@@ -115,7 +115,7 @@ def get_deco_num_notNone(names, n):
 
 
 def get_deco_num_set_differently(names, n, how='equal'):
-    assert how in ('equal', 'gt', 'lt', 'ge', 'le')
+    assert how in ('equal', 'eq', 'gt', 'lt', 'ge', 'le')
     def decorator(func):
         sig = inspect.signature(func)
         if not set(names).issubset(sig.parameters.keys()):
@@ -139,7 +139,7 @@ def get_deco_num_set_differently(names, n, how='equal'):
                     if set_val != default_val:
                         n_diff += 1
 
-            if how == 'equal':
+            if how in ('equal', 'eq'):
                 cond = (n_diff == n)
                 word = 'equal to'
             elif how == 'gt':
@@ -370,7 +370,7 @@ def get_deco_broadcast_ndarray(names):
         sig = inspect.signature(func)
         if not set(names).issubset(sig.parameters.keys()):
             raise Exception(
-                make_errmsg('get_deco_broadcast', func.__name__)
+                make_errmsg('get_deco_broadcast_ndarray', func.__name__)
             )
 
         @functools.wraps(func)
@@ -394,8 +394,8 @@ def get_deco_broadcast_ndarray(names):
     return decorator
 
 
-def get_deco_broadcast(names):
-    """Resulting new arguments are at least 1d."""
+def get_deco_broadcast(names, nargs_name=None, check_length=False):
+    """Each of resulting new arguments is a MultiArgsList object."""
     def decorator(func):
         sig = inspect.signature(func)
         if not set(names).issubset(sig.parameters.keys()):
@@ -408,8 +408,15 @@ def get_deco_broadcast(names):
             ba = sig.bind(*args, **kwargs)
             ba.apply_defaults()
 
+            if nargs_name is None:
+                nargs_idx = None
+            else:
+                nargs_idx = names.index(nargs_name)
+                
             bcast_args = workflow_utils.broadcast_args(
-                *[ba.arguments[key] for key in names]
+                *[ba.arguments[key] for key in names],
+                nargs_idx=nargs_idx, 
+                check_length=check_length,
             )
             for key, newarg in zip(names, bcast_args):
                 ba.arguments[key] = newarg

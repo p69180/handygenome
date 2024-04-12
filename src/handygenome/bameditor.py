@@ -24,7 +24,7 @@ def sort_and_index(bam_path):
     _ = pysam.index(bam_path)
 
 
-def get_index_path(bam_path):
+def get_index_path_bam(bam_path):
     assert bam_path.endswith('.bam')
     bambai_path = bam_path + '.bai'
     bai_path = re.sub(r'\.bam$', '.bai', bam_path)
@@ -34,6 +34,30 @@ def get_index_path(bam_path):
         return bai_path
     else:
         return None
+
+
+def get_index_path_cram(cram_path):
+    assert cram_path.endswith('.cram')
+    cramcrai_path = cram_path + '.crai'
+    crai_path = re.sub(r'\.cram$', '.crai', cram_path)
+    if os.path.exists(cramcrai_path):
+        return cramcrai_path
+    elif os.path.exists(crai_path):
+        return crai_path
+    else:
+        return None
+
+
+def get_index_path(alnfile_path):
+    with pysam.AlignmentFile(alnfile_path) as alnf:
+        is_cram = alnf.is_cram
+
+    if is_cram:
+        index_path = get_index_path_cram(alnfile_path)
+    else:
+        index_path = get_index_path_bam(alnfile_path)
+
+    return index_path
 
 
 def check_has_index(bam_path):

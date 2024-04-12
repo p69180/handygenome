@@ -6,7 +6,7 @@ import stat
 import string
 
 import pysam
-import pyranges as pr
+#import pyranges as pr
 
 import handygenome
 import handygenome.tools as tools
@@ -16,7 +16,7 @@ import handygenome.workflow as workflow
 import handygenome.vcfeditor.misc as vcfmisc
 import handygenome.ucscdata as ucscdata
 from handygenome.genomedf.genomedf_base import GenomeDataFrameBase
-#import handygenome.blacklist as blacklist
+import handygenome.blacklist as blacklist
 
 
 SPLIT_INFILE_PAT = re.compile(r'([0-9]+)([A-Za-z]*)(\.vcf\.gz)')

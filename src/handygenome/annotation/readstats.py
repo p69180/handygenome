@@ -14,7 +14,7 @@ import scipy.stats
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.logutils as logutils
 import handygenome.workflow as workflow
-import handygenome.annotation.annotitem as annotitem
+from handygenome.annotation.annotitem import AnnotItemFormatSingle, AnnotItemFormatSampledict
 import handygenome.variant.infoformat as infoformat
 from handygenome.variant.vcfspec import Vcfspec
 import handygenome.read.readplus as readplus
@@ -59,7 +59,11 @@ def get_position_info_pileup(bam, chrom, pos0):
     return depth, mqlist
 
 
-class ReadStats(annotitem.AnnotItemFormatSingle):
+class ReadStats(AnnotItemFormatSingle):
+    def __init__(self, is_missing=False, is_pon=False):
+        super().__init__(is_missing=is_missing)
+        self['is_pon'] = is_pon
+
     @staticmethod
     def handle_limits_arg(limits):
         result = list(limits)
@@ -84,6 +88,10 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
     @property
     def chromdict(self):
         return self.vcfspec.chromdict
+
+    ################
+    # initializers #
+    ################
         
     @classmethod
     def from_bam(
@@ -96,6 +104,7 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         depth_limits=DEFAULT_DEPTH_LIMITS,
         mq_limits=DEFAULT_MQ_LIMITS,
         include_mNM_items=False,
+        is_pon=False,
     ):
         depth, mqlist = get_position_info(bam, vcfspec.chrom, vcfspec.pos0)
         depth_limits = cls.handle_limits_arg(depth_limits)
@@ -115,6 +124,7 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
                     vcfspec, 
                     countonly=countonly,
                     include_mNM_items=include_mNM_items,
+                    is_pon=is_pon,
                 )
                 del readstats_data
             else:  # SV
@@ -130,12 +140,14 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
                     vcfspec, 
                     countonly=True,
                     include_mNM_items=include_mNM_items,
+                    is_pon=is_pon,
                 )
                 result_bnd2 = cls.from_readstats_data(
                     readstats_data_bnd2, 
                     vcfspec, 
                     countonly=True,
                     include_mNM_items=include_mNM_items,
+                    is_pon=is_pon,
                 )
                 del readstats_data_bnd1
                 del readstats_data_bnd2
@@ -146,11 +158,11 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
                 result['bnd2'] = result_bnd2
         else:
             if not vcfspec.check_is_sv():
-                result = cls.init_invalid(vcfspec, countonly=countonly)
+                result = cls.init_invalid(vcfspec, countonly=countonly, is_pon=is_pon)
             else:
                 result = cls(is_missing=False)
-                result['bnd1'] = cls.init_invalid(vcfspec, countonly=countonly)
-                result['bnd2'] = cls.init_invalid(vcfspec, countonly=countonly)
+                result['bnd1'] = cls.init_invalid(vcfspec, countonly=countonly, is_pon=is_pon)
+                result['bnd2'] = cls.init_invalid(vcfspec, countonly=countonly, is_pon=is_pon)
 
         return result
 
@@ -161,13 +173,17 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         vcfspec, 
         countonly=False,
         include_mNM_items=False,
+        is_pon=False,
     ):
         # main
-        result = cls(is_missing=False)
+        result = cls(is_missing=False, is_pon=is_pon)
         result.is_invalid = False
         result.vcfspec = vcfspec
 
         result['rppcounts'] = readstats_data['count'].copy()
+        if not countonly:
+            for pf in ('clipped', 'f1r2', 'f2r1', 'IDcontext'):
+                result[f'{pf}_rppcounts'] = readstats_data[f'{pf}_count'].copy()
 
         if not countonly:
             result['mean_BQs'] = cls.allele_means(readstats_data['BQ'])
@@ -175,6 +191,9 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
 
             result['mean_MQs'] = cls.allele_means(readstats_data['MQ'])
             result['median_MQs'] = cls.allele_medians(readstats_data['MQ'])
+
+            result['mean_NMs'] = cls.allele_means(readstats_data['NM'])
+            result['median_NMs'] = cls.allele_medians(readstats_data['NM'])
 
             result['mean_cliplens'] = cls.allele_means(readstats_data['cliplen'])
             result['median_cliplens'] = cls.allele_medians(readstats_data['cliplen'])
@@ -203,12 +222,13 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
             )
             result['mean_varpos_fractions'] = cls.allele_means(readstats_data['pos0_left_fraction'])
             result['median_varpos_fractions'] = cls.allele_medians(readstats_data['pos0_left_fraction'])
+            result['std_varpos_fractions'] = cls.allele_stds(readstats_data['pos0_left_fraction'])
 
         return result
 
     @classmethod
-    def from_custom_countonly(cls, vcfspec, counts):
-        result = cls(is_missing=False)
+    def from_custom_countonly(cls, vcfspec, counts, is_pon=False):
+        result = cls(is_missing=False, is_pon=is_pon)
         result.is_invalid = False
         result.vcfspec = vcfspec
 
@@ -224,12 +244,12 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         return result
 
     @classmethod
-    def init_invalid(cls, vcfspec, countonly=False, verbose=True):
+    def init_invalid(cls, vcfspec, countonly=False, verbose=True, is_pon=False):
         if verbose:
             logutils.log(f'Initiating ReadStats object as invalid mode', level='warning')
 
         # main
-        result = cls(is_missing=False)
+        result = cls(is_missing=False, is_pon=is_pon)
         result.is_invalid = True
         result.vcfspec = vcfspec
 
@@ -267,24 +287,26 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
     ####################################
 
     @staticmethod
-    def allele_means(data):
+    def allele_stats(data, func, *args, **kwargs):
         return dict(
             (
                 alleleclass, 
-                np.nan if len(values) == 0 else np.mean(values),
+                np.nan if len(values) == 0 else func(values, *args, **kwargs),
             )
             for (alleleclass, values) in data.items()
         )
 
-    @staticmethod
-    def allele_medians(data):
-        return dict(
-            (
-                alleleclass, 
-                np.nan if len(values) == 0 else np.median(values),
-            ) 
-            for (alleleclass, values) in data.items()
-        )
+    @classmethod
+    def allele_means(cls, data):
+        return cls.allele_stats(data, np.mean)
+
+    @classmethod
+    def allele_medians(cls, data):
+        return cls.allele_stats(data, np.median)
+
+    @classmethod
+    def allele_stds(cls, data, ddof=0):
+        return cls.allele_stats(data, np.std, ddof=ddof)
 
     @staticmethod
     def varpos_kstest(data):
@@ -322,6 +344,8 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
         recurrence_cutoff_fraction,
         recurrence_cutoff_denominator,
     ):
+        """Difference from ordinary NM: recurrent and non-recurrent mismatches are separated.
+        """
         summary_without_recurrence = dict()
         summary_only_recurrence = dict()
         mNMitems_norecur = dict()
@@ -372,7 +396,6 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
             mNMitems_norecur, 
             mNMitems_recur,
         )
-
 
     #def write(self, vr, sampleid):
     #    return self.write_base(vr, sampleid)
@@ -468,7 +491,7 @@ class ReadStats(annotitem.AnnotItemFormatSingle):
     #    return result
 
 
-class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
+class ReadStatsSampledict(AnnotItemFormatSampledict):
     meta = {
         'ID': 'readstats', 'Number': 1, 'Type': 'String',
         'Description': 'Read-based statistics for the variant.',
@@ -508,6 +531,7 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         init_invalid=False,
         include_mNM_items=False,
         verbose=False,
+        pon_samples=list(),
     ):
         depth_limits = cls.handle_limits_arg(depth_limits, bam_dict)
         mq_limits = cls.handle_limits_arg(mq_limits, bam_dict)
@@ -517,11 +541,17 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         if init_invalid:
             for sampleid, bam in bam_dict.items():
                 if not vcfspec.check_is_sv():
-                    result[sampleid] = ReadStats.init_invalid(vcfspec, countonly=countonly)
+                    result[sampleid] = ReadStats.init_invalid(
+                        vcfspec, countonly=countonly, is_pon=(sampleid in pon_samples),
+                    )
                 else:
                     result[sampleid] = ReadStats(is_missing=False)
-                    result[sampleid]['bnd1'] = ReadStats.init_invalid(vcfspec, countonly=countonly)
-                    result[sampleid]['bnd2'] = ReadStats.init_invalid(vcfspec, countonly=countonly)
+                    result[sampleid]['bnd1'] = ReadStats.init_invalid(
+                        vcfspec, countonly=countonly, is_pon=(sampleid in pon_samples),
+                    )
+                    result[sampleid]['bnd2'] = ReadStats.init_invalid(
+                        vcfspec, countonly=countonly, is_pon=(sampleid in pon_samples),
+                    )
         else:
             for sampleid, bam in bam_dict.items():
                 if verbose:
@@ -535,6 +565,7 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
                     depth_limits=depth_limits[sampleid],
                     mq_limits=mq_limits[sampleid],
                     include_mNM_items=include_mNM_items,
+                    is_pon=(sampleid in pon_samples),
                 )
         return result
 
@@ -567,6 +598,7 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         mq_limits=DEFAULT_MQ_LIMITS,
         init_invalid=False,
         include_mNM_items=False,
+        pon_samples=list(),
     ):
         if len(self) == 0:
             raise Exception(f'Length of self must be greater than 0')
@@ -577,7 +609,9 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
         if init_invalid:
             for sampleid, bam in bam_dict.items():
                 self[sampleid] = ReadStats.init_invalid(
-                    self.vcfspec, countonly=countonly,
+                    self.vcfspec, 
+                    countonly=countonly, 
+                    is_pon=(sampleid in pon_samples),
                 )
         else:
             for sampleid, bam in bam_dict.items():
@@ -590,6 +624,7 @@ class ReadStatsSampledict(annotitem.AnnotItemFormatSampledict):
                     depth_limits=depth_limits[sampleid],
                     mq_limits=mq_limits[sampleid],
                     include_mNM_items=include_mNM_items,
+                    is_pon=(sampleid in pon_samples),
                 )
 
     def write(self, vr, donot_write_missing=True):
@@ -672,42 +707,52 @@ def rpplist_to_readstats_data_countonly_sv(
     return data_bnd1, data_bnd2
 
 
+def add_var_pos0s_rp(rp, data, alleleclass_rpp, vcfspec):
+    var_querypos0s = rp.get_querypos0_of_range0_allmodes(vcfspec.REF_range0)
+
+    if var_querypos0s['left'] is not None:
+        data['pos0_left'][alleleclass_rpp].append(var_querypos0s['left'])
+        data['pos0_right'][alleleclass_rpp].append(var_querypos0s['right'])
+        data['pos0_5prime'][alleleclass_rpp].append(var_querypos0s['5prime'])
+        data['pos0_3prime'][alleleclass_rpp].append(var_querypos0s['3prime'])
+
+        data['pos0_left_fraction'][alleleclass_rpp].append(var_querypos0s['left_fraction'])
+        data['pos0_right_fraction'][alleleclass_rpp].append(var_querypos0s['right_fraction'])
+        data['pos0_5prime_fraction'][alleleclass_rpp].append(var_querypos0s['5prime_fraction'])
+        data['pos0_3prime_fraction'][alleleclass_rpp].append(var_querypos0s['3prime_fraction'])
+
+
 def rpplist_to_readstats_data(
-    rpplist, vcfspec, flanklen=liballeleclass.DEFAULT_FLANKLEN,
+    rpplist, 
+    vcfspec, 
+    flanklen=liballeleclass.DEFAULT_FLANKLEN,
+    countonly=False,
 ):
-    def add_var_pos0s_rp(rp, data, alleleclass_rpp, vcfspec):
-        var_querypos0s = rp.get_querypos0_of_range0_allmodes(vcfspec.REF_range0)
-
-        if var_querypos0s['left'] is not None:
-            data['pos0_left'][alleleclass_rpp].append(var_querypos0s['left'])
-            data['pos0_right'][alleleclass_rpp].append(var_querypos0s['right'])
-            data['pos0_5prime'][alleleclass_rpp].append(var_querypos0s['5prime'])
-            data['pos0_3prime'][alleleclass_rpp].append(var_querypos0s['3prime'])
-
-            data['pos0_left_fraction'][alleleclass_rpp].append(var_querypos0s['left_fraction'])
-            data['pos0_right_fraction'][alleleclass_rpp].append(var_querypos0s['right_fraction'])
-            data['pos0_5prime_fraction'][alleleclass_rpp].append(var_querypos0s['5prime_fraction'])
-            data['pos0_3prime_fraction'][alleleclass_rpp].append(var_querypos0s['3prime_fraction'])
-
     # initialize
     alleleclass_keys = vcfspec.get_alleleclasses()
     data = dict()
 
     # fields initialized as integer
     data['count'] = {x: 0 for x in alleleclass_keys}
-    data['count']['softclip_overlap'] = 0
+    if not countonly:
+        data['count']['softclip_overlap'] = 0
+        data['clipped_count'] = {x: 0 for x in alleleclass_keys}
+        data['f1r2_count'] = {x: 0 for x in alleleclass_keys}
+        data['f2r1_count'] = {x: 0 for x in alleleclass_keys}
+        data['IDcontext_count'] = {x: 0 for x in alleleclass_keys}
 
     # fields initialized as list
-    for key in (
-        'rpp_range0',
-        'MQ', 'BQ', 'mNM', 
-        #'clipspec', 
-        'cliplen', 'pairorient', 'readorient',
-        'pos0_left', 'pos0_right', 'pos0_5prime', 'pos0_3prime',
-        'pos0_left_fraction', 'pos0_right_fraction', 
-        'pos0_5prime_fraction', 'pos0_3prime_fraction',
-    ):
-        data[key] = {x: list() for x in alleleclass_keys}
+    if not countonly:
+        for key in (
+            'rpp_range0',
+            'MQ', 'BQ', 'NM', 'mNM', 
+            #'clipspec', 
+            'cliplen', 'pairorient', 'readorient',
+            'pos0_left', 'pos0_right', 'pos0_5prime', 'pos0_3prime',
+            'pos0_left_fraction', 'pos0_right_fraction', 
+            'pos0_5prime_fraction', 'pos0_3prime_fraction',
+        ):
+            data[key] = {x: list() for x in alleleclass_keys}
 
     # add data
     for rpp in rpplist:
@@ -717,80 +762,89 @@ def rpplist_to_readstats_data(
 
         # count
         data['count'][alleleclass_rpp] += 1
-        if alleleclass_rpp is None:
-            if rpp.check_softclip_overlaps_vcfspec(vcfspec):
-                data['count']['softclip_overlap'] += 1
+            
+        if not countonly:
+            # softclip overlap
+            if alleleclass_rpp is None:
+                if rpp.check_softclip_overlaps_vcfspec(vcfspec):
+                    data['count']['softclip_overlap'] += 1
 
-        # rpp_range0
-        rpp_range0s = list()
-        if rpp.rp1.read.reference_name == vcfspec.chrom:
-            rpp_range0s.append(rpp.rp1.range0)
-        if rpp.rp2 is not None:
-            if rpp.rp2.read.reference_name == vcfspec.chrom:
-                rpp_range0s.append(rpp.rp2.range0)
-        data['rpp_range0'][alleleclass_rpp].append(rpp_range0s)
+            # count only softclip-harboring rpps
+            if any(
+                (rp.read.get_cigar_stats()[0][4] > 0)
+                #(4 in [x[0] for x in rp.read.cigartuples])
+                for rp in rpp.get_rp_iter()
+            ):
+                data['clipped_count'][alleleclass_rpp] += 1
 
-        # MQ
-        data['MQ'][alleleclass_rpp].append(rpp.get_MQ())
+            # count only f1r2 configuration
+            if rpp.pairorient == 'f1r2':
+                data['f1r2_count'][alleleclass_rpp] += 1
+            # count only f2r1 configuration
+            if rpp.pairorient == 'f2r1':
+                data['f2r1_count'][alleleclass_rpp] += 1
 
-        # BQ
-        data['BQ'][alleleclass_rpp].extend(rpp.rp1.get_BQlist(vcfspec))
-        if rpp.rp2 is not None:
-            data['BQ'][alleleclass_rpp].extend(rpp.rp2.get_BQlist(vcfspec))
+            # count only rpps with indel around variant position
+            hits = False
+            for rp in rpp.get_rp_iter():
+                mNM_data = rp.get_mNM_data()
+                if any(
+                    (
+                        (x[1] in (1, 2))
+                        and (abs(x[0] - vcfspec.start0) <= 10)
+                    )
+                    for x in mNM_data
+                ):
+                    hits = True
+                    break
+            if hits:
+                data['IDcontext_count'][alleleclass_rpp] += 1
 
-        # cliplen
-        data['cliplen'][alleleclass_rpp].append(rpp.get_cliplen())
+            # rpp_range0
+            rpp_range0s = list()
+            if rpp.rp1.read.reference_name == vcfspec.chrom:
+                rpp_range0s.append(rpp.rp1.range0)
+            if rpp.rp2 is not None:
+                if rpp.rp2.read.reference_name == vcfspec.chrom:
+                    rpp_range0s.append(rpp.rp2.range0)
+            data['rpp_range0'][alleleclass_rpp].append(rpp_range0s)
 
-        # pairorient
-        data['pairorient'][alleleclass_rpp].append(rpp.pairorient)
+            # MQ
+            data['MQ'][alleleclass_rpp].append(rpp.get_MQ())
 
-        # readorient
-        if rpp.rp1.alleleclass[vcfspec] == alleleclass_rpp:
-            data['readorient'][alleleclass_rpp].append(
-                'f' if rpp.rp1.read.is_forward else 'r'
-            )
-        if rpp.rp2 is not None:
-            if rpp.rp2.alleleclass[vcfspec] == alleleclass_rpp:
+            # BQ
+            data['BQ'][alleleclass_rpp].extend(rpp.rp1.get_BQlist(vcfspec))
+            if rpp.rp2 is not None:
+                data['BQ'][alleleclass_rpp].extend(rpp.rp2.get_BQlist(vcfspec))
+
+            # cliplen
+            data['cliplen'][alleleclass_rpp].append(rpp.get_cliplen())
+
+            # pairorient
+            data['pairorient'][alleleclass_rpp].append(rpp.pairorient)
+
+            # readorient
+            if rpp.rp1.alleleclass[vcfspec] == alleleclass_rpp:
                 data['readorient'][alleleclass_rpp].append(
-                    'f' if rpp.rp2.read.is_forward else 'r'
+                    'f' if rpp.rp1.read.is_forward else 'r'
                 )
+            if rpp.rp2 is not None:
+                if rpp.rp2.alleleclass[vcfspec] == alleleclass_rpp:
+                    data['readorient'][alleleclass_rpp].append(
+                        'f' if rpp.rp2.read.is_forward else 'r'
+                    )
 
-        # mNM
-        #mNM_data, clipspec_data = rpp.get_mNM_clipspec_data(vcfspec)
-        mNM_data = rpp.get_mNM_data(vcfspec)
-        data['mNM'][alleleclass_rpp].extend(mNM_data)
-        #data['clipspec'][alleleclass_rpp].extend(clipspec_data)
+            # NM, mNM
+            data['NM'][alleleclass_rpp].append(rpp.get_NM())
+            #mNM_data, clipspec_data = rpp.get_mNM_clipspec_data(vcfspec)
+            mNM_data = rpp.get_mNM_data()
+            data['mNM'][alleleclass_rpp].extend(mNM_data)
+            #data['clipspec'][alleleclass_rpp].extend(clipspec_data)
 
-        # var_pos0s
-        add_var_pos0s_rp(rpp.rp1, data, alleleclass_rpp, vcfspec)
-        if rpp.rp2 is not None:
-            add_var_pos0s_rp(rpp.rp2, data, alleleclass_rpp, vcfspec)
-
-    # turn into numpy arrays
-#    for key in data.keys():
-#        if key != 'count':
-#            data[key] = {
-#                subkey: np.array(subval)
-#                for subkey, subval in data[key].items()
-#            }
-
-    return data
-
-
-def rpplist_to_readstats_data_countonly(
-    rpplist, vcfspec, flanklen=liballeleclass.DEFAULT_FLANKLEN,
-):
-    # initialize
-    alleleclass_keys = vcfspec.get_alleleclasses()  # this includes -1
-    data = dict()
-    data['count'] = {x: 0 for x in alleleclass_keys}
-    data['count']['softclip_overlap'] = 0
-    # add data
-    for rpp in rpplist:
-        if vcfspec not in rpp.alleleclass.keys():
-            rpp.update_alleleclass(vcfspec=vcfspec, flanklen=flanklen)
-        alleleclass_rpp = rpp.alleleclass[vcfspec]
-        data['count'][alleleclass_rpp] += 1
+            # var_pos0s
+            add_var_pos0s_rp(rpp.rp1, data, alleleclass_rpp, vcfspec)
+            if rpp.rp2 is not None:
+                add_var_pos0s_rp(rpp.rp2, data, alleleclass_rpp, vcfspec)
 
     return data
 
@@ -816,7 +870,10 @@ def get_readstats_data(
             bnds=bnds,
             **alleleclass_kwargs,
         )
-        readstats_data_bnd1, readstats_data_bnd2 = rpplist_to_readstats_data_countonly_sv(rpplist, bnds)
+        (
+            readstats_data_bnd1, 
+            readstats_data_bnd2,
+        ) = rpplist_to_readstats_data_countonly_sv(rpplist, bnds)
         del rpplist
 
         return readstats_data_bnd1, readstats_data_bnd2
@@ -832,10 +889,7 @@ def get_readstats_data(
             vcfspec=vcfspec, 
             **alleleclass_kwargs,
         )
-        if countonly:
-            readstats_data = rpplist_to_readstats_data_countonly(rpplist, vcfspec)
-        else:
-            readstats_data = rpplist_to_readstats_data(rpplist, vcfspec)
+        readstats_data = rpplist_to_readstats_data(rpplist, vcfspec, countonly=countonly)
 
         del rpplist
 

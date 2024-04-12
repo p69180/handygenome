@@ -14,7 +14,6 @@ import itertools
 
 import pysam
 import numpy as np
-import pyranges as pr
 import pandas as pd
 
 import handygenome.logutils as logutils
@@ -24,6 +23,7 @@ import handygenome.workflow as workflow
 import handygenome.workflow.parallel as libparallel
 import handygenome.workflow.toolsetup as toolsetup
 import handygenome.annotation.readstats as libreadstats
+from handygenome.annotation.readstats import ReadStatsSampledict
 import handygenome.variant.varianthandler as varianthandler
 import handygenome.variant.variantplus as variantplus
 import handygenome.variant.filter as libfilter
@@ -39,6 +39,8 @@ import handygenome.blacklist as blacklist
 import handygenome.vcfeditor.misc as vcfmisc
 import handygenome.workflow.shell_wrapper as shell_wrapper
 import handygenome.utils.workflow_utils as workflow_utils
+from handygenome.utils.workflow_utils import MultiArgsList
+from handygenome.genomedf.genomedf_base import GenomeDataFrameBase
 
 
 def unit_job(
@@ -195,7 +197,7 @@ def unit_job_core(
 ##################################
 
 def update_header(vcfheader, id_list, pon_id_list):
-    libreadstats.ReadStatsSampledict.add_meta(vcfheader)
+    ReadStatsSampledict.add_meta(vcfheader)
     added_new_samples = False
     for sampleid in itertools.chain(id_list, pon_id_list):
         if sampleid not in vcfheader.samples:
@@ -219,7 +221,7 @@ def update_new_vr(
         else:
             init_invalid = True
 
-    readstats_dict = libreadstats.ReadStatsSampledict.from_bam_dict(
+    readstats_dict = ReadStatsSampledict.from_bam_dict(
         bam_dict=bam_dict, 
         vcfspec=vcfspec, 
         rpplist_kwargs={'no_matesearch': no_matesearch},
@@ -235,6 +237,7 @@ def update_new_vr(
         depth_limits=depth_limits, 
         mq_limits=mq_limits,
         init_invalid=init_invalid,
+        pon_samples=list(pon_bam_dict.keys()),
     )
     readstats_dict.write(new_vr)
 
@@ -265,35 +268,65 @@ def argparsing_sanitycheck(args):
             raise Exception(f'The number of --bamlist and --idlist arguments must be the same.')
 
 
+def argparsing_bamlist_parsing(table_path, bamlist, idlist):
+    with open(table_path, 'r') as infile:
+        for line in infile:
+            linesp = line.replace('\n', '').split('\t')
+            if len(linesp) != 2:
+                raise Exception(f'The number of tab-seperated fields must be 2 in the bamlist file.')
+
+            sampleid = linesp[0]
+            bam_path = linesp[1]
+            if not any(bam_path.endswith(x) for x in ('.bam', '.cram')):
+                raise Exception(
+                    f'Alignment file path does not end with ".bam" or ".cram" '
+                    f'in the bamlist file. Please check if column 1 is '
+                    f'sample ID and column 2 is bam file path.'
+                )
+
+            idlist.append(sampleid)
+            bamlist.append(bam_path)
+
+
 def argparsing_bampath_processing(args):
-    # all information specified by --bamlist/--idlist, --bamlist-file, --pon-cohorts are added
+    # all information specified by --bamlist/--idlist, --bamlist-file, --pon-cohorts, and --pon-dir are merged
     # handling --bamlist-file
     if args.bamlist_file_path is not None:
-        with open(args.bamlist_file_path, 'r') as infile:
-            for line in infile:
-                linesp = line.replace('\n', '').split('\t')
-                if len(linesp) != 2:
-                    raise Exception(f'The number of tab-seperated fields must be 2 in the bamlist file.')
+        argparsing_bamlist_parsing(
+            args.bamlist_file_path, 
+            args.bamlist, 
+            args.idlist,
+        )
 
-                sampleid = linesp[0]
-                bam_path = linesp[1]
-                if not bam_path.endswith('.bam'):
-                    raise Exception(
-                        f'Bam file path does not end with ".bam" in the '
-                        f'bamlist file. Please check if column 1 is '
-                        f'sample ID and column 2 is bam file path.'
-                    )
-
-                args.idlist.append(sampleid)
-                args.bamlist.append(bam_path)
     # handling --pon-cohorts
     args.pon_idlist = list()
     args.pon_bamlist = list()
+    if args.pon_file_path is not None:
+        argparsing_bamlist_parsing(
+            args.pon_file_path, 
+            args.pon_bamlist, 
+            args.pon_idlist,
+        )
     if args.pon_cohorts is not None:
         for cohort in args.pon_cohorts:
             for sampleid, bam_path in libponbams.PON_BAM_PATHS[args.refver][cohort].items():
                 args.pon_idlist.append(sampleid)
                 args.pon_bamlist.append(bam_path)
+    if args.pon_dir is not None:
+        for topdir in args.pon_dir:
+            for fname in os.listdir(topdir):
+                if any(fname.endswith(x) for x in ('.bam', '.cram')):
+                    bam_path = os.path.abspath(os.path.join(topdir, fname))
+                    pon_id = re.sub(r'(\.bam|\.cram)$', '', os.path.basename(bam_path))
+                    args.pon_idlist.append(pon_id)
+                    args.pon_bamlist.append(bam_path)
+
+
+def argparsing_check_bamindex(args):
+    if any((not bameditor.check_has_index(x)) for x in args.bamlist):
+        raise Exception(f'One or more of the non-pon bam files are not indexed.')
+    if any((not bameditor.check_has_index(x)) for x in args.pon_bamlist):
+        raise Exception(f'One or more of the pon bam files are not indexed.')
 
 
 def argparsing(cmdargs=None):
@@ -311,12 +344,16 @@ def argparsing(cmdargs=None):
         )
     )
 
-    # required
+    ############
+    # required #
+    ############
     workflow.add_infile_arg(parser_dict['required'], required=True)
     workflow.add_outfile_arg(parser_dict['required'], required=True, must_not_exist='ask')
     workflow.add_refver_arg(parser_dict['required'], required=True)
 
-    # optional
+    ##########################
+    # optional - non-pon bam #
+    ##########################
     parser_dict['optional'].add_argument(
         '--bamlist', 
         dest='bamlist', 
@@ -342,13 +379,16 @@ def argparsing(cmdargs=None):
     parser_dict['optional'].add_argument(
         '--bamlist-file', dest='bamlist_file_path', required=False,
         type=workflow.arghandler_infile,
-        #metavar='<bam list file path>',
+        metavar='<file containing bam file paths>',
         help=(
             f'A 2-column tab-separated file which contains sample IDs on '
             f'the first column and bam file paths on the second column.'
         ),
     )
 
+    ######################
+    # optional - pon bam #
+    ######################
     allowed_pon_cohorts = dict()
     for refver, subdict in libponbams.PON_BAM_PATHS_WITHOUT_NAMES.items():
         allowed_pon_cohorts[refver] = list(subdict.keys())
@@ -357,11 +397,35 @@ def argparsing(cmdargs=None):
         nargs='+',
         #metavar='<PON cohort name>',
         help=(
-            f'One or more known Panel Of Normal cohort names. Allowed values:\n'
+            f'One or more known Panel-Of-Normal cohort names. Allowed values:\n'
             f'{textwrap.indent(pprint.pformat(allowed_pon_cohorts), " " * 4)}'
         ),
     )
+    parser_dict['optional'].add_argument(
+        '--pon-dir', dest='pon_dir', required=False,
+        nargs='+',
+        metavar='<directory of pon bam files>',
+        help=(
+            f'One or more directory paths where Panel-Of-Normal alignment '
+            f'files are stored. Every bam or cram file is used. Basename of '
+            f'each file, stripped of ".bam" or ".cram", is used as the '
+            f'sample ID.'
+        ),
+    )
+    parser_dict['optional'].add_argument(
+        '--pon-file', dest='pon_file_path', required=False,
+        type=workflow.arghandler_infile,
+        metavar='<file containing PON bam file paths>',
+        help=(
+            f'A 2-column tab-separated file which contains sample IDs on '
+            f'the first column and bam file paths on the second column. '
+            f'Treated as Panel-Of-Normal samples.'
+        ),
+    )
 
+    #####################
+    # optional - others #
+    #####################
     parser_dict['optional'].add_argument(
         '--memlimit', dest='memuse_limit_gb', required=False,
         default=4.0,
@@ -425,7 +489,9 @@ def argparsing(cmdargs=None):
     workflow.add_logging_args(parser_dict)
     workflow.add_scheduler_args(parser_dict, default_parallel=1, default_sched='slurm')
 
-    # flag
+    ########
+    # flag #
+    ########
     workflow.add_rmtmp_arg(parser_dict)
     workflow.add_index_arg(parser_dict)
     parser_dict['flag'].add_argument(
@@ -448,10 +514,13 @@ def argparsing(cmdargs=None):
         ),
     )
 
-    # main
+    ########
+    # main #
+    ########
     args = parser_dict['main'].parse_args(cmdargs)
     argparsing_sanitycheck(args)
     argparsing_bampath_processing(args)
+    argparsing_check_bamindex(args)
 
     return args
 
@@ -482,10 +551,14 @@ def depth_mq_limit_processing(args):
         if args.target_bed_path is None:
             sample_bam_path = next(itertools.chain(args.bamlist, args.pon_bamlist))
             with pysam.AlignmentFile(sample_bam_path) as in_bam:
-                region_length = sum(in_bam.lengths)
+                region_length_sum = sum(in_bam.lengths)
         else:
-            region_gr = pr.read_bed(args.target_bed_path)
-            region_length = region_gr.merge().length
+            #region_gr = pr.read_bed(args.target_bed_path)
+            #region_length = region_gr.merge().length
+            region_gdf = GenomeDataFrameBase.read_tsv(
+                args.target_bed_path, refver=args.refver,
+            )
+            region_length_sum = region_gdf.merge().lengths.sum()
 
     # modify raw argument
     sampleid_list = list(itertools.chain(args.idlist, args.pon_idlist))
@@ -502,7 +575,7 @@ def depth_mq_limit_processing(args):
                     upper = np.inf
                 else:
                     upper = (
-                        bameditor.get_average_depth(in_bam, aligned_region_length=region_length) 
+                        bameditor.get_average_depth(in_bam, aligned_region_length=region_length_sum) 
                         * args.depthlimit_cov_ratio
                     )
             depth_limits[sampleid] = [0, upper]
@@ -510,78 +583,6 @@ def depth_mq_limit_processing(args):
         depth_limits = dict(zip(sampleid_list, rawarg_handler(args.depth_limits, nsample)))
 
     return depth_limits, mq_limits
-
-
-def write_jobscripts(
-    tmpdir_paths, 
-    fetchregion_list,
-    parallel, 
-    infile_copy_path,
-    bam_path_list, 
-    id_list, 
-    pon_bam_path_list, 
-    pon_id_list, 
-    refver, 
-    no_matesearch,
-    countonly,
-    memuse_limit_gb,
-    depth_limits,
-    mq_limits,
-    include_blacklist,
-    jobname_prefix=__name__.split('.')[-1], 
-    nproc=1,
-):
-    jobscript_path_list = list()
-    log_path_list = list()
-    slurm_log_pf_list = list()
-    split_outfile_path_list = list()
-    for zidx in tools.zrange(parallel):
-        jobscript_path = os.path.join(tmpdir_paths['scripts'], f'{zidx}.sbatch')
-        jobscript_path_list.append(jobscript_path)
-
-        bname = os.path.basename(jobscript_path)
-        log_path_list.append(
-            os.path.join(tmpdir_paths['logs'], bname + '.log')
-        )
-        slurm_log_pf_list.append(
-            os.path.join(tmpdir_paths['slurm_logs'], bname)
-        )
-
-        split_outfile_path = os.path.join(tmpdir_paths['split_outfiles'], f'{zidx}.vcf.gz')
-        split_outfile_path_list.append(split_outfile_path)
-
-    kwargs_single = {
-        'infile_copy_path': infile_copy_path,
-        'bam_path_list': bam_path_list,
-        'id_list': id_list,
-        'pon_bam_path_list': pon_bam_path_list,
-        'pon_id_list': pon_id_list,
-        'refver': refver,
-        'no_matesearch': no_matesearch,
-        'countonly': countonly,
-        'memuse_limit_gb': memuse_limit_gb,
-        'depth_limits': depth_limits,
-        'mq_limits': mq_limits,
-        'include_blacklist': include_blacklist,
-    }
-    kwargs_multi = {
-        'split_outfile_path': split_outfile_path_list,
-        'fetchregion': fetchregion_list,
-    }
-
-    toolsetup.write_jobscripts(
-        script_path_list=jobscript_path_list,
-        log_path_list=log_path_list,
-        slurm_log_pf_list=slurm_log_pf_list,
-        module_name=__name__,
-        unit_job_func_name='unit_job',
-        kwargs_single=kwargs_single,
-        kwargs_multi=kwargs_multi,
-        jobname_prefix=jobname_prefix,
-        nproc=nproc,
-    )
-
-    return jobscript_path_list
 
 
 def main_core(cmdargs):
@@ -602,7 +603,7 @@ def main_core(cmdargs):
         nproc=args.parallel,
         make_outfiles=True,
         make_logs=True,
-        other_subdirs=['scripts'],
+        other_subdirs=['tmpfiles'],
     )
 
     # postprocess depth and mq limits
@@ -624,58 +625,9 @@ def main_core(cmdargs):
         args.refver, 
         verbose=False,
     )
-    #logutils.log(f'Split fetch regions: {fetchregion_list}', level="info")
-
-    # make job scripts and run
-#    logutils.log(f'Creating split job scripts', level="info")
-#
-#    jobscript_path_list = write_jobscripts(
-#        tmpdir_paths, 
-#        fetchregion_list,
-#        args.parallel,
-#        infile_copy_path,
-#        args.bamlist, 
-#        args.idlist, 
-#        args.pon_bamlist, 
-#        args.pon_idlist, 
-#        args.refver, 
-#        (not args.do_matesearch),
-#        args.countonly,
-#        args.memuse_limit_gb,
-#        depth_limits,
-#        mq_limits,
-#        args.include_blacklist,
-#    )
-#    logutils.log('Running annotation jobs for each split file', level="info")
-#    libparallel.run_jobs(
-#        jobscript_path_list, 
-#        sched=args.sched, 
-#        intv_check=args.intv_check, 
-#        intv_submit=args.intv_submit, 
-#        max_submit=args.max_submit, 
-#        logger=logger, 
-#        log_dir=tmpdir_paths['logs'],
-#        job_status_logpath=os.path.join(tmpdir_paths['root'], 'job_status_log.gz'),
-#        raise_on_failure=True,
-#    )
 
     # run split jobs
-
-#        fetchregion_list,
-#        args.parallel,
-#        infile_copy_path,
-#        args.bamlist, 
-#        args.idlist, 
-#        args.pon_bamlist, 
-#        args.pon_idlist, 
-#        args.refver, 
-#        (not args.do_matesearch),
-#        args.countonly,
-#        args.memuse_limit_gb,
-#        depth_limits,
-#        mq_limits,
-#        args.include_blacklist,
-
+    logutils.log(f'Running annotation jobs for split inputs', level="info")
     kwargs = workflow_utils.prepare_kwargs(
         args.parallel,
 
@@ -694,13 +646,16 @@ def main_core(cmdargs):
         mq_limits=mq_limits,
         include_blacklist=args.include_blacklist,
     )
-    jobnames = [f'{args.jobname}_{idx}' for idx in range(args.parallel)]
+    jobnames = MultiArgsList(f'{args.jobname}_{idx}' for idx in range(args.parallel))
     shell_wrapper.run_func(
         func=unit_job,
         kwargs=kwargs,
         logpath=tmpdir_paths['logs']['files'],
+        max_run=args.parallel,
+
         use_condaenv=True,
-        use_slurm=True,
+
+        use_slurm=(args.sched == 'slurm'),
         slurm_kwargs=dict(
             nproc=args.parallel,
             jobname=jobnames,
@@ -708,9 +663,14 @@ def main_core(cmdargs):
             intv_submit=args.intv_submit, 
             max_submit=args.max_submit, 
         ),
+
+        funcrun_tmpfile_dir=tmpdir_paths['tmpfiles'],
+        remove_funcrun_tmpfile_dir=False,
+        condawrap_script_dir=tmpdir_paths['tmpfiles'],
+        remove_condawrap_script_dir=False, 
     )
 
-    # concatenates split files
+    # concatenate split files
     logutils.log('Merging split files', level="info")
     libconcat.main(
         infile_path_list=tmpdir_paths['split_outfiles']['files'],
@@ -733,6 +693,9 @@ def main():
         main_core,
         args=(sys.argv[1:],),
         use_condaenv=True,
+        remove_funcrun_tmpfile_dir=True,
+        remove_condawrap_script_dir=True,
+        raise_with_failure=False,
     )
 
 

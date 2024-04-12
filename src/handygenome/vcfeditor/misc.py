@@ -11,6 +11,7 @@ import handygenome.refgenome.refgenome as refgenome
 import handygenome.interval as libinterval
 import handygenome.logutils as logutils
 from handygenome.genomedf.genomedf_base import GenomeDataFrameBase
+from handygenome.utils.workflow_utils import MultiArgsList
 
 
 # pysam VariantFile mode related ones
@@ -243,10 +244,10 @@ def get_fetchargs_from_vcf_positions(vcf_positions, refver):
 def get_vcf_fetchregions(vcf_path, n, refver, verbose=False):
     all_position_info = get_vcf_positions(vcf_path, as_iter=False, verbose=verbose)
     split_position_info = split_vcf_positions(all_position_info, n)
-    result = [
+    result = MultiArgsList(
         get_fetchargs_from_vcf_positions(position_info, refver)
         for position_info in split_position_info
-    ]
+    )
 
     return result
 

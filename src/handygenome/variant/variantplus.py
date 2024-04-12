@@ -110,13 +110,12 @@ class VariantPlusInitParams(dict):
 class VariantPlus:
     ONCOKB_SV_KEY_SEP = ':::'
 
-
     # CONSTRUCTORS
     @classmethod
     def from_vr(
         cls, vr, 
         refver=None, 
-        init_all_attrs=False,
+        init_all_attrs=True,
         vp_init_params=dict(),
         preset_vp_init_params=None,
         popfreq_metadata=None, 
@@ -141,7 +140,7 @@ class VariantPlus:
     def from_vcfspec(
         cls, vcfspec, 
         omit_vr=False,
-        init_all_attrs=False,
+        init_all_attrs=True,
         vp_init_params=dict(),
         preset_vp_init_params=None,
         popfreq_metadata=None, 
@@ -1220,84 +1219,84 @@ class VariantPlus:
             }
         )
 
-    def populate_gdf_data(
-        self, 
-        chroms, 
-        start0s, 
-        end0s, 
-        alleles, 
-        idlist, 
-        is_bnd1_list,
-        vcfspec_id=None,
-    ):
-        # positions
-        chroms.append(self.vcfspec.chrom)
-        start0s.append(self.vcfspec.pos0)
-        end0s.append(self.vcfspec.end0)
+#    def populate_gdf_data(
+#        self, 
+#        chroms, 
+#        start0s, 
+#        end0s, 
+#        alleles, 
+#        idlist, 
+#        is_bnd1_list,
+#        vcfspec_id=None,
+#    ):
+#        # positions
+#        chroms.append(self.vcfspec.chrom)
+#        start0s.append(self.vcfspec.pos0)
+#        end0s.append(self.vcfspec.end0)
+#
+#        for allele_idx, alleles_sublist in enumerate(alleles):
+#            alleles_sublist.append(self.get_allele(allele_idx))
+#
+#        # unique id
+#        if vcfspec_id is None:
+#            vcfspec_id = self.vcfspec.get_id()
+#        idlist.append(vcfspec_id)
+#
+#        # is_bnd1
+#        if self.vcfspec.check_is_sv():
+#            is_bnd1_list.append(self.vcfspec.check_is_bnd1())
+#        else:
+#            is_bnd1_list.append(np.nan)
 
-        for allele_idx, alleles_sublist in enumerate(alleles):
-            alleles_sublist.append(self.get_allele(allele_idx))
-
-        # unique id
-        if vcfspec_id is None:
-            vcfspec_id = self.vcfspec.get_id()
-        idlist.append(vcfspec_id)
-
-        # is_bnd1
-        if self.vcfspec.check_is_sv():
-            is_bnd1_list.append(self.vcfspec.check_is_bnd1())
-        else:
-            is_bnd1_list.append(np.nan)
-
-    def get_gdf(self):
-        chroms = list()
-        start0s = list()
-        end0s = list()
-        alleles = [list() for x in range(len(self.alleles))]
-        idlist = list()
-        is_bnd1_list = list()
-
-        if self.is_sv:
-            bnds = self.vcfspec.get_bnds()
-            vcfspec_bnd1 = bnds.get_vcfspec_bnd1()
-            vcfspec_bnd2 = bnds.get_vcfspec_bnd2()
-            tmpvp_bnd1 = VariantPlus.from_vcfspec(vcfspec_bnd1)
-            tmpvp_bnd2 = VariantPlus.from_vcfspec(vcfspec_bnd2)
-            for vp in [tmpvp_bnd1, tmpvp_bnd2]:
-                vp.populate_gdf_data(
-                    chroms, 
-                    start0s, 
-                    end0s, 
-                    alleles, 
-                    idlist, 
-                    is_bnd1_list,
-                )
-        else:
-            self.populate_gdf_data(
-                chroms, 
-                start0s, 
-                end0s, 
-                alleles, 
-                idlist, 
-                is_bnd1_list,
-            )
-
-        data = dict()
-
-        data['chroms'] = chroms
-        data['start0s'] = start0s
-        data['end0s'] = end0s
-
-        # alleles
-        allele_colnames = get_vafdf_allele_columns(len(self.alleles))
-        for colname, sublist in zip(allele_colnames, alleles):
-            data[colname] = sublist
-
-        # ids
-        data['ID'] = idlist
-        data['is_bnd1'] = is_bnd1_list
-
-        return VCFDataFrame.from_data(refver=self.refver, **data)
+#    def get_gdf(self):
+#        chroms = list()
+#        start0s = list()
+#        end0s = list()
+#        alleles = [list() for x in range(len(self.alleles))]
+#        idlist = list()
+#        is_bnd1_list = list()
+#
+#        if self.is_sv:
+#            bnds = self.vcfspec.get_bnds()
+#            vcfspec_bnd1 = bnds.get_vcfspec_bnd1()
+#            vcfspec_bnd2 = bnds.get_vcfspec_bnd2()
+#            tmpvp_bnd1 = VariantPlus.from_vcfspec(vcfspec_bnd1)
+#            tmpvp_bnd2 = VariantPlus.from_vcfspec(vcfspec_bnd2)
+#            for vp in [tmpvp_bnd1, tmpvp_bnd2]:
+#                vp.populate_gdf_data(
+#                    chroms, 
+#                    start0s, 
+#                    end0s, 
+#                    alleles, 
+#                    idlist, 
+#                    is_bnd1_list,
+#                )
+#        else:
+#            self.populate_gdf_data(
+#                chroms, 
+#                start0s, 
+#                end0s, 
+#                alleles, 
+#                idlist, 
+#                is_bnd1_list,
+#            )
+#
+#        data = dict()
+#
+#        data['chroms'] = chroms
+#        data['start0s'] = start0s
+#        data['end0s'] = end0s
+#
+#        # alleles
+#        allele_colnames = get_vafdf_allele_columns(len(self.alleles))
+#        for colname, sublist in zip(allele_colnames, alleles):
+#            data[colname] = sublist
+#
+#        # ids
+#        data['ID'] = idlist
+#        data['is_bnd1'] = is_bnd1_list
+#
+#        return VCFDataFrame.from_data(refver=self.refver, **data)
 
     def get_gene_names_base(self, transcript_set, canonical=True, overlap=True, coding=False):
         result = set()
@@ -1407,7 +1406,7 @@ class VariantPlusList(list):
         preview_lineno=15, 
         verbose=True, 
         logger=None,
-        init_all_attrs=False,
+        init_all_attrs=True,
         vp_init_params=dict(),
     ):
         # vcf_path, vcf
@@ -1492,7 +1491,7 @@ class VariantPlusList(list):
         preview_lineno=15, 
         verbose=True, 
         logger=None,
-        init_all_attrs=False,
+        init_all_attrs=True,
         vp_init_params=dict(),
 
         prop=None,
@@ -1534,7 +1533,7 @@ class VariantPlusList(list):
         preview_lineno=15, 
         verbose=True, 
         logger=None,
-        init_all_attrs=False,
+        init_all_attrs=True,
         vp_init_params=dict(),
     ):
         with pysam.VariantFile(vcf_path) as tmp_vcf:
@@ -1971,264 +1970,264 @@ class VariantPlusList(list):
         result.extend(itertools.compress(self, selector))
         return result
 
-    def get_gdf(self, n_allele=2):
-        if n_allele is None:
-            n_allele = max(len(vp.alleles) for vp in self)
-
-        # set data component lists
-        chroms = list()
-        starts = list()
-        ends = list()
-        alleles = [list() for x in range(n_allele)]
-
-        idlist = list()
-        is_bnd1_list = list()
-
-        indexes = list()
-
-        vp_iterator = iter(self)
-
-        # extract information for vps
-        def populate_data(vp, vp_idx, vcfspec_id=None):
-            # positions
-            chroms.append(vp.vcfspec.chrom)
-            starts.append(vp.vcfspec.pos0)
-            ends.append(vp.vcfspec.end0)
-
-            for allele_idx, alleles_sublist in enumerate(alleles):
-                alleles_sublist.append(vp.get_allele(allele_idx))
-
-            # unique id
-            if vcfspec_id is None:
-                vcfspec_id = vp.vcfspec.get_id()
-            idlist.append(vcfspec_id)
-
-            # is_bnd1
-            if vp.vcfspec.check_is_sv():
-                is_bnd1_list.append(vp.vcfspec.check_is_bnd1())
-            else:
-                is_bnd1_list.append(np.nan)
-
-            # index
-            indexes.append(vp_idx)
-
-        for vp_idx, vp in enumerate(vp_iterator):
-            if vp.vcfspec.check_is_sv():
-                bnds = vp.vcfspec.get_bnds()
-                vcfspec_bnd1 = bnds.get_vcfspec_bnd1()
-                vcfspec_bnd2 = bnds.get_vcfspec_bnd2()
-                tmpvp_bnd1 = VariantPlus.from_vcfspec(vcfspec_bnd1)
-                tmpvp_bnd2 = VariantPlus.from_vcfspec(vcfspec_bnd2)
-
-                uid = vcfspec_bnd1.get_id()
-                
-                populate_data(tmpvp_bnd1, vp_idx, vcfspec_id=uid)
-                populate_data(tmpvp_bnd2, vp_idx, vcfspec_id=uid)
-            else:
-                populate_data(vp, vp_idx)
-
-        data = dict()
-
-        data['chroms'] = chroms
-        data['start0s'] = starts
-        data['end0s'] = ends
-
-        # alleles
-        allele_colnames = get_vafdf_allele_columns(n_allele)
-        for colname, sublist in zip(allele_colnames, alleles):
-            data[colname] = sublist
-
-        # ids
-        data['ID'] = idlist
-        data['is_bnd1'] = is_bnd1_list
-
-        # index
-        data['index'] = indexes
-
-        return VCFDataFrame.from_data(refver=self.refver, **data)
-
-    @deco.get_deco_atleast1d(['sampleids'])
-    def get_vafdf(
-        self, 
-        sampleids, 
-        chrom=None, start0=None, end0=None,
-        n_allele=2,
-        exclude_other=False,
-
-        lazy=False,
-        prop=None,
-        vpfilter=None,
-
-        #multiindex=False,
-        sampleid_index_name='sampleid',
-
-        add_depth=False,
-    ):
-        # set data component lists
-        chroms = list()
-        #if multiindex:
-        #    pos1s = list()
-        starts = list()
-        ends = list()
-
-        alleles = [list() for x in range(n_allele)]
-
-        idlist = list()
-        is_bnd1_list = list()
-
-        vafs = {
-            sid: [list() for x in range(n_allele)] 
-            for sid in sampleids
-        }
-        
-        if add_depth:
-            depths = {
-                sid: [list() for x in range(n_allele)] 
-                for sid in sampleids
-            }
-            total_depths = {sid: list() for sid in sampleids}
-
-        # set vp iterator
-        if lazy:
-            vp_iterator = self.get_vp_iter_from_vcf(
-                chrom=chrom, start0=start0, end0=end0, 
-                prop=prop,
-                vpfilter=vpfilter,
-            )
-        else:
-            if chrom is None:
-                vp_iterator = iter(self)
-            else:
-                vp_iterator = self.fetch_by_coord(chrom, start0, end0)
-
-        # extract information for vps
-        def populate_data(vp):
-            this_vafs = vp.get_vafs(sampleids, n_allele=n_allele, exclude_other=exclude_other)
-            # skip if vafs are invalid values
-            vafs_are_valid = all(
-                (not np.isnan(vaflist).any())
-                for sid, vaflist in this_vafs.items()
-            )
-            if not vafs_are_valid:
-                return
-
-            # positions
-            chroms.append(vp.vcfspec.chrom)
-            #if multiindex:
-            #    pos1s.append(vp.vcfspec.pos)
-            starts.append(vp.vcfspec.pos0)
-            ends.append(vp.vcfspec.end0)
-
-            # alleles (REF, ALT1, ...)
-            for allele_idx, alleles_sublist in enumerate(alleles):
-                alleles_sublist.append(vp.get_allele(allele_idx))
-
-            # unique id
-            idlist.append(vp.vcfspec.get_id())
-
-            # vaf
-            for sid, this_vaf_list in this_vafs.items():
-                for vaflist, vafval in zip(vafs[sid], this_vaf_list):
-                    vaflist.append(vafval)
-
-            # is_bnd1
-            if vp.vcfspec.check_is_sv():
-                is_bnd1_list.append(vp.vcfspec.check_is_bnd1())
-            else:
-                is_bnd1_list.append(np.nan)
-
-            # depth
-            if add_depth:
-                for sid in sampleids:
-                    readstats = vp.readstats_dict[sid]
-                    for allele_index, sublist in enumerate(depths[sid]):
-                        sublist.append(readstats['rppcounts'][allele_index])
-                    total_depths[sid].append(
-                        readstats.get_total_rppcount(exclude_other=exclude_other)
-                    )
-
-        for vp in vp_iterator:
-            if vp.vcfspec.check_is_sv():
-                bnds = vp.vcfspec.get_bnds()
-                vcfspec_bnd1 = bnds.get_vcfspec_bnd1()
-                vcfspec_bnd2 = bnds.get_vcfspec_bnd2()
-                tmpvp_bnd1 = VariantPlus.from_vcfspec(vcfspec_bnd1)
-                tmpvp_bnd2 = VariantPlus.from_vcfspec(vcfspec_bnd2)
-
-                for key, val in vp.readstats_dict.items():
-                    tmpvp_bnd1.readstats_dict[key] = val['bnd1']
-                    tmpvp_bnd2.readstats_dict[key] = val['bnd2']
-                
-                populate_data(tmpvp_bnd1)
-                populate_data(tmpvp_bnd2)
-            else:
-                populate_data(vp)
-
-        # result
-#        if multiindex:
-#            data = list()
-#            columns_lv2 = list()
+#    def get_gdf(self, n_allele=2):
+#        if n_allele is None:
+#            n_allele = max(len(vp.alleles) for vp in self)
 #
-#            data.append(chroms)
-#            columns_lv2.append('Chromosome')
-#            data.append(starts)
-#            columns_lv2.append('Start')
-#            data.append(ends)
-#            columns_lv2.append('End')
-#            data.append(pos1s)
-#            columns_lv2.append('POS')
+#        # set data component lists
+#        chroms = list()
+#        starts = list()
+#        ends = list()
+#        alleles = [list() for x in range(n_allele)]
 #
-#            allele_colnames = get_vafdf_allele_columns(n_allele)
-#            for colname, alleles_sublist in zip(allele_colnames, alleles):
-#                data.append(alleles_sublist)
-#                columns_lv2.append(colname)
+#        idlist = list()
+#        is_bnd1_list = list()
 #
-#            for sid in sampleids:
-#                for allele_col, vaflist in zip(allele_colnames, vafs[sid]):
-#                    data.append(vaflist)
-#                    columns_lv2.append(f'{allele_col}_vaf')
+#        indexes = list()
 #
-#            columns = pd.MultiIndex.from_arrays(
-#                [
-#                    np.concatenate([np.repeat(None, 4 + n_allele), np.repeat(sampleids, n_allele)]),
-#                    columns_lv2,
-#                ],
-#                names=[sampleid_index_name, None],
+#        vp_iterator = iter(self)
+#
+#        # extract information for vps
+#        def populate_data(vp, vp_idx, vcfspec_id=None):
+#            # positions
+#            chroms.append(vp.vcfspec.chrom)
+#            starts.append(vp.vcfspec.pos0)
+#            ends.append(vp.vcfspec.end0)
+#
+#            for allele_idx, alleles_sublist in enumerate(alleles):
+#                alleles_sublist.append(vp.get_allele(allele_idx))
+#
+#            # unique id
+#            if vcfspec_id is None:
+#                vcfspec_id = vp.vcfspec.get_id()
+#            idlist.append(vcfspec_id)
+#
+#            # is_bnd1
+#            if vp.vcfspec.check_is_sv():
+#                is_bnd1_list.append(vp.vcfspec.check_is_bnd1())
+#            else:
+#                is_bnd1_list.append(np.nan)
+#
+#            # index
+#            indexes.append(vp_idx)
+#
+#        for vp_idx, vp in enumerate(vp_iterator):
+#            if vp.vcfspec.check_is_sv():
+#                bnds = vp.vcfspec.get_bnds()
+#                vcfspec_bnd1 = bnds.get_vcfspec_bnd1()
+#                vcfspec_bnd2 = bnds.get_vcfspec_bnd2()
+#                tmpvp_bnd1 = VariantPlus.from_vcfspec(vcfspec_bnd1)
+#                tmpvp_bnd2 = VariantPlus.from_vcfspec(vcfspec_bnd2)
+#
+#                uid = vcfspec_bnd1.get_id()
+#                
+#                populate_data(tmpvp_bnd1, vp_idx, vcfspec_id=uid)
+#                populate_data(tmpvp_bnd2, vp_idx, vcfspec_id=uid)
+#            else:
+#                populate_data(vp, vp_idx)
+#
+#        data = dict()
+#
+#        data['chroms'] = chroms
+#        data['start0s'] = starts
+#        data['end0s'] = ends
+#
+#        # alleles
+#        allele_colnames = get_vafdf_allele_columns(n_allele)
+#        for colname, sublist in zip(allele_colnames, alleles):
+#            data[colname] = sublist
+#
+#        # ids
+#        data['ID'] = idlist
+#        data['is_bnd1'] = is_bnd1_list
+#
+#        # index
+#        data['index'] = indexes
+#
+#        return VCFDataFrame.from_data(refver=self.refver, **data)
+
+#    @deco.get_deco_atleast1d(['sampleids'])
+#    def get_vafdf(
+#        self, 
+#        sampleids, 
+#        chrom=None, start0=None, end0=None,
+#        n_allele=2,
+#        exclude_other=False,
+#
+#        lazy=False,
+#        prop=None,
+#        vpfilter=None,
+#
+#        #multiindex=False,
+#        sampleid_index_name='sampleid',
+#
+#        add_depth=False,
+#    ):
+#        # set data component lists
+#        chroms = list()
+#        #if multiindex:
+#        #    pos1s = list()
+#        starts = list()
+#        ends = list()
+#
+#        alleles = [list() for x in range(n_allele)]
+#
+#        idlist = list()
+#        is_bnd1_list = list()
+#
+#        vafs = {
+#            sid: [list() for x in range(n_allele)] 
+#            for sid in sampleids
+#        }
+#        
+#        if add_depth:
+#            depths = {
+#                sid: [list() for x in range(n_allele)] 
+#                for sid in sampleids
+#            }
+#            total_depths = {sid: list() for sid in sampleids}
+#
+#        # set vp iterator
+#        if lazy:
+#            vp_iterator = self.get_vp_iter_from_vcf(
+#                chrom=chrom, start0=start0, end0=end0, 
+#                prop=prop,
+#                vpfilter=vpfilter,
 #            )
-#
-#            return pd.DataFrame(list(zip(*data)), columns=columns)
 #        else:
-        data = dict()
-
-        data['chroms'] = chroms
-        data['start0s'] = starts
-        data['end0s'] = ends
-
-        # alleles
-        allele_colnames = get_vafdf_allele_columns(n_allele)
-        for colname, sublist in zip(allele_colnames, alleles):
-            data[colname] = sublist
-
-        # ids
-        data['ID'] = idlist
-        data['is_bnd1'] = is_bnd1_list
-
-        # vafs
-        for sid in sampleids:
-            for allele_col, vaflist in zip(allele_colnames, vafs[sid]):
-                formatkey = f'{allele_col}_vaf'
-                colname = sid + VCFDataFrame.SAMPLEID_SEP + formatkey
-                data[colname] = vaflist
-
-            if add_depth:
-                for allele_col, depthlist in zip(allele_colnames, depths[sid]):
-                    formatkey = f'{allele_col}_depth'
-                    colname = sid + VCFDataFrame.SAMPLEID_SEP + formatkey
-                    data[colname] = depthlist
-
-                data['total_depth'] = total_depths[sid]
-
-        return VCFDataFrame.from_data(refver=self.refver, **data)
+#            if chrom is None:
+#                vp_iterator = iter(self)
+#            else:
+#                vp_iterator = self.fetch_by_coord(chrom, start0, end0)
+#
+#        # extract information for vps
+#        def populate_data(vp):
+#            this_vafs = vp.get_vafs(sampleids, n_allele=n_allele, exclude_other=exclude_other)
+#            # skip if vafs are invalid values
+#            vafs_are_valid = all(
+#                (not np.isnan(vaflist).any())
+#                for sid, vaflist in this_vafs.items()
+#            )
+#            if not vafs_are_valid:
+#                return
+#
+#            # positions
+#            chroms.append(vp.vcfspec.chrom)
+#            #if multiindex:
+#            #    pos1s.append(vp.vcfspec.pos)
+#            starts.append(vp.vcfspec.pos0)
+#            ends.append(vp.vcfspec.end0)
+#
+#            # alleles (REF, ALT1, ...)
+#            for allele_idx, alleles_sublist in enumerate(alleles):
+#                alleles_sublist.append(vp.get_allele(allele_idx))
+#
+#            # unique id
+#            idlist.append(vp.vcfspec.get_id())
+#
+#            # vaf
+#            for sid, this_vaf_list in this_vafs.items():
+#                for vaflist, vafval in zip(vafs[sid], this_vaf_list):
+#                    vaflist.append(vafval)
+#
+#            # is_bnd1
+#            if vp.vcfspec.check_is_sv():
+#                is_bnd1_list.append(vp.vcfspec.check_is_bnd1())
+#            else:
+#                is_bnd1_list.append(np.nan)
+#
+#            # depth
+#            if add_depth:
+#                for sid in sampleids:
+#                    readstats = vp.readstats_dict[sid]
+#                    for allele_index, sublist in enumerate(depths[sid]):
+#                        sublist.append(readstats['rppcounts'][allele_index])
+#                    total_depths[sid].append(
+#                        readstats.get_total_rppcount(exclude_other=exclude_other)
+#                    )
+#
+#        for vp in vp_iterator:
+#            if vp.vcfspec.check_is_sv():
+#                bnds = vp.vcfspec.get_bnds()
+#                vcfspec_bnd1 = bnds.get_vcfspec_bnd1()
+#                vcfspec_bnd2 = bnds.get_vcfspec_bnd2()
+#                tmpvp_bnd1 = VariantPlus.from_vcfspec(vcfspec_bnd1)
+#                tmpvp_bnd2 = VariantPlus.from_vcfspec(vcfspec_bnd2)
+#
+#                for key, val in vp.readstats_dict.items():
+#                    tmpvp_bnd1.readstats_dict[key] = val['bnd1']
+#                    tmpvp_bnd2.readstats_dict[key] = val['bnd2']
+#                
+#                populate_data(tmpvp_bnd1)
+#                populate_data(tmpvp_bnd2)
+#            else:
+#                populate_data(vp)
+#
+#        # result
+##        if multiindex:
+##            data = list()
+##            columns_lv2 = list()
+##
+##            data.append(chroms)
+##            columns_lv2.append('Chromosome')
+##            data.append(starts)
+##            columns_lv2.append('Start')
+##            data.append(ends)
+##            columns_lv2.append('End')
+##            data.append(pos1s)
+##            columns_lv2.append('POS')
+##
+##            allele_colnames = get_vafdf_allele_columns(n_allele)
+##            for colname, alleles_sublist in zip(allele_colnames, alleles):
+##                data.append(alleles_sublist)
+##                columns_lv2.append(colname)
+##
+##            for sid in sampleids:
+##                for allele_col, vaflist in zip(allele_colnames, vafs[sid]):
+##                    data.append(vaflist)
+##                    columns_lv2.append(f'{allele_col}_vaf')
+##
+##            columns = pd.MultiIndex.from_arrays(
+##                [
+##                    np.concatenate([np.repeat(None, 4 + n_allele), np.repeat(sampleids, n_allele)]),
+##                    columns_lv2,
+##                ],
+##                names=[sampleid_index_name, None],
+##            )
+##
+##            return pd.DataFrame(list(zip(*data)), columns=columns)
+##        else:
+#        data = dict()
+#
+#        data['chroms'] = chroms
+#        data['start0s'] = starts
+#        data['end0s'] = ends
+#
+#        # alleles
+#        allele_colnames = get_vafdf_allele_columns(n_allele)
+#        for colname, sublist in zip(allele_colnames, alleles):
+#            data[colname] = sublist
+#
+#        # ids
+#        data['ID'] = idlist
+#        data['is_bnd1'] = is_bnd1_list
+#
+#        # vafs
+#        for sid in sampleids:
+#            for allele_col, vaflist in zip(allele_colnames, vafs[sid]):
+#                formatkey = f'{allele_col}_vaf'
+#                colname = sid + VCFDataFrame.SAMPLEID_SEP + formatkey
+#                data[colname] = vaflist
+#
+#            if add_depth:
+#                for allele_col, depthlist in zip(allele_colnames, depths[sid]):
+#                    formatkey = f'{allele_col}_depth'
+#                    colname = sid + VCFDataFrame.SAMPLEID_SEP + formatkey
+#                    data[colname] = depthlist
+#
+#                data['total_depth'] = total_depths[sid]
+#
+#        return VCFDataFrame.from_data(refver=self.refver, **data)
 
     #jdef get_gr(self, vaf_sampleid=None):
         #return self.get_df(vaf_sampleid=vaf_sampleid, as_gr=True)
@@ -2245,7 +2244,7 @@ class VariantPlusList(list):
             )
         }
         kwargs['vp_init_params'] = self.vp_init_params
-        kwargs['init_all_attrs'] = False
+        kwargs['init_all_attrs'] = True
         result = self.__class__(**kwargs)
         return result
 
@@ -2509,660 +2508,673 @@ class VariantPlusList(list):
             ccfinfo = CCFInfo(CNt, Bt, CNm, ccf, cellularity)
             vp.ccfinfo = ccfinfo
 
-#########
-# vcfdf #
-#########
 
-def get_vafdf_allele_columns(num):
-    return ['REF'] + [f'ALT{x + 1}' for x in range(num - 1)]
 
-
-class VariantDataFrame(GenomeDataFrame):
-    COMMON_ALLELE_COLUMNS = ['REF', 'ALT1']
-    COMMON_COLUMNS = GenomeDataFrame.COMMON_COLUMNS + COMMON_ALLELE_COLUMNS
-    ALLELE_COLNAME_PAT = re.compile(r'(REF|ALT[1-9][0-9]*)')
-
-    DEFAULT_DTYPES = (
-        GenomeDataFrame.DEFAULT_DTYPES
-        | {
-            'REF': 'string',
-            re.compile('ALT[1-9][0-9]*'): 'string',
-        }
-    )
-
-    @property
-    def POS(self):
-        return self['Start'] + 1
-
-    @staticmethod
-    def allele_column_sortkey(colname):
-        if colname == 'REF':
-            return 0
-        else:
-            return int(re.sub('^ALT', '', colname))
-
-    @property
-    def allele_columns(self):
-        result = [
-            x for x in self.columns
-            if self.__class__.ALLELE_COLNAME_PAT.fullmatch(x)
-        ]
-        result.sort(key=self.allele_column_sortkey)
-        return result
-
-    @property
-    def vaf_columns(self):
-        result = [x for x in self.columns if x.endswith('_vaf')]
-        result.sort(
-            key=(lambda x:
-                self.allele_column_sortkey(re.sub('_vaf$', '', x))
-            )
-        )
-        return result
-
-    @property
-    def nonannot_columns(self):
-        return list(GenomeDataFrame.COMMON_COLUMNS) + self.allele_columns
-
-    @property
-    def num_alleles(self):
-        return len(self.allele_columns)
-
-    ##################
-    # set operations #
-    ##################
-
-    def get_uids(self):
-        allele_values = self[self.allele_columns]
-        ref_list = list(allele_values[:, 0])
-        alts_list = list()
-        for row in allele_values[:, 1:]:
-            alts_list.append(
-                tuple(row[pd.notna(row)])
-            )
-
-        values = list()
-        for chrom, pos, ref, alts in zip(
-            self.chroms, self.POS, ref_list, alts_list,
-        ):
-            values.append(
-                libvcfspec.make_vcfspec_id(
-                    chrom, pos, ref, alts
-                )
-            )
-        return pd.Index(values)
-
-    def get_isec_other_indexes(self, other):
-        self_uids = self.get_uids()
-        other_uids = other.get_uids()
-        joined_uids, self_indexes, other_indexes = self_uids.join(other_uids, how='left', return_indexers=True)
-        if other_indexes is None:  # when all elements should be selected, "self_indexes" or "other_indexes" becomes None
-            other_indexes = np.arange(len(other_uids))
-            
-        result = np.where((other_indexes == -1), np.nan, other_indexes)
-        return result
-
-    @classmethod
-    def from_var_indexed_df(cls, df, refver):
-        index_columns = df.index.names
-        assert set(['Chromosome', 'Start']).issubset(index_columns)
-        non_coord_cols = set(index_columns).difference(['Chromosome', 'Start'])
-        assert all(
-            cls.ALLELE_COLNAME_PAT.fullmatch(x) 
-            for x in non_coord_cols
-        )
-        assert set(cls.COMMON_ALLELE_COLUMNS).issubset(non_coord_cols)
-
-        new_df = df.reset_index()
-        new_df['End'] = new_df['Start'] + new_df['REF'].str.len()
-
-        return cls.from_frame(new_df, refver=refver)
-
-    def variant_join(self, other, how='left', nproc=1):
-        self_varidx_df = self.get_var_indexed_df()
-        other_varidx_df = other.get_var_indexed_df()
-        joined_df = self_varidx_df.join(other_varidx_df, how=how)
-        return self.__class__.from_var_indexed_df(joined_df, refver=self.refver)
-
-    @classmethod
-    def variant_union(cls, gdfs, nproc=1, num_split=30):
-        assert len(gdfs) >= 2
-        assert len(set(x.refver for x in gdfs)) == 1
-        assert len(set(x.num_alleles for x in gdfs)) == 1
-
-        logutils.log(f'Splitting input gdfs')
-        #gdfs_bychrom = [x.group_bychrom(sort=False) for x in gdfs]
-        with multiprocessing.Pool(nproc) as pool:
-            gdfs_bychrom = pool.map(cls.split_input_gdfs_targetfunc2, gdfs)
-
-        logutils.log(f'Joining split gdfs')
-        split_args = list()
-        all_chroms = set(
-            itertools.chain.from_iterable(x.keys() for x in gdfs_bychrom)
-        )
-        for chrom in all_chroms:
-            sublist = list()
-            for x in gdfs_bychrom:
-                if chrom in x:
-                    sublist.append(x[chrom])
-            split_args.append(sublist)
-
-        with multiprocessing.Pool(nproc) as pool:
-            mp_result = pool.map(cls.variant_union_base, split_args)
-
-        result = cls.concat(mp_result)
-        result.sort()
-        return result
-
-    @staticmethod
-    def split_input_gdfs_targetfunc2(gdf):
-        return gdf.group_bychrom(sort=False)
-
-    @classmethod
-    def variant_union_base(cls, gdfs):
-        var_indexed_df_list = [x.get_var_indexed_df() for x in gdfs]
-        union_df = var_indexed_df_list[0].join(var_indexed_df_list[1:], how='outer')
-        result = cls.from_var_indexed_df(union_df, refver=gdfs[0].refver)
-        result.sort()
-        return result
-       
-
-class VCFDataFrame(VariantDataFrame):
-    SAMPLEID_SEP = ':::'
-
-    CCF_COLNAME = 'ccf'
-    CNm_COLNAME = 'CNm'
-
-    ##############
-    # properties #
-    ##############
-
-    @property
-    def nonannot_columns(self):
-        return self.colname_getter(self.colnamefilter_nonannot)
-
-    @property
-    def info_columns(self):
-        return self.colname_getter(self.colnamefilter_info)
-
-    @property
-    def format_columns(self):
-        return self.colname_getter(self.colnamefilter_format)
-
-    @property
-    def samples(self):
-        return tools.unique_keeporder(
-            [
-                x.split(self.__class__.SAMPLEID_SEP)[0] 
-                for x in self.format_columns
-            ]
-        )
-
-    @property
-    def format_keys(self):
-        return tools.unique_keeporder(
-            [
-                x.split(self.__class__.SAMPLEID_SEP)[1] 
-                for x in self.format_columns
-            ]
-        )
-
-    #######################
-    # column name filters #
-    #######################
-
-    def colname_getter(self, colnamefilter):
-        return tools.unique_keeporder(filter(colnamefilter, self.columns))
-
-    @classmethod
-    def colnamefilter_nonannot(cls, x):
-        return (
-            (x in cls.COMMON_COLUMNS)
-            or (re.fullmatch('ALT[0-9]+', x) is not None)
-        )
-
-    @classmethod
-    def colnamefilter_info(cls, x):
-        return (
-            (cls.SAMPLEID_SEP not in x)
-            and (not cls.colnamefilter_nonannot(x))
-        )
-
-    @classmethod
-    def colnamefilter_format(cls, x):
-        return (
-            (cls.SAMPLEID_SEP in x)
-            and (not cls.colnamefilter_nonannot(x))
-        )
-
-    ###############
-    # sanitycheck #
-    ###############
-        
-    @classmethod
-    def sanitycheck_df(cls, df):
-        super().sanitycheck_df(df)
-        assert all(
-            (cls.SAMPLEID_SEP not in x)
-            for x in df.columns
-            if cls.colnamefilter_nonannot(x)
-        )
-        assert all(
-            (x.count(cls.SAMPLEID_SEP) == 1)
-            for x in df.columns
-            if cls.colnamefilter_format(x)
-        )
-
-    ###########
-    # getters #
-    ###########
-
-    def get_format_colname(self, sample, key):
-        return sample + self.__class__.SAMPLEID_SEP + key
-
-    def get_format(self, samples, keys):
-        samples = np.atleast_1d(samples)
-        keys = np.atleast_1d(keys)
-        selected_colnames = list()
-        for s, k in itertools.product(samples, keys):
-            colname = s + self.__class__.SAMPLEID_SEP + k
-            selected_colnames.append(colname)
-
-        if len(selected_colnames) == 1:
-            selected_colnames = selected_colnames[0]
-            return self[selected_colnames]
-        else:
-            return np.stack(
-                [self.loc[:, x] for x in selected_colnames],
-                axis=1,
-            )
-            #return self.loc[:, selected_colnames]
-
-    def get_sample_annots(self, sample):
-        colnames = [
-            x for x in self.format_columns 
-            if x.split(self.__class__.SAMPLEID_SEP)[0] == sample
-        ]
-        return self.loc[:, colnames]
-
-    #######
-    # CCF #
-    #######
-
-    def add_ccf(
-        self, cnv_gdf, cellularity, vcf_sampleid, 
-        clonal_pval=cnvcall.DEFAULT_CLONAL_PVALUE,
-    ):
-        assert 'total_depth' in self.columns
-        assert set(['CN', 'B_baf0', 'gCN']).issubset(cnv_gdf.columns)
-
-        CNt_colname = cnv_gdf.get_clonal_CN_colname(germline=False)
-        B_colname = cnv_gdf.get_clonal_B_colname('baf0', germline=False)
-        CNg_colname = cnv_gdf.get_clonal_CN_colname(germline=True)
-
-        joined_df = self.join(
-            cnv_gdf, 
-            [CNt_colname, B_colname, CNg_colname], 
-            how='left',
-            merge='longest', 
-            suffixes={'longest': ''},
-        )
-        valid_flag = (joined_df.get_format(vcf_sampleid, 'ALT1_depth') > 0)
-
-        CNm, ccf = cnvcall.find_ccf(
-            vaf=joined_df.get_format(vcf_sampleid, 'ALT1_vaf'),
-            total_depth=joined_df['total_depth'],
-            alt_depth=np.where(
-                valid_flag, 
-                joined_df.get_format(vcf_sampleid, 'ALT1_depth'),
-                np.nan,
-            ),
-            CNg=joined_df[CNg_colname],
-            CNt=joined_df[CNt_colname],
-            Bt=joined_df[B_colname],
-            cellularity=cellularity,
-            clonal_pval=clonal_pval,
-        )
-
-        self[self.__class__.CCF_COLNAME] = ccf
-        self[self.__class__.CNm_COLNAME] = CNm
-        self[CNt_colname] = joined_df[CNt_colname]
-        self[B_colname] = joined_df[B_colname]
-        self[CNg_colname] = joined_df[CNg_colname]
-
-    ########
-    # draw #
-    ########
-
-    def add_vaf_legend_handle(self, handles):
-        handles.add_line(
-            marker='o', 
-            linewidth=0, 
-            color='black', 
-            markersize=4,
-            label='vaf'
-        )
-
-    def add_ccf_legend_handle(self, handles):
-        handles.add_line(
-            marker='x', 
-            linewidth=0, 
-            color='tab:red', 
-            markersize=4,
-            label='ccf'
-        )
-
-    def draw_vaf(
-        self,
-        ax=None,
-        genomeplotter=None,
-        plotdata=None,
-
-        sampleid=None,
-        vaf_legend=True,
-        ccf_legend=False,
-
-        # fig generation params
-        title=None,
-        suptitle_kwargs=dict(),
-        subplots_kwargs=dict(),
-
-        # drawing kwargs
-        plot_kwargs=dict(),
-
-        # axes setting
-        setup_axes=True,
-        ylabel=False,
-        ylabel_prefix='',
-        ylabel_kwargs=dict(),
-        ymax=False,
-        ymin=False,
-        yticks=False,
-        draw_common_kwargs=dict(),
-        rotate_chromlabel=None,
-
-        # multicore plotdata generation
-        nproc=1,
-        verbose=True,
-    ):
-        if ymax is False:
-            ymax = 1.1
-        if ymin is False:
-            ymin = -0.1
-        if ylabel is False:
-            ylabel = 'Mutation'
-        if yticks is False:
-            yticks = np.round(np.arange(0, 1.2, 0.2), 1)
-        if sampleid is None:
-            sampleid = self.samples[0]
-
-        # prepare single plotdata
-        if genomeplotter is None:
-            genomeplotter = self.get_default_genomeplotter()
-        if plotdata is None:
-            plotdata = genomeplotter.make_plotdata(
-                self, 
-                log_suffix=' (mutation vaf)',
-                nproc=nproc,
-                verbose=verbose,
-            )
-
-        # draw vaf
-        plot_kwargs = (
-            {'linewidth': 0, 'alpha': 0.7, 'markersize': 1, 'marker': 'o', 'color': 'black'} 
-            | plot_kwargs
-        )
-        gdraw_result = self.draw_dots(
-            y_colname=self.get_format_colname(sampleid, 'ALT1_vaf'),
-            ax=ax,
-            genomeplotter=genomeplotter,
-
-            plotdata=plotdata,
-            plot_kwargs=plot_kwargs,
-
-            setup_axes=False,
-            subplots_kwargs=subplots_kwargs,
-        )
-
-        ax = gdraw_result.ax
-        fig = gdraw_result.fig
-        genomeplotter = gdraw_result.genomeplotter
-
-        gdraw_result.set_name('vaf')
-
-        # axes setup
-        if setup_axes:
-            genomedf_draw.draw_axessetup(
-                ax=ax,
-                genomeplotter=genomeplotter,
-
-                ylabel=ylabel,
-                ylabel_prefix=ylabel_prefix,
-                ylabel_kwargs=ylabel_kwargs,
-                ymax=ymax,
-                ymin=ymin,
-                yticks=yticks,
-
-                draw_common_kwargs=draw_common_kwargs,
-                rotate_chromlabel=rotate_chromlabel,
-
-                fig=fig,
-                title=title, 
-                suptitle_kwargs=suptitle_kwargs,
-            )
-
-        # make legend - intentionally placed after axes setup to use "bbox_to_anchor"
-        handles = plotmisc.LegendHandles()
-        if vaf_legend:
-            self.add_vaf_legend_handle(handles)
-        if ccf_legend:
-            self.add_ccf_legend_handle(handles)
-
-        ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
-
-        return gdraw_result
-
-    def draw_ccf(
-        self,
-        ax=None,
-        genomeplotter=None,
-        plotdata=None,
-
-        sampleid=None,
-        vaf_legend=False,
-        ccf_legend=True,
-
-        # fig generation params
-        title=None,
-        suptitle_kwargs=dict(),
-        subplots_kwargs=dict(),
-
-        # drawing kwargs
-        plot_kwargs=dict(),
-
-        # axes setting
-        setup_axes=True,
-        ylabel=False,
-        ylabel_prefix='',
-        ylabel_kwargs=dict(),
-        ymax=False,
-        ymin=False,
-        yticks=False,
-        draw_common_kwargs=dict(),
-        rotate_chromlabel=None,
-
-        # multicore plotdata generation
-        nproc=1,
-        verbose=True,
-    ):
-        if ymax is False:
-            ymax = 1.1
-        if ymin is False:
-            ymin = -0.1
-        if ylabel is False:
-            ylabel = 'Mutation'
-        if yticks is False:
-            yticks = np.round(np.arange(0, 1.2, 0.2), 1)
-        if sampleid is None:
-            sampleid = self.samples[0]
-
-        # prepare single plotdata
-        if genomeplotter is None:
-            genomeplotter = self.get_default_genomeplotter()
-        if plotdata is None:
-            plotdata = genomeplotter.make_plotdata(
-                self, 
-                log_suffix=' (mutation ccf)',
-                nproc=nproc,
-                verbose=verbose,
-            )
-
-        # draw
-        plot_kwargs = (
-            {'linewidth': 0, 'alpha': 0.7, 'markersize': 1, 'color': 'tab:red', 'marker': 'x'} 
-            | plot_kwargs
-        )
-        gdraw_result = self.draw_dots(
-            y_colname=self.__class__.CCF_COLNAME,
-            ax=ax,
-            genomeplotter=genomeplotter,
-
-            plotdata=plotdata,
-            plot_kwargs=plot_kwargs,
-
-            setup_axes=False,
-            subplots_kwargs=subplots_kwargs,
-        )
-
-        ax = gdraw_result.ax
-        fig = gdraw_result.fig
-        genomeplotter = gdraw_result.genomeplotter
-
-        gdraw_result.set_name('ccf')
-
-        # axes setup
-        if setup_axes:
-            genomedf_draw.draw_axessetup(
-                ax=ax,
-                genomeplotter=genomeplotter,
-
-                ylabel=ylabel,
-                ylabel_prefix=ylabel_prefix,
-                ylabel_kwargs=ylabel_kwargs,
-                ymax=ymax,
-                ymin=ymin,
-                yticks=yticks,
-
-                draw_common_kwargs=draw_common_kwargs,
-                rotate_chromlabel=rotate_chromlabel,
-
-                fig=fig,
-                title=title, 
-                suptitle_kwargs=suptitle_kwargs,
-            )
-
-        # make legend - intentionally placed after axes setup to use "bbox_to_anchor"
-        handles = plotmisc.LegendHandles()
-        if vaf_legend:
-            self.add_vaf_legend_handle(handles)
-        if ccf_legend:
-            self.add_ccf_legend_handle(handles)
-
-        ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
-
-        return gdraw_result
-
-
-
-#########################################
-# parallelized vaf dataframe generation #
-#########################################
-
-@deco.get_deco_nproc_limit(3)
-@deco.get_deco_atleast1d(['sampleids'])
-def get_vafdf(
-    vcf_path, 
-    sampleids, 
-    n_allele=2,
-    nproc=1,
-    num_split=200,
-    exclude_other=False,
-    prop=None,
-    vpfilter=None,
-    verbose=True,
-):
-    """Columns: MultiIndex with 2 levels
-        level 1: (name:                                              None |                                 sid1 |                                 sid2
-        level 2: Chromosome, Start, End, REF, [ALT1, [ALT2, ...]]   REF_vaf, [ALT1_vaf, [ALT2_vaf, ...]]   REF_vaf, [ALT1_vaf, [ALT2_vaf, ...]]
-    """
-    # get VCF fetch regions for each parallel job
-    if verbose:
-        logutils.log(f'Extracting vcf position information') 
-
-    #num_split = nproc * 10
-    fetchregion_gdf_list = vcfmisc.get_vcf_fetchregions_new(
-        vcf_path, 
-        n=num_split, 
-        nproc=nproc,
-    )
-
-    # run multiprocess jobs
-    args = (
-        (
-            fetchregion_gdf,
-            vcf_path, 
-            sampleids, 
-            n_allele, 
-            exclude_other,
-            prop,
-            vpfilter,
-        )
-        for fetchregion_gdf in fetchregion_gdf_list
-    )
-    with multiprocessing.Pool(nproc) as pool:
-        if verbose:
-            logutils.log(f'Running parallel jobs') 
-        mp_result = pool.starmap(get_vafdf_targetfunc, args)
-        if verbose:
-            logutils.log(f'Concatenating split job dataframes') 
-        result = VCFDataFrame.concat(itertools.chain.from_iterable(mp_result))
-
-    return result
-
-
-def get_vafdf_targetfunc(
-    fetchregion_gdf,
-    vcf_path, 
-    sampleids, 
-    n_allele, 
-    exclude_other,
-    prop,
-    vpfilter,
-):
-    vafdf_list = list()
-    for chrom, start0, end0 in fetchregion_gdf.iter_coords():
-        vplist = VariantPlusList.from_vcf_lazy(
-            vcf_path, 
-            logging_lineno=None, 
-            verbose=False,
-            init_all_attrs=False,
-            vp_init_params=dict(
-                init_readstats=True,
-                sampleid_list=sampleids,
-            ),
-        )
-        vafdf = vplist.get_vafdf(
-            sampleids=sampleids,
-            chrom=chrom, start0=start0, end0=end0,
-            n_allele=n_allele,
-            exclude_other=exclude_other,
-            lazy=True,
-            prop=prop,
-            vpfilter=vpfilter,
-        )
-        vafdf_list.append(vafdf)
-
-    return vafdf_list
+####################
+# AAAAAAAAAAAAAAAA #
+####################
+
+
+##########
+## vcfdf #
+##########
+#
+#def get_vafdf_allele_columns(num):
+#    return ['REF'] + [f'ALT{x + 1}' for x in range(num - 1)]
+#
+#
+#class VariantDataFrame(GenomeDataFrame):
+#    COMMON_ALLELE_COLUMNS = ['REF', 'ALT1']
+#    COMMON_COLUMNS = GenomeDataFrame.COMMON_COLUMNS + COMMON_ALLELE_COLUMNS
+#    ALLELE_COLNAME_PAT = re.compile(r'(REF|ALT[1-9][0-9]*)')
+#
+#    DEFAULT_DTYPES = (
+#        GenomeDataFrame.DEFAULT_DTYPES
+#        | {
+#            'REF': 'string',
+#            re.compile('ALT[1-9][0-9]*'): 'string',
+#        }
+#    )
+#
+#    @property
+#    def POS(self):
+#        return self['Start'] + 1
+#
+#    @staticmethod
+#    def allele_column_sortkey(colname):
+#        if colname == 'REF':
+#            return 0
+#        else:
+#            return int(re.sub('^ALT', '', colname))
+#
+#    @property
+#    def allele_columns(self):
+#        result = [
+#            x for x in self.columns
+#            if self.__class__.ALLELE_COLNAME_PAT.fullmatch(x)
+#        ]
+#        result.sort(key=self.allele_column_sortkey)
+#        return result
+#
+#    @property
+#    def vaf_columns(self):
+#        result = [x for x in self.columns if x.endswith('_vaf')]
+#        result.sort(
+#            key=(lambda x:
+#                self.allele_column_sortkey(re.sub('_vaf$', '', x))
+#            )
+#        )
+#        return result
+#
+#    @property
+#    def nonannot_columns(self):
+#        return list(GenomeDataFrame.COMMON_COLUMNS) + self.allele_columns
+#
+#    @property
+#    def num_alleles(self):
+#        return len(self.allele_columns)
+#
+#    ##################
+#    # set operations #
+#    ##################
+#
+#    def get_uids(self):
+#        allele_values = self[self.allele_columns]
+#        ref_list = list(allele_values[:, 0])
+#        alts_list = list()
+#        for row in allele_values[:, 1:]:
+#            alts_list.append(
+#                tuple(row[pd.notna(row)])
+#            )
+#
+#        values = list()
+#        for chrom, pos, ref, alts in zip(
+#            self.chroms, self.POS, ref_list, alts_list,
+#        ):
+#            values.append(
+#                libvcfspec.make_vcfspec_id(
+#                    chrom, pos, ref, alts
+#                )
+#            )
+#        return pd.Index(values)
+#
+#    def get_isec_other_indexes(self, other):
+#        self_uids = self.get_uids()
+#        other_uids = other.get_uids()
+#        joined_uids, self_indexes, other_indexes = self_uids.join(other_uids, how='left', return_indexers=True)
+#        if other_indexes is None:  # when all elements should be selected, "self_indexes" or "other_indexes" becomes None
+#            other_indexes = np.arange(len(other_uids))
+#            
+#        result = np.where((other_indexes == -1), np.nan, other_indexes)
+#        return result
+#
+#    @classmethod
+#    def from_var_indexed_df(cls, df, refver):
+#        index_columns = df.index.names
+#        assert set(['Chromosome', 'Start']).issubset(index_columns)
+#        non_coord_cols = set(index_columns).difference(['Chromosome', 'Start'])
+#        assert all(
+#            cls.ALLELE_COLNAME_PAT.fullmatch(x) 
+#            for x in non_coord_cols
+#        )
+#        assert set(cls.COMMON_ALLELE_COLUMNS).issubset(non_coord_cols)
+#
+#        new_df = df.reset_index()
+#        new_df['End'] = new_df['Start'] + new_df['REF'].str.len()
+#
+#        return cls.from_frame(new_df, refver=refver)
+#
+#    def variant_join(self, other, how='left', nproc=1):
+#        self_varidx_df = self.get_var_indexed_df()
+#        other_varidx_df = other.get_var_indexed_df()
+#        joined_df = self_varidx_df.join(other_varidx_df, how=how)
+#        return self.__class__.from_var_indexed_df(joined_df, refver=self.refver)
+#
+#    @classmethod
+#    def variant_union(cls, gdfs, nproc=1, num_split=30):
+#        assert len(gdfs) >= 2
+#        assert len(set(x.refver for x in gdfs)) == 1
+#        assert len(set(x.num_alleles for x in gdfs)) == 1
+#
+#        logutils.log(f'Splitting input gdfs')
+#        #gdfs_bychrom = [x.group_bychrom(sort=False) for x in gdfs]
+#        with multiprocessing.Pool(nproc) as pool:
+#            gdfs_bychrom = pool.map(cls.split_input_gdfs_targetfunc2, gdfs)
+#
+#        logutils.log(f'Joining split gdfs')
+#        split_args = list()
+#        all_chroms = set(
+#            itertools.chain.from_iterable(x.keys() for x in gdfs_bychrom)
+#        )
+#        for chrom in all_chroms:
+#            sublist = list()
+#            for x in gdfs_bychrom:
+#                if chrom in x:
+#                    sublist.append(x[chrom])
+#            split_args.append(sublist)
+#
+#        with multiprocessing.Pool(nproc) as pool:
+#            mp_result = pool.map(cls.variant_union_base, split_args)
+#
+#        result = cls.concat(mp_result)
+#        result.sort()
+#        return result
+#
+#    @staticmethod
+#    def split_input_gdfs_targetfunc2(gdf):
+#        return gdf.group_bychrom(sort=False)
+#
+#    @classmethod
+#    def variant_union_base(cls, gdfs):
+#        var_indexed_df_list = [x.get_var_indexed_df() for x in gdfs]
+#        union_df = var_indexed_df_list[0].join(var_indexed_df_list[1:], how='outer')
+#        result = cls.from_var_indexed_df(union_df, refver=gdfs[0].refver)
+#        result.sort()
+#        return result
+#       
+#
+#class VCFDataFrame(VariantDataFrame):
+#    SAMPLEID_SEP = ':::'
+#
+#    CCF_COLNAME = 'ccf'
+#    CNm_COLNAME = 'CNm'
+#
+#    ##############
+#    # properties #
+#    ##############
+#
+#    @property
+#    def nonannot_columns(self):
+#        return self.colname_getter(self.colnamefilter_nonannot)
+#
+#    @property
+#    def info_columns(self):
+#        return self.colname_getter(self.colnamefilter_info)
+#
+#    @property
+#    def format_columns(self):
+#        return self.colname_getter(self.colnamefilter_format)
+#
+#    @property
+#    def samples(self):
+#        return tools.unique_keeporder(
+#            [
+#                x.split(self.__class__.SAMPLEID_SEP)[0] 
+#                for x in self.format_columns
+#            ]
+#        )
+#
+#    @property
+#    def format_keys(self):
+#        return tools.unique_keeporder(
+#            [
+#                x.split(self.__class__.SAMPLEID_SEP)[1] 
+#                for x in self.format_columns
+#            ]
+#        )
+#
+#    #######################
+#    # column name filters #
+#    #######################
+#
+#    def colname_getter(self, colnamefilter):
+#        return tools.unique_keeporder(filter(colnamefilter, self.columns))
+#
+#    @classmethod
+#    def colnamefilter_nonannot(cls, x):
+#        return (
+#            (x in cls.COMMON_COLUMNS)
+#            or (re.fullmatch('ALT[0-9]+', x) is not None)
+#        )
+#
+#    @classmethod
+#    def colnamefilter_info(cls, x):
+#        return (
+#            (cls.SAMPLEID_SEP not in x)
+#            and (not cls.colnamefilter_nonannot(x))
+#        )
+#
+#    @classmethod
+#    def colnamefilter_format(cls, x):
+#        return (
+#            (cls.SAMPLEID_SEP in x)
+#            and (not cls.colnamefilter_nonannot(x))
+#        )
+#
+#    ###############
+#    # sanitycheck #
+#    ###############
+#        
+#    @classmethod
+#    def sanitycheck_df(cls, df):
+#        super().sanitycheck_df(df)
+#        assert all(
+#            (cls.SAMPLEID_SEP not in x)
+#            for x in df.columns
+#            if cls.colnamefilter_nonannot(x)
+#        )
+#        assert all(
+#            (x.count(cls.SAMPLEID_SEP) == 1)
+#            for x in df.columns
+#            if cls.colnamefilter_format(x)
+#        )
+#
+#    ###########
+#    # getters #
+#    ###########
+#
+#    def get_format_colname(self, sample, key):
+#        return sample + self.__class__.SAMPLEID_SEP + key
+#
+#    def get_format(self, samples, keys):
+#        samples = np.atleast_1d(samples)
+#        keys = np.atleast_1d(keys)
+#        selected_colnames = list()
+#        for s, k in itertools.product(samples, keys):
+#            colname = s + self.__class__.SAMPLEID_SEP + k
+#            selected_colnames.append(colname)
+#
+#        if len(selected_colnames) == 1:
+#            selected_colnames = selected_colnames[0]
+#            return self[selected_colnames]
+#        else:
+#            return np.stack(
+#                [self.loc[:, x] for x in selected_colnames],
+#                axis=1,
+#            )
+#            #return self.loc[:, selected_colnames]
+#
+#    def get_sample_annots(self, sample):
+#        colnames = [
+#            x for x in self.format_columns 
+#            if x.split(self.__class__.SAMPLEID_SEP)[0] == sample
+#        ]
+#        return self.loc[:, colnames]
+#
+#    #######
+#    # CCF #
+#    #######
+#
+#    def add_ccf(
+#        self, cnv_gdf, cellularity, vcf_sampleid, 
+#        clonal_pval=cnvcall.DEFAULT_CLONAL_PVALUE,
+#    ):
+#        assert 'total_depth' in self.columns
+#        assert set(['CN', 'B_baf0', 'gCN']).issubset(cnv_gdf.columns)
+#
+#        CNt_colname = cnv_gdf.get_clonal_CN_colname(germline=False)
+#        B_colname = cnv_gdf.get_clonal_B_colname('baf0', germline=False)
+#        CNg_colname = cnv_gdf.get_clonal_CN_colname(germline=True)
+#
+#        joined_df = self.join(
+#            cnv_gdf, 
+#            [CNt_colname, B_colname, CNg_colname], 
+#            how='left',
+#            merge='longest', 
+#            suffixes={'longest': ''},
+#        )
+#        valid_flag = (joined_df.get_format(vcf_sampleid, 'ALT1_depth') > 0)
+#
+#        CNm, ccf = cnvcall.find_ccf(
+#            vaf=joined_df.get_format(vcf_sampleid, 'ALT1_vaf'),
+#            total_depth=joined_df['total_depth'],
+#            alt_depth=np.where(
+#                valid_flag, 
+#                joined_df.get_format(vcf_sampleid, 'ALT1_depth'),
+#                np.nan,
+#            ),
+#            CNg=joined_df[CNg_colname],
+#            CNt=joined_df[CNt_colname],
+#            Bt=joined_df[B_colname],
+#            cellularity=cellularity,
+#            clonal_pval=clonal_pval,
+#        )
+#
+#        self[self.__class__.CCF_COLNAME] = ccf
+#        self[self.__class__.CNm_COLNAME] = CNm
+#        self[CNt_colname] = joined_df[CNt_colname]
+#        self[B_colname] = joined_df[B_colname]
+#        self[CNg_colname] = joined_df[CNg_colname]
+#
+#    ########
+#    # draw #
+#    ########
+#
+#    def add_vaf_legend_handle(self, handles):
+#        handles.add_line(
+#            marker='o', 
+#            linewidth=0, 
+#            color='black', 
+#            markersize=4,
+#            label='vaf'
+#        )
+#
+#    def add_ccf_legend_handle(self, handles):
+#        handles.add_line(
+#            marker='x', 
+#            linewidth=0, 
+#            color='tab:red', 
+#            markersize=4,
+#            label='ccf'
+#        )
+#
+#    def draw_vaf(
+#        self,
+#        ax=None,
+#        genomeplotter=None,
+#        plotdata=None,
+#
+#        sampleid=None,
+#        vaf_legend=True,
+#        ccf_legend=False,
+#
+#        # fig generation params
+#        title=None,
+#        suptitle_kwargs=dict(),
+#        subplots_kwargs=dict(),
+#
+#        # drawing kwargs
+#        plot_kwargs=dict(),
+#
+#        # axes setting
+#        setup_axes=True,
+#        ylabel=False,
+#        ylabel_prefix='',
+#        ylabel_kwargs=dict(),
+#        ymax=False,
+#        ymin=False,
+#        yticks=False,
+#        draw_common_kwargs=dict(),
+#        rotate_chromlabel=None,
+#
+#        # multicore plotdata generation
+#        nproc=1,
+#        verbose=True,
+#    ):
+#        if ymax is False:
+#            ymax = 1.1
+#        if ymin is False:
+#            ymin = -0.1
+#        if ylabel is False:
+#            ylabel = 'Mutation'
+#        if yticks is False:
+#            yticks = np.round(np.arange(0, 1.2, 0.2), 1)
+#        if sampleid is None:
+#            sampleid = self.samples[0]
+#
+#        # prepare single plotdata
+#        if genomeplotter is None:
+#            genomeplotter = self.get_default_genomeplotter()
+#        if plotdata is None:
+#            plotdata = genomeplotter.make_plotdata(
+#                self, 
+#                log_suffix=' (mutation vaf)',
+#                nproc=nproc,
+#                verbose=verbose,
+#            )
+#
+#        # draw vaf
+#        plot_kwargs = (
+#            {'linewidth': 0, 'alpha': 0.7, 'markersize': 1, 'marker': 'o', 'color': 'black'} 
+#            | plot_kwargs
+#        )
+#        gdraw_result = self.draw_dots(
+#            y_colname=self.get_format_colname(sampleid, 'ALT1_vaf'),
+#            ax=ax,
+#            genomeplotter=genomeplotter,
+#
+#            plotdata=plotdata,
+#            plot_kwargs=plot_kwargs,
+#
+#            setup_axes=False,
+#            subplots_kwargs=subplots_kwargs,
+#        )
+#
+#        ax = gdraw_result.ax
+#        fig = gdraw_result.fig
+#        genomeplotter = gdraw_result.genomeplotter
+#
+#        gdraw_result.set_name('vaf')
+#
+#        # axes setup
+#        if setup_axes:
+#            genomedf_draw.draw_axessetup(
+#                ax=ax,
+#                genomeplotter=genomeplotter,
+#
+#                ylabel=ylabel,
+#                ylabel_prefix=ylabel_prefix,
+#                ylabel_kwargs=ylabel_kwargs,
+#                ymax=ymax,
+#                ymin=ymin,
+#                yticks=yticks,
+#
+#                draw_common_kwargs=draw_common_kwargs,
+#                rotate_chromlabel=rotate_chromlabel,
+#
+#                fig=fig,
+#                title=title, 
+#                suptitle_kwargs=suptitle_kwargs,
+#            )
+#
+#        # make legend - intentionally placed after axes setup to use "bbox_to_anchor"
+#        handles = plotmisc.LegendHandles()
+#        if vaf_legend:
+#            self.add_vaf_legend_handle(handles)
+#        if ccf_legend:
+#            self.add_ccf_legend_handle(handles)
+#
+#        ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
+#
+#        return gdraw_result
+#
+#    def draw_ccf(
+#        self,
+#        ax=None,
+#        genomeplotter=None,
+#        plotdata=None,
+#
+#        sampleid=None,
+#        vaf_legend=False,
+#        ccf_legend=True,
+#
+#        # fig generation params
+#        title=None,
+#        suptitle_kwargs=dict(),
+#        subplots_kwargs=dict(),
+#
+#        # drawing kwargs
+#        plot_kwargs=dict(),
+#
+#        # axes setting
+#        setup_axes=True,
+#        ylabel=False,
+#        ylabel_prefix='',
+#        ylabel_kwargs=dict(),
+#        ymax=False,
+#        ymin=False,
+#        yticks=False,
+#        draw_common_kwargs=dict(),
+#        rotate_chromlabel=None,
+#
+#        # multicore plotdata generation
+#        nproc=1,
+#        verbose=True,
+#    ):
+#        if ymax is False:
+#            ymax = 1.1
+#        if ymin is False:
+#            ymin = -0.1
+#        if ylabel is False:
+#            ylabel = 'Mutation'
+#        if yticks is False:
+#            yticks = np.round(np.arange(0, 1.2, 0.2), 1)
+#        if sampleid is None:
+#            sampleid = self.samples[0]
+#
+#        # prepare single plotdata
+#        if genomeplotter is None:
+#            genomeplotter = self.get_default_genomeplotter()
+#        if plotdata is None:
+#            plotdata = genomeplotter.make_plotdata(
+#                self, 
+#                log_suffix=' (mutation ccf)',
+#                nproc=nproc,
+#                verbose=verbose,
+#            )
+#
+#        # draw
+#        plot_kwargs = (
+#            {'linewidth': 0, 'alpha': 0.7, 'markersize': 1, 'color': 'tab:red', 'marker': 'x'} 
+#            | plot_kwargs
+#        )
+#        gdraw_result = self.draw_dots(
+#            y_colname=self.__class__.CCF_COLNAME,
+#            ax=ax,
+#            genomeplotter=genomeplotter,
+#
+#            plotdata=plotdata,
+#            plot_kwargs=plot_kwargs,
+#
+#            setup_axes=False,
+#            subplots_kwargs=subplots_kwargs,
+#        )
+#
+#        ax = gdraw_result.ax
+#        fig = gdraw_result.fig
+#        genomeplotter = gdraw_result.genomeplotter
+#
+#        gdraw_result.set_name('ccf')
+#
+#        # axes setup
+#        if setup_axes:
+#            genomedf_draw.draw_axessetup(
+#                ax=ax,
+#                genomeplotter=genomeplotter,
+#
+#                ylabel=ylabel,
+#                ylabel_prefix=ylabel_prefix,
+#                ylabel_kwargs=ylabel_kwargs,
+#                ymax=ymax,
+#                ymin=ymin,
+#                yticks=yticks,
+#
+#                draw_common_kwargs=draw_common_kwargs,
+#                rotate_chromlabel=rotate_chromlabel,
+#
+#                fig=fig,
+#                title=title, 
+#                suptitle_kwargs=suptitle_kwargs,
+#            )
+#
+#        # make legend - intentionally placed after axes setup to use "bbox_to_anchor"
+#        handles = plotmisc.LegendHandles()
+#        if vaf_legend:
+#            self.add_vaf_legend_handle(handles)
+#        if ccf_legend:
+#            self.add_ccf_legend_handle(handles)
+#
+#        ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1, 1.3))
+#
+#        return gdraw_result
+#
+#
+#
+##########################################
+## parallelized vaf dataframe generation #
+##########################################
+#
+#@deco.get_deco_nproc_limit(3)
+#@deco.get_deco_atleast1d(['sampleids'])
+#def get_vafdf(
+#    vcf_path, 
+#    sampleids, 
+#    n_allele=2,
+#    nproc=1,
+#    num_split=200,
+#    exclude_other=False,
+#    prop=None,
+#    vpfilter=None,
+#    verbose=True,
+#):
+#    """Columns: MultiIndex with 2 levels
+#        level 1: (name:                                              None |                                 sid1 |                                 sid2
+#        level 2: Chromosome, Start, End, REF, [ALT1, [ALT2, ...]]   REF_vaf, [ALT1_vaf, [ALT2_vaf, ...]]   REF_vaf, [ALT1_vaf, [ALT2_vaf, ...]]
+#    """
+#    # get VCF fetch regions for each parallel job
+#    if verbose:
+#        logutils.log(f'Extracting vcf position information') 
+#
+#    #num_split = nproc * 10
+#    fetchregion_gdf_list = vcfmisc.get_vcf_fetchregions_new(
+#        vcf_path, 
+#        n=num_split, 
+#        nproc=nproc,
+#    )
+#
+#    # run multiprocess jobs
+#    args = (
+#        (
+#            fetchregion_gdf,
+#            vcf_path, 
+#            sampleids, 
+#            n_allele, 
+#            exclude_other,
+#            prop,
+#            vpfilter,
+#        )
+#        for fetchregion_gdf in fetchregion_gdf_list
+#    )
+#    with multiprocessing.Pool(nproc) as pool:
+#        if verbose:
+#            logutils.log(f'Running parallel jobs') 
+#        mp_result = pool.starmap(get_vafdf_targetfunc, args)
+#        if verbose:
+#            logutils.log(f'Concatenating split job dataframes') 
+#        result = VCFDataFrame.concat(itertools.chain.from_iterable(mp_result))
+#
+#    return result
+#
+#
+#def get_vafdf_targetfunc(
+#    fetchregion_gdf,
+#    vcf_path, 
+#    sampleids, 
+#    n_allele, 
+#    exclude_other,
+#    prop,
+#    vpfilter,
+#):
+#    vafdf_list = list()
+#    for chrom, start0, end0 in fetchregion_gdf.iter_coords():
+#        vplist = VariantPlusList.from_vcf_lazy(
+#            vcf_path, 
+#            logging_lineno=None, 
+#            verbose=False,
+#            init_all_attrs=False,
+#            vp_init_params=dict(
+#                init_readstats=True,
+#                sampleid_list=sampleids,
+#            ),
+#        )
+#        vafdf = vplist.get_vafdf(
+#            sampleids=sampleids,
+#            chrom=chrom, start0=start0, end0=end0,
+#            n_allele=n_allele,
+#            exclude_other=exclude_other,
+#            lazy=True,
+#            prop=prop,
+#            vpfilter=vpfilter,
+#        )
+#        vafdf_list.append(vafdf)
+#
+#    return vafdf_list
+
+
+
+######################
+# AAAAAAAAAAAAAAAAAA #
+######################
 
 
 #def get_vafdf_targetfunc_old(

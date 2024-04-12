@@ -629,7 +629,9 @@ def make_jobscript(
 ########################################
 
 @deco.get_deco_broadcast(
-    ['cmdargs', 'logpath', 'nproc', 'jobname']
+    ['cmdargs', 'logpath', 'nproc', 'jobname'],
+    nargs_name='cmdargs',
+    check_length=True,
 )
 def run_cmdargs_with_slurm(
     cmdargs, 
@@ -650,24 +652,14 @@ def run_cmdargs_with_slurm(
         cmdargs: Must be a list. Each element must be a list or str representing
             command-line arguments.
     """
-    # broadcast
-    n_item = len(cmdargs)
-    logpath = np.broadcast_to(logpath, n_item)  # even when n_item is 1, a 1d array results
-    nproc = np.broadcast_to(nproc, n_item)
-    jobname = np.broadcast_to(jobname, n_item)
-
     # sanity check
     if any(
         ((x is not None) and (not x.endswith('.log')))
         for x in logpath
     ):
         raise Exception(f'All "logpath" must end with ".log".')
-
-    # modify cmdargs
-    cmdargs = [
-        workflow_utils.handle_cmdargs_arg(x, to_list=False)
-        for x in cmdargs
-    ]
+    if not all(isinstance(x, str) for x in cmdargs):
+        raise Exception(f'All "cmdargs" must be str objects.')
 
     # make script files
     jobscript_dir = tempfile.mkdtemp(prefix='slurm_script_tmpdir_', dir=tmpfile_dir)

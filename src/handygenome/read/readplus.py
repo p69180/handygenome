@@ -214,7 +214,8 @@ class ReadPlus(RefverObjectBase):
         return BQlist
 
     #def get_mNM_clipspec_data(self, vcfspec, split_del=False):
-    def get_mNM_data(self, vcfspec, split_del=False):
+    #def get_mNM_data(self, vcfspec, split_del=False):
+    def get_mNM_data(self, split_del=False):
         """mNM
             - Softclip is not included
             - Insertion on the right or left border is not included
@@ -972,7 +973,7 @@ class ReadPlusPair(RefverObjectBase):
     # non-alleleclass methods #
     ##########################
 
-    def get_iter_rps(self):
+    def get_rp_iter(self):
         for rp in (self.rp1, self.rp2):
             if rp is not None:
                 yield rp
@@ -994,10 +995,16 @@ class ReadPlusPair(RefverObjectBase):
             )
 
     def check_overlaps(self, rng0):
-        return any(rp.check_overlaps(rng0) for rp in self.get_iter_rps())
+        return any(
+            rp.check_overlaps(rng0) 
+            for rp in self.get_rp_iter()
+        )
 
     def check_softclip_overlaps(self, rng0):
-        return any(rp.check_softclip_overlaps(rng0) for rp in self.get_iter_rps())
+        return any(
+            rp.check_softclip_overlaps(rng0) 
+            for rp in self.get_rp_iter()
+        )
 
     def check_softclip_overlaps_vcfspec(self, vcfspec):
         if self.rp2 is None:
@@ -1120,16 +1127,20 @@ class ReadPlusPair(RefverObjectBase):
         else:
             return self.rp1.cigarstats[4] + self.rp2.cigarstats[4]
 
+    def get_NM(self):
+        return sum(rp.read.get_tag('NM') for rp in self.get_rp_iter())
+
     #def get_mNM_clipspec_data(self, vcfspec):
-    def get_mNM_data(self, vcfspec):
+    #def get_mNM_data(self, vcfspec):
+    def get_mNM_data(self):
         if self.rp2 is None:
             #return self.rp1.get_mNM_clipspec_data(vcfspec)
-            return self.rp1.get_mNM_data(vcfspec)
+            return self.rp1.get_mNM_data()
         else:
             #mNM_data_rp1, clipspec_data_rp1 = self.rp1.get_mNM_clipspec_data(vcfspec)
             #mNM_data_rp2, clipspec_data_rp2 = self.rp2.get_mNM_clipspec_data(vcfspec)
-            mNM_data_rp1 = self.rp1.get_mNM_data(vcfspec)
-            mNM_data_rp2 = self.rp2.get_mNM_data(vcfspec)
+            mNM_data_rp1 = self.rp1.get_mNM_data()
+            mNM_data_rp2 = self.rp2.get_mNM_data()
 
             mNM_data = sorted(
                 set(itertools.chain(mNM_data_rp1, mNM_data_rp2)),

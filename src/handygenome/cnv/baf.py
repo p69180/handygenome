@@ -24,7 +24,7 @@ import handygenome.peakutils as peakutils
 from handygenome.peakutils import HistPeaks, DensityPeaks, DensityGenerationFailure, NoPeakError
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.variant.variantplus as libvp
-from handygenome.variant.variantplus import VCFDataFrame, VariantDataFrame
+from handygenome.variant.vcfdataframe import VCFDataFrame, VariantDataFrame
 from handygenome.genomedf.genomedf import GenomeDataFrame, SegmentDataFrame
 import handygenome.genomedf.genomedf_draw as genomedf_draw
 import handygenome.plot.misc as plotmisc

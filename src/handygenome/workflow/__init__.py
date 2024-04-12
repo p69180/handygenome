@@ -19,6 +19,7 @@ import handygenome.tools as tools
 import handygenome.deco as deco
 import handygenome.refgenome.refgenome as refgenome
 import handygenome.vcfeditor.misc as vcfmisc
+from handygenome.utils.workflow_utils import MultiArgsList
 
 
 
@@ -323,20 +324,20 @@ def get_tmpdir_paths_vcfeditor(
         subdic = dict()
         subdic['top'] = os.path.join(root_path, 'split_outfiles')
         os.mkdir(subdic['top'])
-        subdic['files'] = [
+        subdic['files'] = MultiArgsList(
             os.path.join(subdic['top'], f'{zidx}.vcf.gz')
             for zidx in tools.zrange(nproc)
-        ]
+        )
         tmpdir_paths['split_outfiles'] = subdic
 
     if make_logs:
         subdic = dict()
         subdic['top'] = os.path.join(root_path, 'logs')
         os.mkdir(subdic['top'])
-        subdic['files'] = [
+        subdic['files'] = MultiArgsList(
             os.path.join(subdic['top'], f'{zidx}.log')
             for zidx in tools.zrange(nproc)
-        ]
+        )
         tmpdir_paths['logs'] = subdic
 
     if set(other_subdirs).intersection(tmpdir_paths.keys()):
@@ -431,12 +432,15 @@ def add_infile_arg(parser, required=True, help=f'Input vcf file path.'):
 
 
 def add_infilelist_arg(
-        parser, required=True, 
-        help=f'One or more input file paths, separated with whitespaces.'):
+    parser, 
+    required=True, 
+    help=f'One or more input file paths, separated with whitespaces.',
+):
     parser.add_argument(
         '--infilelist', dest='infile_path_list', required=required, 
         nargs='+', type=arghandler_infile, metavar='<input file path>', 
-        help=textwrap.fill(help, width=HELP_WIDTH))
+        help=textwrap.fill(help, width=HELP_WIDTH),
+    )
 
 
 def add_indir_arg(parser, required=True, help=f'Input directory path.'):
@@ -483,7 +487,7 @@ def add_fasta_arg(parser, required=True, help=None):
         help=textwrap.fill(help, width=HELP_WIDTH))
 
 
-def add_refver_arg(parser, required=True, choices='all', help=None, standardize=False):
+def add_refver_arg(parser, default='hg19', required=False, choices='all', help=None, standardize=False):
     if choices == 'all':
         allowed_vals = refgenome.REFVERINFO.list_known_refvers()
     elif choices == 'mouse':
@@ -494,7 +498,10 @@ def add_refver_arg(parser, required=True, choices='all', help=None, standardize=
         allowed_vals = choices
 
     if help is None:
-        help = f'Reference genome version. Must be one of {allowed_vals}.'
+        help = (
+            f'Reference genome version. Must be one of: '
+            f'{refgenome.REFVERINFO.list_known_refvers()}'
+        )
 
     if standardize:
         type_arg = refgenome.standardize
@@ -504,8 +511,8 @@ def add_refver_arg(parser, required=True, choices='all', help=None, standardize=
         '--refver', 
         dest='refver', 
         required=required, 
-        default=None, 
-        choices=allowed_vals, 
+        default=default, 
+        #choices=allowed_vals, 
         metavar='<reference genome version>', 
         help=textwrap.fill(help, width=HELP_WIDTH),
         type=type_arg,

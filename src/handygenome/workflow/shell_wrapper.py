@@ -17,6 +17,7 @@ import handygenome.tools as tools
 import handygenome.deco as deco
 #import handygenome.workflow as workflow
 import handygenome.utils.workflow_utils as worfklow_utils
+from handygenome.utils.workflow_utils import MultiArgsList
 import handygenome.workflow.slurm as libslurm
 
 
@@ -61,7 +62,7 @@ def get_conda_params(conda_prefix=None):
 # running command-line arguments #
 ##################################
 
-def run_cmdargs_targetfunc(cmdargs, logpath_item):
+def run_cmdargs_targetfunc(cmdargs_item, logpath_item):
     run_kwargs = dict(
         check=False,
         shell=True,
@@ -70,7 +71,7 @@ def run_cmdargs_targetfunc(cmdargs, logpath_item):
         log = open(logpath_item, 'wt')
         run_kwargs.update(text=True, stdout=log, stderr=log)
 
-    p = subprocess.run(cmdargs, **run_kwargs)
+    p = subprocess.run(cmdargs_item, **run_kwargs)
 
     if logpath_item is not None:
         log.close()
@@ -79,18 +80,22 @@ def run_cmdargs_targetfunc(cmdargs, logpath_item):
     return p
 
 
-@deco.get_deco_broadcast(['cmdargs', 'logpath', 'hostname'])
+@deco.get_deco_broadcast(
+    ['cmdargs', 'logpath', 'hostname'],
+    nargs_name='cmdargs',
+    check_length=True,
+)
 def run_cmdargs_base(
     cmdargs, 
     logpath=None,
-    max_run=None,
+    max_run=None, # only works with non-slurm mode
 
     use_ssh=False, 
     hostname=None,
     set_wd=True,
 
     use_slurm=False,
-    slurm_kwargs=dict(),  # nproc, jobname, etc.
+    slurm_kwargs=dict(),  # nproc, jobname, intv_submit, intv_check, max_submit, etc.
 ):
     """- Run command-line arguments within a subshell, by either slurm,
         on another host over ssh, or on the current host.
@@ -98,7 +103,7 @@ def run_cmdargs_base(
         Else, error messages will be written to the log file.
 
     Args:
-        cmdargs: A single str object or a list of str objects
+        cmdargs: A single str object or a MultiArgsList of str objects
         set_wd: Only relevant when "use_ssh" is True. If "set_wd" is True, 
             move to current working directory before running commands
     """
@@ -121,7 +126,6 @@ def run_cmdargs_base(
         success_list, exitcode_list, script_path_list = libslurm.run_cmdargs_with_slurm(
             cmdargs, 
             logpath=logpath,
-            max_submit=max_run,
             **slurm_kwargs,
         )
         subp_result = {
@@ -133,7 +137,7 @@ def run_cmdargs_base(
     else:
         if use_ssh:
             ssh_path = tools.which('ssh')
-            new_cmdargs = list()
+            new_cmdargs = MultiArgsList()
             for cmdargs_item, hostname_item in zip(cmdargs, hostname):
                 if set_wd:
                     new_item = f'{ssh_path} {hostname_item} "cd {os.getcwd()} ; {cmdargs_item}"'
@@ -155,17 +159,20 @@ def run_cmdargs_base(
             'subprocess_obj': plist,
         }
 
+    subp_result['all_success'] = all(subp_result['success'])
+
     return subp_result
 
 
-def run_with_condaenv_prepare(
-    cmdargs, 
+def prepare_conda_wrapping(
+    cmdargs_item, 
     conda_prefix=None, 
-    condawrap_tmpfile_dir=DEFAULT_TMPFILE_DIR,
+    condawrap_script_dir=DEFAULT_TMPFILE_DIR,
+    condawrap_script_prefix='conda_wrapping_script_',
     shell="bash",
 ):
     """Args:
-        cmdargs: Must be a str object.
+        cmdargs_item: Must be a str object.
         conda_prefix: e.g. <leading paths>/miniconda3/envs/<envname>
     """
     bash_path = tools.which('bash')
@@ -180,9 +187,9 @@ def run_with_condaenv_prepare(
 
     with tempfile.NamedTemporaryFile(
         mode='wt', 
-        prefix='conda_wrapper_script_', 
+        prefix=condawrap_script_prefix, 
         suffix='.sh', 
-        dir=condawrap_tmpfile_dir,
+        dir=condawrap_script_dir,
         delete=False,
     ) as tmpfile:
         tmpfile.write(
@@ -191,7 +198,7 @@ def run_with_condaenv_prepare(
                 conda activate {conda_params["envname"]}
 
                 set -eu
-                {cmdargs}
+                {cmdargs_item}
             ''')
         )
 
@@ -206,35 +213,48 @@ def run_with_condaenv_prepare(
     return new_cmdargs, script_path
 
 
-@deco.get_deco_broadcast(['cmdargs', 'logpath', 'hostname'])
+@deco.get_deco_broadcast(
+    ['cmdargs', 'logpath', 'hostname'],
+    nargs_name='cmdargs',
+    check_length=True,
+)
 def run_cmdargs(
     cmdargs, 
     logpath=None,
+    max_run=None, # only works with non-slurm mode
 
     use_condaenv=False,
     conda_prefix=None, 
-    condawrap_tmpfile_dir=DEFAULT_TMPFILE_DIR, 
+    condawrap_script_dir=DEFAULT_TMPFILE_DIR, 
+    remove_condawrap_script_dir=True,
 
     use_ssh=False, 
     hostname=None,
 
     use_slurm=False,
     slurm_kwargs=dict(),
+
+    raise_with_failure=True,
 ):
-    """Args:
+    """
+    ####################
+    # For end-user use #
+    ####################
+    Args:
         cmdargs: Must be str object or a list of them
         conda_prefix: e.g. <leading paths>/miniconda3/envs/<envname>
 
     Automatically remove conda-wrapping-related scripts
     """
     if use_condaenv:
-        new_cmdargs = list()
+        new_cmdargs = MultiArgsList()
         condawrap_script_list = list()
-        for cmdargs_item in cmdargs:
-            new_cmdargs_item, condawrap_script = run_with_condaenv_prepare(
+        for zidx, cmdargs_item in tools.zenumerate(cmdargs):
+            new_cmdargs_item, condawrap_script = prepare_conda_wrapping(
                 cmdargs_item, 
                 conda_prefix=conda_prefix, 
-                condawrap_tmpfile_dir=condawrap_tmpfile_dir,
+                condawrap_script_dir=condawrap_script_dir,
+                condawrap_script_prefix=f'conda_wrapping_script_{zidx}_',
             )
             new_cmdargs.append(new_cmdargs_item)
             condawrap_script_list.append(condawrap_script)
@@ -243,14 +263,29 @@ def run_cmdargs(
     subp_result = run_cmdargs_base(
         cmdargs,
         logpath=logpath,
+        max_run=max_run,
         use_ssh=use_ssh, 
         hostname=hostname,
         use_slurm=use_slurm,
         slurm_kwargs=slurm_kwargs,
     )
-    if use_condaenv:
+    if use_condaenv and remove_condawrap_script_dir:
         for x in condawrap_script_list:
             os.remove(x)
+
+    if raise_with_failure and (not subp_result['all_success']):
+        logpath_given = any((x is not None) for x in logpath)
+        if logpath_given:
+            logpath_string = '\n'.join(logpath)
+            raise Exception(
+                f'One or more of the jobs finished unsuccessfully. Refer to '
+                f'the log files.\nLog file paths:\n{logpath_string}'
+            )
+        else:
+            raise Exception(
+                f'One or more of the jobs finished unsuccessfully. Log files '
+                f'were not created because "logpath" argument was not set.'
+            )
 
     return subp_result
 
@@ -259,21 +294,34 @@ def run_cmdargs(
 # running a script #
 ####################
 
-@deco.get_deco_broadcast(['script_path', 'logpath', 'hostname'])
+@deco.get_deco_broadcast(
+    ['script_path', 'logpath', 'hostname'],
+    nargs_name='cmdargs',
+    check_length=True,
+)
 def run_script(
     script_path, 
     logpath=None,
+    max_run=None, # only works with non-slurm mode
 
     use_condaenv=False,
     conda_prefix=None, 
-    condawrap_tmpfile_dir=DEFAULT_TMPFILE_DIR, 
+    condawrap_script_dir=DEFAULT_TMPFILE_DIR, 
+    remove_condawrap_script_dir=True,
 
     use_ssh=False,
     hostname=None,
 
     use_slurm=False,
     slurm_kwargs=dict(),
+
+    raise_with_failure=True,
 ):
+    """
+    ####################
+    # For end-user use #
+    ####################
+    """
     if any((not os.access(x, os.R_OK | os.X_OK)) for x in script_path):
         raise Exception(f'read/execute permission is not set for the script file.')
     if any((not workflow_utils.check_has_shebang(script_path)) for x in script_path):
@@ -282,16 +330,20 @@ def run_script(
     subp_result = run_cmdargs(
         cmdargs=script_path, 
         logpath=logpath,
+        max_run=max_run,
 
         use_condaenv=use_condaenv,
         conda_prefix=conda_prefix,
-        condawrap_tmpfile_dir=condawrap_tmpfile_dir,
+        condawrap_script_dir=condawrap_script_dir,
+        remove_condawrap_script_dir=remove_condawrap_script_dir,
 
         use_ssh=use_ssh,
         hostname=hostname,
 
         use_slurm=use_slurm,
         slurm_kwargs=slurm_kwargs,
+
+        raise_with_failure=raise_with_failure,
     )
     return subp_result
     
@@ -398,7 +450,7 @@ def prepare_funcrun_write_pyscript(
     os.chmod(pyscript_path, stat.S_IRUSR | stat.S_IXUSR)
 
 
-@deco.get_deco_broadcast(['func', 'args', 'kwargs'])
+#@deco.get_deco_broadcast(['func', 'args', 'kwargs'])
 def prepare_funcrun(
     func, 
     *, 
@@ -470,10 +522,12 @@ def prepare_funcrun(
     return tmpdir_tree
 
 
-#def run_func_with_script(
 @deco.get_deco_broadcast(
-    ['func', 'args', 'kwargs', 'logpath', 'hostname']
+    ['func', 'args', 'kwargs', 'logpath', 'hostname'],
+    nargs_name='func',
+    check_length=True,
 )
+@deco.get_deco_num_set_differently(['use_ssh', 'use_slurm'], 1, how='le')
 def run_func(
     func, 
 
@@ -481,26 +535,35 @@ def run_func(
 
     args=tuple(), 
     kwargs=dict(), 
+    logpath=None,
+    max_run=None, # only works with non-slurm mode
 
-    python=None,
-    funcrun_tmpfile_dir=DEFAULT_TMPFILE_DIR,
+    raise_with_failure=True,
 
     ###
 
-    logpath=None,
-
     use_condaenv=False,
     conda_prefix=None, 
-    condawrap_tmpfile_dir=DEFAULT_TMPFILE_DIR, 
+    condawrap_script_dir=DEFAULT_TMPFILE_DIR, 
+    remove_condawrap_script_dir=True, 
 
     use_ssh=False, 
     hostname=None,
 
     use_slurm=False,
     slurm_kwargs=dict(),
-):
-    assert sum([use_ssh, use_slurm]) <= 1, f'No more than one of "use_ssh", "use_slurm" may be set True'
 
+    ### 
+
+    python=None,
+    funcrun_tmpfile_dir=DEFAULT_TMPFILE_DIR,
+    remove_funcrun_tmpfile_dir=True,
+):
+    """
+    ####################
+    # For end-user use #
+    ####################
+    """
     # set python executable
     if python is None:
         if use_condaenv:
@@ -517,22 +580,25 @@ def run_func(
         python=python, 
         funcrun_tmpfile_dir=funcrun_tmpfile_dir, 
     )
-    cmdargs = [
+    cmdargs = MultiArgsList(
         subdir_tree['pyscript']
         for subdir_tree in tmpdir_tree['subdirs'].values()
-    ]
+    )
 
     # run cmdargs
     subp_result = run_cmdargs(
         cmdargs=cmdargs,
         logpath=logpath,
+        max_run=max_run,
         use_condaenv=use_condaenv,
         conda_prefix=conda_prefix,
-        condawrap_tmpfile_dir=condawrap_tmpfile_dir,
+        condawrap_script_dir=condawrap_script_dir,
+        remove_condawrap_script_dir=remove_condawrap_script_dir,
         use_ssh=use_ssh,
         hostname=hostname,
         use_slurm=use_slurm,
         slurm_kwargs=slurm_kwargs,
+        raise_with_failure=raise_with_failure,
     )
 
     # obtain result object  
@@ -551,7 +617,8 @@ def run_func(
         result.append(result_item)
 
     # remove funcrun temporary directory
-    shutil.rmtree(tmpdir_tree['top'])
+    if remove_funcrun_tmpfile_dir:
+        shutil.rmtree(tmpdir_tree['top'])
 
     return result, subp_result
 

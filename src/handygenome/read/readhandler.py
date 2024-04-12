@@ -764,6 +764,8 @@ def get_pairorient_substring(read, mate=False):
 
 
 def get_pairorient(read):
+    """Example of return values: None, f1r2, f2r1
+    """
     if read.mate_is_unmapped:
         pairorient = None
     else:

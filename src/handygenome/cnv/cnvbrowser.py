@@ -31,7 +31,7 @@ from handygenome.refgenome.refverfile import PARUnavailableError
 import handygenome.genomedf.genomedf as libgdf
 from handygenome.genomedf.genomedf import GenomeDataFrame as GDF
 import handygenome.cnv.depth as libdepth
-from handygenome.variant.variantplus import VariantDataFrame
+from handygenome.variant.vcfdataframe import VariantDataFrame
 
 from handygenome.cnv.depth import DepthRawDataFrame as DepthRawDF
 from handygenome.cnv.depth import DepthSegmentDataFrame as DepthSegDF
