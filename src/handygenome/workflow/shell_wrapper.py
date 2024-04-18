@@ -524,7 +524,6 @@ def prepare_funcrun(
 
 @deco.get_deco_broadcast(
     ['func', 'args', 'kwargs', 'logpath', 'hostname'],
-    nargs_name='func',
     check_length=True,
 )
 @deco.get_deco_num_set_differently(['use_ssh', 'use_slurm'], 1, how='le')

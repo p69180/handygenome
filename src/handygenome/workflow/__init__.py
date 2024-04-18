@@ -354,7 +354,9 @@ def get_tmpdir_paths_vcfeditor(
     return tmpdir_paths
 
 
-# ARGPARSE SETUP FUNCTIONS
+############################
+# ARGPARSE SETUP FUNCTIONS #
+############################
 
 class CustomFormatter(
     argparse.ArgumentDefaultsHelpFormatter,
@@ -599,11 +601,26 @@ def add_jobname_arg(
     )
 
 
-def add_index_arg(parser_dict,
-                  help='If set, output vcf file is not indexed.'):
+def add_index_arg(
+    parser_dict,
+    help='If set, output vcf file is not indexed.',
+):
     parser_dict['flag'].add_argument(
         '--donot-index', dest='donot_index', action='store_true',
-        help=textwrap.fill(help, width=HELP_WIDTH))
+        help=textwrap.fill(help, width=HELP_WIDTH),
+    )
+
+
+def add_tmpdirloc_arg(
+    parser_dict,
+    help='Location where temporary directory will be created.',
+):
+    parser_dict['optional'].add_argument(
+        '--tmpdir-loc', 
+        default=os.getcwd(),
+        dest='tmpdirloc', 
+        help=textwrap.fill(help, width=HELP_WIDTH),
+    )
 
 
 #######
@@ -665,11 +682,14 @@ def add_help_arg(parser, help='show this help message and exit'):
 
 def add_logging_args(parser_dict):
     parser_dict['optional'].add_argument(
-        '--log', required=False, 
+        '--log', 
+        required=False, 
         help=textwrap.fill(
             f'If used, progress messages will be written to this file. '
             f'Existing file will be truncated.',
-            width=HELP_WIDTH))
+            width=HELP_WIDTH,
+        )
+    )
 
     parser_dict['flag'].add_argument(
         '--append-log', dest='append_log', action='store_true',

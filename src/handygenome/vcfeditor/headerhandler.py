@@ -44,6 +44,27 @@ def addmeta_END(vcfheader):
                    ('Description', 'End position on CHROM')])
 
 
+#################################
+# copy header with modification #
+#################################
+
+def copyheader(vcfheader, excl_info=set(), excl_format=set()):
+    newhdr = pysam.VariantHeader()
+    for sid in vcfheader.samples:
+        newhdr.samples.add(sid)
+    for rec in vcfheader.records:
+        if rec.type == 'INFO':
+            if rec.key not in excl_info:
+                newhdr.add_record(rec)
+        elif rec.type == 'FORMAT':
+            if rec.key not in excl_format:
+                newhdr.add_record(rec)
+        else:
+            newhdr.add_record(rec)
+
+    return newhdr
+
+
 ##################################
 
 
@@ -195,4 +216,5 @@ def check_header_compatibility(vcfheader1, vcfheader2):
 def close_vcfplus_list(vcfplus_list):
     for vcfp in vcfplus_list:
         vcfp.vcf.close()
+
 

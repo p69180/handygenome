@@ -17,6 +17,7 @@ import handygenome.vcfeditor.misc as vcfmisc
 import handygenome.ucscdata as ucscdata
 from handygenome.genomedf.genomedf_base import GenomeDataFrameBase
 import handygenome.blacklist as blacklist
+import handygenome.vcfeditor.validatevcf as validatevcf
 
 
 SPLIT_INFILE_PAT = re.compile(r'([0-9]+)([A-Za-z]*)(\.vcf\.gz)')
@@ -251,15 +252,8 @@ def make_infile_copy(infile_path, tmpdir_root):
             infile_link_index_path = f'{infile_link_path}.csi'
             os.symlink(indexfile_path, infile_link_index_path)
     else:
-        logutils.log(f'Making bgzipped copy of input VCF')
-        in_vcf = pysam.VariantFile(infile_path)
-        out_vcf = pysam.VariantFile(infile_link_path, mode='wz', header=in_vcf.header.copy())
-        for vr in in_vcf.fetch():
-            out_vcf.write(vr)
-
-        out_vcf.close()
-        in_vcf.close()
-
+        logutils.log(f'Making a copy of input VCF which is bgzipped and has valid INFO/FORMAT metadata')
+        validatevcf.make_metavalid_vcf(infile_path, infile_link_path)
         logutils.log(f'Making index of the copied VCF')
         infile_link_index_path = vcfmisc.make_index(infile_link_path)
 

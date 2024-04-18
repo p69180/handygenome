@@ -488,6 +488,7 @@ def argparsing(cmdargs=None):
     workflow.add_outfmt_arg(parser_dict['optional'], required=False)
     workflow.add_logging_args(parser_dict)
     workflow.add_scheduler_args(parser_dict, default_parallel=1, default_sched='slurm')
+    workflow.add_tmpdirloc_arg(parser_dict)
 
     ########
     # flag #
@@ -598,7 +599,8 @@ def main_core(cmdargs):
             + __name__.split('.')[-1]
             + '_'
         ),
-        where=os.path.dirname(args.infile_path),
+        #where=os.path.dirname(args.infile_path),
+        where=args.tmpdirloc,
 
         nproc=args.parallel,
         make_outfiles=True,

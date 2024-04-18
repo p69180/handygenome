@@ -95,7 +95,7 @@ def get_format(vr, sampleid, key, collapse_tuple=True):
             for_write = False,
             typeconv = False,
             collapse_tuple = collapse_tuple,
-            )
+        )
     else:
         return None
 
@@ -172,7 +172,7 @@ def set_info(vr, key, val, typeconv=True):
             for_write=True,
             typeconv=typeconv,
             collapse_tuple=False,
-            )
+        )
         vr.info[key] = modified_val
 
 set_value_info = set_info
@@ -306,18 +306,26 @@ def translate_metadata_number(vr, metadata_number):
     return translated_number
 
 
+def prepare_translated_numbers(vr):
+    return {
+        'A': len(vr.alts),
+        'R': len(vr.alleles),
+        'G': math.comb(len(vr.alleles) + 1, 2),
+            # combinations with repetition H(len(vr.alleles), 2)
+        #'other': metadata_number,
+    }
+
+
 def get_translated_number_info(vr, key):
     if key in vr.header.info.keys():
-        metadata_number = vr.header.info[key].number
-        return translate_metadata_number(vr, metadata_number)
+        return translate_metadata_number(vr, vr.header.info[key].number)
     else:
         return None
 
 
 def get_translated_number_format(vr, key):
     if key in vr.header.formats.keys():
-        metadata_number = vr.header.formats[key].number
-        return translate_metadata_number(vr, metadata_number)
+        return translate_metadata_number(vr, vr.header.formats[key].number)
     else:
         return None
 
@@ -326,15 +334,15 @@ def get_translated_number_format(vr, key):
 
 
 def modify_InfoFormatValue(
-        key, 
-        val, 
-        metadata_number,
-        translated_number, 
-        keytype, 
-        for_write=False, 
-        typeconv=False, 
-        collapse_tuple=True,
-        ):
+    key, 
+    val, 
+    metadata_number,
+    translated_number, 
+    keytype, 
+    for_write=False, 
+    typeconv=False, 
+    collapse_tuple=True,
+):
     """
     Assumption:
         "val" is a tuple or a list if and only if metadata "Number" is 1.
@@ -367,144 +375,160 @@ def modify_InfoFormatValue(
             for_write == True.
         collapse_tuple: If True, length-1 tuple is converted to its element
     """
-
-    def handle_special_cases(key, val, keytype):
-        if key == 'AS_SB_TABLE':
-            # Exception for Mutect2 INFO annotation AS_SB_TABLE
-            # Number == 1 but its value looks like '20,14|4,4'
-            stop = True
-            return_val = ','.join(val)
-        elif keytype == 'Flag' or key == 'GT':
-            # Flag or GT should not be modified
-            stop = True
-            return_val = val
-        else:
-            stop = False
-            return_val = None
-
-        return stop, return_val
-
-    def get_params(val, for_write, keytype):
-        if isinstance(val, (tuple, list)):
-            len_val = 1 if len(val) == 0 else len(val)
-        else:
-            len_val = 1
-
-        isNA = check_InfoFormatValue_isNA(val)
-            # True with zero-length tuple
-            # True with a non-length-zero tuple composed of NA equivalents
-
-        if for_write:
-            unifiedNA = '.' if keytype == 'String' else None
-        else:
-            unifiedNA = None
-
-        return len_val, isNA, unifiedNA
-
-    def sanity_check(key, val, metadata_number, translated_number, keytype, 
-                     len_val, isNA):
-        # Check if metadata Number and actual length of the value are the same
-        if (
-                isinstance(translated_number, int) and
-                (len_val != translated_number) and
-                (not isNA)):
-            raise Exception(
-                f'"Number" metadata and actual number of the value '
-                f'does not match.\n'
-                f'key = {key}, val = {val}, '
-                f'translated_number = {translated_number}, '
-                f'keytype = {keytype}')
-        # Assumed that raw value is not a sequence type if and only if 
-        # "Number" is 1.
-        if (
-                metadata_number == 1 and
-                isinstance(val, (tuple, list))):
-            raise Exception(
-                f'Unexpected case: raw value is a tuple or a list'
-                f'when metadata Number is 1.')
-        if (
-                metadata_number != 1 and
-                not isinstance(val, (tuple, list))):
-            raise Exception(
-                f'Unexpected case: raw value is not a tuple or a list'
-                f'when metadata Number is not 1.')
-
-    def get_modified_val(
-            val,
-            metadata_number,
-            translated_number,
-            isNA,
-            len_val,
-            unifiedNA,
-            ):
-        if isNA:
-            if translated_number == '.':
-                modified_val = tuple([unifiedNA] * len_val)
-                    # len_val is 1 when val is an empty tuple
-            else:
-                if metadata_number == 1:
-                    modified_val = unifiedNA
-                else:
-                    modified_val = tuple([unifiedNA] * translated_number)
-        else:
-            if metadata_number == 1:
-                # turn NAvalues into unifiedNA
-                if val in NA_VALUES:
-                    modified_val = unifiedNA
-                else:
-                    modified_val = val
-            else:
-                # turn NAvalues into unifiedNA
-                modified_val = tuple(unifiedNA if x in NA_VALUES else x
-                                     for x in val)
-
-        return modified_val
-
-    def do_typeconv(modified_val, keytype):
-        if keytype == 'Flag':
-            return bool(modified_val)
-        else:
-            if keytype == 'String' or keytype == 'Character':
-                converter_func = str
-            elif keytype == 'Integer':
-                converter_func = int
-            elif keytype == 'Float':
-                converter_func = float
-
-            def converter(val):
-                return val if val in NA_VALUES else converter_func(val)
-
-            if isinstance(modified_val, (tuple, list)):
-                new_val = tuple(converter(x) for x in modified_val)
-            else:
-                new_val = converter(modified_val)
-
-            return new_val
-
-    def do_collapse_tuple(modified_val):
-        if isinstance(modified_val, (tuple, list)):
-            if len(modified_val) == 1:
-                return modified_val[0]
-            else:
-                return modified_val
-        else:
-            return modified_val
-
     # main
     assert translated_number == '.' or isinstance(translated_number, int)
 
-    stop, return_val = handle_special_cases(key, val, keytype)
+    stop, return_val = modify_InfoFormatValue_handle_special_cases(key, val, keytype)
     if stop:
         return return_val
 
-    len_val, isNA, unifiedNA = get_params(val, for_write, keytype)
-    sanity_check(key, val, metadata_number, translated_number, keytype, 
-                 len_val, isNA)
-    modified_val = get_modified_val(val, metadata_number, translated_number, 
-                                    isNA, len_val, unifiedNA)
+    len_val, isNA, unifiedNA = modify_InfoFormatValue_get_params(val, for_write, keytype)
+    modify_InfoFormatValue_sanity_check(key, val, metadata_number, translated_number, keytype, len_val, isNA)
+    modified_val = modify_InfoFormatValue_get_modified_val(
+        val, metadata_number, translated_number, isNA, len_val, unifiedNA,
+    )
     if typeconv:
-        modified_val = do_typeconv(modified_val, keytype)
+        modified_val = modify_InfoFormatValue_typeconv(modified_val, keytype)
     if collapse_tuple:
-        modified_val = do_collapse_tuple(modified_val)
+        modified_val = modify_InfoFormatValue_collapse_tuple(modified_val)
 
     return modified_val
+
+
+def modify_InfoFormatValue_handle_special_cases(key, val, keytype):
+    if key == 'AS_SB_TABLE':
+        # Exception for Mutect2 INFO annotation AS_SB_TABLE
+        # Number == 1 but its value looks like '20,14|4,4'
+        stop = True
+        return_val = ','.join(val)
+    elif keytype == 'Flag' or key == 'GT':
+        # Flag or GT should not be modified
+        stop = True
+        return_val = val
+    else:
+        stop = False
+        return_val = None
+
+    return stop, return_val
+
+
+def modify_InfoFormatValue_get_params(val, for_write, keytype):
+    if isinstance(val, (tuple, list)):
+        len_val = 1 if len(val) == 0 else len(val)
+    else:
+        len_val = 1
+
+    isNA = check_InfoFormatValue_isNA(val)
+        # True with zero-length tuple
+        # True with a non-length-zero tuple composed of NA equivalents
+
+    if for_write:
+        unifiedNA = '.' if keytype == 'String' else None
+    else:
+        unifiedNA = None
+
+    return len_val, isNA, unifiedNA
+
+
+def modify_InfoFormatValue_sanity_check(
+    key, val, metadata_number, translated_number, keytype, 
+    len_val, isNA,
+):
+    # Check if metadata Number and actual length of the value are the same
+    if (
+        isinstance(translated_number, int)
+        and (len_val != translated_number)
+        and (not isNA)
+    ):
+        raise Exception(
+            f'"Number" metadata and actual number of the value '
+            f'does not match.\n'
+            f'key = {key}, val = {val}, '
+            f'translated_number = {translated_number}, '
+            f'keytype = {keytype}'
+        )
+    # Assumed that raw value is not a sequence type if and only if 
+    # "Number" is 1.
+    if (
+        (metadata_number == 1) 
+        and isinstance(val, (tuple, list))
+    ):
+        raise Exception(
+            f'Unexpected case: raw value is a tuple or a list'
+            f'when metadata Number is 1.'
+        )
+    if (
+        (metadata_number != 1) 
+        and (not isinstance(val, (tuple, list)))
+    ):
+        raise Exception(
+            f'Unexpected case: raw value is not a tuple or a list'
+            f'when metadata Number is not 1.'
+        )
+
+
+def modify_InfoFormatValue_get_modified_val(
+    val,
+    metadata_number,
+    translated_number,
+    isNA,
+    len_val,
+    unifiedNA,
+):
+    if isNA:
+        if translated_number == '.':
+            modified_val = tuple([unifiedNA] * len_val)
+                # len_val is 1 when val is an empty tuple
+        else:
+            if metadata_number == 1:
+                modified_val = unifiedNA
+            else:
+                modified_val = tuple([unifiedNA] * translated_number)
+    else:
+        if metadata_number == 1:
+            # turn NAvalues into unifiedNA
+            if val in NA_VALUES:
+                modified_val = unifiedNA
+            else:
+                modified_val = val
+        else:
+            # turn NAvalues into unifiedNA
+            modified_val = tuple(unifiedNA if x in NA_VALUES else x
+                                 for x in val)
+
+    return modified_val
+
+
+def modify_InfoFormatValue_typeconv(modified_val, keytype):
+    if keytype == 'Flag':
+        return bool(modified_val)
+    else:
+        if keytype == 'String' or keytype == 'Character':
+            converter_func = str
+        elif keytype == 'Integer':
+            converter_func = int
+        elif keytype == 'Float':
+            converter_func = float
+
+        def converter(val):
+            return val if val in NA_VALUES else converter_func(val)
+
+        if isinstance(modified_val, (tuple, list)):
+            new_val = tuple(converter(x) for x in modified_val)
+        else:
+            new_val = converter(modified_val)
+
+        return new_val
+
+
+def modify_InfoFormatValue_collapse_tuple(modified_val):
+    if isinstance(modified_val, (tuple, list)):
+        if len(modified_val) == 1:
+            return modified_val[0]
+        else:
+            return modified_val
+    else:
+        return modified_val
+
+
+

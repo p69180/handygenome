@@ -2,6 +2,7 @@ import os
 import re
 import shlex
 import itertools
+import pprint
 from collections import UserList
 
 import numpy as np
@@ -82,12 +83,16 @@ def broadcast_args(*args, nargs=None, nargs_idx=None, check_length=False):
     # step3: check_length
     if check_length:
         if not all((len(x) in (1, set_nargs)) for x in newargs):
+            print(f'set_nargs={set_nargs}')
+            for x in newargs:
+                print(len(x))
+            print('#################')
             errmsg = (
                 f'Length of some of input args are not 1 or nargs.\n'
-                f'args: {args}\n'
-                f'nargs: {nargs}\n'
-                f'nargs_idx: {nargs_idx}\n'
-                f'check_length: {check_length}'
+                f'* args: {pprint.pformat(args, compact=False, indent=4)}\n\n'
+                f'* nargs: {nargs}\n'
+                f'* nargs_idx: {nargs_idx}\n'
+                f'* check_length: {check_length}'
             )
             raise Exception(errmsg)
 

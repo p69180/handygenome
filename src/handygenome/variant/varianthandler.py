@@ -193,14 +193,15 @@ def _copy_info(old_vr, new_vr, dont_copy_if_exist=True):
                                     infoformat.get_info(old_vr, info_key))
 
 
-def _copy_format(old_vr, new_vr, dont_copy_if_exist=True):
-    def assign_val(old_vr, new_vr, key, sampleid):
-        if key == 'GT':
-            new_vr.samples[sampleid].allele_indices = old_vr.samples[sampleid].allele_indices
-            new_vr.samples[sampleid].phased = old_vr.samples[sampleid].phased
-        else:
-            infoformat.set_format(new_vr, sampleid, key, infoformat.get_format(old_vr, sampleid, key))
+def _copy_format_assign_val(old_vr, new_vr, key, sampleid):
+    if key == 'GT':
+        new_vr.samples[sampleid].allele_indices = old_vr.samples[sampleid].allele_indices
+        new_vr.samples[sampleid].phased = old_vr.samples[sampleid].phased
+    else:
+        infoformat.set_format(new_vr, sampleid, key, infoformat.get_format(old_vr, sampleid, key))
 
+
+def _copy_format(old_vr, new_vr, dont_copy_if_exist=True):
     new_vr_samples = tuple(new_vr.samples)
     for sampleid in old_vr.samples:
         # check if the new vr header defines the sample id of input vr
@@ -215,9 +216,9 @@ def _copy_format(old_vr, new_vr, dont_copy_if_exist=True):
                     if dont_copy_if_exist:
                         # copy the value only if the value is not already set
                         if key not in new_vr.samples[sampleid]:
-                            assign_val(old_vr, new_vr, key, sampleid)
+                            _copy_format_assign_val(old_vr, new_vr, key, sampleid)
                     else:
-                        assign_val(old_vr, new_vr, key, sampleid)
+                        _copy_format_assign_val(old_vr, new_vr, key, sampleid)
 
 
 # raw VCF string parsers
